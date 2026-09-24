@@ -22,6 +22,8 @@ dist/
 # ===== 运行时生成 =====
 debug/
 logs/
+*.db
+city_players.db
 __pycache__/
 *.py[cod]
 *$py.class
@@ -45,6 +47,10 @@ Thumbs.db
 files.zip
 新增文件说明.txt
 解密.txt
+
+tools/flash_host/build/
+pktcap/
+pepflashplayer.dll
 
 # ===== Wiki 源文件 =====
 # GitHub Wiki 是另一个仓库（<repo>.wiki.git），这里只是本地工作副本，

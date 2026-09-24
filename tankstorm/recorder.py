@@ -645,8 +645,11 @@ class Recorder:
                             self.latest[nm] = (self._latest_seq, data)
                             hist = self.recent.setdefault(nm, [])
                             hist.append((self._latest_seq, data))
-                            if len(hist) > 8:
-                                del hist[:-8]
+                            # 城市玩家列表（RseCountryUserLst）一条城可能推很多人，
+                            # 每人一条时 8 条会把前面的冲掉。其它消息仍只留近 8 条。
+                            cap = 256 if nm == "RseCountryUserLst" else 8
+                            if len(hist) > cap:
+                                del hist[:-cap]
 
             # ---- 以下为明文消息的原有逻辑，行为保持不变 ----
             text = _readable_text(body) if len(body) <= 65536 else ""

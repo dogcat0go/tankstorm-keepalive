@@ -13,9 +13,9 @@
     type:2   刷新自己国家的面板   → countryData 里有行动力、当前城市、今日攻击次数
     type:3   打开某城市的面板     → cityData 里有"这城还有没有支援兵"
     type:45  召唤摩多军团支援兵   → 随后服务端推 RseCountryUserLst，给出攻击目标
-    type:19  扫荡                 行动力 -15，dayatktimes +3，支援兵士气 -300
-    type:14  普通攻击             行动力 -5， dayatktimes +1
-    type:4   移动到相邻城市       行动力 -5
+    type:19  扫荡                 行动力 -15，dayatktimes +3；打玩家时带 atkUserID
+    type:14  普通攻击             行动力 -5， dayatktimes +1；打玩家时带 atkUserID
+    type:4   移动到相邻城市       行动力 -5（离线打人暂不发）
 
 字段含义是靠**数量关系**锁死的，不是猜的：抓包里行动力
 136→121→106→91→76→61→46→31→16 每次正好 -15，与玩家所述"一次扫荡消耗 15 点"
@@ -41,11 +41,14 @@ log = get_logger()
 OPCODE = "0463"
 RSE = "RseCountryOpt"
 USER_LST = "RseCountryUserLst"
+BTL = "RseCountryBtlResult"
 
 # 抓包实测的开销，用来在**发之前**就判断够不够，而不是发出去等服务端拒绝。
 # "拿服务器的拒绝当探针"在这个项目里花掉过 60 勋章。
 COST_SWEEP = 15      # type:19 扫荡
 COST_ATTACK = 5      # type:14 普通攻击
+WAIT_ATK = 3.0       # 扫荡/攻击回包超时，超时打下一次
+WAIT_BTL = 2.0       # 战报超时，超时打下一次
 
 # countryData 里这几个字段的含义由抓包的数量关系确定
 F_POWER = "countryData.field13"     # 行动力
@@ -103,7 +106,7 @@ def _use_recovery_card(sock, rec, item_id):
     return True, f"已用掉 1 张国战恢复卡（用前背包有 {count} 张）"
 
 
-def _fields(type_, country=0, city=0, atk=None, check=False):
+def _fields(type_, country=0, city=0, atk=None, check=False, page=0):
     """照抓包的字段集构造请求。
 
     真客户端把 0 值字段也显式写出来，所以一律 omit_zero=False 发全套；
@@ -116,7 +119,7 @@ def _fields(type_, country=0, city=0, atk=None, check=False):
          6: ("int32", city),
          7: ("int32", 0),
          9: ("bool", check),       # bCheckFinishSet：抓包里只有 type:2 是 true
-         13: ("int32", 0),
+         13: ("int32", page),      # pageInx：城市玩家列表翻页，开面板默认 0
          14: ("int32", 0),
          15: ("int32", 0),
          16: ("int32", 0)}
@@ -141,6 +144,23 @@ def _wait(sock, rec, since, type_, timeout=6.0):
     """
     return _await_response(sock, rec, RSE, since, timeout,
                            want=lambda d: d.get("type") == type_)
+
+
+def _def_from_btl(data, uid=""):
+    """从 RseCountryBtlResult 取出防守方。field8 剩余士气，field14 本击掉了多少。"""
+    if not isinstance(data, dict):
+        return None
+    fr = data.get("fightReoprt")
+    if not isinstance(fr, dict):
+        return None
+    defu = fr.get("field2")
+    if not isinstance(defu, dict):
+        return None
+    if uid:
+        duid = str(defu.get("field1") or "")
+        if duid and duid != str(uid):
+            return None
+    return defu
 
 
 def _target_id(rec, since=0):
@@ -217,13 +237,28 @@ def _find_npc_city(sock, rec, npc_country, configured, current_city):
 
 
 def _panel(sock, rec, country):
-    """刷新自己国家的面板。返回 (行动力, 当前城市, 今日攻击次数, 原始响应)。"""
-    since = _send(sock, rec, 2, country=country, check=True)
-    data = _wait(sock, rec, since, 2)
-    if not isinstance(data, dict):
-        return None, None, None, None
-    return (_read_path(data, F_POWER), _read_path(data, F_CITY),
-            data.get("dayatktimes"), data)
+    """刷新自己国家的面板。返回 (行动力, 当前城市, 今日攻击次数, 原始响应)。
+
+    回包偶尔会丢，连着再读两次。对端已经把连接掐了就立刻停，别空等。
+    """
+    for n in range(1, 3):
+        t0 = time.time()
+        try:
+            since = _send(sock, rec, 2, country=country, check=True)
+            data = _wait(sock, rec, since, 2, timeout=WAIT_ATK)
+        except OSError:
+            log.info("[国战] 连接已断开，读不了面板")
+            return None, None, None, None
+        if isinstance(data, dict):
+            return (_read_path(data, F_POWER), _read_path(data, F_CITY),
+                    data.get("dayatktimes"), data)
+        if time.time() - t0 < 0.4:
+            log.info("[国战] 连接已断开，不再重试读面板")
+            return None, None, None, None
+        if n < 2:
+            log.info("[国战] 读不到面板，1 秒后再读（%d/2）", n)
+            _nap(1.0)
+    return None, None, None, None
 
 
 def daily_attack(rec, sock, config):
@@ -449,3 +484,751 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
     if not out["停止原因"]:
         out["停止原因"] = "已打满设定次数"
     return out
+
+
+# CountryUser（RseCountryUserLst.user）字段。嵌套消息没有 opcode，schema
+# 解出来全是 fieldN；名字来自 docs/redwar.proto 的 CountryUser。
+# field3(baseid) 是 string，解码器常把它当嵌套 protobuf 读，还原方式与
+# _target_id() 相同，见那条函数的注释。
+_USER_INT = (
+    (1, "leaguePoint"), (2, "leagueTitle"), (6, "lvl"), (7, "morale"),
+    (8, "combatPowerValue"), (9, "officerPosition"), (10, "vipType"),
+    (11, "vipLevel"), (12, "countryID"), (13, "regionID"),
+)
+
+
+def _as_text(v):
+    """把解码器吐出来的值尽量还原成可读字符串。中文名优先，避免误当 hex。"""
+    if isinstance(v, bytes):
+        for enc in ("utf-8", "gbk"):
+            try:
+                t = v.decode(enc).strip()
+                if t:
+                    return t
+            except UnicodeDecodeError:
+                continue
+        return None
+    if isinstance(v, str) and v.strip():
+        s = v.strip()
+        if any("\u4e00" <= c <= "\u9fff" for c in s):
+            return s
+        try:
+            t = s.encode("latin-1").decode("utf-8").strip()
+            if t and any("\u4e00" <= c <= "\u9fff" for c in t):
+                return t
+        except UnicodeError:
+            pass
+        if len(s) >= 4 and len(s) % 2 == 0 and all(c in "0123456789abcdefABCDEF" for c in s):
+            try:
+                t = bytes.fromhex(s).decode("utf-8")
+                if t.isprintable() and t.strip():
+                    return t.strip()
+            except (ValueError, UnicodeDecodeError):
+                pass
+        return s
+    if isinstance(v, dict):
+        cjk, other = [], []
+        for x in v.values():
+            t = _as_text(x)
+            if not t or (t.isdigit() and len(t) >= 8):
+                continue
+            (cjk if any("\u4e00" <= c <= "\u9fff" for c in t) else other).append(t)
+        return (cjk or other or [None])[0]
+    return None
+
+
+def _as_uid(v):
+    """还原 CountryUser.baseid。真人 uid 是字符串；NPC 支援兵会走 _target_id 那条纠偏。"""
+    if isinstance(v, str) and v.strip():
+        return v.strip()
+    if not isinstance(v, dict):
+        return None
+    raw = v.get("field6")
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        try:
+            tail = raw.to_bytes(8, "little").decode("latin-1")
+        except (OverflowError, UnicodeDecodeError):
+            return None
+        if tail.isdigit():
+            return "1" + tail
+        if tail.isprintable():
+            return tail.rstrip("\x00") or None
+    for x in v.values():
+        if isinstance(x, str) and x.isdigit() and len(x) >= 8:
+            return x
+    return None
+
+
+def _parse_city_user(u):
+    """把 RseCountryUserLst.user 的 fieldN 字典翻成带名字的玩家记录。"""
+    if not isinstance(u, dict):
+        return None
+    out = {}
+    uid = _as_uid(u.get("field3"))
+    if uid:
+        out["uid"] = uid
+    name = _as_text(u.get("field5"))
+    if name:
+        out["name"] = name
+    pic = _as_text(u.get("field4"))
+    if pic:
+        out["pic"] = pic
+    for n, key in _USER_INT:
+        v = u.get(f"field{n}")
+        if isinstance(v, int) and not isinstance(v, bool):
+            out[key] = v
+        elif isinstance(v, bool) and key == "bLeaveLeague":
+            out[key] = v
+    leave = u.get("field14")
+    if isinstance(leave, bool):
+        out["bLeaveLeague"] = leave
+    return out or None
+
+
+def _users_in(data):
+    """从一条 RseCountryUserLst 取出玩家列表。user 可能是 dict 或 list。"""
+    if not isinstance(data, dict):
+        return []
+    user = data.get("user")
+    if isinstance(user, dict):
+        user = [user]
+    if not isinstance(user, list):
+        return []
+    out = []
+    for u in user:
+        p = _parse_city_user(u)
+        if p:
+            out.append(p)
+    return out
+
+
+def _collect_city_users(rec, since, city_id):
+    """从 rec.recent 里捞 since 之后、属于这座城的 RseCountryUserLst。"""
+    hist = (getattr(rec, "recent", {}) or {}).get(USER_LST) or []
+    latest = (rec.latest.get(USER_LST) if rec else None) or (None, None)
+    rows = list(hist)
+    if latest[0] is not None and all(seq != latest[0] for seq, _ in rows):
+        rows.append(latest)
+    got, seen = [], set()
+    for seq, data in rows:
+        if seq is None or seq <= since or not isinstance(data, dict):
+            continue
+        cid = data.get("nCityID")
+        if cid not in (None, city_id):
+            continue
+        for p in _users_in(data):
+            key = p.get("uid") or id(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            got.append(p)
+    return got
+
+
+def _listed_user(users, uid):
+    uid = str(uid or "")
+    for p in users or []:
+        if str(p.get("uid") or "") == uid:
+            return p
+    return None
+
+
+def _wait_city_users(sock, rec, since, city_id, timeout=6.0):
+    """type:3 开面板后等玩家列表。服务端不一定马上推，所以多收一会儿。"""
+    deadline = time.time() + timeout
+    best = []
+    while time.time() < deadline:
+        best = _collect_city_users(rec, since, city_id)
+        if best:
+            # 已经有人了再多收 0.8 秒，把同一批后续包捞齐
+            extra = time.time() + 0.8
+            while time.time() < extra:
+                _beat()
+                try:
+                    sock.settimeout(0.4)
+                    if not sock.recv(8192):
+                        return _collect_city_users(rec, since, city_id)
+                except TimeoutError:
+                    continue
+                except OSError:
+                    return _collect_city_users(rec, since, city_id)
+            return _collect_city_users(rec, since, city_id)
+        _beat()
+        try:
+            sock.settimeout(0.5)
+            if not sock.recv(8192):
+                break
+        except TimeoutError:
+            continue
+        except OSError:
+            break
+    return best
+
+
+def list_city_players(rec, sock, config: dict, city_id: int,
+                      country: int = 0, beat=None, on_page=None,
+                      start_page: int = 0) -> dict:
+    """只读：打开指定城市面板，收集城里所有玩家。
+
+    走 RceCountryOpt type:3（开面板，不花行动力）。玩家在
+    RseCountryUserLst；人多时用 pageInx 翻页。on_page(batch, page) 每页回调。
+    start_page 从 0 起算，用来断线后续拉。返回另带 last_page。
+    """
+    conf = (config.get("国战", {}) or {})
+    city_id = int(city_id)
+    start_page = max(0, int(start_page or 0))
+    country = int(country or conf.get("自己国家ID") or 0) \
+        or _daily.read_my_country(rec)
+    out = {"city": city_id, "owner": None, "userCnt": None, "玩家": [],
+           "原因": "", "last_page": start_page, "start_page": start_page}
+    if not city_id:
+        out["原因"] = "城市 ID 不能为 0"
+        return out
+    if not country:
+        out["原因"] = ("读不到自己的国家ID，停手；"
+                      "可在 config 的「国战.自己国家ID」里手填，"
+                      "或命令行加 --city-country")
+        return out
+
+    prev = _daily._BEAT
+    if beat is not None:
+        _daily._BEAT = beat
+    try:
+        return _list_city_players(rec, sock, city_id, country, out, on_page,
+                                 start_page)
+    finally:
+        _daily._BEAT = prev
+
+
+def _list_city_players(rec, sock, city_id, country, out, on_page=None,
+                      start_page=0):
+    # 先刷自己国家的面板，跟真客户端进世界地图的顺序一致；也用来确认连着。
+    power, loc, _, panel = _panel(sock, rec, country)
+    if panel is None:
+        out["原因"] = "读不到国战面板，停手"
+        return out
+    log.info("[城市玩家] 自己国家=%s 当前城市=%s 行动力=%s；查询城市 %s，从第 %d 页开始",
+             country, loc, power, city_id, start_page)
+
+    players, seen = [], set()
+    owner = None
+    total = None
+    used_country = country
+    # 芝加哥实测约 6000 人、每页 15 条。
+    page_size, max_pages = 15, 2000
+    last_ok = start_page - 1
+
+    for page in range(start_page, max_pages):
+        since = _send(sock, rec, 3, country=used_country, city=city_id, page=page)
+        cd = _wait(sock, rec, since, 3)
+        if not isinstance(cd, dict):
+            out["原因"] = (f"翻到第 {page} 页时没有回包（连接断开或超时），"
+                          f"下次用 --city-page {page} 从这里继续")
+            break
+        ret = cd.get("ret")
+        if ret not in (0, None):
+            out["原因"] = (f"打开城市面板被拒 ret={ret}（停在第 {page} 页），"
+                          f"下次用 --city-page {page} 继续")
+            break
+
+        got_city = _read_path(cd, "cityData.field3")
+        owner = _read_path(cd, "cityData.field2")
+        # cityData.field5 是 CityData.userCnt；国战里当「还有没有支援兵」用，
+        # 玩家城里就是人数。RseCountryOpt.userCnt 是同一份计数的顶层字段。
+        cnt = cd.get("userCnt")
+        if not isinstance(cnt, int) or isinstance(cnt, bool):
+            cnt = _read_path(cd, "cityData.field5")
+        if isinstance(cnt, int) and not isinstance(cnt, bool):
+            total = cnt
+
+        if page == start_page and got_city not in (None, city_id):
+            # 可能国家填错了：回包里带了归属国，换那个国家再开一次。
+            if isinstance(owner, int) and owner and owner != used_country:
+                log.info("[城市玩家] 面板回的城市是 %s、归属国 %s，"
+                         "改用归属国重开", got_city, owner)
+                used_country = owner
+                since = _send(sock, rec, 3, country=used_country,
+                              city=city_id, page=page)
+                cd = _wait(sock, rec, since, 3)
+                if not isinstance(cd, dict):
+                    out["原因"] = "用归属国重开城市面板没有回包"
+                    break
+                got_city = _read_path(cd, "cityData.field3")
+                owner = _read_path(cd, "cityData.field2")
+                cnt = cd.get("userCnt")
+                if not isinstance(cnt, int) or isinstance(cnt, bool):
+                    cnt = _read_path(cd, "cityData.field5")
+                if isinstance(cnt, int) and not isinstance(cnt, bool):
+                    total = cnt
+            if got_city not in (None, city_id):
+                out["原因"] = (f"面板回的城市ID={got_city}，与请求的 {city_id} 不一致")
+                break
+
+        if total == 0:
+            break
+
+        batch = _wait_city_users(sock, rec, since, city_id)
+        new = 0
+        for p in batch:
+            p["page"] = page
+            key = p.get("uid")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            players.append(p)
+            new += 1
+        last_ok = page
+        out["last_page"] = page
+        log.info("[城市玩家] 第 %d 页：本页 %d 人，累计 %d%s",
+                 page, new, len(players),
+                 f" / {total}" if total is not None else "")
+        if on_page:
+            on_page(batch, page)
+        if new == 0:
+            break
+        if total is not None:
+            max_pages = min(2000, max(page + 2,
+                                      (int(total) + page_size - 1) // page_size + 2))
+        if total is not None and start_page == 0 and len(players) >= total:
+            break
+        if total is not None and start_page > 0:
+            # 续拉时 len(players) 只是本轮人数，用页码判断是否到末
+            if (page + 1) * page_size >= int(total):
+                break
+        _nap(0.4)
+
+    out["owner"] = owner
+    out["userCnt"] = total
+    out["玩家"] = players
+    out["last_page"] = last_ok
+    if not out["原因"] and not players and total != 0:
+        out["原因"] = ("面板开了但没等到玩家列表。"
+                      "空城、或人在别的国家视野外时会这样")
+    return out
+
+
+def attack_player(rec, sock, config: dict, uid, times: int = 1,
+                  sweep: bool = False, city_id: int = 0, country: int = 0,
+                  beat=None, card_used: int = 0, until_down: bool = False,
+                  disp_name="", last_act: float = 0.0, page: int = 0) -> dict:
+    """离线打指定玩家。照 2026-09-24 抓包：开城面板 type:3，再 type:14/19。
+
+    不发 type:4（迁城）。人不在邻城时服务端会拒，把 ret 记下来就停。
+    city/country 没给时从 city_players.db 按 uid 补。
+    """
+    from . import citydb
+
+    uid = str(uid or "").strip()
+    times = max(1, int(times or 1))
+    act, name, cost = ((19, "扫荡", COST_SWEEP) if sweep
+                       else (14, "攻击", COST_ATTACK))
+    conf = (config.get("国战", {}) or {})
+    cooldown = float(conf.get("扫荡间隔秒", 15))
+    my = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
+    out = {"成功": 0, "停止原因": "", "目标": uid, "名字": str(disp_name or "").strip(),
+           "城市": int(city_id or 0), "国家": int(country or 0),
+           "动作": name, "用卡": 0}
+
+    info = citydb.find_player(uid)
+    if info:
+        if not out["名字"]:
+            out["名字"] = info.get("name") or ""
+        if not out["城市"]:
+            out["城市"] = int(info.get("city_id") or 0)
+        if not out["国家"]:
+            out["国家"] = int(info.get("city_country")
+                            or info.get("country_id") or 0)
+    if not uid:
+        out["停止原因"] = "没给目标 baseid"
+        return out
+    if not out["城市"] or not out["国家"]:
+        out["停止原因"] = ("库里没有这个人的城市/国家。"
+                          "先 --city-players 拉过该城，或加 --atk-city / --city-country")
+        return out
+    if not my:
+        _, _, _, panel = _panel(sock, rec, 0)
+        v = _read_path(panel, "countryData.field5") if isinstance(panel, dict) else None
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            my = v
+        else:
+            out["停止原因"] = "读不到自己的国家ID，停手"
+            return out
+
+    prev = _daily._BEAT
+    if beat is not None:
+        _daily._BEAT = beat
+    try:
+        return _attack_player(rec, sock, my, uid, times, act, name, cost,
+                              cooldown, out, conf, card_used, until_down,
+                              last_act, page)
+    finally:
+        _daily._BEAT = prev
+
+
+def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
+                   conf=None, card_used=0, until_down=False, last_act=0.0,
+                   page=0):
+    from . import citydb
+
+    city, owner = out["城市"], out["国家"]
+    card_item = int((conf or {}).get("国战恢复卡物品ID") or CARD_ITEM_ID)
+    card_limit = max(0, int((conf or {}).get("单次最多用几张恢复卡", 1)))
+    cap = 80 if until_down else max(1, int(times or 1))
+    if until_down and int(times or 0) > 1:
+        cap = int(times)
+    last_act = float(last_act or 0)
+    out["last_act"] = last_act
+    if citydb.in_atk_fail(uid):
+        log.info("[打人] %s 已在失败库，跳过", out["名字"] or uid)
+        out["停止原因"] = "已在失败库，跳过"
+        return out
+    power, loc, _, panel = _panel(sock, rec, my)
+    if panel is None:
+        out["停止原因"] = "读不到国战面板，停手"
+        return out
+    if not citydb.can_reach(loc, city):
+        here = citydb.city_name(loc) or loc
+        there = citydb.city_name(city) or city
+        out["停止原因"] = f"自己在 {loc} {here}，与目标城 {city} {there} 不相邻，停手"
+        return out
+    start_loc = loc
+    who = out["名字"] or uid
+    if until_down:
+        log.info("[打人] 目标 %s uid=%s 城=%s 国=%s；自己在 %s 行动力=%s；"
+                 "一直%s直到击退或打不过",
+                 who, uid, city, owner, loc, power, name)
+    else:
+        log.info("[打人] 目标 %s uid=%s 城=%s 国=%s；自己在 %s 行动力=%s；准备%s %d 次",
+                 who, uid, city, owner, loc, power, name, cap)
+
+    merit0 = _read_path(panel, F_MERIT) or 0
+    panel_miss = 0
+    for i in range(1, cap + 1):
+        power, loc, _, panel = _panel(sock, rec, my)
+        if power is None:
+            panel_miss += 1
+            log.info("[打人] 中途读不到行动力（超时），打下一次")
+            if panel_miss >= 2:
+                log.info("[打人] 连续读不到行动力，换下一个")
+                break
+            continue
+        panel_miss = 0
+        if loc is not None and start_loc is not None and loc != start_loc:
+            here = citydb.city_name(loc) or loc
+            out["停止原因"] = (f"位置变了：{start_loc} → {loc} {here}"
+                              f"（可能被遣返主城）")
+            out["遣返"] = True
+            log.info("[打人] %s", out["停止原因"])
+            break
+        if power < 15:
+            used = card_used + out.get("用卡", 0)
+            if used >= card_limit:
+                if power < cost:
+                    out["停止原因"] = (f"行动力只剩 {power}，{name}要 {cost}；"
+                                      f"本次已用 {used}/{card_limit} 张恢复卡")
+                    break
+            else:
+                sent, msg = _use_recovery_card(sock, rec, card_item)
+                log.info("[打人] 行动力 %s < 15，%s（%d/%d）",
+                         power, msg, used + (1 if sent else 0), card_limit)
+                if sent:
+                    out["用卡"] = out.get("用卡", 0) + 1
+                    _nap(2.0)
+                    power, loc, _, panel = _panel(sock, rec, my)
+                elif power < cost:
+                    out["停止原因"] = f"行动力只剩 {power}，{name}要 {cost}；{msg}"
+                    break
+        if power is None:
+            log.info("[打人] 用卡后读不到行动力（超时），打下一次")
+            continue
+        if power < cost:
+            out["停止原因"] = f"行动力只剩 {power}，{name}要 {cost}"
+            break
+        since = _send(sock, rec, 3, country=owner, city=city, page=page)
+        cd = _wait(sock, rec, since, 3, timeout=WAIT_ATK)
+        if not isinstance(cd, dict):
+            log.info("[打人] 第 %d 次打开目标城市面板超时，打下一次", i)
+            continue
+        got_owner = _read_path(cd, "cityData.field2")
+        if isinstance(got_owner, int) and got_owner:
+            owner = got_owner
+            out["国家"] = owner
+        listed = _wait_city_users(sock, rec, since, city, timeout=2.0)
+        p = _listed_user(listed, uid)
+        morale = p.get("morale") if p else None
+        if p and p.get("name"):
+            out["名字"] = p["name"]
+            who = p["name"]
+        shown = (morale if isinstance(morale, int)
+                 and not isinstance(morale, bool) and morale > 0 else None)
+        if until_down:
+            log.info("[打人] %s 攻击前士气=%s", who,
+                     shown if shown is not None else "不可见")
+        if p is None:
+            if out["成功"]:
+                out["击退"] = True
+                log.info("[打人] %s 已不在本页，视为击退", who)
+            else:
+                log.info("[打人] %s 不在本页名单，换下一个（不打）", who)
+            break
+        wait = cooldown - (time.time() - last_act) if last_act else 0
+        if wait > 0:
+            log.info("[打人] 冷却，等 %.0f 秒", wait)
+            _nap(wait)
+        since = _send(sock, rec, act, country=owner, city=city, atk=uid)
+        last_act = time.time()
+        out["last_act"] = last_act
+        r = _wait(sock, rec, since, act, timeout=WAIT_ATK)
+        if not isinstance(r, dict):
+            log.info("[打人] 第 %d 次%s回包超时（%.0f 秒），打下一次",
+                     i, name, WAIT_ATK)
+            continue
+        ret = r.get("ret")
+        if ret not in (0, None):
+            if until_down and out["成功"]:
+                log.info("[打人] %s 被拒 ret=%s，此前已打中，视为击退", who, ret)
+                out["击退"] = True
+                break
+            if ret == 21:
+                wait = cooldown - (time.time() - last_act) if last_act else cooldown
+                if wait < 1:
+                    wait = cooldown
+                if not out.get("_waited_21"):
+                    out["_waited_21"] = True
+                    log.info("[打人] %s ret=21 是冷却未到，等 %.0f 秒再打（不记失败）",
+                             who, wait)
+                    _nap(wait)
+                    continue
+                log.info("[打人] %s 仍是 ret=21，换下一个（不记失败）", who)
+                out["停止原因"] = f"{name}被拒 ret=21（跳过，不记失败）"
+                break
+            why = f"{name}被拒 ret={ret}（打不到，不记失败）"
+            out["停止原因"] = why
+            log.info("[打人] %s", why)
+            break
+        merit = _read_path(r, F_MERIT)
+        btl = _await_response(
+            sock, rec, BTL, since, WAIT_BTL,
+            want=lambda d: _def_from_btl(d, uid) is not None)
+        defu = _def_from_btl(btl, uid) if btl else None
+        if not defu:
+            log.info("[打人] 第 %d 次%s战报超时（%.0f 秒），打下一次",
+                     i, name, WAIT_BTL)
+            out["成功"] += 1
+            continue
+        if defu and defu.get("field2"):
+            nm = str(defu.get("field2") or "").strip()
+            if nm:
+                out["名字"] = nm
+                who = nm
+        after = defu.get("field8") if defu else None
+        lost = defu.get("field14") if defu else None
+        after_n = (after if isinstance(after, int) and not isinstance(after, bool)
+                   else None)
+        lost_n = (lost if isinstance(lost, int) and not isinstance(lost, bool)
+                  else None)
+        log.info("[打人] 第 %d 次%s回包 ret=%s 战功=%s 战报士气=%s 损失=%s",
+                 i, name, ret, merit, after_n, lost_n)
+        _beat()
+        if lost_n is None:
+            out["成功"] += 1
+            citydb.clear_atk_fail(uid)
+            log.info("[打人] %s 战报里没有损失字段，不记失败", who)
+            if after_n is not None and after_n <= 0:
+                out["击退"] = True
+                break
+            continue
+        if lost_n < 150:
+            why = (f"{who} 攻击后士气损失 {lost_n}"
+                   f"（剩余 {after_n}，须≥150才算打得动）")
+            citydb.record_atk_fail(uid, city, ret, reason=why, name=who)
+            out["记失败"] = True
+            out["停止原因"] = why
+            log.info("[打人] %s，已写入 atk_fail", why)
+            break
+        out["成功"] += 1
+        citydb.clear_atk_fail(uid)
+        log.info("[打人] %s 攻击后士气=%s 损失=%s，算成功", who, after_n, lost_n)
+        if after_n is not None and after_n <= 0:
+            out["击退"] = True
+            log.info("[打人] %s 攻击后士气=0，视为击退", who)
+            break
+    power, loc, atk_times, panel = _panel(sock, rec, my)
+    out["剩余行动力"] = power
+    out["当前城市"] = loc
+    out["今日攻击次数"] = atk_times
+    if panel is not None:
+        out["战功"] = (_read_path(panel, F_MERIT) or 0) - merit0
+    if not out["停止原因"] and not out.get("击退") and not until_down and out["成功"] < cap:
+        out["停止原因"] = f"只打成 {out['成功']}/{cap} 次"
+    return out
+
+
+def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
+              country=0, beat=None) -> dict:
+    """现场翻页打这座城。打中后看士气损失，低于 150 才写入 atk_fail；
+    打不到不入库。不读玩家库。跳过失败库，行动力低于 15 自动开卡，不迁城。"""
+    from . import citydb
+
+    conf = (config.get("国战", {}) or {})
+    city_id = int(city_id or 0)
+    country = int(country or conf.get("自己国家ID") or 0) \
+        or _daily.read_my_country(rec)
+    out = {"成功": 0, "失败": 0, "跳过": 0, "用卡": 0, "打过": 0,
+           "停止原因": "", "城市": city_id}
+    if not city_id:
+        out["停止原因"] = "没给城市 ID"
+        return out
+    if not country:
+        out["停止原因"] = "读不到自己的国家ID，停手"
+        return out
+
+    prev = _daily._BEAT
+    if beat is not None:
+        _daily._BEAT = beat
+    try:
+        power, loc, _, panel = _panel(sock, rec, country)
+        if panel is None:
+            out["停止原因"] = "读不到国战面板，停手"
+            return out
+        cname = citydb.city_name(city_id) or str(city_id)
+        here_name = citydb.city_name(loc) or loc
+        if not citydb.can_reach(loc, city_id):
+            out["停止原因"] = (f"自己在 {loc} {here_name}，"
+                              f"与目标 {city_id} {cname} 不相邻，停手")
+            log.info("[打人] %s", out["停止原因"])
+            return out
+        start_loc = loc
+        link = "同城" if loc == city_id else "相邻"
+        log.info("[打人] 自己在 %s %s，目标 %s %s（%s）；行动力=%s",
+                 loc, here_name, city_id, cname, link, power)
+
+        fail = citydb.failed_uids()
+        me = str(getattr(rec, "uid", "") or "")
+        seen = set()
+        last_act = 0.0
+        owner = None
+        total = None
+        used_country = country
+        page_size, max_pages = 15, 2000
+
+        for page in range(0, max_pages):
+            if out["停止原因"]:
+                break
+            power, loc, _, panel = _panel(sock, rec, country)
+            if loc is not None and start_loc is not None and loc != start_loc:
+                here = citydb.city_name(loc) or loc
+                out["停止原因"] = (f"位置变了：{start_loc} → {loc} {here}"
+                                  f"（可能被遣返主城）")
+                log.info("[打人] %s", out["停止原因"])
+                break
+            since = _send(sock, rec, 3, country=used_country, city=city_id,
+                          page=page)
+            cd = _wait(sock, rec, since, 3)
+            if not isinstance(cd, dict):
+                out["停止原因"] = f"翻到第 {page} 页时没有回包"
+                break
+            ret = cd.get("ret")
+            if ret not in (0, None):
+                out["停止原因"] = f"打开城市面板被拒 ret={ret}（第 {page} 页）"
+                break
+            got_city = _read_path(cd, "cityData.field3")
+            owner = _read_path(cd, "cityData.field2")
+            cnt = cd.get("userCnt")
+            if not isinstance(cnt, int) or isinstance(cnt, bool):
+                cnt = _read_path(cd, "cityData.field5")
+            if isinstance(cnt, int) and not isinstance(cnt, bool):
+                total = cnt
+            if page == 0 and got_city not in (None, city_id):
+                if isinstance(owner, int) and owner and owner != used_country:
+                    used_country = owner
+                    since = _send(sock, rec, 3, country=used_country,
+                                  city=city_id, page=page)
+                    cd = _wait(sock, rec, since, 3)
+                    if not isinstance(cd, dict):
+                        out["停止原因"] = "用归属国重开城市面板没有回包"
+                        break
+                    got_city = _read_path(cd, "cityData.field3")
+                    owner = _read_path(cd, "cityData.field2")
+                    cnt = cd.get("userCnt")
+                    if not isinstance(cnt, int) or isinstance(cnt, bool):
+                        cnt = _read_path(cd, "cityData.field5")
+                    if isinstance(cnt, int) and not isinstance(cnt, bool):
+                        total = cnt
+                if got_city not in (None, city_id):
+                    out["停止原因"] = (f"面板回的城市ID={got_city}，"
+                                      f"与请求的 {city_id} 不一致")
+                    break
+            if total == 0:
+                break
+            batch = _wait_city_users(sock, rec, since, city_id)
+            log.info("[打人] 第 %d 页：现场 %d 人%s",
+                     page, len(batch),
+                     f" / {total}" if total is not None else "")
+            if not batch:
+                break
+            for p in batch:
+                uid = str(p.get("uid") or "").strip()
+                if not uid or uid == me or uid in seen:
+                    continue
+                seen.add(uid)
+                if uid in fail or citydb.in_atk_fail(uid):
+                    log.info("[打人] %s 已在失败库，跳过", p.get("name") or uid)
+                    out["跳过"] += 1
+                    continue
+                one = attack_player(
+                    rec, sock, config, uid, times=0, sweep=sweep,
+                    city_id=city_id,
+                    country=int(owner or used_country or 0),
+                    beat=beat, card_used=out["用卡"], until_down=True,
+                    disp_name=p.get("name") or "", last_act=last_act,
+                    page=page)
+                if one.get("last_act"):
+                    last_act = one["last_act"]
+                if p.get("name") and not one.get("名字"):
+                    one["名字"] = p["name"]
+                reason = one.get("停止原因") or ""
+                if reason == "已在失败库，跳过":
+                    out["跳过"] += 1
+                    continue
+                out["用卡"] += one.get("用卡") or 0
+                out["打过"] += 1
+                if one.get("成功"):
+                    out["成功"] += one["成功"]
+                if one.get("击退"):
+                    continue
+                if one.get("记失败"):
+                    fail.add(uid)
+                    out["失败"] += 1
+                    continue
+                if "ret=21" in reason or "被拒" in reason:
+                    continue
+                if one.get("遣返") or "位置变了" in reason or "不相邻" in reason:
+                    out["停止原因"] = reason
+                    break
+                if reason and ("行动力只剩" in reason or "恢复卡" in reason):
+                    out["停止原因"] = reason
+                    break
+                if reason and ("读不到" in reason or "没有回包" in reason
+                               or "超时" in reason):
+                    continue
+                if reason and not one.get("成功"):
+                    out["停止原因"] = reason
+                    break
+            if out["停止原因"]:
+                break
+            if total is not None:
+                max_pages = min(2000, max(page + 2,
+                                          (int(total) + page_size - 1)
+                                          // page_size + 2))
+                if (page + 1) * page_size >= int(total) and page > 0:
+                    break
+                if page == 0 and len(seen) + out["跳过"] >= int(total):
+                    break
+            _nap(0.4)
+        if not out["停止原因"]:
+            out["停止原因"] = "这座城打完了" if out["打过"] else "这一页没有可打的人"
+        return out
+    finally:
+        _daily._BEAT = prev

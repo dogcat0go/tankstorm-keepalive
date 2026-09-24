@@ -25,6 +25,14 @@
   python main.py --list        列出每日任务及今日进度
   python main.py --reset       清空今日任务计数
   python main.py --country-war 10   单独跑国战：自动打摩多军团 10 次
+  python main.py --city-players 2203              拉芝加哥玩家（从第 0 页）
+  python main.py --city-players 2203 --city-page 232  从第 232 页继续
+  python main.py --watch-cities                    常驻：按 config 城市监视每 5 分钟刷新指定城
+  python main.py --atk 7826194927704102           离线打人（默认普通攻击 1 次）
+  python main.py --atk 7826194927704102 --sweep --atk-times 2
+  python main.py --atk-city 2302 --sweep          现场翻页打城：先打再看士气，击退/打不过换人
+  python main.py --list-cities        列出全部城市 ID 与中文名
+  python main.py --capture            扫码后打开钩子版游戏窗口，实时抓包
 """
 
 import argparse
@@ -109,8 +117,42 @@ def main() -> int:
     g5.add_argument("--country-war", type=int, metavar="次数", default=0,
                     help="自动扫荡摩多军团 N 次（行动力够就扫荡，不够改普通攻击，"
                          "低于 5 点停手）")
+    g5.add_argument("--city-players", type=int, metavar="城市ID", default=None,
+                    help="查询指定城市内的全部玩家，写入 city_players.db")
+    g5.add_argument("--city-country", type=int, metavar="国家ID", default=0,
+                    help="配合 --city-players / --atk：城市所属国家；"
+                         "拉玩家时不填则用自己的国家，打人时不填则查库")
+    g5.add_argument("--city-page", type=int, metavar="页码", default=0,
+                    help="配合 --city-players：从第几页继续（0 起算。"
+                         "上次停在第 231 页就传 232）")
+    g5.add_argument("--atk", metavar="BASEID", default=None,
+                    help="离线打指定玩家（type:14 普通攻击；加 --sweep 改扫荡。"
+                         "不迁城，目标须在邻城）")
+    g5.add_argument("--atk-times", type=int, metavar="次数", default=1,
+                    help="配合 --atk：打几次，默认 1。打城时无效（一人打到击退或打不过）")
+    g5.add_argument("--sweep", action="store_true",
+                    help="配合 --atk / --atk-city：用 type:19 扫荡（15 点行动力），"
+                         "默认 type:14 普通攻击（5 点）")
+    g5.add_argument("--atk-city", type=int, metavar="城市ID", default=None,
+                    help="不带 --atk：现场翻页打这座城。每人先打、再看士气，"
+                         "归零或不在城内才换下一个；第一次就被拒记失败。"
+                         "行动力低于 15 自动开恢复卡。带 --atk：指定目标所在城市")
+    g5.add_argument("--watch-cities", action="store_true",
+                    help="常驻刷新 config「城市监视.城市」的归属国和玩家；"
+                         "间隔见「间隔秒」，默认 5 分钟。走保活同一条连接")
+    g5.add_argument("--list-cities", action="store_true",
+                    help="列出全部城市 ID 与中文名（读官方配置表，不用登录）")
+    g5.add_argument("--route", type=int, metavar="城市ID", default=None,
+                    help="规划怎么打到这座城：同国城市直接通过，异国城市须先占领。"
+                         "配合 --from 当前城市、--city-country 自己国家。"
+                         "只打印路线，不迁城、不发攻击")
+    g5.add_argument("--from", dest="from_city", type=int, metavar="城市ID",
+                    default=0, help="配合 --route：自己当前所在城市")
 
     g4 = parser.add_argument_group("其它")
+    g4.add_argument("--capture", action="store_true",
+                    help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
+                         "不要用 QQ 游戏大厅。请先停掉 --keepalive")
     g4.add_argument("--task", help="（旧的 HTTP 接口任务，见 endpoints.json）")
     g4.add_argument("--real", action="store_true",
                     help="（已废弃，保留兼容：现在 --daily 一律真实发送）")
@@ -120,12 +162,50 @@ def main() -> int:
     # HTTP 任务，全部失败还把退出码带成 1，看着像登录坏了。
     if not any((args.login, args.check, args.keepalive, args.daily,
                 args.list, args.reset, args.task, args.import_device,
-                args.country_war)):
+                args.country_war, args.city_players is not None,
+                args.atk, args.atk_city is not None, args.watch_cities,
+                args.list_cities, args.route is not None, args.capture)):
         parser.print_help()
         return 0
 
     config = load_config()
     endpoints = load_json(ENDPOINTS_FILE)
+
+    if args.list_cities:
+        from tankstorm import citydb
+        try:
+            rows = citydb.list_cities()
+        except Exception as exc:
+            log.error("拉城市目录失败：%s", exc)
+            return 1
+        print(f"\n{'ID':<8} {'城市':<16} {'阵营ID':<8} 阵营")
+        print("-" * 52)
+        for cid, name, n_id, n_name in rows:
+            print(f"{cid:<8} {name:<16} {str(n_id or ''):<8} {n_name}")
+        print("-" * 52)
+        print(f"共 {len(rows)} 座  库文件 {citydb.DB_FILE}\n")
+        return 0
+
+    if args.route is not None:
+        from tankstorm import citydb
+        my = int(args.city_country or 0)
+        if not my:
+            my = int((config.get("国战", {}) or {}).get("自己国家ID") or 0)
+        if not args.from_city:
+            log.error("规划路线要知道现在在哪。加上 --from 当前城市ID")
+            return 1
+        if not my:
+            log.error("规划路线要知道自己的国家。加上 --city-country，"
+                      "或在 config「国战.自己国家ID」里填写")
+            return 1
+        try:
+            plan = citydb.plan_route(args.from_city, args.route, my)
+        except Exception as exc:
+            log.error("规划路线失败：%s", exc)
+            return 1
+        for line in citydb.format_route(plan):
+            log.info("[路线] %s", line)
+        return 0 if plan.get("路径") else 1
 
     if args.reset:
         from tankstorm import daily as _daily
@@ -192,13 +272,41 @@ def main() -> int:
         return 0
 
     # 保活：常驻。--keepalive --daily 时才顺带跑一轮任务
-    if args.keepalive:
+    if args.watch_cities:
+        w = config.setdefault("城市监视", {})
+        w["启用"] = True
+        ids = w.get("城市") or []
+        if not ids:
+            log.error("config「城市监视.城市」是空的，先填城市 ID（可用 --list-cities 查）")
+            return 1
+        config.setdefault("保持活跃", {})["启用"] = True
+    if args.keepalive or args.watch_cities:
         return socket_keepalive.run(qq, config, with_daily=args.daily)
+
+    if args.capture:
+        from tankstorm import live_capture
+        return live_capture.run(qq, config)
 
     # 国战自动战斗：连一次、打 N 次、退出
     if args.country_war:
         return socket_keepalive.run_country_war_once(qq, config,
                                                      args.country_war)
+
+    # 城市玩家：连一次、开指定城市面板、把列表打出来、退出
+    if args.city_players is not None:
+        return socket_keepalive.run_city_players_once(
+            qq, config, args.city_players, args.city_country, args.city_page)
+
+    # 离线打人：连一次、开目标城面板、type:14/19，不迁城
+    if args.atk:
+        return socket_keepalive.run_attack_once(
+            qq, config, args.atk, times=args.atk_times, sweep=args.sweep,
+            city_id=args.atk_city or 0, country=args.city_country)
+
+    if args.atk_city is not None:
+        return socket_keepalive.run_farm_city_once(
+            qq, config, args.atk_city, times=args.atk_times, sweep=args.sweep,
+            country=args.city_country)
 
     # 每日任务：连一次、跑一轮、退出
     if args.daily:

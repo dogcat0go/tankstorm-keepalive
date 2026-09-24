@@ -5,8 +5,11 @@
 # （第 3 版，或你选择的任何更新版本）之条款，再分发和/或修改它。
 # 本程序希望能有用，但不提供任何担保；甚至不含适销性或特定用途适用性的默示担保。
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
+import ctypes
 import logging
+import logging.handlers
 import os
+import queue
 import sys
 from datetime import date
 
@@ -15,6 +18,8 @@ from .paths import user_path                      # noqa: E402
 # 日志和当天任务计数是**可写数据**，打包后要落在 exe 旁边而不是临时解压目录，
 # 否则每次运行完就被删掉，当天次数永远从零开始。见 paths.py。
 LOG_DIR = user_path("logs")
+
+_log_listener = None
 
 
 def _force_utf8_console() -> None:
@@ -35,7 +40,26 @@ def _force_utf8_console() -> None:
             pass          # 流被换成了不支持 reconfigure 的对象，忽略即可
 
 
+def _disable_win_quick_edit() -> None:
+    """关掉控制台「快速编辑」。点选窗口会暂停进程，打人日志像卡住，回车才继续。"""
+    if sys.platform != "win32":
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+        h = kernel32.GetStdHandle(-10)
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+            return
+        ENABLE_QUICK_EDIT = 0x40
+        ENABLE_EXTENDED_FLAGS = 0x80
+        kernel32.SetConsoleMode(
+            h, (mode.value | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT)
+    except Exception:
+        pass
+
+
 _force_utf8_console()
+_disable_win_quick_edit()
 
 
 def get_logger(name: str = "tankstorm") -> logging.Logger:
@@ -45,15 +69,22 @@ def get_logger(name: str = "tankstorm") -> logging.Logger:
     logger.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
 
-    console = logging.StreamHandler(sys.stdout)
-    console.setLevel(logging.INFO)
-    console.setFormatter(fmt)
-    logger.addHandler(console)
-
     os.makedirs(LOG_DIR, exist_ok=True)
     logfile = os.path.join(LOG_DIR, f"{date.today().isoformat()}.log")
     fh = logging.FileHandler(logfile, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logger.addHandler(fh)
+
+    # 控制台写到独立线程：点选窗口卡住的是打印，不能把打人线程一起堵住。
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    console.setFormatter(fmt)
+    q = queue.Queue(-1)
+    qh = logging.handlers.QueueHandler(q)
+    qh.setLevel(logging.INFO)
+    logger.addHandler(qh)
+    global _log_listener
+    _log_listener = logging.handlers.QueueListener(q, console)
+    _log_listener.start()
     return logger

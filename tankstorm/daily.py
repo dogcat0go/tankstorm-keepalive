@@ -77,14 +77,18 @@ def _beat() -> None:
 
 
 def _nap(seconds: float) -> None:
-    """边等边发心跳。任务之间动辄等好几秒，累计起来早超过心跳周期了。"""
-    end = time.time() + seconds
+    """等到点。心跳已在独立线程发，这里只 sleep，不再 recv。
+
+    以前冷却时 recv 排空缓冲；和心跳线程同时对同一条 socket send/recv，
+    Windows 上 settimeout 会失效，recv 能一直卡住（日志停在「冷却，等 14 秒」）。
+    """
+    end = time.time() + max(0.0, float(seconds or 0))
     while True:
-        _beat()
         left = end - time.time()
         if left <= 0:
             return
-        time.sleep(min(left, 1.0))
+        _beat()
+        time.sleep(min(left, 0.5))
 
 # 字段名命中这些词 = 可能花钱/耗券，值必须为 0
 #
@@ -1805,8 +1809,10 @@ def _await_response(sock, rec, rse_msg, since_seq, timeout, want=None,
             sock.settimeout(0.5)
             if not sock.recv(8192):
                 break
-        except Exception:
-            pass
+        except TimeoutError:
+            continue
+        except OSError:
+            break
     if relaxed is not None:
         hit = _pick_recent(rec, rse_msg, since_seq, relaxed)
         if hit is not None:

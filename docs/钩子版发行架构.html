@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>钩子版 SWF 发行架构</title>
+<style>
+  :root {
+    --ink: #1c1915;
+    --muted: #5c564c;
+    --line: #e4ddd2;
+    --paper: #f7f4ee;
+    --card: #fffdf9;
+    --accent: #9a3412;
+    --accent-soft: #f3e6dc;
+    --ok: #1f6b45;
+    --ok-soft: #e5f2eb;
+    --stop: #9f1239;
+    --stop-soft: #fde8ee;
+    --server: #1e3a5f;
+    --server-soft: #e7eef6;
+    --author: #5b4636;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: var(--paper);
+    font: 16px/1.65 "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  }
+  header {
+    padding: 48px 24px 28px;
+    border-bottom: 1px solid var(--line);
+    background:
+      radial-gradient(900px 220px at 10% -20%, #f3e6dc, transparent 60%),
+      var(--paper);
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 8px 24px 80px; }
+  header, main > * { max-width: 980px; margin-left: auto; margin-right: auto; }
+  header { max-width: none; }
+  header .inner { max-width: 980px; margin: 0 auto; }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.02em; }
+  h2 { font-size: 22px; margin: 42px 0 12px; }
+  h3 { font-size: 16px; margin: 0 0 8px; }
+  p { margin: 0 0 12px; }
+  .lead { font-size: 18px; color: var(--muted); max-width: 68ch; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 22px; font-size: 14px; }
+  nav a { color: var(--accent); text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 16px 14px;
+  }
+  .card .who { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .card ul { margin: 8px 0 0; padding-left: 18px; }
+  .card li { margin: 4px 0; }
+  .tag {
+    display: inline-block;
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  .tag.server { background: var(--server-soft); color: var(--server); }
+  .tag.ok { background: var(--ok-soft); color: var(--ok); }
+  figure {
+    margin: 18px 0 8px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 12px 8px;
+    overflow-x: auto;
+  }
+  figcaption { color: var(--muted); font-size: 13px; padding: 4px 8px 8px; }
+  ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+  ol.steps li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 36px 1fr;
+    gap: 12px;
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+  }
+  ol.steps li:first-child { border-top: 0; }
+  ol.steps li::before {
+    content: counter(step);
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--ink);
+    color: #fff;
+    display: grid; place-items: center;
+    font-size: 13px;
+    margin-top: 2px;
+  }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; color: var(--muted); font-weight: 600; background: #f3efe8; }
+  code, .mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.92em; }
+  pre {
+    background: #231f1b;
+    color: #f6f1e8;
+    border-radius: 12px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font: 13.5px/1.55 Consolas, "Cascadia Mono", monospace;
+  }
+  .note, .stop {
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin: 14px 0;
+  }
+  .note { background: var(--ok-soft); color: #143d28; }
+  .stop { background: var(--stop-soft); color: #6d1028; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 36px; }
+  @media (max-width: 800px) {
+    .grid, .two { grid-template-columns: 1fr; }
+    h1 { font-size: 28px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="inner">
+    <h1>钩子版 SWF 发行架构</h1>
+    <p class="lead">用户电脑不编译、不装 Java、不装 ffdec。游戏点名哪一份 <span class="mono">RedWar_*.swf</span>，本机代理就向清单服务器要同名的钩子版，再交给本机的 Flash 窗口。</p>
+    <nav>
+      <a href="#roles">三个角色</a>
+      <a href="#boot">一次启动</a>
+      <a href="#manifest">清单</a>
+      <a href="#proxy">本机代理</a>
+      <a href="#publish">发布</a>
+      <a href="#cache">缓存</a>
+      <a href="#fail">停下来的时候</a>
+      <a href="#bundle">用户目录</a>
+      <a href="#boundary">和协议客户端的边界</a>
+    </nav>
+  </div>
+</header>
+<main>
+
+<section id="roles">
+  <h2>三个角色</h2>
+  <div class="grid">
+    <article class="card">
+      <div class="tag">作者机器</div>
+      <h3>打钩子、核对、上传</h3>
+      <ul>
+        <li>从官方 CDN 下载被点名的那一版 SWF</li>
+        <li>只往当版 <span class="mono">Transport</span> 里插入钩子</li>
+        <li>锚点对得上才发布</li>
+      </ul>
+    </article>
+    <article class="card">
+      <div class="tag server">清单服务器</div>
+      <h3>按文件名提供钩子版</h3>
+      <ul>
+        <li>一份清单：文件名、哈希、钩子修订号</li>
+        <li>对应的钩子版 SWF 文件</li>
+        <li>同时留着最近几版，供不同入口使用</li>
+      </ul>
+    </article>
+    <article class="card">
+      <div class="tag ok">用户目录</div>
+      <h3>解压即用</h3>
+      <ul>
+        <li>拉清单、下 SWF、起本机代理和游戏窗口</li>
+        <li>证书打在目录里，不再找 OpenSSL</li>
+        <li>Flash 仍在本机跑</li>
+      </ul>
+    </article>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 920 250" width="100%" role="img" aria-label="作者机器、清单服务器、用户目录之间的关系">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 1.2 L 9 5 L 0 8.8 z" fill="#1c1915"/>
+        </marker>
+      </defs>
+      <rect x="16" y="36" width="200" height="150" rx="12" fill="#fffdf9" stroke="#e4ddd2"/>
+      <text x="116" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#5b4636">作者机器</text>
+      <text x="116" y="96" text-anchor="middle" font-size="12" fill="#5c564c">官方 SWF</text>
+      <text x="116" y="118" text-anchor="middle" font-size="12" fill="#5c564c">插入 Transport 钩子</text>
+      <text x="116" y="140" text-anchor="middle" font-size="12" fill="#5c564c">核对锚点</text>
+      <text x="116" y="162" text-anchor="middle" font-size="12" fill="#5c564c">上传</text>
+
+      <rect x="360" y="36" width="200" height="150" rx="12" fill="#e7eef6" stroke="#c5d4e6"/>
+      <text x="460" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#1e3a5f">清单服务器</text>
+      <text x="460" y="100" text-anchor="middle" font-size="12" fill="#1e3a5f">manifest.json</text>
+      <text x="460" y="124" text-anchor="middle" font-size="12" fill="#1e3a5f">RedWar_&lt;版本&gt;.swf</text>
+      <text x="460" y="148" text-anchor="middle" font-size="12" fill="#1e3a5f">最近几版都留着</text>
+
+      <rect x="704" y="36" width="200" height="150" rx="12" fill="#e5f2eb" stroke="#b7d7c6"/>
+      <text x="804" y="66" text-anchor="middle" font-size="14" font-weight="700" fill="#1f6b45">用户目录</text>
+      <text x="804" y="96" text-anchor="middle" font-size="12" fill="#143d28">读清单、缓存 SWF</text>
+      <text x="804" y="118" text-anchor="middle" font-size="12" fill="#143d28">本机 CDN 代理</text>
+      <text x="804" y="140" text-anchor="middle" font-size="12" fill="#143d28">flash_host</text>
+      <text x="804" y="162" text-anchor="middle" font-size="12" fill="#143d28">明文上报到本机</text>
+
+      <line x1="216" y1="110" x2="352" y2="110" stroke="#1c1915" stroke-width="1.4" marker-end="url(#arrow)"/>
+      <line x1="560" y1="110" x2="696" y2="110" stroke="#1c1915" stroke-width="1.4" marker-end="url(#arrow)"/>
+      <text x="284" y="100" text-anchor="middle" font-size="11" fill="#5c564c">发布</text>
+      <text x="628" y="100" text-anchor="middle" font-size="11" fill="#5c564c">按文件名下载</text>
+    </svg>
+    <figcaption>钩子只在作者机器上生成。用户拿到的是已经打好的那一份，按游戏正在要的文件名取。</figcaption>
+  </figure>
+</section>
+
+<section id="boot">
+  <h2>一次启动</h2>
+  <p>游戏外框里的 <span class="mono">FlashVars.version</span> 不是 SWF 文件名。以页面实际请求的 <span class="mono">RedWar_&lt;版本&gt;.swf</span> 为准。</p>
+  <ol class="steps">
+    <li><div><b>登录，拿到游戏外框地址。</b>从外框或随后的 CDN 请求里读出 SWF 文件名。</div></li>
+    <li><div><b>向清单服务器要清单。</b>用文件名查找。本地已有同一文件名、且哈希和修订号都一致，就用缓存。</div></li>
+    <li><div><b>不一致就下载这一份钩子版</b>，校验哈希后再写入缓存。</div></li>
+    <li><div><b>清单里没有这个文件名，启动停在这里。</b>窗口不要打开。</div></li>
+    <li><div><b>打开本机代理</b>，只接 <span class="mono">redwar-cdn.sincetimes.com</span>。游戏来要这个 SWF 时，返回钩子版；图片和其他资源仍向官方 CDN 转发。</div></li>
+    <li><div><b>启动 flash_host。</b>它用自带证书的 SPKI 打开游戏页。钩子通过页面里的 <span class="mono">__pkt</span> 把明文交回本机。</div></li>
+  </ol>
+</section>
+
+<section id="manifest">
+  <h2>清单</h2>
+  <p>服务器不提供一个叫「最新」的地址。游戏点哪个文件名，清单里就用哪个文件名当键。同一文件名后来重打了钩子，靠哈希和修订号让客户端换掉旧文件。</p>
+  <pre>{
+  "RedWar_2026092201.swf": {
+    "sha256": "&lt;钩子版文件的哈希&gt;",
+    "hook": 3,
+    "size": 8423111
+  },
+  "RedWar_2026092402.swf": {
+    "sha256": "&lt;钩子版文件的哈希&gt;",
+    "hook": 1,
+    "size": 8450020
+  }
+}</pre>
+  <table>
+    <thead>
+      <tr><th>字段</th><th>作用</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><span class="mono">文件名</span></td><td>必须和游戏请求的文件名一致</td></tr>
+      <tr><td><span class="mono">sha256</span></td><td>客户端用来确认下载完整，也用来判断要不要更新缓存</td></tr>
+      <tr><td><span class="mono">hook</span></td><td>同一官方版本上的钩子修订。锚点没变、只修了上报时把它加一</td></tr>
+      <tr><td><span class="mono">size</span></td><td>下载前提示体积。大于 1MB 只是文件不像主体 SWF 时的粗检，不能当作「已经可用」</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="proxy">
+  <h2>本机代理</h2>
+  <p>Flash 仍会向官方 CDN 要资源。代理只拦这一个主机，而且只替换被点名的那一个主体 SWF。</p>
+  <figure>
+    <svg viewBox="0 0 920 210" width="100%" role="img" aria-label="游戏窗口、本机代理、清单缓存和官方 CDN">
+      <rect x="20" y="60" width="170" height="78" rx="12" fill="#fffdf9" stroke="#e4ddd2"/>
+      <text x="105" y="92" text-anchor="middle" font-size="14" font-weight="700">flash_host</text>
+      <text x="105" y="114" text-anchor="middle" font-size="12" fill="#5c564c">只把 CDN 主机走代理</text>
+
+      <rect x="280" y="48" width="190" height="102" rx="12" fill="#f3e6dc" stroke="#e7cbbd"/>
+      <text x="375" y="82" text-anchor="middle" font-size="14" font-weight="700" fill="#9a3412">127.0.0.1:8443</text>
+      <text x="375" y="106" text-anchor="middle" font-size="12" fill="#9a3412">RedWar_*.swf → 钩子版</text>
+      <text x="375" y="128" text-anchor="middle" font-size="12" fill="#9a3412">其余路径 → 官方 CDN</text>
+
+      <rect x="560" y="22" width="180" height="64" rx="12" fill="#e5f2eb" stroke="#b7d7c6"/>
+      <text x="650" y="48" text-anchor="middle" font-size="13" font-weight="700" fill="#1f6b45">本地缓存</text>
+      <text x="650" y="68" text-anchor="middle" font-size="12" fill="#143d28">清单里那一份</text>
+
+      <rect x="560" y="112" width="180" height="64" rx="12" fill="#fffdf9" stroke="#e4ddd2"/>
+      <text x="650" y="138" text-anchor="middle" font-size="13" font-weight="700">官方 CDN</text>
+      <text x="650" y="158" text-anchor="middle" font-size="12" fill="#5c564c">图片和其他 SWF</text>
+
+      <line x1="190" y1="99" x2="272" y2="99" stroke="#1c1915" marker-end="url(#arrow)"/>
+      <line x1="470" y1="78" x2="552" y2="58" stroke="#1c1915" marker-end="url(#arrow)"/>
+      <line x1="470" y1="120" x2="552" y2="140" stroke="#1c1915" marker-end="url(#arrow)"/>
+    </svg>
+    <figcaption>证书和 SPKI 放在用户目录里，只给这个窗口用，不装进系统。</figcaption>
+  </figure>
+  <p>明文从钩子进页面的 <span class="mono">__pkt</span>，再由 flash_host 送到本机的记录端口。这条上报不经过清单服务器。</p>
+</section>
+
+<section id="publish">
+  <h2>发布</h2>
+  <div class="two">
+    <article class="card">
+      <h3>可以上传的时候</h3>
+      <ul>
+        <li>官方出现新的 <span class="mono">RedWar_*.swf</span> 文件名</li>
+        <li>从这一份里定位 <span class="mono">Transport</span>，插入收发处的钩子</li>
+        <li>锚点都在，钩子版能被 Flash 加载</li>
+        <li>写入清单，修订号按这次发布填写</li>
+      </ul>
+    </article>
+    <article class="card">
+      <h3>先留在作者机器上</h3>
+      <ul>
+        <li>类还在，但收发锚点对不上</li>
+        <li>编译或字节码补丁失败</li>
+        <li>加载后钩子没有把明文交出来</li>
+      </ul>
+    </article>
+  </div>
+  <p>厂商同时挂着两三个文件名时，清单里保留这些还在被外框引用的版本。旧到已经没有入口的文件，从清单拿掉即可。</p>
+</section>
+
+<section id="cache">
+  <h2>缓存</h2>
+  <p>用户目录按「文件名 + 哈希 + 修订号」保存钩子版。三次都和清单一致才直接开窗口。文件名相同但修订号变了，删掉旧文件再下新的。体积够大不能单独作为可用条件。</p>
+</section>
+
+<section id="fail">
+  <h2>停下来的时候</h2>
+  <div class="stop">
+    清单没有游戏正在要的文件名，或者下载哈希对不上：不要把官方原版送进 Flash。窗口能开，钩子却是空的，后面的记录会看起来像「今天没有包」。
+  </div>
+  <p>这时告诉用户这一版还没就绪，等清单里出现同名钩子版再启动。</p>
+</section>
+
+<section id="bundle">
+  <h2>用户目录里有什么</h2>
+  <table>
+    <thead>
+      <tr><th>放进解压目录</th><th>原因</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>主程序</td><td>登录、读清单、下 SWF、起代理</td></tr>
+      <tr><td><span class="mono">flash_host</span> 和 Qt 运行库</td><td>本机 Flash 窗口。这是目录体积的大头</td></tr>
+      <tr><td><span class="mono">pepflashplayer.dll</span></td><td>放在 <span class="mono">flash_host</span> 旁边。Flash 在用户机器上执行</td></tr>
+      <tr><td>代理证书、私钥、SPKI</td><td>窗口只信任这一张证书，启动时不必再调用 OpenSSL</td></tr>
+      <tr><td>SWF 缓存和清单副本</td><td>运行后生成，不必打进第一次下发的压缩包</td></tr>
+    </tbody>
+  </table>
+  <div class="note">Java、ffdec、一份冻结的 Transport 源码，都留在作者机器上，不进用户目录。</div>
+</section>
+
+<section id="boundary">
+  <h2>和协议客户端的边界</h2>
+  <p>保活、每日任务、国战走已经还原好的协议，运行时不加载 SWF，也不访问这份清单。厂商改了 opcode 或加密时，作者重出协议表再发一版程序。钩子版 SWF 只负责让游戏窗口把明文交出来。</p>
+  <p>清单服务器上放的是打过钩子的游戏主体。它按文件名分发，用户机器不再现下官方包再改。</p>
+  <footer>对应实现入口是本机 CDN 代理、flash_host，以及按 <span class="mono">RedWar_*.swf</span> 文件名替换主体。</footer>
+</section>
+
+</main>
+</body>
+</html>

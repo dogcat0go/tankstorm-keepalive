@@ -24,6 +24,7 @@
 """
 
 import socket
+import threading
 import time
 
 from . import daily, notify, protocol, sender
@@ -92,26 +93,30 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         # 必须赶在第一条非豁免消息到达之前开，RC4 密钥流从那一条开始累积。
         rec.enable_crypto(ctx)
 
-        # 超级强攻自动拒绝：在当前会话的 sock 和 RC4 上下文里构造回调
-        if rec.auto_reject:
-            _sock_ref = sock     # 闭包捕获当前会话的 socket
-            def _on_super_storm(data):
-                rc4 = rec.rc4_c2s
-                if rc4 is None:
-                    log.warning("自动拒绝超级强攻失败：RC4 C→S 实例不可用"
-                                "（实时解密未启用或密钥自检失败）")
-                    return
-                ok = sender.send_reject_super_storm(_sock_ref, rc4, data)
-                if ok:
-                    notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
-                                f"进攻方：{data.get('atkName', '?')}（{data.get('atkUid', '?')}）\n"
-                                f"防守方：{data.get('deftName', '?')}（{data.get('deftUid', '?')}）\n\n"
-                                f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
-                                f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
-                                f"请立刻打开游戏确认。")
-            rec.on_super_storm = _on_super_storm
-            log.info("超级强攻自动拒绝已就绪")
+    sock = _LockedSock(sock)
 
+    if rec and rec.auto_reject:
+        # 超级强攻自动拒绝：在当前会话的 sock 和 RC4 上下文里构造回调
+        _sock_ref = sock
+        def _on_super_storm(data):
+            rc4 = rec.rc4_c2s
+            if rc4 is None:
+                log.warning("自动拒绝超级强攻失败：RC4 C→S 实例不可用"
+                            "（实时解密未启用或密钥自检失败）")
+                return
+            ok = sender.send_reject_super_storm(_sock_ref, rc4, data)
+            if ok:
+                notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
+                            f"进攻方：{data.get('atkName', '?')}（{data.get('atkUid', '?')}）\n"
+                            f"防守方：{data.get('deftName', '?')}（{data.get('deftUid', '?')}）\n\n"
+                            f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
+                            f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
+                            f"请立刻打开游戏确认。")
+        rec.on_super_storm = _on_super_storm
+        log.info("超级强攻自动拒绝已就绪")
+
+    heart = None
+    prev_beat = daily._BEAT
     try:
         steps = protocol.build_login_sequence(spec, ctx)
         for i, (data, delay) in enumerate(steps, 1):
@@ -132,39 +137,45 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         # 需要"连上顺便领一轮"时显式传 with_daily=True（或 --keepalive --daily）。
         # 心跳包提前构造好：任务执行期间也要发，不能等进了心跳循环才开始
         hb = protocol.build_heartbeat(spec, ctx)
+        heart = _Beater(sock, hb, interval)
+        daily._BEAT = heart
 
         if with_daily:
             try:
-                beater = _Beater(sock, hb, interval)
-                res, det = daily.run(rec, sock, config, beat=beater)
-                log.info("任务执行期间共发心跳 %d 次", beater.count)
+                res, det = daily.run(rec, sock, config, beat=heart)
+                log.info("任务执行期间共发心跳 %d 次", heart.count)
                 _push_daily_summary(config, res, det)
             except Exception as exc:
                 log.error("每日任务执行异常（不影响保活）: %s", exc)
 
-        last_beat = 0.0
-        beats = 0
+        cities, watch_gap = _watch_city_ids(config)
+        last_watch = 0.0
+        if cities:
+            log.info("城市监视：每 %.0f 秒刷新 %d 座城 %s",
+                     watch_gap, len(cities), ",".join(str(c) for c in cities))
+        elif (config.get("城市监视") or {}).get("启用"):
+            log.info("城市监视已启用但没填「城市」，跳过")
+
         sock.settimeout(1.0)
         while True:
             now = time.time()
-            if now - last_beat >= interval:
-                sock.sendall(hb)
-                beats += 1
-                last_beat = now
-                if beats % 10 == 1:
-                    log.info("心跳運行中（第 %d 次，每 %.0fs）", beats, interval)
-                else:
-                    log.debug("心跳 #%d", beats)
-            # 读服务器数据（非阻塞式：超时就继续发心跳）
+            if cities and now - last_watch >= watch_gap:
+                last_watch = now
+                try:
+                    _watch_cities_round(rec, sock, config, cities, heart)
+                except OSError as exc:
+                    return (f"城市监视时连接中断: {exc}"
+                            f"（已发 {heart.count} 次心跳）")
+                except Exception as exc:
+                    log.error("城市监视异常（保活继续）: %s", exc)
+                sock.settimeout(1.0)
+                continue
             try:
                 data = sock.recv(8192)
             except socket.timeout:
                 continue
             if not data:
-                return f"服务器关闭连接（已发 {beats} 次心跳）"
-            # 注意：不再在这里调 rec.feed(data)。
-            # sock 已被 rec.wrap() 包过，收发字节会自动旁路进录制器；
-            # 这里再喂一次会导致下行消息被记录两遍、分帧缓冲错乱。
+                return f"服务器关闭连接（已发 {heart.count} 次心跳）"
             reply = protocol.maybe_online_reply(spec, data, ctx)
             if reply:
                 sock.sendall(reply)
@@ -172,6 +183,9 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
     except OSError as exc:
         return f"连接中断: {exc}"
     finally:
+        daily._BEAT = prev_beat
+        if heart is not None:
+            heart.stop()
         try:
             sock.close()
         except OSError:
@@ -215,32 +229,149 @@ def _push_daily_summary(config: dict, results: dict, details: dict) -> None:
     notify.send(config, title, html, template="html")
 
 
+class _LockedSock:
+    """收发都加锁。心跳线程只 sendall；Windows 上和任务线程同时 recv 会让
+    settimeout 失效，recv 一直卡住（冷却日志之后再也没下文）。"""
+
+    def __init__(self, sock):
+        self._sock = sock
+        self._lock = threading.Lock()
+
+    def sendall(self, data, *a, **kw):
+        with self._lock:
+            return self._sock.sendall(data, *a, **kw)
+
+    def send(self, data, *a, **kw):
+        with self._lock:
+            return self._sock.send(data, *a, **kw)
+
+    def recv(self, n, *a, **kw):
+        with self._lock:
+            return self._sock.recv(n, *a, **kw)
+
+    def settimeout(self, t):
+        with self._lock:
+            return self._sock.settimeout(t)
+
+    def write(self, data):
+        return self.sendall(data)
+
+    def close(self):
+        with self._lock:
+            return self._sock.close()
+
+    def __getattr__(self, name):
+        return getattr(self._sock, name)
+
+
 class _Beater:
-    """每日任务执行期间的心跳器：到点才发，没到点就是空操作。
+    """独立心跳线程。任务卡住（写库、等战报）时心跳照发。
 
-    每日任务一跑就是好几分钟，而心跳周期只有 10 秒。原先任务执行期间一个心跳
-    都不发（2026-08-29 实测：3 分 50 秒里 0 次，本该 23 次），真客户端则是雷打
-    不动每 10 秒一次。
-
-    做成"由任务侧回调、单线程发送"而不是后台线程：心跳走明文豁免、不碰 RC4，
-    但两个线程同时 sendall 会让帧字节交错，那是比掉线更难查的坏法。
+    心跳是明文豁免、不碰 RC4。发包走 _LockedSock，避免和任务 sendall 字节交错。
+    __call__ 保留给 _nap / _await_response，那边只排空下行，不再从任务线程发心跳。
     """
 
     def __init__(self, sock, hb: bytes, interval: float):
         self.sock = sock
         self.hb = hb
-        self.interval = interval
-        self.last = time.time()      # 刚登录完不必立刻补一发
+        self.interval = max(1.0, float(interval) or 10.0)
+        self.last = time.time()
         self.count = 0
+        self._stop = threading.Event()
+        self._th = threading.Thread(target=self._loop, name="game-heartbeat",
+                                    daemon=True)
+        self._th.start()
+
+    def _loop(self):
+        while not self._stop.wait(self.interval):
+            try:
+                self.sock.sendall(self.hb)
+                self.last = time.time()
+                self.count += 1
+                if self.count % 10 == 1:
+                    log.info("心跳運行中（第 %d 次，每 %.0fs）",
+                             self.count, self.interval)
+                else:
+                    log.debug("心跳 #%d", self.count)
+            except (TimeoutError, socket.timeout):
+                continue
+            except OSError:
+                break
 
     def __call__(self) -> None:
-        now = time.time()
-        if now - self.last < self.interval:
-            return
-        self.sock.sendall(self.hb)
-        self.last = now
-        self.count += 1
-        log.debug("任务执行中心跳 #%d", self.count)
+        return
+
+    def stop(self):
+        self._stop.set()
+        self._th.join(timeout=2)
+
+
+def _watch_city_ids(config):
+    w = config.get("城市监视") or {}
+    if not w.get("启用"):
+        return [], 300.0
+    ids, seen = [], set()
+    for x in (w.get("城市") or []):
+        try:
+            v = int(x)
+        except (TypeError, ValueError):
+            continue
+        if v > 0 and v not in seen:
+            seen.add(v)
+            ids.append(v)
+    return ids, float(w.get("间隔秒") or 300)
+
+
+def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0):
+    """拉一座城：玩家入库，并记下当前归属国。"""
+    from . import citydb, country_war
+
+    cname = citydb.city_name(city_id) or str(city_id)
+    ts = citydb.now_ts()
+    n = [0]
+
+    def on_page(batch, page):
+        n[0] += citydb.upsert_players(city_id, batch, ts, page=page)
+
+    out = country_war.list_city_players(
+        rec, sock, config, city_id, country=country_id, beat=beat,
+        on_page=on_page, start_page=start_page)
+    players = out.get("玩家") or []
+    last = out.get("last_page")
+    total = out.get("userCnt")
+    owner = out.get("owner")
+    if owner is not None or total is not None:
+        citydb.record_occupy(city_id, owner, total, ts)
+    full = (start_page == 0 and not out.get("原因")
+            and total is not None and len(players) >= total)
+    if full:
+        gone = citydb.drop_stale(city_id, ts)
+        if gone:
+            log.info("已清掉本城过期记录 %d 条", gone)
+    oname = citydb.country_name(owner) if owner else ""
+    log.info("―― 城市 %s %s ―― 归属国家 %s%s，面板人数 %s，本轮写入 %d 人，最后一页 %s",
+             out.get("city"), cname, owner,
+             f" {oname}" if oname else "", total, n[0], last)
+    return out, n[0]
+
+
+def _watch_cities_round(rec, sock, config, cities, beat):
+    from . import citydb
+
+    try:
+        citydb.ensure_catalog()
+    except Exception as exc:
+        log.warning("城市目录更新失败（仍会拉玩家）：%s", exc)
+    log.info("[监视] 开始刷新 %d 座城", len(cities))
+    done = 0
+    for cid in cities:
+        out, _n = _scan_one_city(rec, sock, config, cid, beat)
+        reason = out.get("原因") or ""
+        if any(s in reason for s in ("没有回包", "读不到国战面板", "连接断开")):
+            log.info("[监视] %s，本轮剩下的下次再拉", reason)
+            break
+        done += 1
+    log.info("[监视] 本轮完成 %d/%d 座城", done, len(cities))
 
 
 def run_country_war_once(qq, config: dict, rounds: int) -> int:
@@ -251,10 +382,7 @@ def run_country_war_once(qq, config: dict, rounds: int) -> int:
     """
     from . import country_war, shop
 
-    def _work(rec, sock, spec, ctx):
-        beater = _Beater(sock, protocol.build_heartbeat(spec, ctx),
-                         float(config.get("保持活跃", {}).get("心跳间隔秒")
-                               or protocol.heartbeat_interval(spec)))
+    def _work(rec, sock, spec, ctx, beater):
         # 支援兵是国战的消耗品，开打之前先按配置补货（默认关闭，开了才买）。
         # 放在这里而不是打完之后：库存不够的话这一轮就打不动了。
         if (config.get("功勋商城", {}) or {}).get("自动补支援兵"):
@@ -277,12 +405,77 @@ def run_country_war_once(qq, config: dict, rounds: int) -> int:
     return _connect_and(qq, config, _work)
 
 
+def run_city_players_once(qq, config: dict, city_id: int,
+                          country_id: int = 0, start_page: int = 0) -> int:
+    """连一次游戏、查询指定城市的玩家列表、写入 sqlite、断开退出。"""
+    from . import citydb
+
+    def _work(rec, sock, spec, ctx, beater):
+        try:
+            citydb.ensure_catalog()
+        except Exception as exc:
+            log.warning("城市目录更新失败（仍会写玩家）：%s", exc)
+        out, n = _scan_one_city(rec, sock, config, city_id, beater,
+                               country_id=country_id, start_page=start_page)
+        last = out.get("last_page")
+        log.info("   查询期间共发心跳 %d 次；库文件 %s", beater.count, citydb.DB_FILE)
+        if out.get("原因"):
+            nxt = (last + 1) if isinstance(last, int) else start_page
+            log.info("   %s", out["原因"])
+            log.info("   续拉：py main.py --city-players %s --city-page %s",
+                     city_id, nxt)
+        return 0 if n or not out.get("原因") else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_attack_once(qq, config: dict, uid, times=1, sweep=False,
+                    city_id=0, country=0) -> int:
+    """连一次游戏、打指定玩家若干次、断开退出。不迁城。"""
+    from . import country_war
+
+    def _work(rec, sock, spec, ctx, beater):
+        out = country_war.attack_player(
+            rec, sock, config, uid, times=times, sweep=sweep,
+            city_id=city_id, country=country, beat=beater)
+        who = out.get("名字") or out.get("目标")
+        log.info("―― 打人 %s ―― %s %d/%d 次，用卡 %s，战功 +%s，剩余行动力 %s",
+                 who, out.get("动作"), out.get("成功") or 0, times,
+                 out.get("用卡"), out.get("战功"), out.get("剩余行动力"))
+        if out.get("停止原因"):
+            log.info("   结束原因：%s", out["停止原因"])
+        log.info("   任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if out.get("成功") else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_farm_city_once(qq, config: dict, city_id, times=1, sweep=False,
+                       country=0) -> int:
+    """连一次游戏、打指定城市里库中的人、断开退出。不迁城。"""
+    from . import country_war
+
+    def _work(rec, sock, spec, ctx, beater):
+        out = country_war.farm_city(
+            rec, sock, config, city_id, sweep=sweep, times=times,
+            country=country, beat=beater)
+        log.info("―― 打城 %s ―― 命中 %d 次，失败 %d 人，跳过 %d，用卡 %d",
+                 out.get("城市"), out.get("成功") or 0, out.get("失败") or 0,
+                 out.get("跳过") or 0, out.get("用卡") or 0)
+        if out.get("停止原因"):
+            log.info("   结束原因：%s", out["停止原因"])
+        log.info("   任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if out.get("成功") else 1
+
+    return _connect_and(qq, config, _work)
+
+
 def _connect_and(qq, config: dict, work) -> int:
     """连一次游戏、登录、把活交给 work，然后断开退出。
 
-    `--daily` 和 `--country-war` 共用这一套：登录、建 RC4、实时解密、
-    等服务端把登录后的状态推完，一步都不能少 —— 闸门要靠那批推送判断次数。
-    work(rec, sock, spec, ctx) 返回进程退出码。
+    `--daily`、`--country-war`、`--city-players`、`--atk` / `--atk-city` 共用这一套：登录、建 RC4、
+    实时解密、等服务端把登录后的状态推完，一步都不能少。
+    work(rec, sock, spec, ctx, beater) 返回进程退出码。心跳在独立线程里发。
     """
     try:
         spec = protocol.load_spec()
@@ -301,44 +494,71 @@ def _connect_and(qq, config: dict, work) -> int:
         return 1
 
     rec = Recorder(config, on_alert=None)
+    if spec.get("http_warmup", True):
+        _http_warmup(qq, ctx)
     try:
         sock = _connect(host, port)
     except OSError as exc:
         log.error("连接失败: %s", exc)
         return 1
 
+    heart = None
     try:
         rec.on_connect()
         sock = rec.wrap(sock, host=host, port=port,
                         uid=ctx.get("uid"), sid=ctx.get("sid"))
         rec.enable_crypto(ctx)
+        sock = _LockedSock(sock)
         for data, delay in protocol.build_login_sequence(spec, ctx):
             sock.sendall(data)
             if delay:
                 time.sleep(delay)
         log.info("已登录，uid=%s sid=%s", ctx.get("uid"), ctx.get("sid"))
 
-        # 先收一会儿，让服务器把登录后的状态推完 —— 闸门要靠这些判断免费次数
+        interval = float(config.get("保持活跃", {}).get("心跳间隔秒")
+                         or protocol.heartbeat_interval(spec))
+        heart = _Beater(sock, protocol.build_heartbeat(spec, ctx), interval)
+
+        # 等到角色数据（国家ID）到了再干活。只收到 RseAuthState 就开打，
+        # 后面一律是「读不到自己的国家ID」。保活连上前会走 loadIdInfo.war，
+        # 这里以前漏了，服务端有时只回认证包、不推 RseLoad。
         sock.settimeout(1.0)
-        deadline = time.time() + 6
+        deadline = time.time() + 12
         while time.time() < deadline:
+            if daily.read_my_country(rec):
+                break
             try:
-                if not sock.recv(8192):
-                    break
+                chunk = sock.recv(8192)
             except socket.timeout:
                 continue
+            if not chunk:
+                break
+            reply = protocol.maybe_online_reply(spec, chunk, ctx)
+            if reply:
+                sock.sendall(reply)
+                log.info("收到在线探测，已回应")
+        if not daily.read_my_country(rec):
+            got = "、".join(rec.latest.keys()) or "无"
+            log.error("登录后没收到角色数据，读不到国家ID（已有回包：%s）。"
+                      "先停掉 --keepalive 和游戏窗口再试，多半是号被另一路占着",
+                      got)
+            return 1
         log.info("登录态数据接收完毕，开始执行")
 
-        return work(rec, sock, spec, ctx)
+        return work(rec, sock, spec, ctx, heart)
     except OSError as exc:
         log.error("连接中断: %s", exc)
         return 1
     finally:
+        if heart is not None:
+            heart.stop()
         try:
             sock.close()
         except OSError:
             pass
         rec.close()
+        from . import citydb
+        citydb.flush_atk_fail()
 
 
 def run_daily_once(qq, config: dict) -> int:
@@ -346,10 +566,7 @@ def run_daily_once(qq, config: dict) -> int:
 
     与 --keepalive 的区别：不常驻，任务跑完就走；但任务执行期间照样发心跳。
     """
-    def _work(rec, sock, spec, ctx):
-        beater = _Beater(sock, protocol.build_heartbeat(spec, ctx),
-                         float(config.get("保持活跃", {}).get("心跳间隔秒")
-                               or protocol.heartbeat_interval(spec)))
+    def _work(rec, sock, spec, ctx, beater):
         results, details = daily.run(rec, sock, config, beat=beater)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         _push_daily_summary(config, results, details)
