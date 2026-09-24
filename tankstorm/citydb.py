@@ -245,6 +245,12 @@ def neighbors(city_id: int) -> set:
         conn.close()
 
 
+def fort_locked(city_id) -> bool:
+    """编号第 2 位是 1 或 2 的城，不是自己国家时不能占领。"""
+    s = str(int(city_id or 0))
+    return len(s) > 1 and s[1] in "12"
+
+
 def can_reach(here, there) -> bool:
     """自己所在城能否打到目标城：同城，或官方连接城市（双向）。"""
     here, there = int(here or 0), int(there or 0)
@@ -313,8 +319,7 @@ def plan_route(here, target, my_country) -> dict:
         return g[cid]["owner"] == my
 
     def blocked(cid):
-        s = str(cid)
-        return len(s) > 1 and s[1] in "12" and not mine(cid)
+        return fort_locked(cid) and not mine(cid)
 
     pq = [(0, 0, here)]          # (须占领数, 步数, 城市)
     best = {here: (0, 0)}

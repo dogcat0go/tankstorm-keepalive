@@ -142,6 +142,9 @@ def main() -> int:
                          "间隔见「间隔秒」，默认 5 分钟。走保活同一条连接")
     g5.add_argument("--list-cities", action="store_true",
                     help="列出全部城市 ID 与中文名（读官方配置表，不用登录）")
+    g5.add_argument("--move", type=int, metavar="城市ID", default=None,
+                    help="沿路线走到能打到这座城的相邻城，然后扫荡这座城"
+                         "（type:19，每次 15 点行动力）。敌城有人就先扫荡")
     g5.add_argument("--route", type=int, metavar="城市ID", default=None,
                     help="规划怎么打到这座城。当前城市和自己的国家从国战面板读。"
                          "同国城市直接通过，异国城市须先占领。"
@@ -162,7 +165,8 @@ def main() -> int:
                 args.list, args.reset, args.task, args.import_device,
                 args.country_war, args.city_players is not None,
                 args.atk, args.atk_city is not None, args.watch_cities,
-                args.list_cities, args.route is not None, args.capture)):
+                args.list_cities, args.route is not None, args.move is not None,
+                args.capture)):
         parser.print_help()
         return 0
 
@@ -273,6 +277,10 @@ def main() -> int:
     if args.route is not None:
         return socket_keepalive.run_route_once(
             qq, config, args.route, args.city_country)
+
+    if args.move is not None:
+        return socket_keepalive.run_move_once(
+            qq, config, args.move, sweep=args.sweep, country=args.city_country)
 
     if args.city_players is not None:
         return socket_keepalive.run_city_players_once(

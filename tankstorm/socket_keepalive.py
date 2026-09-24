@@ -467,10 +467,29 @@ def run_route_once(qq, config: dict, city_id, country=0) -> int:
         log.info("[路线] 当前在 %s %s，目标 %s %s",
                  loc, citydb.city_name(loc) or loc,
                  city_id, citydb.city_name(city_id) or city_id)
-        plan = citydb.plan_route(loc, city_id, my)
+        plan = country_war.live_plan(sock, rec, loc, city_id, my)
         for line in citydb.format_route(plan):
             log.info("[路线] %s", line)
         return 0 if plan.get("路径") else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_move_once(qq, config: dict, city_id, sweep=False, country=0) -> int:
+    """连一次游戏，沿路线走到目标城，然后断开。"""
+    from . import country_war
+
+    def _work(rec, sock, spec, ctx, beater):
+        if country:
+            config.setdefault("国战", {})["自己国家ID"] = int(country)
+        out = country_war.walk_to(
+            rec, sock, config, city_id, sweep=sweep, beat=beater)
+        log.info("―― 移动到 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                 city_id, out.get("移动") or 0, out.get("走到"),
+                 out.get("攻击") if out.get("攻击") is not None else "未打")
+        if out.get("停止原因"):
+            log.info("   结束原因：%s", out["停止原因"])
+        return 0 if out.get("攻击") is not None else 1
 
     return _connect_and(qq, config, _work)
 
