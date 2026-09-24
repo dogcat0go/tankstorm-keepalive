@@ -450,6 +450,31 @@ def run_attack_once(qq, config: dict, uid, times=1, sweep=False,
     return _connect_and(qq, config, _work)
 
 
+def run_route_once(qq, config: dict, city_id, country=0) -> int:
+    """连一次游戏，读自己当前城市，规划到目标城的路线，然后断开。不迁城。"""
+    from . import citydb, country_war
+
+    def _work(rec, sock, spec, ctx, beater):
+        my = int(country or (config.get("国战") or {}).get("自己国家ID") or 0) \
+            or daily.read_my_country(rec)
+        if not my:
+            log.error("读不到自己的国家ID，停手")
+            return 1
+        _, loc, _, panel = country_war._panel(sock, rec, my)
+        if panel is None or not loc:
+            log.error("读不到当前所在城市，停手")
+            return 1
+        log.info("[路线] 当前在 %s %s，目标 %s %s",
+                 loc, citydb.city_name(loc) or loc,
+                 city_id, citydb.city_name(city_id) or city_id)
+        plan = citydb.plan_route(loc, city_id, my)
+        for line in citydb.format_route(plan):
+            log.info("[路线] %s", line)
+        return 0 if plan.get("路径") else 1
+
+    return _connect_and(qq, config, _work)
+
+
 def run_farm_city_once(qq, config: dict, city_id, times=1, sweep=False,
                        country=0) -> int:
     """连一次游戏、打指定城市里库中的人、断开退出。不迁城。"""

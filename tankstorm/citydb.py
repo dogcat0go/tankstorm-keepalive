@@ -287,6 +287,7 @@ def plan_route(here, target, my_country) -> dict:
     """规划从当前城打到目标城的走法。只算路线，不发移动包。
 
     归属国与自己相同的城可以直接经过。别国的城要先占领，才能落脚或当走廊。
+    编号第 2 位是 1 或 2、又不是自己国家的城不能占领，也不能借道。
     目标城本身不必走进去，站在相邻城就能打。优先少占领，其次少走几步。
     """
     import heapq
@@ -311,6 +312,10 @@ def plan_route(here, target, my_country) -> dict:
     def mine(cid):
         return g[cid]["owner"] == my
 
+    def blocked(cid):
+        s = str(cid)
+        return len(s) > 1 and s[1] in "12" and not mine(cid)
+
     pq = [(0, 0, here)]          # (须占领数, 步数, 城市)
     best = {here: (0, 0)}
     prev = {here: None}
@@ -323,7 +328,7 @@ def plan_route(here, target, my_country) -> dict:
             found = u
             break
         for v in g[u]["near"]:
-            if v == target:
+            if v == target or blocked(v):
                 continue
             add = 0 if mine(v) else 1
             nxt = (occ + add, hops + 1)
@@ -332,7 +337,8 @@ def plan_route(here, target, my_country) -> dict:
                 prev[v] = u
                 heapq.heappush(pq, (*nxt, v))
     if found is None:
-        out["原因"] = f"从 {label(here)} 到 {label(target)} 没有通路"
+        out["原因"] = (f"从 {label(here)} 到 {label(target)} 没有通路。"
+                      "编号第2位是1或2、又不是自己国家的城不能占领，也不能借道")
         return out
     path = []
     cur = found

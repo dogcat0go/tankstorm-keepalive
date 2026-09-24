@@ -143,11 +143,9 @@ def main() -> int:
     g5.add_argument("--list-cities", action="store_true",
                     help="列出全部城市 ID 与中文名（读官方配置表，不用登录）")
     g5.add_argument("--route", type=int, metavar="城市ID", default=None,
-                    help="规划怎么打到这座城：同国城市直接通过，异国城市须先占领。"
-                         "配合 --from 当前城市、--city-country 自己国家。"
+                    help="规划怎么打到这座城。当前城市和自己的国家从国战面板读。"
+                         "同国城市直接通过，异国城市须先占领。"
                          "只打印路线，不迁城、不发攻击")
-    g5.add_argument("--from", dest="from_city", type=int, metavar="城市ID",
-                    default=0, help="配合 --route：自己当前所在城市")
 
     g4 = parser.add_argument_group("其它")
     g4.add_argument("--capture", action="store_true",
@@ -185,27 +183,6 @@ def main() -> int:
         print("-" * 52)
         print(f"共 {len(rows)} 座  库文件 {citydb.DB_FILE}\n")
         return 0
-
-    if args.route is not None:
-        from tankstorm import citydb
-        my = int(args.city_country or 0)
-        if not my:
-            my = int((config.get("国战", {}) or {}).get("自己国家ID") or 0)
-        if not args.from_city:
-            log.error("规划路线要知道现在在哪。加上 --from 当前城市ID")
-            return 1
-        if not my:
-            log.error("规划路线要知道自己的国家。加上 --city-country，"
-                      "或在 config「国战.自己国家ID」里填写")
-            return 1
-        try:
-            plan = citydb.plan_route(args.from_city, args.route, my)
-        except Exception as exc:
-            log.error("规划路线失败：%s", exc)
-            return 1
-        for line in citydb.format_route(plan):
-            log.info("[路线] %s", line)
-        return 0 if plan.get("路径") else 1
 
     if args.reset:
         from tankstorm import daily as _daily
@@ -293,6 +270,10 @@ def main() -> int:
                                                      args.country_war)
 
     # 城市玩家：连一次、开指定城市面板、把列表打出来、退出
+    if args.route is not None:
+        return socket_keepalive.run_route_once(
+            qq, config, args.route, args.city_country)
+
     if args.city_players is not None:
         return socket_keepalive.run_city_players_once(
             qq, config, args.city_players, args.city_country, args.city_page)

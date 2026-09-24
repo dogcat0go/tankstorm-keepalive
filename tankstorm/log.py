@@ -5,7 +5,7 @@
 # （第 3 版，或你选择的任何更新版本）之条款，再分发和/或修改它。
 # 本程序希望能有用，但不提供任何担保；甚至不含适销性或特定用途适用性的默示担保。
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
-import ctypes
+import atexit
 import logging
 import logging.handlers
 import os
@@ -40,26 +40,21 @@ def _force_utf8_console() -> None:
             pass          # 流被换成了不支持 reconfigure 的对象，忽略即可
 
 
-def _disable_win_quick_edit() -> None:
-    """关掉控制台「快速编辑」。点选窗口会暂停进程，打人日志像卡住，回车才继续。"""
-    if sys.platform != "win32":
+def _stop_log_listener() -> None:
+    """先把控制台队列打完再退出。否则后台线程和收尾抢 stdout，进程直接崩。"""
+    global _log_listener
+    lis = _log_listener
+    if lis is None:
         return
+    _log_listener = None
     try:
-        kernel32 = ctypes.windll.kernel32
-        h = kernel32.GetStdHandle(-10)
-        mode = ctypes.c_uint32()
-        if not kernel32.GetConsoleMode(h, ctypes.byref(mode)):
-            return
-        ENABLE_QUICK_EDIT = 0x40
-        ENABLE_EXTENDED_FLAGS = 0x80
-        kernel32.SetConsoleMode(
-            h, (mode.value | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT)
+        lis.stop()
     except Exception:
         pass
 
 
 _force_utf8_console()
-_disable_win_quick_edit()
+atexit.register(_stop_log_listener)
 
 
 def get_logger(name: str = "tankstorm") -> logging.Logger:
