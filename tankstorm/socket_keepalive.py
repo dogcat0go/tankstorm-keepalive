@@ -605,6 +605,49 @@ def _connect_and(qq, config: dict, work) -> int:
         citydb.flush_atk_fail()
 
 
+def run_fund_once(qq, config: dict, building_id: int, times: int) -> int:
+    """连一次、开资源卡、给指定建筑拨款、退出。"""
+    from . import fund
+
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = fund.fund(rec, sock, building_id, times)
+        log.info("[拨款] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_pve_once(qq, config: dict, stages=None) -> int:
+    """连一次、按名单打征战世界、退出。stages 为空则用 config「征战.关卡」。"""
+    from . import pve
+
+    def _work(rec, sock, spec, ctx, beater):
+        cfg = config.get("征战") or {}
+        if cfg.get("第4次"):
+            ok, why = pve.vip_restart(rec, sock)
+            log.info("[征战] %s", why)
+            if not ok:
+                return 1
+        raw = stages if stages else cfg.get("关卡")
+        if not raw:
+            if not cfg.get("第4次"):
+                log.error("[征战] 没有配置关卡")
+                return 1
+            log.info("任务执行期间共发心跳 %d 次", beater.count)
+            return 0
+        try:
+            ok, why = pve.fight(rec, sock, raw, cfg.get("间隔秒", 1))
+        except ValueError as exc:
+            log.error("[征战] %s", exc)
+            return 1
+        log.info("[征战] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
 def run_daily_once(qq, config: dict) -> int:
     """连一次游戏、跑一轮每日任务、断开退出。供 `main.py --daily` 用。
 

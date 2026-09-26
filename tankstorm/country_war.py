@@ -58,6 +58,25 @@ F_MORALE = "countryData.field14"    # 士气（被别人打会掉，掉光遣返
 F_CITY = "countryData.field6"       # 当前所在城市
 F_MERIT = "countryData.field17"     # 累计战功
 F_CD = "countryData.field10"        # proto cdTime；攻击回包里通常缺省（0）
+_CD_GEARS = (5, 10, 15)              # 出手间隔只有这三档
+
+
+def _gear_up(sec):
+    """比当前档更长的下一档。已经是 15 就停在 15。"""
+    for g in _CD_GEARS:
+        if g > float(sec or 0) + 0.2:
+            return float(g)
+    return float(_CD_GEARS[-1])
+
+
+def _gear_down(sec):
+    """比当前档更短的下一档。已经是 5 就停在 5。"""
+    prev = float(_CD_GEARS[0])
+    for g in _CD_GEARS:
+        if g >= float(sec or 0) - 0.2:
+            return prev
+        prev = float(g)
+    return prev
 
 
 def _cd_until_from(data):
@@ -90,7 +109,7 @@ def _apply_cd(out, sent_at, data, fallback):
     """成功出手后记下下次可打时刻。优先服务器 cdTime，否则用学到的间隔。"""
     out["_n21"] = 0
     got = _cd_until_from(data)
-    sec = float(out.get("cd_sec") or fallback or 15)
+    sec = float(out.get("cd_sec") or fallback or _CD_GEARS[0])
     if got:
         out["cd_until"] = got
         if sent_at:
@@ -98,24 +117,38 @@ def _apply_cd(out, sent_at, data, fallback):
         left = max(0.0, got - time.time())
         log.info("[冷却] 服务器给到 %.0f 秒后", left)
     else:
-        out["cd_until"] = sent_at + sec
+        hold = int(out.get("_cd_hold") or 0)
+        if hold > 0:
+            out["_cd_hold"] = hold - 1
+        elif sec > _CD_GEARS[0]:
+            sec = _gear_down(sec)
+            log.info("[冷却] 间隔试短一档，%.0f 秒", sec)
+        out["cd_until"] = (sent_at or time.time()) + sec
     out["cd_sec"] = sec
     out["last_act"] = sent_at
 
 
-def _retry_cd21(out, last_ok, fallback, tag, who=""):
-    """ret=21 回包不带剩余秒。等 1 秒再打，并用这次拒的时刻把间隔拉长。"""
+def _retry_cd21(out, last_ok, fallback, tag, who="", code=21):
+    """冷却回包不带剩余秒。升到下一档（5→10→15），只补等这一档剩下的时间。"""
     now = time.time()
-    sec = float(out.get("cd_sec") or fallback or 15)
-    if last_ok:
-        sec = max(sec, now - last_ok + 1.0)
-    out["cd_sec"] = sec
-    out["cd_until"] = now + 1.0
+    sec = float(out.get("cd_sec") or fallback or _CD_GEARS[0])
+    nxt = _gear_up(sec)
+    base = last_ok or now
+    if nxt > sec + 0.2:
+        out["cd_sec"] = nxt
+        out["_cd_hold"] = 8
+        until = base + nxt
+    else:
+        until = max(base + sec, now + 1.0)
+    wait = max(0.0, until - time.time())
+    out["cd_until"] = until
     n = int(out.get("_n21") or 0) + 1
     out["_n21"] = n
     who = f"{who} " if who else ""
-    log.info("[%s] %sret=21 冷却未到，等 1 秒再打（第 %d 次）", tag, who, n)
-    _nap(1.0)
+    log.info("[%s] %sret=%s 冷却未到，间隔升到 %.0f 秒，再等 %.0f 秒（第 %d 次）",
+             tag, who, code, out.get("cd_sec") or nxt, wait, n)
+    if wait > 0.05:
+        _nap(wait)
     return n
 
 
@@ -360,7 +393,7 @@ def run(rec, sock, config: dict, rounds: int = 0, beat=None,
     country = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
     npc_country = int(conf.get("摩多国家ID", 21))
     npc_city = int(conf.get("摩多驻地城市ID", 32010))
-    cooldown = float(conf.get("扫荡间隔秒", 15))
+    cooldown = float(_CD_GEARS[0])
     rounds = int(rounds or conf.get("默认次数", 0))
     use_card = bool(conf.get("自动使用国战恢复卡", False))
     card_limit = int(conf.get("单次最多用几张恢复卡", 1))
@@ -899,13 +932,14 @@ def attack_player(rec, sock, config: dict, uid, times: int = 1,
     act, name, cost = ((19, "扫荡", COST_SWEEP) if sweep
                        else (14, "攻击", COST_ATTACK))
     conf = (config.get("国战", {}) or {})
-    cooldown = float(cd_sec if cd_sec not in (None, 0)
-                     else conf.get("扫荡间隔秒", 15))
+    learned = cd_sec not in (None, 0)
+    cooldown = float(cd_sec if learned else _CD_GEARS[0])
     my = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
     out = {"成功": 0, "停止原因": "", "目标": uid, "名字": str(disp_name or "").strip(),
            "城市": int(city_id or 0), "国家": int(country or 0),
            "动作": name, "用卡": 0, "cd_sec": cooldown,
-           "cd_until": float(cd_until or 0)}
+           "cd_until": float(cd_until or 0),
+           "_cd_hold": 8 if learned else 0}
 
     info = citydb.find_player(uid)
     if info:
@@ -1035,15 +1069,9 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             out["国家"] = owner
         listed = _wait_city_users(sock, rec, since, city, timeout=2.0)
         p = _listed_user(listed, uid)
-        morale = p.get("morale") if p else None
         if p and p.get("name"):
             out["名字"] = p["name"]
             who = p["name"]
-        shown = (morale if isinstance(morale, int)
-                 and not isinstance(morale, bool) and morale > 0 else None)
-        if until_down:
-            log.info("[打人] %s 攻击前士气=%s", who,
-                     shown if shown is not None else "不可见")
         if p is None:
             if out["成功"]:
                 out["击退"] = True
@@ -1109,19 +1137,23 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
                    else None)
         lost_n = (lost if isinstance(lost, int) and not isinstance(lost, bool)
                   else None)
-        log.info("[打人] 第 %d 次%s回包 ret=%s 战功=%s 战报士气=%s 损失=%s",
-                 i, name, ret, merit, after_n, lost_n)
+        mine = _read_path(r, F_MORALE)
+        if not isinstance(mine, int) or isinstance(mine, bool):
+            mine = _read_path(panel, F_MORALE) if isinstance(panel, dict) else None
+        mine_n = mine if isinstance(mine, int) and not isinstance(mine, bool) else None
+        log.info("[打人] 第 %d 次%s回包 ret=%s 战功=%s 战报士气=%s 击伤=%s 自己士气=%s",
+                 i, name, ret, merit, after_n, lost_n, mine_n)
         _beat()
         if lost_n is None:
             out["成功"] += 1
             citydb.clear_atk_fail(uid)
-            log.info("[打人] %s 战报里没有损失字段，不记失败", who)
+            log.info("[打人] %s 战报里没有击伤，不记失败", who)
             if after_n is not None and after_n <= 0:
                 out["击退"] = True
                 break
             continue
         if lost_n < 150:
-            why = (f"{who} 攻击后士气损失 {lost_n}"
+            why = (f"{who} 击伤 {lost_n}"
                    f"（剩余 {after_n}，须≥150才算打得动）")
             citydb.record_atk_fail(uid, city, ret, reason=why, name=who)
             out["记失败"] = True
@@ -1130,7 +1162,8 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             break
         out["成功"] += 1
         citydb.clear_atk_fail(uid)
-        log.info("[打人] %s 攻击后士气=%s 损失=%s，算成功", who, after_n, lost_n)
+        log.info("[打人] %s 攻击后士气=%s 击伤=%s，自己士气=%s，算成功",
+                 who, after_n, lost_n, mine_n)
         if after_n is not None and after_n <= 0:
             out["击退"] = True
             log.info("[打人] %s 攻击后士气=0，视为击退", who)
@@ -1147,7 +1180,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
 
 
 def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
-              country=0, beat=None) -> dict:
+              country=0, beat=None, pass_block=False) -> dict:
     """现场翻页打这座城。打中后看士气损失，低于 150 才写入 atk_fail；
     打不到不入库。不读玩家库。跳过失败库，行动力低于 15 自动开卡，不迁城。"""
     from . import citydb
@@ -1190,7 +1223,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
         seen = set()
         last_act = 0.0
         cd_until = 0.0
-        cd_sec = float(conf.get("扫荡间隔秒", 15))
+        cd_sec = float(_CD_GEARS[0])
         owner = None
         total = None
         used_country = country
@@ -1244,6 +1277,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                                       f"与请求的 {city_id} 不一致")
                     break
             if total == 0:
+                log.info("[打人] 第 %d 页：现场 0 人，没有可打的目标", page)
                 break
             batch = _wait_city_users(sock, rec, since, city_id)
             log.info("[打人] 第 %d 页：现场 %d 人%s",
@@ -1251,6 +1285,20 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                      f" / {total}" if total is not None else "")
             if not batch:
                 break
+            if pass_block:
+                stuck = next((
+                    p for p in batch
+                    if str(p.get("uid") or "").strip()
+                    and str(p.get("uid") or "").strip() != me
+                    and (str(p.get("uid") or "").strip() in fail
+                         or citydb.in_atk_fail(str(p.get("uid") or "").strip()))
+                ), None)
+                if stuck:
+                    who = stuck.get("name") or stuck.get("uid")
+                    log.info("[打人] %s 已在失败库，这座城不可通行", who)
+                    out["跳过"] += 1
+                    out["停止原因"] = f"{who} 打不过，这座城不可通行"
+                    break
             for p in batch:
                 uid = str(p.get("uid") or "").strip()
                 if not uid or uid == me or uid in seen:
@@ -1259,6 +1307,10 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 if uid in fail or citydb.in_atk_fail(uid):
                     log.info("[打人] %s 已在失败库，跳过", p.get("name") or uid)
                     out["跳过"] += 1
+                    if pass_block:
+                        out["停止原因"] = (f"{p.get('name') or uid} 打不过，"
+                                          "这座城不可通行")
+                        break
                     continue
                 one = attack_player(
                     rec, sock, config, uid, times=0, sweep=sweep,
@@ -1288,6 +1340,10 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 if one.get("记失败"):
                     fail.add(uid)
                     out["失败"] += 1
+                    if pass_block:
+                        who = one.get("名字") or p.get("name") or uid
+                        out["停止原因"] = f"{who} 打不过，这座城不可通行"
+                        break
                     continue
                 if "ret=21" in reason or "被拒" in reason:
                     continue
@@ -1321,7 +1377,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
         _daily._BEAT = prev
 
 
-def live_plan(sock, rec, here, target, my) -> dict:
+def live_plan(sock, rec, here, target, my, avoid=None) -> dict:
     """先按本地归属规划，再开面板核对路线上每座城的占领国，变了就重算。
 
     目录里的国家是原属国。9316 这类城被法国占了之后，不看面板仍会写成黑暗联盟。
@@ -1329,8 +1385,11 @@ def live_plan(sock, rec, here, target, my) -> dict:
     from . import citydb
 
     known = {}
-    plan = citydb.plan_route(here, target, my)
-    for _ in range(4):
+    blocked = {int(c) for c in (avoid or ())}
+    fail = citydb.failed_uids()
+    me = str(getattr(rec, "uid", "") or "")
+    plan = citydb.plan_route(here, target, my, blocked)
+    for _ in range(6):
         seq = list(plan.get("路径") or [])
         if target not in seq:
             seq.append(int(target))
@@ -1347,13 +1406,30 @@ def live_plan(sock, rec, here, target, my) -> dict:
             name = citydb.city_name(city) or city
             log.info("[路线] %s %s 面板归属国=%s", city, name, info["owner"])
             changed = True
-        if not changed:
-            break
-        nxt = citydb.plan_route(here, target, my)
-        if (nxt.get("路径") == plan.get("路径")
+            others = info["userCnt"]
+            if info.get("here") == int(city) and others:
+                others -= 1
+            if city == int(target) or info["owner"] == my or not others:
+                continue
+            since = _send(sock, rec, 3, country=int(info["owner"] or my),
+                          city=int(city))
+            _wait(sock, rec, since, 3)
+            bad = []
+            for p in _wait_city_users(sock, rec, since, city):
+                uid = str(p.get("uid") or "").strip()
+                if uid and uid != me and uid in fail:
+                    bad.append(p.get("name") or uid)
+            if bad:
+                blocked.add(int(city))
+                log.info("[路线] %s %s 有打不过的人：%s，规划时跳过",
+                         city, name, "、".join(bad))
+        nxt = citydb.plan_route(here, target, my, blocked)
+        if (not changed and nxt.get("路径") == plan.get("路径")
                 and nxt.get("须占领") == plan.get("须占领")):
-            return nxt
+            plan = nxt
+            break
         plan = nxt
+    plan["避开"] = blocked
     return plan
 
 
@@ -1371,21 +1447,65 @@ def _open_city(sock, rec, city, country, retry=True):
     if (retry and got not in (None, int(city)) and isinstance(owner, int)
             and owner and owner != country):
         return _open_city(sock, rec, city, owner, retry=False)
-    return {"owner": int(owner or 0), "userCnt": int(cnt or 0)}
+    need = _read_path(cd, "cityData.field7")
+    here = _read_path(cd, F_CITY)
+    power = _read_path(cd, F_POWER)
+    return {"owner": int(owner or 0), "userCnt": int(cnt or 0),
+            "need": int(need) if isinstance(need, int) and not isinstance(need, bool) else 0,
+            "here": int(here) if isinstance(here, int) and not isinstance(here, bool) else 0,
+            "power": power}
 
 
-def _commit_move(sock, rec, city, owner):
-    """type:4 走进这座城。countryID 用面板上的归属国，和 2026-09-24 抓包一致。"""
-    since = _send(sock, rec, 4, country=int(owner or 0), city=int(city))
-    got = _wait(sock, rec, since, 4)
-    if not isinstance(got, dict):
-        return None, "移动没有回包"
-    if got.get("ret") not in (0, None):
-        return None, f"移动被拒 ret={got.get('ret')}"
-    here = _read_path(got, F_CITY)
-    if here not in (None, int(city)):
-        return None, f"移动后位置是 {here}，不是 {city}"
-    return {"here": int(here or city), "power": _read_path(got, F_POWER)}, ""
+_MOVE_CD = {"cd_sec": float(_CD_GEARS[0]), "last_act": 0.0,
+            "cd_until": 0.0, "_n21": 0, "_cd_hold": 0}
+
+
+def _commit_move(sock, rec, city, owner, my=0):
+    """发占领前再开一次面板：人在哪、城里还有没有别人、城属于谁。
+
+    人已经在目标城就不再发。敌城还有人也不发。所属以这次面板为准。
+    移动和占领的间隔也是 5、10、15 秒。ret=30 升一档再试。
+    """
+    for _ in range(6):
+        info = _open_city(sock, rec, city, owner, retry=False)
+        if not info:
+            return None, "占领前打不开城市"
+        owner = int(info["owner"] or owner or 0)
+        cnt = info["userCnt"]
+        here = info.get("here") or 0
+        if here == int(city) and cnt:
+            cnt -= 1
+        if here == int(city):
+            log.info("[移动] 查看：人在 %s，目标 %s 所属 %s，其他人 %d，人已在城里",
+                     here, city, owner, cnt)
+            return {"here": int(city), "power": info.get("power")}, ""
+        if cnt and int(my or 0) and owner != int(my):
+            log.info("[移动] 查看：人在 %s，目标 %s 所属 %s，其他人 %d，先攻打",
+                     here, city, owner, cnt)
+            return None, f"城里还有 {cnt} 人，所属 {owner}"
+        action = "移动" if int(my or 0) and owner == int(my) else "占领"
+        send_country = int(my if action == "移动" else owner)
+        log.info("[移动] 查看：人在 %s，目标 %s 所属 %s，其他人 %d，选择%s（国家 %s）",
+                 here, city, owner, cnt, action, send_country)
+        _sleep_cd(_MOVE_CD.get("last_act") or 0, _MOVE_CD.get("cd_until") or 0,
+                  _MOVE_CD.get("cd_sec"), "移动")
+        sent = time.time()
+        since = _send(sock, rec, 4, country=send_country, city=int(city))
+        got = _wait(sock, rec, since, 4)
+        if not isinstance(got, dict):
+            return None, "移动没有回包"
+        if got.get("ret") in (0, None):
+            here = _read_path(got, F_CITY)
+            if here not in (None, int(city)):
+                return None, f"移动后位置是 {here}，不是 {city}"
+            _apply_cd(_MOVE_CD, sent, got, _CD_GEARS[0])
+            return {"here": int(here or city), "power": _read_path(got, F_POWER)}, ""
+        if got.get("ret") != 30:
+            return None, f"移动被拒 ret={got.get('ret')}"
+        if _retry_cd21(_MOVE_CD, _MOVE_CD.get("last_act") or 0, _CD_GEARS[0],
+                       "移动", code=30) > 4:
+            return None, "移动被拒 ret=30"
+    return None, "移动被拒 ret=30"
 
 
 def _ready_to_leave(sock, rec, config, loc, my) -> str:
@@ -1410,11 +1530,12 @@ def _ready_to_leave(sock, rec, config, loc, my) -> str:
     return ""
 
 
-def walk_to(rec, sock, config, target, sweep=False, beat=None) -> dict:
-    """先一跳走到路线上最远的本国城，剩下的敌城再一座一座占领。
+def walk_to(rec, sock, config, target, sweep=False, beat=None,
+             avoid=None, replanned=False) -> dict:
+    """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
-    敌方城里还有人就先打这座城。剩下的人都打不过时暂停，不再往下走。
-    编号第 2 位是 1 或 2、又不是自己国家的城不能占领，同样暂停。
+    本国城可以一次走到最远。敌城有人就先打，空城直接占领。
+    编号第 2 位是 1 或 2、又不是自己国家的城不能占领，直接暂停。
     """
     from . import citydb
 
@@ -1430,7 +1551,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None) -> dict:
         out["停止原因"] = "读不到当前所在城市"
         return out
     out["走到"] = int(loc)
-    plan = live_plan(sock, rec, loc, target, my)
+    plan = live_plan(sock, rec, loc, target, my, avoid)
+    avoid = set(plan.get("避开") or avoid or ())
     for line in citydb.format_route(plan):
         log.info("[路线] %s", line)
     if not plan.get("路径"):
@@ -1446,6 +1568,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None) -> dict:
             break
         far_i = i
     occupy_from = 1
+    blocked_at = 0
 
     prev = _daily._BEAT
     if beat is not None:
@@ -1468,7 +1591,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None) -> dict:
                 log.info("[移动] %s %s 实际归属 %s，不是本国，改为从下一座城逐城走",
                          city, name, info["owner"])
             else:
-                moved, why = _commit_move(sock, rec, city, info["owner"])
+                moved, why = _commit_move(sock, rec, city, info["owner"], my)
                 if not moved:
                     out["停止原因"] = f"{city} {name}：{why}"
                     return out
@@ -1491,51 +1614,240 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None) -> dict:
                 break
             owner, cnt = info["owner"], info["userCnt"]
             citydb.record_occupy(city, owner, cnt)
-            if owner != my and citydb.fort_locked(city):
+            if info.get("here") == int(city) and cnt:
+                cnt -= 1
+            moved, why = None, ""
+            if info.get("here") == int(city) and (owner == my or not cnt):
+                moved = {"here": int(city), "power": info.get("power")}
+                log.info("[移动] 人已经在 %s %s", city, name)
+            elif (owner != my and citydb.fort_locked(city)
+                  and (owned.get(city) or {}).get("home") != 21):
                 out["停止原因"] = (f"{city} {name} 不是自己国家，"
                                   "编号第2位是1或2，不能占领，暂停移动")
                 break
-            if owner != my and cnt:
+            elif owner != my and cnt:
                 log.info("[移动] %s %s 有 %d 个敌方，先打这座城", city, name, cnt)
                 fought = farm_city(rec, sock, config, city, sweep=True,
-                                   country=my, beat=beat)
+                                   country=my, beat=beat, pass_block=True)
                 reason = fought.get("停止原因") or ""
                 if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
                     out["停止原因"] = reason
+                    break
+                if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
+                    blocked_at = city
+                    log.info("[移动] %s %s 有打不过的敌方，这座城不可通行，准备改道",
+                             city, name)
                     break
                 info = _open_city(sock, rec, city, owner or my)
                 if not info:
                     out["停止原因"] = f"打完后打不开 {city} {name}"
                     break
                 owner, cnt = info["owner"], info["userCnt"]
+                if info.get("here") == int(city) and cnt:
+                    cnt -= 1
                 citydb.record_occupy(city, owner, cnt)
-                if owner != my and cnt:
-                    out["停止原因"] = f"{city} {name} 剩下的人都打不过，暂停移动"
+                if info.get("here") == int(city):
+                    moved = {"here": int(city), "power": info.get("power")}
+                    log.info("[移动] 人已经在 %s %s，不用再发占领", city, name)
+                elif owner == my or not cnt:
+                    log.info("[移动] %s %s 人已清空，占领", city, name)
+                    moved, why = _commit_move(sock, rec, city, owner or my, my)
+                    if not moved and "ret=30" in (why or ""):
+                        blocked_at = city
+                        log.info("[移动] %s %s 占领被拒 ret=30，避开它重新规划",
+                                 city, name)
+                else:
+                    blocked_at = city
+                    log.info("[移动] %s %s 打完还有 %d 人，避开这座城重新规划",
+                             city, name, cnt)
                     break
-            if owner != my and not cnt:
-                log.info("[移动] %s %s 是空城，按归属国 %s 占领", city, name, owner)
+            elif owner != my:
                 info = _open_city(sock, rec, city, owner, retry=False)
                 if info:
                     owner = info["owner"] or owner
-            moved, why = _commit_move(sock, rec, city, owner or my)
+                    need = info.get("need") or 0
+                    power = info.get("power")
+                    cnt = info["userCnt"]
+                    if info.get("here") == int(city) and cnt:
+                        cnt -= 1
+                    if (isinstance(power, int) and not isinstance(power, bool)
+                            and need and power < need and not cnt
+                            and owner != my):
+                        item = int(conf.get("国战恢复卡物品ID") or CARD_ITEM_ID)
+                        sent, msg = _use_recovery_card(sock, rec, item)
+                        log.info("[移动] 行动力 %s < 这一步要的 %s，%s",
+                                 power, need, msg)
+                        if not sent:
+                            out["停止原因"] = (f"行动力 {power} 不够占领 "
+                                              f"{city} {name}（要 {need}）；{msg}")
+                            break
+                        _nap(2.0)
+                if cnt and owner != my:
+                    log.info("[移动] %s %s 再看还有 %d 人，所属 %s，改为先打",
+                             city, name, cnt, owner)
+                    fought = farm_city(rec, sock, config, city, sweep=True,
+                                       country=my, beat=beat, pass_block=True)
+                    reason = fought.get("停止原因") or ""
+                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                        out["停止原因"] = reason
+                        break
+                    if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
+                        blocked_at = city
+                        log.info("[移动] %s %s 有打不过的敌方，这座城不可通行，准备改道",
+                                 city, name)
+                        break
+                    info = _open_city(sock, rec, city, owner or my)
+                    if info and info.get("here") == int(city):
+                        moved = {"here": int(city), "power": info.get("power")}
+                        why = ""
+                    elif info and (info["owner"] == my or not info["userCnt"]):
+                        moved, why = _commit_move(sock, rec, city,
+                                                  info["owner"] or owner, my)
+                    else:
+                        blocked_at = city
+                        log.info("[移动] %s %s 打完还有人，避开这座城重新规划",
+                                 city, name)
+                else:
+                    moved, why = _commit_move(sock, rec, city, owner or my, my)
+                if not moved and "城里还有" in (why or ""):
+                    log.info("[移动] %s %s %s，改为先打", city, name, why)
+                    fought = farm_city(rec, sock, config, city, sweep=True,
+                                       country=my, beat=beat, pass_block=True)
+                    reason = fought.get("停止原因") or ""
+                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                        out["停止原因"] = reason
+                        break
+                    if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
+                        blocked_at = city
+                        log.info("[移动] %s %s 有打不过的敌方，这座城不可通行，准备改道",
+                                 city, name)
+                        break
+                    info = _open_city(sock, rec, city, owner or my)
+                    if info and (info.get("here") == int(city)
+                                 or info["owner"] == my or not info["userCnt"]):
+                        moved, why = _commit_move(sock, rec, city,
+                                                  info["owner"] or my, my)
+                if not moved and "ret=30" in (why or ""):
+                    log.info("[移动] %s %s 占领被拒 ret=30，先尝试攻打", city, name)
+                    fought = farm_city(rec, sock, config, city, sweep=True,
+                                       country=my, beat=beat, pass_block=True)
+                    reason = fought.get("停止原因") or ""
+                    log.info("[移动] %s %s 攻打结束：%s，成功 %d，失败 %d",
+                             city, name, reason, fought.get("成功") or 0,
+                             fought.get("失败") or 0)
+                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                        out["停止原因"] = reason
+                        break
+                    if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
+                        blocked_at = city
+                        log.info("[移动] %s %s 有打不过的敌方，这座城不可通行，准备改道",
+                                 city, name)
+                        break
+                    if not fought.get("打过") and not fought.get("失败"):
+                        out["停止原因"] = (f"{city} {name} 空城没有人可打，"
+                                          f"占领仍被拒：{why}")
+                        break
+                    info = _open_city(sock, rec, city, owner or my)
+                    if info and info.get("here") == int(city):
+                        moved = {"here": int(city), "power": info.get("power")}
+                        why = ""
+                    elif info and not info["userCnt"]:
+                        moved, why = _commit_move(sock, rec, city,
+                                                  info["owner"] or owner, my)
+                    if not moved:
+                        blocked_at = city
+                        log.info("[移动] %s %s 打完仍进不去，避开这座城重新规划",
+                                 city, name)
+            else:
+                moved, why = _commit_move(sock, rec, city, my, my)
+                if not moved and "ret=7" in (why or ""):
+                    moved = {"here": int(city), "power": info.get("power")}
+                    why = ""
+                    log.info("[移动] %s %s 已在城里（ret=7），继续", city, name)
+                elif not moved and cnt and "ret=30" in (why or ""):
+                    log.info("[移动] %s %s 进不去（城里 %d 人），先把人清掉再进",
+                             city, name, cnt)
+                    fought = farm_city(rec, sock, config, city, sweep=True,
+                                       country=my, beat=beat)
+                    reason = fought.get("停止原因") or ""
+                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                        out["停止原因"] = reason
+                        break
+                    if fought.get("失败") and not fought.get("成功"):
+                        out["停止原因"] = f"{city} {name} 剩下的人都打不过，暂停移动"
+                        break
+                    info = _open_city(sock, rec, city, my)
+                    if info and info.get("here") == int(city):
+                        moved, why = {"here": int(city), "power": info.get("power")}, ""
+                    elif info and not info["userCnt"]:
+                        log.info("[移动] %s %s 人已清空，再走进去", city, name)
+                        moved, why = _commit_move(sock, rec, city, my, my)
+            if blocked_at:
+                break
             if not moved:
-                out["停止原因"] = f"{city} {name}：{why}"
+                out["停止原因"] = f"{city} {name}：{why or '还没走进去'}"
                 break
             out["移动"] += 1
             out["走到"] = moved["here"]
             log.info("[移动] 进入 %s %s，行动力 %s",
                      moved["here"], name, moved.get("power"))
+        if blocked_at:
+            cname = citydb.city_name(blocked_at) or blocked_at
+            if replanned:
+                out["停止原因"] = f"{blocked_at} {cname} 重新规划后仍受阻，停止"
+                return out
+            log.info("[路线] %s %s 攻打失败，按最短路径重新规划，避开它",
+                     blocked_at, cname)
+            nxt = walk_to(rec, sock, config, target, sweep=sweep, beat=beat,
+                          avoid=set(avoid or ()) | {blocked_at}, replanned=True)
+            out["移动"] += nxt.get("移动") or 0
+            if nxt.get("走到"):
+                out["走到"] = nxt["走到"]
+            if nxt.get("攻击") is not None:
+                out["攻击"] = nxt["攻击"]
+            out["停止原因"] = nxt.get("停止原因") or ""
+            return out
         if out["停止原因"]:
             return out
         if not citydb.can_reach(out["走到"], target):
             out["停止原因"] = f"停在 {out['走到']}，还没挨着目标 {target}"
             return out
-        log.info("[移动] 人在 %s，开始扫荡目标 %s %s",
-                 out["走到"], target, citydb.city_name(target) or target)
-        fought = farm_city(rec, sock, config, target, sweep=True,
-                           country=my, beat=beat)
-        out["攻击"] = fought.get("成功") or 0
-        out["停止原因"] = fought.get("停止原因") or ""
+        tname = citydb.city_name(target) or target
+        log.info("[移动] 人在 %s，开始清目标 %s %s 里的人",
+                 out["走到"], target, tname)
+        hit = 0
+        last_cnt = None
+        while True:
+            info = _open_city(sock, rec, target, my)
+            if not info:
+                out["停止原因"] = f"打不开目标 {target} {tname}"
+                break
+            left = info["userCnt"]
+            if info.get("here") == int(target) and left:
+                left -= 1
+            if not left:
+                log.info("[移动] 目标 %s %s 城里已经没人", target, tname)
+                out["停止原因"] = ""
+                break
+            if last_cnt is not None and left >= last_cnt:
+                out["停止原因"] = f"{target} {tname} 还有 {left} 人，再打人数没减少"
+                break
+            last_cnt = left
+            log.info("[移动] 目标 %s %s 还有 %d 人", target, tname, left)
+            fought = farm_city(rec, sock, config, target, sweep=True,
+                               country=my, beat=beat)
+            hit += fought.get("成功") or 0
+            reason = fought.get("停止原因") or ""
+            if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                out["停止原因"] = reason
+                break
+            if fought.get("失败") and not fought.get("成功"):
+                out["停止原因"] = f"{target} {tname} 剩下的人都打不过，停止"
+                break
+            if not fought.get("成功") and not fought.get("失败"):
+                out["停止原因"] = reason or f"{target} {tname} 还有人但没打到"
+                break
+        out["攻击"] = hit
         return out
     finally:
         _daily._BEAT = prev

@@ -1438,9 +1438,15 @@ def _run(rec, sock, config, schema):
                      st["done"].get(task.key, 0), task.max_per_day)
         continue
 
+    if (config.get("征战") or {}).get("第4次"):
+        from . import pve
+        ok, why = pve.vip_restart(rec, sock)
+        results["征战第4次"] = why if ok else f"失败：{why}"
+
     log.info("=== 每日任务结束 ===")
     for k, v in results.items():
         log.info("  %-12s %s", k, v)
+
     return results, details
 
 

@@ -268,17 +268,19 @@ def city_map() -> dict:
     try:
         rows = conn.execute(
             "SELECT c.id, c.name, IFNULL(c.country_id,0), "
-            "o.occupy_country, c.near_city "
+            "o.occupy_country, o.user_cnt, c.near_city "
             "FROM city c LEFT JOIN city_occupy o ON o.city_id=c.id"
         ).fetchall()
     finally:
         conn.close()
     g = {}
-    for cid, name, home, occ, near in rows:
+    for cid, name, home, occ, users, near in rows:
         cid = int(cid)
         g[cid] = {
             "name": name or "",
+            "home": int(home or 0),
             "owner": int(occ) if isinstance(occ, int) else int(home or 0),
+            "users": int(users) if isinstance(users, int) else 0,
             "near": set(_parse_near(near)),
         }
     for cid, info in list(g.items()):
@@ -289,12 +291,14 @@ def city_map() -> dict:
     return g
 
 
-def plan_route(here, target, my_country) -> dict:
+def plan_route(here, target, my_country, avoid=None) -> dict:
     """规划从当前城打到目标城的走法。只算路线，不发移动包。
 
     归属国与自己相同的城可以直接经过。别国的城要先占领，才能落脚或当走廊。
     编号第 2 位是 1 或 2、又不是自己国家的城不能占领，也不能借道。
-    目标城本身不必走进去，站在相邻城就能打。优先少占领，其次少走几步。
+    原属国是 21（黑暗联盟）的城例外，可以占领。
+    目标城本身不必走进去，站在相邻城就能打。先走最短：少占领，再少走几步。
+    avoid 里的城是已经打不过的，这条路不再经过。
     """
     import heapq
 
@@ -318,8 +322,11 @@ def plan_route(here, target, my_country) -> dict:
     def mine(cid):
         return g[cid]["owner"] == my
 
+    skip = {int(c) for c in (avoid or ())}
+
     def blocked(cid):
-        return fort_locked(cid) and not mine(cid)
+        home = g[cid].get("home") or 0
+        return cid in skip or (fort_locked(cid) and not mine(cid) and home != 21)
 
     pq = [(0, 0, here)]          # (须占领数, 步数, 城市)
     best = {here: (0, 0)}

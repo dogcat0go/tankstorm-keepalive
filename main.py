@@ -33,6 +33,8 @@
   python main.py --atk-city 2302 --sweep          现场翻页打城：先打再看士气，击退/打不过换人
   python main.py --list-cities        列出全部城市 ID 与中文名
   python main.py --capture            扫码后打开钩子版游戏窗口，实时抓包
+  python main.py --pve                 征战世界，关卡见 config「征战.关卡」
+  python main.py --pve 1-10,15         只打这些关（当前关必须在名单里）
 """
 
 import argparse
@@ -150,6 +152,18 @@ def main() -> int:
                          "同国城市直接通过，异国城市须先占领。"
                          "只打印路线，不迁城、不发攻击")
 
+    g6 = parser.add_argument_group("成就建筑拨款")
+    g6.add_argument("--fund", type=int, metavar="建筑ID", default=None,
+                    help="每次全部拨款前，各开 4 张 1000 万金属卡和石油卡。"
+                         "次数见 --fund-times")
+    g6.add_argument("--fund-times", type=int, metavar="次数", default=1,
+                    help="全部拨款的次数，默认 1。每一次都会先开 4 张金属卡和 4 张石油卡")
+
+    g7 = parser.add_argument_group("征战世界")
+    g7.add_argument("--pve", nargs="?", const="", default=None, metavar="关卡",
+                    help="打征战世界后退出。不带参数用 config「征战.关卡」。"
+                         "也可写 1-10 或 3,5,8。当前关不在名单里会停，不会跳关")
+
     g4 = parser.add_argument_group("其它")
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
@@ -166,7 +180,8 @@ def main() -> int:
                 args.country_war, args.city_players is not None,
                 args.atk, args.atk_city is not None, args.watch_cities,
                 args.list_cities, args.route is not None, args.move is not None,
-                args.capture)):
+                args.capture, args.fund is not None,
+                args.pve is not None)):
         parser.print_help()
         return 0
 
@@ -296,6 +311,13 @@ def main() -> int:
         return socket_keepalive.run_farm_city_once(
             qq, config, args.atk_city, times=args.atk_times, sweep=args.sweep,
             country=args.city_country)
+
+    if args.fund is not None:
+        return socket_keepalive.run_fund_once(
+            qq, config, args.fund, args.fund_times)
+
+    if args.pve is not None:
+        return socket_keepalive.run_pve_once(qq, config, args.pve)
 
     # 每日任务：连一次、跑一轮、退出
     if args.daily:
