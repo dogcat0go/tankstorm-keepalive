@@ -807,6 +807,7 @@ cp out/schema.json tankstorm/ && cp out/redwar.proto out/opcodes.json docs/
 - [docs/protocol-reverse-engineering.md](docs/protocol-reverse-engineering.md) —— TCP 二进制协议逆向入门与踩坑
 - [docs/redwar.proto](docs/redwar.proto) —— 从 SWF 还原的完整协议定义
 - [docs/opcodes.json](docs/opcodes.json) —— opcode ↔ 消息名对照
+- [docs/路径规划与图论教程.html](docs/路径规划与图论教程.html) —— 以国战地图为例讲图、BFS、Dijkstra 与 `plan_route` 的字典序代价，附可交互沙盘
 
 ---
 

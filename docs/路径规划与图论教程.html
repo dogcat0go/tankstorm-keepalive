@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>从国战地图学图论：路径规划与最短路径</title>
+<style>
+  :root {
+    --ink: #1c1915;
+    --muted: #5c564c;
+    --line: #e4ddd2;
+    --paper: #f7f4ee;
+    --card: #fffdf9;
+    --accent: #9a3412;
+    --accent-soft: #f3e6dc;
+    --ok: #1f6b45;
+    --ok-soft: #e5f2eb;
+    --stop: #9f1239;
+    --stop-soft: #fde8ee;
+    --server: #1e3a5f;
+    --server-soft: #e7eef6;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: var(--paper);
+    font: 16px/1.7 "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  }
+  header {
+    padding: 48px 24px 28px;
+    border-bottom: 1px solid var(--line);
+    background:
+      radial-gradient(900px 220px at 10% -20%, #f3e6dc, transparent 60%),
+      var(--paper);
+  }
+  header .inner { max-width: 1080px; margin: 0 auto; }
+  main { max-width: 1080px; margin: 0 auto; padding: 8px 24px 80px; }
+  h1 { font-size: 34px; line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.02em; }
+  h2 { font-size: 24px; margin: 48px 0 12px; padding-top: 8px; }
+  h3 { font-size: 17px; margin: 24px 0 8px; }
+  p { margin: 0 0 12px; }
+  .lead { font-size: 18px; color: var(--muted); max-width: 70ch; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 22px; font-size: 14px; }
+  nav a { color: var(--accent); text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  a { color: var(--accent); }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 16px 14px;
+  }
+  .card h3 { margin-top: 0; }
+  .tag {
+    display: inline-block;
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  .tag.server { background: var(--server-soft); color: var(--server); }
+  .tag.ok { background: var(--ok-soft); color: var(--ok); }
+  figure {
+    margin: 18px 0 8px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px 12px 8px;
+    overflow-x: auto;
+  }
+  figcaption { color: var(--muted); font-size: 13px; padding: 4px 8px 8px; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border-radius: 12px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; color: var(--muted); font-weight: 600; background: #f3efe8; }
+  code, .mono { font-family: Consolas, "Cascadia Mono", "JetBrains Mono", monospace; font-size: 0.92em; }
+  p code, li code, td code { background: #efe9e0; padding: 1px 5px; border-radius: 4px; }
+  pre {
+    background: #231f1b;
+    color: #f6f1e8;
+    border-radius: 12px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font: 13.5px/1.55 Consolas, "Cascadia Mono", "JetBrains Mono", monospace;
+    margin: 12px 0 16px;
+  }
+  pre .c { color: #9c9284; }
+  pre .k { color: #f0a868; }
+  pre .s { color: #a8d8a0; }
+  pre .n { color: #8fc7ff; }
+  pre .src { display: block; color: #9c9284; font-size: 12px; margin-bottom: 8px; }
+  .note, .stop, .think {
+    border-radius: 12px;
+    padding: 12px 16px;
+    margin: 14px 0;
+  }
+  .note { background: var(--ok-soft); color: #143d28; }
+  .stop { background: var(--stop-soft); color: #6d1028; }
+  .think { background: var(--server-soft); color: #14283f; }
+  .note > strong:first-child, .stop > strong:first-child, .think > strong:first-child { display: block; margin-bottom: 4px; }
+  ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+  ol.steps li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 36px 1fr;
+    gap: 12px;
+    padding: 12px 0;
+    border-top: 1px solid var(--line);
+  }
+  ol.steps li:first-child { border-top: 0; }
+  ol.steps li::before {
+    content: counter(step);
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: var(--ink);
+    color: #fff;
+    display: grid; place-items: center;
+    font-size: 13px;
+    margin-top: 2px;
+  }
+  .math { font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif; font-style: italic; }
+  details { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 10px 14px; margin: 10px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+  details p { margin-top: 10px; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 36px; }
+
+  /* 沙盘 */
+  .lab {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 16px 0;
+    position: relative; left: 50%; transform: translateX(-50%);
+    width: min(1320px, calc(100vw - 32px));
+  }
+  .lab-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; }
+  .lab svg { width: 100%; height: auto; background: #fbf9f5; border-radius: 10px; border: 1px solid var(--line); display: block; }
+  .ctl { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 10px; font-size: 14px; }
+  .ctl label { display: inline-flex; gap: 6px; align-items: center; }
+  .ctl select, .ctl button, .ctl input[type=range] { font: inherit; }
+  .ctl select { padding: 3px 6px; border-radius: 6px; border: 1px solid #cfc6b8; background: #fff; }
+  button.btn {
+    padding: 5px 12px; border-radius: 8px; border: 1px solid #cfc6b8; background: #fff; cursor: pointer; font-size: 14px;
+  }
+  button.btn:hover { background: #f3efe8; }
+  button.btn.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+  button.btn.primary:hover { background: #3a342d; }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+  .presets button { font-size: 13px; }
+  .side h4 { margin: 0 0 6px; font-size: 14px; color: var(--muted); letter-spacing: 0.04em; }
+  .side pre { font-size: 12.5px; margin: 0 0 12px; max-height: 260px; overflow: auto; white-space: pre-wrap; }
+  .side .stat { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; font-size: 13px; margin-bottom: 12px; }
+  .side .stat b { font-weight: 600; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 50%; vertical-align: -2px; margin-right: 4px; border: 1px solid #0003; }
+  .legend .sw { display: inline-block; width: 22px; height: 0; border-top: 3px solid; vertical-align: 3px; margin-right: 4px; }
+  .log { font-size: 12.5px; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+  .log table { border-radius: 0; }
+  .log td, .log th { padding: 4px 8px; font-size: 12.5px; }
+  .log tr.cur td { background: #fff4d6; }
+  .log tr.stale td { color: #a09686; text-decoration: line-through; }
+  .log tr.found td { background: #e5f2eb; font-weight: 600; }
+  .hint { font-size: 13px; color: var(--muted); }
+  @media (max-width: 900px) {
+    .grid, .two, .lab-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 28px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="inner">
+    <h1>从国战地图学图论：路径规划与最短路径</h1>
+    <p class="lead">这个仓库里有一个真实的路径规划问题：人在某座城，要打另一座城，中间要经过哪些城、先占领哪些城。本文用这份代码当教材，从「什么是图」讲到「Dijkstra 为什么是对的」，再到「计划赶不上变化时怎么重算」。所有例子都跑在游戏的真实地图上（95 座城、140 条道路），可以动手点。</p>
+    <nav>
+      <a href="#problem">1 问题从哪来</a>
+      <a href="#graph">2 图、点、边、邻接表</a>
+      <a href="#bfs">3 BFS：最少步数</a>
+      <a href="#dijkstra">4 Dijkstra：带代价的最短路</a>
+      <a href="#variant">5 项目的变体</a>
+      <a href="#playground">6 实战沙盘</a>
+      <a href="#replan">7 边走边重算</a>
+      <a href="#pitfalls">8 复杂度与常见坑</a>
+      <a href="#beyond">9 延伸</a>
+      <a href="#quiz">10 自测</a>
+    </nav>
+  </div>
+</header>
+<main>
+
+<!-- ============================================================ -->
+<section id="problem">
+  <h2>1. 问题从哪来</h2>
+  <p>国战里，玩家站在一座城，只能攻击<strong>同城或相邻城</strong>里的人。要打远处的目标，就得一座城一座城地挪过去。挪动的规则（都是抓包和实盘确认的，见 <code>tankstorm/citydb.py</code> 的 <code>plan_route</code> 注释）：</p>
+  <div class="grid">
+    <article class="card">
+      <div class="tag ok">免费通过</div>
+      <h3>归属国是自己的城</h3>
+      <p>可以直接走过去落脚，也可以当走廊。<code>walk_to</code> 甚至会把连续的本国城「一次走到最远」。</p>
+    </article>
+    <article class="card">
+      <div class="tag">要先占领</div>
+      <h3>别国的城</h3>
+      <p>得先把城里的敌人打空、发一次占领（<code>type:4</code>），才能落脚或借道。每占一座就多花行动力和时间。</p>
+    </article>
+    <article class="card">
+      <div class="tag server">禁行</div>
+      <h3>别国的首都与大城</h3>
+      <p>城市编号第 2 位是 1 或 2 的城（<code>fort_locked</code>），不是自己国家就不能占领、也不能借道。原属黑暗联盟（21）的例外。</p>
+    </article>
+  </div>
+  <p style="margin-top:14px">于是「怎么打到目标城」就变成了一个明确的优化问题：</p>
+  <div class="think">
+    <strong>目标</strong>
+    从当前城出发，找到一个<strong>落点</strong>（目标城本身或它的任意邻城），使沿途<strong>须占领的城最少</strong>；占领数相同时，<strong>步数最少</strong>。禁行的城不能进，已知打不过的城也绕开。
+  </div>
+  <p>这正是图论里的<strong>最短路径问题</strong>，只是「最短」的定义不是米，而是一个二元组 <span class="mono">(须占领数, 步数)</span>。下面从头搭起来。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="graph">
+  <h2>2. 图、点、边、邻接表</h2>
+  <p>把每座城看成一个<strong>顶点</strong>（vertex / node），两座相邻的城之间画一条<strong>边</strong>（edge），整张地图就是一个<strong>图</strong>（graph）。这份地图有 95 个顶点、140 条边。</p>
+
+  <h3>2.1 数据长什么样</h3>
+  <p>顶点和边来自官方 CDN 的 <code>CityData_*.dat</code>，一张 GBK 编码的 TSV，最后一列 <code>nearCity</code> 就是「这座城连着哪些城」：</p>
+<pre><span class="src">CityData_2019091902.dat（节选，制表符分隔）</span>1101  罗马      1  0  …  ",1201,1202,1203"
+1201  米兰      1  1  …  ",1101,1301,12010"
+1301  威尼斯    1  2  …  ",1201,9301"
+9301  伊斯坦布尔 21 2  …  ",1301,9302,9318,9319"
+9101  马奇诺    21 0  …  ",9201,9202,9203,9204,9205,9206"</pre>
+  <p>每一行「城 → 它的邻居列表」，这种存法叫<strong>邻接表</strong>（adjacency list）。另一种存法是 95×95 的<strong>邻接矩阵</strong>，格子里 1 表示相连。矩阵占 9025 格却只有 280 个 1，太稀疏，所以稀疏图几乎都用邻接表。</p>
+
+  <h3>2.2 代码里怎么建图</h3>
+  <p><code>citydb.city_map()</code> 把 SQLite 里的城市表读成一个 <code>dict</code>，键是城市 ID，值里有 <code>near</code>（邻居集合）和 <code>owner</code>（当前归属国：有占领记录用记录，没有用原属国）：</p>
+<pre><span class="src">tankstorm/citydb.py · city_map()</span>g = {}
+<span class="k">for</span> cid, name, home, occ, users, near <span class="k">in</span> rows:
+    g[cid] = {
+        <span class="s">"name"</span>: name <span class="k">or</span> <span class="s">""</span>,
+        <span class="s">"home"</span>: int(home <span class="k">or</span> 0),           <span class="c"># 原属国</span>
+        <span class="s">"owner"</span>: int(occ) <span class="k">if</span> isinstance(occ, int) <span class="k">else</span> int(home <span class="k">or</span> 0),
+        <span class="s">"users"</span>: …,
+        <span class="s">"near"</span>: set(_parse_near(near)),   <span class="c"># 邻接表</span>
+    }
+<span class="k">for</span> cid, info <span class="k">in</span> list(g.items()):
+    info[<span class="s">"near"</span>] = {n <span class="k">for</span> n <span class="k">in</span> info[<span class="s">"near"</span>] <span class="k">if</span> n <span class="k">in</span> g <span class="k">and</span> n != cid}   <span class="c"># 去掉自环和不存在的城</span>
+<span class="k">for</span> cid, info <span class="k">in</span> g.items():
+    <span class="k">for</span> n <span class="k">in</span> info[<span class="s">"near"</span>]:
+        g[n][<span class="s">"near"</span>].add(cid)              <span class="c"># 边补成双向</span></pre>
+  <p>最后三行值得停一下。道路是<strong>无向</strong>的：A 挨着 B，B 就挨着 A。但数据文件是人手维护的，未必两边都写了。所以代码不信任数据、主动把每条边补成双向。（这份 2019 版数据其实是对称的，但下一版未必，防御性代码花不了几行。）</p>
+
+  <h3>2.3 几个概念对照</h3>
+  <table>
+    <tr><th style="width:120px">术语</th><th>含义</th><th>在这个项目里</th></tr>
+    <tr><td>顶点 / 结点</td><td>图里的一个点</td><td>一座城，如 <code>1301 威尼斯</code></td></tr>
+    <tr><td>边</td><td>连接两个顶点</td><td>两城相邻，如 <code>1301 — 9301</code></td></tr>
+    <tr><td>无向图</td><td>边没有方向</td><td>能从 A 走到 B 就能从 B 走回 A</td></tr>
+    <tr><td>度</td><td>一个顶点连着几条边</td><td>马奇诺 9101 度为 6（六座 92xx 城都连着它）；魔多军团度为 1</td></tr>
+    <tr><td>路径</td><td>一串顶点，相邻两个之间有边</td><td><code>1301 → 9301 → 9318 → 2301</code></td></tr>
+    <tr><td>路径长度</td><td>边数，或边权之和</td><td>「步数」；本项目还额外数「须占领数」</td></tr>
+    <tr><td>连通</td><td>两点之间存在路径</td><td>去掉禁行城后目标可能就不连通了，这时 <code>plan_route</code> 返回「没有通路」</td></tr>
+    <tr><td>点权 / 边权</td><td>顶点或边上的代价</td><td>「进入这座城要不要占领」是<strong>点</strong>的属性，见第 5 节</td></tr>
+  </table>
+
+  <h3>2.4 地图的结构</h3>
+  <p>看一眼数据就能发现这张图是刻意设计的同心圆：</p>
+  <ol class="steps">
+    <li><div><strong>最外圈：六个玩家国家。</strong>每国 1 座首都（x101）连 3 座大城（x201–x203），每座大城连 1 座小城（x301–x303），两座大城各挂一支魔多军团 NPC（x2010 / x2030，度为 1 的「叶子」）。</div></li>
+    <li><div><strong>第三圈：18 座黑暗联盟小城 9301–9318</strong>，首尾相连成环，每座连着一个国家的一座小城。这是各国的「出海口」，也是国与国之间的唯一通道。</div></li>
+    <li><div><strong>第二圈：9319–9330 十二座城</strong>，以及 4 座 buff 城 73xx。</div></li>
+    <li><div><strong>第一圈：9201–9206 六座城，中心是马奇诺 9101。</strong></div></li>
+  </ol>
+  <p>这意味着：从意大利打美国，要么沿第三圈的环走，要么钻进内圈穿过去。哪条更「短」取决于你怎么定义短，这是第 5 节的主题。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="bfs">
+  <h2>3. BFS：最少步数</h2>
+  <p>先解决最简单的版本：不管归属、不管占领，只问「最少走几步能到」。这是<strong>无权图</strong>上的最短路，标准解法是<strong>广度优先搜索</strong>（Breadth-First Search）。</p>
+  <p>想法像水面上的波纹：从起点出发，先访问所有 1 步能到的城，再访问所有 2 步能到的城……第一次碰到目标时，走过的步数一定是最少的，因为所有步数更少的城都已经在之前的波纹里看过了。</p>
+<pre><span class="src">BFS 骨架（Python）</span><span class="k">from</span> collections <span class="k">import</span> deque
+
+<span class="k">def</span> bfs(g, here, target):
+    prev = {here: <span class="k">None</span>}          <span class="c"># 记录每座城是从哪座城走过来的；也兼任「访问过」标记</span>
+    q = deque([here])
+    <span class="k">while</span> q:
+        u = q.popleft()          <span class="c"># 先进先出：保证按步数从小到大处理</span>
+        <span class="k">if</span> u == target:
+            <span class="k">break</span>
+        <span class="k">for</span> v <span class="k">in</span> g[u][<span class="s">"near"</span>]:
+            <span class="k">if</span> v <span class="k">not</span> <span class="k">in</span> prev:      <span class="c"># 没见过才入队；第一次见到就是最短</span>
+                prev[v] = u
+                q.append(v)
+    <span class="c"># 从 target 沿 prev 倒着走回 here，再反转，就是路径</span>
+    path, cur = [], target
+    <span class="k">while</span> cur <span class="k">is</span> <span class="k">not</span> <span class="k">None</span>:
+        path.append(cur)
+        cur = prev[cur]
+    <span class="k">return</span> path[::-1]</pre>
+  <div class="note">
+    <strong>两个关键点</strong>
+    ① 队列是<strong>先进先出</strong>（FIFO），所以出队顺序就是发现顺序，也就是按步数分层。② <code>prev</code> 字典一物两用：既标记「访问过」，又留下回溯的「面包屑」。项目里 <code>plan_route</code> 的 <code>prev</code> 正是这个用法。
+  </div>
+  <p>在下面的沙盘里选「BFS（只算步数）」，按「单步」看波纹一层层扩开：先是起点的邻居，再是邻居的邻居。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="dijkstra">
+  <h2>4. Dijkstra：带代价的最短路</h2>
+  <p>BFS 假设每一步代价相同。可现实是：走进本国的城几乎免费，走进敌城要先打仗再占领。<strong>不同的边有不同的代价</strong>，这时 BFS 的「先发现的就是最短」不再成立，需要 Dijkstra 算法。</p>
+
+  <h3>4.1 核心思想</h3>
+  <p>BFS 用「先进先出」保证按步数从小到大处理；Dijkstra 把队列换成<strong>优先队列</strong>（最小堆），保证<strong>按累计代价从小到大</strong>处理。每次取出代价最小的城 <span class="math">u</span>，它的代价就<strong>定死了</strong>（不会再变小），然后用它去更新邻居：</p>
+  <div class="think">
+    <strong>松弛（relax）</strong>
+    对每个邻居 <span class="math">v</span>：如果「到 <span class="math">u</span> 的代价 + 边 <span class="math">u→v</span> 的代价」比目前已知的「到 <span class="math">v</span> 的代价」更小，就更新它，并把 <span class="math">v</span> 以新代价推进堆。
+  </div>
+  <p>为什么取出的那个「定死了」？因为所有边代价 ≥ 0，堆里剩下的每个城代价都 ≥ <span class="math">u</span>，再往后走只会更大，不可能绕出一条更便宜的路回到 <span class="math">u</span>。<strong>这就是 Dijkstra 要求边权非负的原因。</strong></p>
+
+  <h3>4.2 项目里的实现</h3>
+  <p>这是 <code>plan_route</code> 的主循环，去掉注释后不到 20 行。请对照上面的描述逐行读：</p>
+<pre><span class="src">tankstorm/citydb.py · plan_route()</span>pq = [(0, 0, here)]          <span class="c"># 堆里的元素：(须占领数, 步数, 城市)</span>
+best = {here: (0, 0)}        <span class="c"># 每座城目前已知的最小代价</span>
+prev = {here: <span class="k">None</span>}          <span class="c"># 回溯用</span>
+found = <span class="k">None</span>
+<span class="k">while</span> pq:
+    occ, hops, u = heapq.heappop(pq)             <span class="c"># ① 取代价最小的</span>
+    <span class="k">if</span> (occ, hops) != best.get(u):
+        <span class="k">continue</span>                                  <span class="c"># ② 过期条目，跳过（见 8.2）</span>
+    <span class="k">if</span> u == target <span class="k">or</span> target <span class="k">in</span> g[u][<span class="s">"near"</span>]:
+        found = u                                 <span class="c"># ③ 到目标或挨着目标，就是落点</span>
+        <span class="k">break</span>
+    <span class="k">for</span> v <span class="k">in</span> g[u][<span class="s">"near"</span>]:
+        <span class="k">if</span> v == target <span class="k">or</span> blocked(v):
+            <span class="k">continue</span>                              <span class="c"># ④ 不走进目标；禁行的不走</span>
+        add = 0 <span class="k">if</span> mine(v) <span class="k">else</span> 1                  <span class="c"># ⑤ 进 v 要不要占领</span>
+        nxt = (occ + add, hops + 1)
+        <span class="k">if</span> nxt &lt; best.get(v, (10 ** 9, 10 ** 9)):  <span class="c"># ⑥ 松弛</span>
+            best[v] = nxt
+            prev[v] = u
+            heapq.heappush(pq, (*nxt, v))</pre>
+  <table>
+    <tr><th style="width:44px">#</th><th>做什么</th><th>为什么</th></tr>
+    <tr><td>①</td><td><code>heappop</code> 取出元组最小的那个</td><td>Python 元组按字典序比较：先比 <code>occ</code>，相等再比 <code>hops</code>，还相等比城市 ID。城市 ID 只是让比较永远有结果，没有语义。</td></tr>
+    <tr><td>②</td><td>和 <code>best</code> 对不上就丢掉</td><td>同一座城可能多次入堆（每次被松弛都推一份新的）。旧的那份代价大，但还留在堆里。这叫<strong>延迟删除</strong>（lazy deletion）——不去堆里删，等它冒出来再认出来跳过。</td></tr>
+    <tr><td>③</td><td>终止条件是「到了或挨着」</td><td>目标城不必走进去，站在邻城就能打。所以有<strong>多个可能的终点</strong>，谁先从堆里冒出来谁就是最优落点（8.1 节证明）。</td></tr>
+    <tr><td>④</td><td>不把目标城当中转</td><td>目标城里有敌人，打的是它，不是要穿过它。<code>blocked</code> 里是禁行城和 <code>avoid</code> 里明确要绕开的城。</td></tr>
+    <tr><td>⑤</td><td>代价挂在「进入的城」上</td><td>见 5.2 节点权与边权。</td></tr>
+    <tr><td>⑥</td><td>标准松弛</td><td><code>(10**9, 10**9)</code> 是「无穷大」，第一次见到必然更新。</td></tr>
+  </table>
+
+  <h3>4.3 BFS 是 Dijkstra 的特例</h3>
+  <p>如果所有边代价都是 1，Dijkstra 的堆里代价总是「一层 <span class="math">d</span> 和一层 <span class="math">d+1</span>」，取出顺序和 FIFO 队列完全一样，只是多付了一个 <span class="mono">log</span> 的堆操作费。所以 BFS 是 Dijkstra 的退化情形，反过来说 Dijkstra 是「按代价而不是按步数分层的 BFS」。沙盘里的「BFS」模式用真正的 FIFO 队列实现，可以对照观察。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="variant">
+  <h2>5. 项目的变体：(须占领数, 步数) 字典序</h2>
+  <p>教科书的 Dijkstra 代价是一个数。这里是一个<strong>二元组</strong>，比较用字典序。这是全项目最值得琢磨的设计，展开讲三点。</p>
+
+  <h3>5.1 字典序等价于「大权重」</h3>
+  <p><span class="mono">(occ, hops)</span> 的字典序意味着：<strong>少占一座城，胜过少走任意多步</strong>。(0, 6) &lt; (1, 4)——宁可绕 6 步全走本国城，也不占 1 座敌城走 4 步。</p>
+  <p>换个写法你会更熟悉：令代价 = <span class="math">occ</span> × M + <span class="math">hops</span>，M 取一个比任何可能的步数都大的数（比如 1000，因为图只有 95 个点，路径最多 94 步）。这时单个整数的大小比较和二元组字典序<strong>完全等价</strong>。二元组只是不用担心 M 取多大、也不会溢出。</p>
+  <p>反过来，如果你觉得「为了少占 1 座城多绕 6 步不值」，那就应该换成 <span class="math">occ</span> × 3 + <span class="math">hops</span> 这类<strong>加权和</strong>。字典序是一种极端的偏好表达；权重多大才「合理」是业务决策，不是算法决策。沙盘里提供了「(步数, 占领数)」这个反向字典序，可以直观看到偏好翻转后路线怎么变。</p>
+
+  <h3>5.2 点权与边权</h3>
+  <p>「进入这座城要不要占领」是<strong>城</strong>的属性（点权），而 Dijkstra 教科书上讲的是<strong>边</strong>的代价。两者怎么统一？</p>
+  <p>很简单：把点权 <span class="math">c(v)</span> 摊到所有「进入 <span class="math">v</span>」的边上，定义边权 <span class="math">w(u→v) = c(v)</span>。因为一条路径进入每个中间点恰好一次，路径上的边权之和就等于中间点的点权之和。代码里的 <code>add = 0 if mine(v) else 1</code> 就是在算 <span class="math">w(u→v)</span>，只看 <span class="math">v</span> 不看 <span class="math">u</span>。</p>
+  <div class="note">
+    <strong>注意方向</strong>
+    这样定义后，即使道路是无向的，边权也不对称了：从本国城走进敌城代价 1，从敌城走回本国城代价 0。这没有任何问题——Dijkstra 天生就是给有向图设计的，无向边只是「两条方向相反的有向边」。
+  </div>
+
+  <h3>5.3 禁行结点的三种来源</h3>
+<pre><span class="src">tankstorm/citydb.py</span><span class="k">def</span> fort_locked(city_id) -&gt; bool:
+    <span class="s">"""编号第 2 位是 1 或 2 的城，不是自己国家时不能占领。"""</span>
+    s = str(int(city_id <span class="k">or</span> 0))
+    <span class="k">return</span> len(s) &gt; 1 <span class="k">and</span> s[1] <span class="k">in</span> <span class="s">"12"</span>
+
+<span class="c"># plan_route 内部</span>
+<span class="k">def</span> blocked(cid):
+    home = g[cid].get(<span class="s">"home"</span>) <span class="k">or</span> 0
+    <span class="k">return</span> cid <span class="k">in</span> skip <span class="k">or</span> (fort_locked(cid) <span class="k">and</span> <span class="k">not</span> mine(cid) <span class="k">and</span> home != 21)</pre>
+  <ul>
+    <li><strong>规则禁行</strong>：别国的首都和大城。编号规律 <code>x1xx</code>、<code>x2xx</code>；黑暗联盟原属的 <code>9101</code>、<code>92xx</code>、<code>x2010</code> 虽然第 2 位也是 1 或 2，但 <code>home == 21</code> 例外。</li>
+    <li><strong>经验禁行</strong>：<code>avoid</code> 集合，来自 <code>live_plan</code> 发现「这城有打不过的人」或 <code>walk_to</code> 实际攻打失败。</li>
+    <li><strong>目标本身</strong>：不作为中转。</li>
+  </ul>
+  <p>禁行在图论上就是<strong>把这些顶点从图里删掉</strong>。删掉之后目标可能不再连通，这时算法自然地耗尽堆、<code>found</code> 仍是 <code>None</code>，返回「没有通路」。这比事先判连通再搜索要省事，也不容易漏。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="playground">
+  <h2>6. 实战沙盘</h2>
+  <p>下面是真实地图。颜色是归属国，虚线圈是「在堆里等着」，实线粗圈是「已定死」，黄色路线是最终路径。点城可以改起点、终点、归属国或标记禁行，然后「重新规划」，再用「单步」看算法怎么一步步展开。</p>
+
+  <div class="lab">
+    <div class="presets">
+      <span class="hint" style="align-self:center">预设：</span>
+      <button class="btn" data-preset="a">例 1 同国直达</button>
+      <button class="btn" data-preset="b">例 2 少占领优先（对比三种模式）</button>
+      <button class="btn" data-preset="c">例 3 占过的城改变路线</button>
+      <button class="btn" data-preset="d">例 4 禁行城与「没有通路」</button>
+    </div>
+    <div class="ctl">
+      <label>我的国家 <select id="my"></select></label>
+      <label>算法 <select id="mode">
+        <option value="project">项目算法：(占领数, 步数)</option>
+        <option value="hopsfirst">反过来：(步数, 占领数)</option>
+        <option value="bfs">BFS（只算步数，FIFO 队列）</option>
+      </select></label>
+      <label>点城市时 <select id="click">
+        <option value="here">设为起点</option>
+        <option value="target">设为目标</option>
+        <option value="owner">切换归属国</option>
+        <option value="avoid">标记 / 取消禁行</option>
+      </select></label>
+      <label><input type="checkbox" id="labels" checked> 显示城名</label>
+    </div>
+    <div class="ctl">
+      <button class="btn primary" id="run">重新规划</button>
+      <button class="btn" id="step0">回到开头</button>
+      <button class="btn" id="step">单步 ▸</button>
+      <button class="btn" id="play">自动播放</button>
+      <button class="btn" id="stepEnd">直接看结果</button>
+      <button class="btn" id="resetOwner">恢复原属国 / 清空禁行</button>
+      <span class="hint" id="cursorInfo"></span>
+    </div>
+    <div class="lab-grid">
+      <div>
+        <svg id="map" viewBox="0 0 940 940" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="legend">
+          <span><i style="background:#2e8b57"></i>1 飘逸·意</span>
+          <span><i style="background:#1e5fbf"></i>2 荣耀·美</span>
+          <span><i style="background:#c0392b"></i>3 坚毅·英</span>
+          <span><i style="background:#4b4f58"></i>4 铁血·德</span>
+          <span><i style="background:#d97706"></i>5 勇武·苏</span>
+          <span><i style="background:#7c3aed"></i>6 雄壮·法</span>
+          <span><i style="background:#a08c78"></i>21 黑暗联盟</span>
+          <span><span class="sw" style="border-color:#e0a800"></span>最终路径</span>
+          <span><i style="border:2px dashed #333;background:transparent"></i>在堆里</span>
+          <span><i style="border:2.5px solid #111;background:transparent"></i>已定死</span>
+          <span><i style="background:#ddd;opacity:.5"></i>禁行（半透明 + 斜线）</span>
+        </div>
+      </div>
+      <div class="side">
+        <h4>路线（同 citydb.format_route 的写法）</h4>
+        <pre id="route">—</pre>
+        <h4>统计</h4>
+        <div class="stat" id="stat"></div>
+        <h4>探索日志（每一行是一次出堆）</h4>
+        <div class="log" id="log"></div>
+        <h4 style="margin-top:12px">堆里现在有（按代价排序）</h4>
+        <pre id="heap" style="max-height:120px">—</pre>
+      </div>
+    </div>
+  </div>
+
+  <h3>建议这样玩</h3>
+  <ol class="steps">
+    <li><div><strong>例 1</strong>：罗马 → 意·魔多军团。目标挂在米兰上，米兰是本国城，走一步就到落点。注意算法一步就停：堆里第一次冒出来的就是「挨着目标」的城。</div></li>
+    <li><div><strong>例 2</strong>：威尼斯 → 南特（法国小城）。项目算法给出的是<strong>绕回本国、从热那亚出海</strong>的 6 步路，只须占领 2 座；切到「(步数, 占领数)」变成沿外环 4 步、占 4 座；切到 BFS 也是 4 步。同一张图、同一个起终点，三种「最短」。</div></li>
+    <li><div><strong>例 3</strong>：还是威尼斯出发，目标圣迭戈。预设把 9301、9319、9202、9330 标成了「我已占领」（模拟 <code>city_occupy</code> 表里有记录）。项目算法找到一条 4 步零占领的路；反向字典序则宁可占 1 座走 2 步。这解释了为什么 <code>city_map()</code> 要合并占领记录——归属国变了，最短路就变了。</div></li>
+    <li><div><strong>例 4</strong>：威尼斯 → 纽约。纽约是美国大城，禁行；它的邻居华盛顿也禁行、美·魔多军团只连着纽约。唯一落点是洛杉矶 2301，唯一入口是夏威夷 9318。现在用「标记禁行」点一下夏威夷再规划——「没有通路」。这就是 <code>walk_to</code> 里「重新规划后仍受阻，停止」的情形。</div></li>
+    <li><div>随便点一座敌城切换归属国，看路线怎么「被吸过去」；把某座城标成禁行，看路线怎么绕。用「单步」观察堆的变化：同一座城会以不同代价入堆多次，只有最小的那次是「有效」的，其余出堆时被划掉（延迟删除）。</div></li>
+  </ol>
+</section>
+
+<!-- ============================================================ -->
+<section id="replan">
+  <h2>7. 边走边重算：live_plan 与 walk_to</h2>
+  <p>到此为止的算法都假设地图信息是准的。但本地 SQLite 里的归属国可能是几天前的，城里有没有打不过的人更是只有开了面板才知道。项目分两层处理这个「已知条件不全」的问题。</p>
+
+  <h3>7.1 live_plan：先算、再核对、再算，直到不动</h3>
+<pre><span class="src">tankstorm/country_war.py · live_plan()（节选）</span>plan = citydb.plan_route(here, target, my, blocked)
+<span class="k">for</span> _ <span class="k">in</span> range(6):
+    seq = list(plan.get(<span class="s">"路径"</span>) <span class="k">or</span> [])
+    changed = <span class="k">False</span>
+    <span class="k">for</span> city <span class="k">in</span> seq:
+        <span class="k">if</span> city <span class="k">in</span> known:
+            <span class="k">continue</span>
+        info = _open_city(sock, rec, city, my)          <span class="c"># type:3 开面板，不花行动力</span>
+        known[city] = info[<span class="s">"owner"</span>]
+        citydb.record_occupy(city, info[<span class="s">"owner"</span>], info[<span class="s">"userCnt"</span>])   <span class="c"># 写回 city_occupy</span>
+        changed = <span class="k">True</span>
+        … <span class="c"># 城里有失败库里的人 → blocked.add(city)</span>
+    nxt = citydb.plan_route(here, target, my, blocked)
+    <span class="k">if</span> <span class="k">not</span> changed <span class="k">and</span> nxt[<span class="s">"路径"</span>] == plan[<span class="s">"路径"</span>] <span class="k">and</span> nxt[<span class="s">"须占领"</span>] == plan[<span class="s">"须占领"</span>]:
+        <span class="k">break</span>                                         <span class="c"># 不动点：没学到新东西，路线也没变</span>
+    plan = nxt</pre>
+  <p>这是一个<strong>不动点迭代</strong>：用当前信息算一条路 → 只核对这条路上的城（而不是全图 95 座，那太慢）→ 归属或禁行有变就重算 → 新路线上又有没核对过的城就再核对……直到一轮下来什么都没变。最多 6 轮，防止极端情况下反复摇摆。</p>
+  <p>为什么只核对路线上的城就够了？因为不在最短路上的城，它的信息变了也不会让当前路线变差；只有路线上的城变「贵」了才需要重算。这是一种<strong>惰性求值</strong>：只在需要的地方花网络请求。</p>
+
+  <h3>7.2 walk_to：执行时受阻，避开它再算一次</h3>
+<pre><span class="src">tankstorm/country_war.py · walk_to()（节选）</span><span class="k">if</span> blocked_at:
+    <span class="k">if</span> replanned:
+        out[<span class="s">"停止原因"</span>] = f<span class="s">"{blocked_at} {cname} 重新规划后仍受阻，停止"</span>
+        <span class="k">return</span> out
+    nxt = walk_to(rec, sock, config, target, sweep=sweep, beat=beat,
+                  avoid=set(avoid <span class="k">or</span> ()) | {blocked_at}, replanned=<span class="k">True</span>)</pre>
+  <p>规划是纸上谈兵，走起来才知道城里有人打不过。<code>walk_to</code> 沿路线逐城执行：本国城直接走，敌城先 <code>farm_city</code> 把人打空再占领。哪座城打不下来，就把它加进 <code>avoid</code>，<strong>从当前位置</strong>重新规划一次（不是从原起点，人已经走了几步了），再走。第二次还受阻就停手，把决定权交回给人。</p>
+  <div class="stop">
+    <strong>为什么只重算一次</strong>
+    每次重算都可能引导玩家去打另一座城，每打一次都要烧行动力。无限重试的下场是行动力归零、人被遣返首都。工程上「失败两次就停」比「一直试到成功」更安全，这个项目里有太多这种被烧掉的勋章换来的注释。
+  </div>
+
+  <h3>7.3 这在图论里叫什么</h3>
+  <p>「环境部分可观测、边走边发现新障碍、增量修正路径」是机器人导航的经典课题，对应的算法是 <strong>D*</strong> / <strong>D* Lite</strong> / <strong>LPA*</strong>。它们的精妙之处是<strong>复用上一次搜索的结果</strong>，只修补受影响的部分，而不是从头再算。</p>
+  <p>本项目没有用它们，而是直接重跑 Dijkstra。这是正确的取舍：95 个点、140 条边，一次 Dijkstra 微秒级；而一次开面板要等服务器几百毫秒。<strong>瓶颈在 I/O 不在计算</strong>，用复杂算法省计算是白费功夫。识别瓶颈在哪，比会多少算法更重要。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="pitfalls">
+  <h2>8. 复杂度与常见坑</h2>
+
+  <h3>8.1 「挨着目标就停」为什么是对的</h3>
+  <p>标准 Dijkstra 的终点是一个顶点；这里终点是一个<strong>集合</strong>（目标城 + 它所有未禁行的邻居）。为什么第一个从堆里冒出来的集合成员就是最优落点？</p>
+  <p>因为 Dijkstra 出堆的代价<strong>单调不减</strong>（这是它的核心不变量）。集合里任何其他成员，要么还在堆里、要么还没入堆，代价都 ≥ 当前这个。所以当前这个就是集合里代价最小的。等价的教科书做法是加一个虚拟终点 <span class="math">T</span>，从集合每个成员连一条零权边到 <span class="math">T</span>，然后求到 <span class="math">T</span> 的最短路——两种写法结果一样，代码里直接判断更省事。</p>
+
+  <h3>8.2 延迟删除与 <code>best</code> 校验</h3>
+  <p>Python 的 <code>heapq</code> 不支持「修改堆里某个元素的优先级」（decrease-key）。于是同一座城被松弛几次就入堆几次，堆里会有多份、代价各不相同的同城条目。处理办法就是出堆时和 <code>best</code> 比一下，对不上就是过期的，跳过。</p>
+  <p>漏掉这一步会怎样？过期条目的代价比 <code>best</code> 大，用它去松弛邻居不会产生更优结果，所以<strong>答案仍然正确</strong>，只是白做了工。但如果你在出堆后不检查就直接 <code>break</code>（比如「找到目标了」），就可能拿到一个过期的、非最优的代价。项目代码把校验放在终止判断之前，顺序是对的。</p>
+
+  <h3>8.3 元组比较的陷阱</h3>
+  <p><code>(0, 6) &lt; (1, 4)</code> 是 True，这是想要的。但如果元组里混进了 <code>None</code>——比如某处 <code>best.get(v)</code> 返回了 <code>None</code> 而没给默认值——Python 3 会直接抛 <code>TypeError</code>。代码用 <code>(10**9, 10**9)</code> 当默认值就是为了避免这个。另一个坑是元组末尾的城市 ID：它只是让相等代价的条目有个确定顺序，不要给它任何业务含义。</p>
+
+  <h3>8.4 <code>prev[here] = None</code> 与 0 的区别</h3>
+  <p>回溯路径用 <code>while cur is not None</code>。如果起点的「前驱」写成 <code>0</code> 而循环写成 <code>while cur:</code>，在城市 ID 是 0 的场合就会提前停。这个项目里 ID 都不是 0 所以不会出事，但写 <code>is not None</code> 是好习惯。项目里大量的 <code>if not isinstance(v, int) or isinstance(v, bool)</code> 也是同一种谨慎——协议解码出来的东西类型不可信。</p>
+
+  <h3>8.5 复杂度</h3>
+  <table>
+    <tr><th>算法</th><th>时间</th><th>空间</th><th>这张图（V=95, E=140）</th></tr>
+    <tr><td>BFS</td><td>O(V + E)</td><td>O(V)</td><td>约 235 次基本操作</td></tr>
+    <tr><td>Dijkstra（二叉堆 + 延迟删除）</td><td>O((V + E) log V)</td><td>O(V + E)（堆里最多 E 份条目）</td><td>约 1500 次</td></tr>
+    <tr><td>Dijkstra（数组线性找最小）</td><td>O(V²)</td><td>O(V)</td><td>约 9000 次，在小图上其实也没差</td></tr>
+    <tr><td>Floyd–Warshall（全源）</td><td>O(V³)</td><td>O(V²)</td><td>约 86 万次，一次算完所有城市对，也只要几毫秒</td></tr>
+  </table>
+  <p>算法课强调渐近复杂度，是因为 V 会到百万级。这里 V=95，任何一种都够快，选择的依据变成「哪种最不容易写错」。项目选了堆版 Dijkstra，因为它是标准写法、随手就能写对。</p>
+
+  <h3>8.6 无向图的对称性不能靠数据保证</h3>
+  <p>回看 2.2 节：<code>city_map()</code> 把边补成双向。<code>can_reach(here, there)</code> 也是两边都查：<code>there in neighbors(here) or here in neighbors(there)</code>。这两处都在说同一件事——数据来自别人，不要假设它满足你以为的性质。</p>
+</section>
+
+<!-- ============================================================ -->
+<section id="beyond">
+  <h2>9. 延伸阅读</h2>
+  <div class="two">
+    <article class="card">
+      <h3>A*</h3>
+      <p>Dijkstra 是「盲目」向四周扩展的。如果能<strong>估计</strong>每个点到目标还有多远（启发函数 h），就可以优先扩展「看起来离目标近」的点。只要 h 不高估真实代价，A* 和 Dijkstra 一样保证最优，但少访问很多点。这张图的同心圆结构其实能给出不错的 h（环上的角度差 ÷ 20°），不过 95 个点没这个必要。</p>
+    </article>
+    <article class="card">
+      <h3>Bellman–Ford / SPFA</h3>
+      <p>Dijkstra 要求边权非负。如果「走进某城反而<strong>回复</strong>行动力」这种负代价出现了，就得用 Bellman-Ford（O(VE)），它还能检测负环。本项目代价是 0 或 1，用不上。</p>
+    </article>
+    <article class="card">
+      <h3>多目标最短路（Pareto 前沿）</h3>
+      <p>字典序是把两个目标强行排了先后。如果你想同时看到「占 0 座走 6 步」和「占 1 座走 4 步」两个都不错的方案让人选，就需要保留每个点上所有<strong>互不支配</strong>的代价对，这叫 Pareto 最优。代价是状态数可能爆炸，实践中常配合限界。</p>
+    </article>
+    <article class="card">
+      <h3>D* Lite / LPA*</h3>
+      <p>7.3 节提过：环境变化时增量修补路径而不是重算。核心是维护一个「一致性」概念，只重新处理受影响的顶点。适合大图 + 频繁小变动，比如机器人在未知地形里探索。</p>
+    </article>
+    <article class="card">
+      <h3>最短路的其他变体</h3>
+      <p>k 短路（给出前 k 条路线备选）、带资源约束的最短路（行动力总量有上限，每座城消耗不同）、时间依赖最短路（冷却时间 5/10/15 秒是随状态变的）。本项目 <code>_commit_move</code> 里学习冷却档位的逻辑，已经隐约有「时间依赖」的影子。</p>
+    </article>
+    <article class="card">
+      <h3>推荐材料</h3>
+      <p>《算法导论》第 22–24 章（图的表示、BFS/DFS、单源最短路）；Red Blob Games 的 <em>Introduction to A*</em> 是最好的可视化入门；D* Lite 原论文 Koenig &amp; Likhachev 2002。</p>
+    </article>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="quiz">
+  <h2>10. 自测</h2>
+  <p>不看答案先想，再点开核对。前三题可以在沙盘里验证。</p>
+
+  <details>
+    <summary>1. 我是意大利（1），人在威尼斯 1301，目标是雅典 9303。项目算法给出的路线是什么？须占领几座？</summary>
+    <p>雅典的邻居是热那亚 1303、贝尔格莱德 9302、布鲁塞尔 9304、加莱 9321。热那亚是本国城，所以最优落点是热那亚：<code>1301 → 1201 → 1101 → 1203 → 1303</code>，4 步、须占领 0 座。沿外环 <code>1301 → 9301 → 9302</code> 只要 2 步但须占领 2 座，字典序下输了。</p>
+  </details>
+  <details>
+    <summary>2. 上一题里如果把「(占领数, 步数)」换成加权和 <span class="math">3·occ + hops</span>，哪条路赢？</summary>
+    <p>本国路：3×0 + 4 = 4。外环路：3×2 + 2 = 8。仍是本国路。要让外环路赢，权重得降到 <span class="math">occ</span> 系数 &lt; 1，也就是「占一座城比走一步还便宜」，显然不符合游戏实际。这说明字典序在这张图上其实和大多数合理权重结论一致，差别只出现在边界情况。</p>
+  </details>
+  <details>
+    <summary>3. 为什么魔多军团 NPC 城（如 12010）永远不会出现在路径中间，只能是目标？</summary>
+    <p>它们的度是 1——只连着一座大城。经过一个度为 1 的顶点意味着从它进来又从它出去，走的是同一条边，这条路径去掉这两步会更短。Dijkstra 自然不会选它当中转。另外它们的编号第 2 位是 2，但 <code>home == 21</code>，所以并不禁行——如果它是目标，可以打；如果某天它成了别人的落点，规则上也允许。</p>
+  </details>
+  <details>
+    <summary>4. 把 <code>if (occ, hops) != best.get(u): continue</code> 这行删掉，结果会错吗？会慢吗？</summary>
+    <p>结果不会错：过期条目的代价 ≥ <code>best[u]</code>，用它松弛不会产生任何更新。但会慢——每个过期条目都要把 <code>u</code> 的所有邻居再扫一遍。在这张图上感觉不到；在百万级图上就是数倍的差距。另外，如果终止判断写在校验之前，就有可能用过期代价「找到」目标，这才是真正的错误。</p>
+  </details>
+  <details>
+    <summary>5. <code>live_plan</code> 为什么只核对路线上的城，不核对全图？如果某座<strong>不在</strong>路线上的城被本国占了，会不会错过一条更好的路？</summary>
+    <p>会错过。<code>live_plan</code> 只保证「当前这条路上的信息是新的」，不保证全局最优。它的取舍是：一次开面板几百毫秒，95 座城全核对要一分钟，而路线上通常只有 4–8 座。要弥补这个盲区，靠的是别的地方（<code>--watch-cities</code> 常驻刷新、每次打人顺手 <code>record_occupy</code>）持续把归属记录喂进 <code>city_occupy</code> 表。这是「增量维护世界模型」的思路，而不是「每次决策前全量刷新」。</p>
+  </details>
+  <details>
+    <summary>6. 如果规则改成「占领一座城要花 5 点行动力、走进本国城花 1 点，行动力总量有限」，还能用现在的算法吗？</summary>
+    <p>如果只是问「行动力花得最少的路」，可以：边权改成 5 或 1，还是单一非负权重的 Dijkstra。如果问「在行动力不超过 N 的前提下步数最少」，这就是带资源约束的最短路，是 NP 难的一般问题；但因为 N 很小（几百）可以把「剩余行动力」加进状态 <span class="mono">(城市, 剩余行动力)</span> 做分层图 Dijkstra，状态数 95 × N，仍然很快。</p>
+  </details>
+</section>
+
+<footer>
+  <p>地图数据来自游戏官方 CDN <code>CityData_2019091902.dat</code> / <code>CountryName_2018122001.dat</code>，与 <code>tankstorm/citydb.py</code> 读取的同一份。页面里的 JavaScript 是对 <code>plan_route</code> 的逐行翻译，用来演示；实际运行以 Python 为准。</p>
+</footer>
+</main>
+
+<script>
+(function () {
+  // ---------------- 数据：[名字, 原属国, x, y, 邻居] ----------------
+  const RAW = {"1101":["罗马",1,853,610,[1201,1202,1203]],"1201":["米兰",1,818,470,[1101,1301,12010]],"1202":["那不勒斯",1,797,589,[1101,1302]],"1203":["都灵",1,737,694,[1101,1303,12030]],"1301":["威尼斯",1,758,470,[1201,9301]],"1302":["塔兰托",1,741,569,[1202,9302]],"1303":["热那亚",1,691,655,[1203,9303]],"2101":["华盛顿",2,783,208,[2201,2202,2203]],"2201":["纽约",2,797,351,[2101,2301,22010]],"2202":["旧金山",2,737,246,[2101,2302]],"2203":["芝加哥",2,644,169,[2101,2303,22030]],"2301":["洛杉矶",2,741,371,[2201,9318]],"2302":["波士顿",2,691,285,[2202,9317]],"2303":["西雅图",2,614,221,[2203,9316]],"3101":["伦敦",3,399,68,[3201,3202,3203]],"3201":["曼彻斯特",3,530,127,[3101,3301,32010]],"3202":["利物浦",3,410,127,[3101,3302]],"3203":["伯明翰",3,296,169,[3101,3303,32030]],"3301":["普斯茅斯",3,520,186,[3201,9315]],"3302":["爱丁堡",3,420,186,[3202,9314]],"3303":["考文垂",3,326,221,[3203,9313]],"4101":["柏林",4,87,330,[4201,4202,4203]],"4201":["慕尼黑",4,203,246,[4101,4301,42010]],"4202":["汉堡",4,143,351,[4101,4302]],"4203":["法兰克福",4,122,470,[4101,4303,42030]],"4301":["不来梅",4,249,285,[4201,9312]],"4302":["科隆",4,199,371,[4202,9311]],"4303":["斯图加特",4,182,470,[4203,9310]],"5101":["莫斯科",5,157,732,[5201,5202,5203]],"5201":["列宁格勒",5,296,771,[5101,5301,52010]],"5202":["斯大林格勒",5,203,694,[5101,5302]],"5203":["叶卡捷琳堡",5,143,589,[5101,5303,52030]],"5301":["库尔斯克",5,326,719,[5201,9307]],"5302":["哈尔科夫",5,249,655,[5202,9308]],"5303":["罗斯托夫",5,199,569,[5203,9309]],"6101":["巴黎",6,541,872,[6201,6202,6203]],"6201":["波尔多",6,644,771,[6101,6301,62010]],"6202":["里昂",6,530,813,[6101,6302]],"6203":["马赛",6,410,813,[6101,6303,62030]],"6301":["南特",6,614,719,[6201,9304]],"6302":["尼斯",6,520,754,[6202,9305]],"6303":["里尔",6,420,754,[6203,9306]],"7301":["梵蒂冈",21,582,480,[9320,9201,9202,9319]],"7302":["马德里",21,451,360,[9329,9328,9327,9203]],"7303":["日内瓦",21,358,460,[9204,9205,9326,9325]],"7304":["伯尔尼",21,482,581,[9321,9206,9323,9322]],"9101":["马奇诺",21,470,470,[9201,9202,9203,9204,9205,9206]],"9201":["西西里",21,529,511,[9101,9206,9202,9320,9321,7301]],"9202":["诺曼底",21,535,440,[9101,9201,9203,9319,9330,7301]],"9203":["阿拉曼",21,476,398,[9101,9202,9204,9329,7302]],"9204":["塞瓦斯托波尔",21,411,429,[9101,9203,9205,9326,9327,7303]],"9205":["加里宁格勒",21,405,500,[9101,9204,9206,9324,9325,7303]],"9206":["敦克尔克",21,464,542,[9101,9205,9201,9323,7304]],"9301":["伊斯坦布尔",21,695,470,[1301,9302,9318,9319]],"9302":["贝尔格莱德",21,681,547,[1302,9301,9303,9320]],"9303":["雅典",21,642,615,[1303,9302,9304,9321]],"9304":["布鲁塞尔",21,582,665,[6301,9303,9321,9305]],"9305":["鹿特丹",21,509,692,[6302,9322,9304,9306]],"9306":["奥斯陆",21,431,692,[6303,9305,9307,9323]],"9307":["赫尔辛基",21,358,665,[5301,9306,9308,9323]],"9308":["斯德哥尔摩",21,298,615,[5302,9324,9307,9309]],"9309":["基辅",21,259,547,[5303,9308,9310,9325]],"9310":["维也纳",21,245,470,[4303,9309,9311,9325]],"9311":["布达佩斯",21,259,393,[4302,9310,9312,9326]],"9312":["布拉格",21,298,325,[4301,9311,9313,9327]],"9313":["直布罗陀",21,357,275,[3303,9312,9314,9327]],"9314":["安特卫普",21,431,248,[3302,9328,9313,9315]],"9315":["阿姆斯特丹",21,509,248,[3301,9314,9316,9329]],"9316":["费城",21,582,275,[2303,9315,9317,9329]],"9317":["圣迭戈",21,642,325,[2302,9330,9316,9318]],"9318":["夏威夷",21,681,393,[2301,9319,9301,9317]],"9319":["开罗",21,628,442,[9318,9301,9202,7301]],"9320":["萨拉热窝",21,620,525,[9302,9201,7301]],"9321":["加莱",21,573,593,[9303,9304,9201,7304]],"9322":["哥本哈根",21,498,628,[9305,7304]],"9323":["里加",21,415,620,[9306,9307,9206,7304]],"9324":["明斯克",21,347,573,[9308,9205]],"9325":["华沙",21,312,498,[9309,9310,9205,7303]],"9326":["波兹南",21,320,415,[9311,9204,7303]],"9327":["斯摩棱斯克",21,367,347,[9312,9313,9204,7302]],"9328":["班加西",21,442,312,[9314,7302]],"9329":["贝尔法斯特",21,525,320,[9315,9316,9203,7302]],"9330":["都柏林",21,593,367,[9317,9202]],"12010":["意·魔多军团",21,880,470,[1201]],"12030":["意·魔多军团",21,784,734,[1203]],"22010":["美·魔多军团",21,855,330,[2201]],"22030":["美·魔多军团",21,675,115,[2203]],"32010":["英·魔多军团",21,541,66,[3201]],"32030":["英·魔多军团",21,265,115,[3203]],"42010":["德·魔多军团",21,156,206,[4201]],"42030":["德·魔多军团",21,60,470,[4203]],"52010":["苏·魔多军团",21,265,825,[5201]],"52030":["苏·魔多军团",21,85,610,[5203]],"62010":["法·魔多军团",21,675,825,[6201]],"62030":["法·魔多军团",21,399,874,[6203]]};
+  const COUNTRY = {1:"飘逸之国·意",2:"荣耀之国·美",3:"坚毅之国·英",4:"铁血之国·德",5:"勇武之国·苏",6:"雄壮之国·法",21:"黑暗联盟"};
+  const COLOR = {1:"#2e8b57",2:"#1e5fbf",3:"#c0392b",4:"#4b4f58",5:"#d97706",6:"#7c3aed",21:"#a08c78"};
+  const OWNER_CYCLE = [1,2,3,4,5,6,21];
+
+  // 建图：和 citydb.city_map() 一样，边补成双向
+  const G = {};
+  for (const [id, [name, home, x, y, near]] of Object.entries(RAW)) {
+    G[+id] = {id: +id, name, home, x, y, near: new Set(near)};
+  }
+  for (const c of Object.values(G)) for (const n of c.near) if (G[n]) G[n].near.add(c.id);
+  const IDS = Object.keys(G).map(Number).sort((a, b) => a - b);
+  const EDGES = [];
+  for (const c of Object.values(G)) for (const n of c.near) if (c.id < n) EDGES.push([c.id, n]);
+
+  // ---------------- 状态 ----------------
+  const S = {my: 1, here: 1301, target: 6301, mode: "project", owner: {}, avoid: new Set(),
+             steps: [], result: null, cursor: 0, timer: null};
+  const ownerOf = id => S.owner[id] ?? G[id].home;
+  const fortLocked = id => { const s = String(id); return s.length > 1 && "12".includes(s[1]); };
+  const blocked = id => S.avoid.has(id) || (fortLocked(id) && ownerOf(id) !== S.my && G[id].home !== 21);
+
+  // ---------------- 最小堆（Python heapq 的对应物） ----------------
+  class Heap {
+    constructor(cmp) { this.a = []; this.cmp = cmp; }
+    get size() { return this.a.length; }
+    push(x) {
+      const a = this.a; a.push(x); let i = a.length - 1;
+      while (i > 0) { const p = (i - 1) >> 1; if (this.cmp(a[i], a[p]) < 0) { [a[i], a[p]] = [a[p], a[i]]; i = p; } else break; }
+    }
+    pop() {
+      const a = this.a, top = a[0], last = a.pop();
+      if (a.length) { a[0] = last; let i = 0;
+        for (;;) { const l = 2 * i + 1, r = l + 1; let m = i;
+          if (l < a.length && this.cmp(a[l], a[m]) < 0) m = l;
+          if (r < a.length && this.cmp(a[r], a[m]) < 0) m = r;
+          if (m === i) break; [a[i], a[m]] = [a[m], a[i]]; i = m; } }
+      return top;
+    }
+    sorted() { return [...this.a].sort(this.cmp); }
+  }
+  const cmpKey = (a, b) => { for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] - b[i]; return 0; };
+  const keyOf = (occ, hops) => S.mode === "project" ? [occ, hops] : S.mode === "hopsfirst" ? [hops, occ] : [hops];
+  const fmtKey = k => "(" + k.join(", ") + ")";
+
+  // ---------------- plan_route 的逐行翻译，外加记录每一步 ----------------
+  function plan() {
+    const {here, target} = S;
+    const steps = [], out = {here, target, path: [], must: [], found: null, reason: "", pops: 0, relaxes: 0};
+    if (!G[here] || !G[target]) { out.reason = "起点或目标不在城市目录里"; return {steps, out}; }
+    const best = {[here]: {key: keyOf(0, 0), occ: 0, hops: 0}};
+    const prev = {[here]: null};
+    let found = null;
+
+    if (S.mode === "bfs") {
+      // 真正的 FIFO 队列版本，入队时标记已访问
+      const q = [here];
+      while (q.length) {
+        const u = q.shift(); out.pops++;
+        const {occ, hops} = best[u];
+        if (u === target || G[u].near.has(target)) { steps.push({type: "found", u, key: [hops], occ, hops, queue: q.map(v => ({u: v, key: best[v].key}))}); found = u; break; }
+        const relax = [];
+        for (const v of G[u].near) {
+          if (v === target || blocked(v)) { relax.push({v, skip: v === target ? "目标" : "禁行"}); continue; }
+          if (!(v in best)) { best[v] = {key: [hops + 1], occ: occ + (ownerOf(v) === S.my ? 0 : 1), hops: hops + 1}; prev[v] = u; q.push(v); relax.push({v, improved: true, key: best[v].key}); out.relaxes++; }
+          else relax.push({v, improved: false});
+        }
+        steps.push({type: "pop", u, key: [hops], occ, hops, relax, queue: q.map(v => ({u: v, key: best[v].key}))});
+      }
+    } else {
+      const pq = new Heap((a, b) => cmpKey(a.key, b.key) || a.u - b.u);
+      pq.push({key: keyOf(0, 0), occ: 0, hops: 0, u: here});
+      while (pq.size) {
+        const {key, occ, hops, u} = pq.pop(); out.pops++;
+        if (cmpKey(key, best[u].key) !== 0) { steps.push({type: "stale", u, key, occ, hops, queue: pq.sorted()}); continue; }
+        if (u === target || G[u].near.has(target)) { steps.push({type: "found", u, key, occ, hops, queue: pq.sorted()}); found = u; break; }
+        const relax = [];
+        for (const v of G[u].near) {
+          if (v === target || blocked(v)) { relax.push({v, skip: v === target ? "目标" : "禁行"}); continue; }
+          const add = ownerOf(v) === S.my ? 0 : 1;
+          const nk = keyOf(occ + add, hops + 1);
+          if (!best[v] || cmpKey(nk, best[v].key) < 0) {
+            best[v] = {key: nk, occ: occ + add, hops: hops + 1}; prev[v] = u;
+            pq.push({key: nk, occ: occ + add, hops: hops + 1, u: v});
+            relax.push({v, improved: true, key: nk}); out.relaxes++;
+          } else relax.push({v, improved: false, key: nk});
+        }
+        steps.push({type: "pop", u, key, occ, hops, relax, queue: pq.sorted()});
+      }
+    }
+    const label = c => `${c} ${G[c] ? G[c].name : ""}`.trim();
+    if (found === null) {
+      out.reason = `从 ${label(here)} 到 ${label(target)} 没有通路。编号第2位是1或2、又不是自己国家的城不能占领，也不能借道`;
+      return {steps, out};
+    }
+    const path = []; for (let cur = found; cur !== null; cur = prev[cur]) path.push(cur); path.reverse();
+    const must = path.filter(c => c !== here && ownerOf(c) !== S.my);
+    Object.assign(out, {found, path, must, occ: best[found].occ, hops: best[found].hops});
+    const via = path.map(label).join(" → ");
+    if (must.length) out.reason = `还不能直接打。先按顺序占领 ${must.map(label).join(" → ")}，再沿 ${via} 走到 ${label(found)} 打 ${label(target)}`;
+    else if (found === here) out.reason = `人已经在 ${label(here)}，可以直接打 ${label(target)}`;
+    else out.reason = `沿同国城市 ${via} 走到 ${label(found)}，就能打 ${label(target)}`;
+    return {steps, out};
+  }
+
+  // citydb.format_route 的对应物
+  function formatRoute(out) {
+    const lines = [out.reason];
+    const path = out.path || [];
+    if (!path.length) return lines.join("\n");
+    const must = new Set(out.must);
+    const one = (cid, tag) => `${cid} ${G[cid].name}（${COUNTRY[ownerOf(cid)] || "未知"}）  [${tag}]`;
+    path.forEach((cid, i) => {
+      if (i) { lines.push(`   |  ${must.has(cid) ? "须占领后通过" : "同国，直接通过"}`); lines.push("   v"); }
+      const tags = [];
+      if (cid === out.here) tags.push("起点");
+      if (cid === out.found) tags.push("落点");
+      if (must.has(cid)) tags.push("须占领");
+      if (cid === out.target) tags.push("目标");
+      lines.push(one(cid, tags.join("·") || "经过"));
+    });
+    if (!path.includes(out.target)) { lines.push("   |  相邻，从落点打"); lines.push("   v"); lines.push(one(out.target, "目标")); }
+    return lines.join("\n");
+  }
+
+  // ---------------- 渲染 ----------------
+  const svg = document.getElementById("map");
+  const NS = "http://www.w3.org/2000/svg";
+  const el = (tag, attrs, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); (parent || svg).appendChild(e); return e; };
+  const edgeEls = {}, nodeEls = {}, labelEls = {}, markEls = {};
+  function build() {
+    svg.innerHTML = "";
+    const gE = el("g", {}), gN = el("g", {}), gL = el("g", {});
+    for (const [a, b] of EDGES) edgeEls[a + "-" + b] = el("line", {x1: G[a].x, y1: G[a].y, x2: G[b].x, y2: G[b].y, stroke: "#c9c0b3", "stroke-width": 1.4}, gE);
+    for (const id of IDS) {
+      const c = G[id];
+      const grp = el("g", {"data-id": id, style: "cursor:pointer"}, gN);
+      nodeEls[id] = el("circle", {cx: c.x, cy: c.y, r: 9, fill: COLOR[c.home], stroke: "#0002", "stroke-width": 1}, grp);
+      markEls[id] = el("line", {x1: c.x - 7, y1: c.y + 7, x2: c.x + 7, y2: c.y - 7, stroke: "#333", "stroke-width": 2, visibility: "hidden"}, grp);
+      el("title", {}, grp).textContent = `${id} ${c.name}`;
+      grp.addEventListener("click", () => onClick(id));
+      labelEls[id] = el("text", {x: c.x, y: c.y - 12, "text-anchor": "middle", "font-size": 9.5, fill: "#3b352d", "pointer-events": "none"}, gL);
+      labelEls[id].textContent = c.name;
+    }
+  }
+
+  function stateAt(cursor) {
+    const done = new Set(), frontier = new Map(); let cur = null;
+    for (let i = 0; i < cursor && i < S.steps.length; i++) {
+      const st = S.steps[i];
+      if (st.type === "stale") continue;
+      done.add(st.u); cur = st.u;
+      frontier.clear(); for (const q of st.queue) if (!done.has(q.u)) frontier.set(q.u, q.key);
+    }
+    return {done, frontier, cur};
+  }
+
+  function render() {
+    const showLabels = document.getElementById("labels").checked;
+    const finished = S.cursor >= S.steps.length;
+    const {done, frontier, cur} = stateAt(S.cursor);
+    const path = finished && S.result ? S.result.path : [];
+    const pathEdges = new Set(); for (let i = 1; i < path.length; i++) pathEdges.add(Math.min(path[i-1], path[i]) + "-" + Math.max(path[i-1], path[i]));
+    if (finished && S.result && S.result.found !== null && S.result.found !== S.target) {
+      pathEdges.add(Math.min(S.result.found, S.target) + "-" + Math.max(S.result.found, S.target));
+    }
+    for (const k in edgeEls) {
+      const onPath = pathEdges.has(k);
+      edgeEls[k].setAttribute("stroke", onPath ? "#e0a800" : "#c9c0b3");
+      edgeEls[k].setAttribute("stroke-width", onPath ? 5 : 1.4);
+    }
+    for (const id of IDS) {
+      const n = nodeEls[id], own = ownerOf(id), isBlocked = blocked(id) && id !== S.target;
+      n.setAttribute("fill", COLOR[own]);
+      n.setAttribute("opacity", isBlocked ? 0.35 : 1);
+      markEls[id].setAttribute("visibility", isBlocked ? "visible" : "hidden");
+      let stroke = "#0002", sw = 1, dash = "", r = 9;
+      if (frontier.has(id)) { stroke = "#333"; sw = 2; dash = "3 2"; }
+      if (done.has(id)) { stroke = "#111"; sw = 2.5; }
+      if (path.includes(id)) { stroke = "#e0a800"; sw = 4; }
+      if (id === cur && !finished) { stroke = "#e0a800"; sw = 4; r = 12; }
+      if (id === S.here) { stroke = "#111"; sw = 4; r = 12; }
+      if (id === S.target) { stroke = "#9f1239"; sw = 4; r = 12; }
+      n.setAttribute("stroke", stroke); n.setAttribute("stroke-width", sw); n.setAttribute("r", r);
+      if (dash) n.setAttribute("stroke-dasharray", dash); else n.removeAttribute("stroke-dasharray");
+      const lab = labelEls[id];
+      lab.setAttribute("visibility", showLabels || id === S.here || id === S.target || path.includes(id) ? "visible" : "hidden");
+      lab.setAttribute("font-weight", id === S.here || id === S.target || path.includes(id) ? 700 : 400);
+      lab.textContent = (id === S.here ? "起 " : id === S.target ? "终 " : "") + G[id].name;
+    }
+    // 右侧
+    document.getElementById("route").textContent = finished && S.result ? formatRoute(S.result) : (S.steps.length ? "（还在搜索中，按「直接看结果」或继续单步）" : "—");
+    const r = S.result || {};
+    const stat = [["起点", `${S.here} ${G[S.here].name}`], ["目标", `${S.target} ${G[S.target].name}`], ["我的国家", COUNTRY[S.my]],
+      ["算法", {project: "(占领数, 步数)", hopsfirst: "(步数, 占领数)", bfs: "BFS 步数"}[S.mode]],
+      ["出堆 / 出队次数", `${Math.min(S.cursor, S.steps.length)} / ${S.steps.length}`], ["松弛成功次数", r.relaxes ?? "—"],
+      ["落点", finished && r.found !== null && r.found !== undefined ? `${r.found} ${G[r.found].name}` : "—"],
+      ["步数 / 须占领", finished && r.path && r.path.length ? `${r.hops} / ${r.must.length}` : "—"],
+      ["禁行（规则）", IDS.filter(id => blocked(id) && !S.avoid.has(id)).length + " 座"], ["禁行（手动）", S.avoid.size + " 座"]];
+    document.getElementById("stat").innerHTML = stat.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join("");
+    const rows = S.steps.slice(0, S.cursor).map((st, i) => {
+      const who = `${st.u} ${G[st.u].name}`;
+      let what;
+      if (st.type === "stale") what = `代价 ${fmtKey(st.key)} 已过期，跳过`;
+      else if (st.type === "found") what = `代价 ${fmtKey(st.key)}，${st.u === S.target ? "就是目标" : "挨着目标"} → 落点`;
+      else what = `代价 ${fmtKey(st.key)}；` + st.relax.map(x => x.skip ? `<s>${G[x.v].name}</s>(${x.skip})` : x.improved ? `<b>${G[x.v].name}</b>${fmtKey(x.key)}` : `${G[x.v].name}(不更优)`).join("、");
+      return `<tr class="${st.type}${i === S.cursor - 1 ? " cur" : ""}"><td>${i + 1}</td><td>${who}</td><td>${what}</td></tr>`;
+    });
+    document.getElementById("log").innerHTML = `<table><tr><th>#</th><th>出堆</th><th>松弛邻居</th></tr>${rows.join("")}</table>`;
+    const logBox = document.getElementById("log"); logBox.scrollTop = logBox.scrollHeight;
+    const last = S.steps[Math.min(S.cursor, S.steps.length) - 1];
+    document.getElementById("heap").textContent = last && last.queue.length ? last.queue.map(q => `${fmtKey(q.key)} ${q.u} ${G[q.u].name}`).join("\n") : (last ? "（空）" : "—");
+    document.getElementById("cursorInfo").textContent = S.steps.length ? (finished ? `搜索结束，共 ${S.steps.length} 次出堆` : `第 ${S.cursor} / ${S.steps.length} 步`) : "";
+  }
+
+  // ---------------- 交互 ----------------
+  function recompute(showEnd) {
+    stopPlay();
+    const {steps, out} = plan();
+    S.steps = steps; S.result = out; S.cursor = showEnd ? steps.length : 0;
+    render();
+  }
+  function onClick(id) {
+    const mode = document.getElementById("click").value;
+    if (mode === "here") S.here = id;
+    else if (mode === "target") S.target = id;
+    else if (mode === "owner") { const cur = ownerOf(id); const nxt = OWNER_CYCLE[(OWNER_CYCLE.indexOf(cur) + 1) % OWNER_CYCLE.length]; if (nxt === G[id].home) delete S.owner[id]; else S.owner[id] = nxt; }
+    else if (mode === "avoid") { if (S.avoid.has(id)) S.avoid.delete(id); else S.avoid.add(id); }
+    recompute(true);
+  }
+  function stopPlay() { if (S.timer) { clearInterval(S.timer); S.timer = null; document.getElementById("play").textContent = "自动播放"; } }
+  document.getElementById("run").addEventListener("click", () => recompute(true));
+  document.getElementById("step0").addEventListener("click", () => { stopPlay(); if (!S.steps.length) recompute(false); S.cursor = 0; render(); });
+  document.getElementById("step").addEventListener("click", () => { stopPlay(); if (!S.steps.length) recompute(false); if (S.cursor < S.steps.length) S.cursor++; render(); });
+  document.getElementById("stepEnd").addEventListener("click", () => { stopPlay(); if (!S.steps.length) recompute(false); S.cursor = S.steps.length; render(); });
+  document.getElementById("play").addEventListener("click", () => {
+    if (S.timer) { stopPlay(); return; }
+    if (!S.steps.length || S.cursor >= S.steps.length) { recompute(false); }
+    document.getElementById("play").textContent = "暂停";
+    S.timer = setInterval(() => { if (S.cursor >= S.steps.length) { stopPlay(); return; } S.cursor++; render(); }, 450);
+  });
+  document.getElementById("resetOwner").addEventListener("click", () => { S.owner = {}; S.avoid.clear(); recompute(true); });
+  document.getElementById("labels").addEventListener("change", render);
+  document.getElementById("mode").addEventListener("change", e => { S.mode = e.target.value; recompute(true); });
+  const mySel = document.getElementById("my");
+  for (const k of [1,2,3,4,5,6]) { const o = document.createElement("option"); o.value = k; o.textContent = `${k} ${COUNTRY[k]}`; mySel.appendChild(o); }
+  mySel.addEventListener("change", e => { S.my = +e.target.value; recompute(true); });
+
+  const PRESETS = {
+    a: {my: 1, here: 1101, target: 12010, owner: {}, avoid: [], mode: "project"},
+    b: {my: 1, here: 1301, target: 6301, owner: {}, avoid: [], mode: "project"},
+    c: {my: 1, here: 1301, target: 9317, owner: {9301: 1, 9319: 1, 9202: 1, 9330: 1}, avoid: [], mode: "project"},
+    d: {my: 1, here: 1301, target: 2201, owner: {}, avoid: [], mode: "project"},
+  };
+  document.querySelectorAll("[data-preset]").forEach(b => b.addEventListener("click", () => {
+    const p = PRESETS[b.dataset.preset];
+    S.my = p.my; S.here = p.here; S.target = p.target; S.owner = {...p.owner}; S.avoid = new Set(p.avoid); S.mode = p.mode;
+    mySel.value = p.my; document.getElementById("mode").value = p.mode;
+    recompute(true);
+    document.getElementById("map").scrollIntoView({behavior: "smooth", block: "nearest"});
+  }));
+
+  build();
+  mySel.value = S.my;
+  recompute(true);
+})();
+</script>
+</body>
+</html>
