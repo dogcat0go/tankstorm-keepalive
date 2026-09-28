@@ -460,6 +460,10 @@ def _spki(openssl, crt) -> str:
 def _find_openssl() -> str:
     for p in (os.environ.get("OPENSSL") or "",
               r"D:\strawberry-perl-5.42.0.1-64bit-portable\c\bin\openssl.exe",
+              # Git for Windows 自带一份，克隆了仓库的机器基本都有
+              r"C:\Program Files\Git\usr\bin\openssl.exe",
+              os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                           r"Programs\Git\usr\bin\openssl.exe"),
               shutil.which("openssl") or ""):
         if p and os.path.isfile(p):
             return p
