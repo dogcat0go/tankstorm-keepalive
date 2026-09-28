@@ -168,6 +168,9 @@ def main() -> int:
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
                          "不要用 QQ 游戏大厅。请先停掉 --keepalive")
+    g4.add_argument("--tank-range", type=int, metavar="射程", default=0,
+                    help="配合 --capture：投递给窗口的 SWF 里，把坦克表 attackRange "
+                         "列的 375 改成这个数。只改本机客户端的演算与显示")
     g4.add_argument("--task", help="（旧的 HTTP 接口任务，见 endpoints.json）")
     g4.add_argument("--real", action="store_true",
                     help="（已废弃，保留兼容：现在 --daily 一律真实发送）")
@@ -281,7 +284,7 @@ def main() -> int:
 
     if args.capture:
         from tankstorm import live_capture
-        return live_capture.run(qq, config)
+        return live_capture.run(qq, config, tank_range=args.tank_range)
 
     # 国战自动战斗：连一次、打 N 次、退出
     if args.country_war:
