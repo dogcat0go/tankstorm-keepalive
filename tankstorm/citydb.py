@@ -819,6 +819,10 @@ def attack_status(user_id: int) -> dict:
             "SELECT city_id, IFNULL(uid,'') FROM atk_order "
             "WHERE user_id=? AND status='running' ORDER BY id DESC LIMIT 1",
             (int(user_id),)).fetchone()
+        latest = conn.execute(
+            "SELECT status, IFNULL(reason,'') FROM atk_order "
+            "WHERE user_id=? ORDER BY id DESC LIMIT 1",
+            (int(user_id),)).fetchone()
     finally:
         conn.close()
     phase = "offline"
@@ -851,6 +855,8 @@ def attack_status(user_id: int) -> dict:
         detail = "正在执行订单"
     else:
         detail = "空闲，等订单"
+        if latest and latest[0] == "failed" and latest[1]:
+            detail = f"空闲。上一单没打成：{latest[1]}"
     return {"online": True, "phase": phase, "detail": detail,
             "seen_at": beijing_ts(seen), "qr": show_qr}
 

@@ -987,6 +987,18 @@ def attack_player(rec, sock, config: dict, uid, times: int = 1,
         _daily._BEAT = prev
 
 
+def _lost_city_reason(loc, city, start=None) -> str:
+    """人和目标城不再挨着。分不清是对方离开，还是自己被打回去。"""
+    from . import citydb
+    here = citydb.city_name(loc) or loc
+    there = citydb.city_name(city) or city
+    tail = "可能是对方离开了这座城，也可能是自己被打回去了。"
+    if start is not None and start != loc:
+        return (f"人从 {start} 到了 {loc} {here}，"
+                f"和 {city} {there} 不再相邻。{tail}")
+    return f"人在 {loc} {here}，和 {city} {there} 不相邻。{tail}"
+
+
 def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
                    conf=None, card_used=0, until_down=False, last_act=0.0,
                    page=0, cd_until=0.0):
@@ -1011,9 +1023,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         out["停止原因"] = "读不到国战面板，停手"
         return out
     if not citydb.can_reach(loc, city):
-        here = citydb.city_name(loc) or loc
-        there = citydb.city_name(city) or city
-        out["停止原因"] = f"自己在 {loc} {here}，与目标城 {city} {there} 不相邻，停手"
+        out["停止原因"] = _lost_city_reason(loc, city)
         return out
     start_loc = loc
     who = out["名字"] or uid
@@ -1038,9 +1048,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             continue
         panel_miss = 0
         if loc is not None and start_loc is not None and loc != start_loc:
-            here = citydb.city_name(loc) or loc
-            out["停止原因"] = (f"位置变了：{start_loc} → {loc} {here}"
-                              f"（可能被遣返主城）")
+            out["停止原因"] = _lost_city_reason(loc, city, start_loc)
             out["遣返"] = True
             log.info("[打人] %s", out["停止原因"])
             break
@@ -1219,8 +1227,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
         cname = citydb.city_name(city_id) or str(city_id)
         here_name = citydb.city_name(loc) or loc
         if not citydb.can_reach(loc, city_id):
-            out["停止原因"] = (f"自己在 {loc} {here_name}，"
-                              f"与目标 {city_id} {cname} 不相邻，停手")
+            out["停止原因"] = _lost_city_reason(loc, city_id)
             log.info("[打人] %s", out["停止原因"])
             return out
         start_loc = loc
@@ -1244,9 +1251,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 break
             power, loc, _, panel = _panel(sock, rec, country)
             if loc is not None and start_loc is not None and loc != start_loc:
-                here = citydb.city_name(loc) or loc
-                out["停止原因"] = (f"位置变了：{start_loc} → {loc} {here}"
-                                  f"（可能被遣返主城）")
+                out["停止原因"] = _lost_city_reason(loc, city_id, start_loc)
                 log.info("[打人] %s", out["停止原因"])
                 break
             since = _send(sock, rec, 3, country=used_country, city=city_id,
@@ -1307,7 +1312,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     who = stuck.get("name") or stuck.get("uid")
                     log.info("[打人] %s 已在失败库，这座城不可通行", who)
                     out["跳过"] += 1
-                    out["停止原因"] = f"{who} 打不过，这座城不可通行"
+                    out["停止原因"] = f"{who} 打不过，这座城不可通行，路径被堵住了"
                     break
             for p in batch:
                 uid = str(p.get("uid") or "").strip()
@@ -1319,7 +1324,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     out["跳过"] += 1
                     if pass_block:
                         out["停止原因"] = (f"{p.get('name') or uid} 打不过，"
-                                          "这座城不可通行")
+                                          "这座城不可通行，路径被堵住了")
                         break
                     continue
                 one = attack_player(
@@ -1352,7 +1357,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     out["失败"] += 1
                     if pass_block:
                         who = one.get("名字") or p.get("name") or uid
-                        out["停止原因"] = f"{who} 打不过，这座城不可通行"
+                        out["停止原因"] = f"{who} 打不过，这座城不可通行，路径被堵住了"
                         break
                     continue
                 if "ret=21" in reason or "被拒" in reason:
@@ -1784,7 +1789,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                         out["停止原因"] = reason
                         break
                     if fought.get("失败") and not fought.get("成功"):
-                        out["停止原因"] = f"{city} {name} 剩下的人都打不过，暂停移动"
+                        out["停止原因"] = f"{city} {name} 剩下的人都打不过，暂停移动，路径被堵住了"
                         break
                     info = _open_city(sock, rec, city, my)
                     if info and info.get("here") == int(city):
@@ -1804,7 +1809,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         if blocked_at:
             cname = citydb.city_name(blocked_at) or blocked_at
             if replanned:
-                out["停止原因"] = f"{blocked_at} {cname} 重新规划后仍受阻，停止"
+                out["停止原因"] = (
+                    f"路径上 {blocked_at} {cname} 有打不过的人，这条路不通。"
+                    f"避开这座城重新规划后还是过不去，已停止")
                 return out
             log.info("[路线] %s %s 攻打失败，按最短路径重新规划，避开它",
                      blocked_at, cname)
@@ -1821,7 +1828,11 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         if out["停止原因"]:
             return out
         if not citydb.can_reach(out["走到"], target):
-            out["停止原因"] = f"停在 {out['走到']}，还没挨着目标 {target}"
+            here = citydb.city_name(out["走到"]) or out["走到"]
+            there = citydb.city_name(target) or target
+            out["停止原因"] = (
+                f"停在 {out['走到']} {here}，还没挨到目标 {target} {there}。"
+                f"路上有打不过的人时，这条路就不通")
             return out
         tname = citydb.city_name(target) or target
         if uid:
@@ -1867,7 +1878,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 out["停止原因"] = reason
                 break
             if fought.get("失败") and not fought.get("成功"):
-                out["停止原因"] = f"{target} {tname} 剩下的人都打不过，停止"
+                out["停止原因"] = f"{target} {tname} 剩下的人都打不过，这座城清不完，已停止"
                 break
             if not fought.get("成功") and not fought.get("失败"):
                 out["停止原因"] = reason or f"{target} {tname} 还有人但没打到"

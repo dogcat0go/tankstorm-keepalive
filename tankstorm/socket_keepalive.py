@@ -640,6 +640,7 @@ def _run_aimed(qq, config: dict, city_id, uid) -> tuple:
             ok = out.get("攻击") is not None
         if out.get("停止原因"):
             log.info("   结束原因：%s", out["停止原因"])
+            ok = False
         return 0 if ok else 1
 
     code = _connect_and(qq, config, _work)
@@ -700,7 +701,7 @@ def run_remote_orders(qq, config: dict) -> int:
             code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
             citydb.finish_attack_order(
                 job["id"], "done" if code == 0 else "failed",
-                "" if code == 0 else (reason or "未打成"))
+                reason or ("" if code == 0 else "未打成"))
             citydb.set_attack_status("idle")
     except KeyboardInterrupt:
         log.info("停止领取远程扫码攻打")
@@ -786,7 +787,7 @@ def kick_attack_login(config: dict) -> str:
                 code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
                 citydb.finish_attack_order(
                     job["id"], "done" if code == 0 else "failed",
-                    "" if code == 0 else (reason or "未打成"))
+                    reason or ("" if code == 0 else "未打成"))
         finally:
             if on_page:
                 citydb.set_page_qr(False)
