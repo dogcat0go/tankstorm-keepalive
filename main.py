@@ -19,6 +19,8 @@
 
 常用：
   python main.py --login       扫码登录（cookie 存 cookies.json，之后自动续期）
+  python main.py --qq 攻打 --login     给「登录.账号」里的另一个号扫码
+  python main.py --qq 攻打 --move 2302 用这个号寻径并打这座城
   python main.py --check       验证登录态，打印 uid/sid/level
   python main.py --keepalive   保活常驻
   python main.py --daily       跑一轮每日任务
@@ -41,6 +43,7 @@
 """
 
 import argparse
+import fcntl
 import json
 import os
 import sys
@@ -133,6 +136,114 @@ def load_config() -> dict:
     return _deep_merge(config, local)
 
 
+_QQ_LOCK = None
+
+
+def _lock_cookie(path: str) -> None:
+    """同一份 cookie 只能有一个进程。扫描号和攻打号因此不会互相覆盖票据。"""
+    global _QQ_LOCK
+    fh = open(path + ".lock", "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log.error("这个号已有进程在用 %s", path)
+        sys.exit(1)
+    _QQ_LOCK = fh
+
+
+def _cookie_path(name: str, cookie: str) -> str:
+    if not cookie or os.path.isabs(cookie) or ".." in cookie.split("/"):
+        log.error("账号「%s」的 cookie 要写成程序目录下的相对路径", name)
+        sys.exit(1)
+    path = os.path.normpath(paths.user_path(cookie))
+    root = os.path.normpath(paths.app_dir())
+    if path != root and not path.startswith(root + os.sep):
+        log.error("账号「%s」的 cookie 要写在程序目录里", name)
+        sys.exit(1)
+    return path
+
+
+def _uin_in_cookie_file(path: str) -> str:
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            jar = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    picked = ""
+    for c in jar:
+        if not isinstance(c, dict) or c.get("name") != "uin":
+            continue
+        picked = str(c.get("value") or "").lstrip("o0")
+        if "qq.com" in str(c.get("domain") or ""):
+            return picked
+    return picked
+
+
+def open_qq(config: dict, name: str) -> QQSession:
+    """不带名字是扫描号：根目录 cookies.json，可以向 NapCat 要票据。
+    带名字是攻打号：独立 cookie，不碰 NapCat，也不能和扫描号是同一个 QQ。"""
+    scan_path = os.path.normpath(paths.user_path("cookies.json"))
+    if not name:
+        _lock_cookie(scan_path)
+        return QQSession(scan_path)
+    accounts = (config.get("登录") or {}).get("账号") or {}
+    spec = accounts.get(name)
+    if not isinstance(spec, dict):
+        names = [k for k, v in accounts.items() if isinstance(v, dict)]
+        log.error("登录.账号 里没有「%s」%s", name,
+                  ("。已有：" + "、".join(names)) if names else "")
+        sys.exit(1)
+    if spec.get("用NapCat"):
+        log.error("攻打号「%s」不能使用 NapCat。NapCat 只给扫描号续票", name)
+        sys.exit(1)
+    by_name = {}
+    for key, item in accounts.items():
+        if not isinstance(item, dict):
+            continue
+        path = _cookie_path(key, str(item.get("cookie") or "").strip())
+        if path == scan_path:
+            log.error("攻打号「%s」不能使用扫描号的 cookies.json", key)
+            sys.exit(1)
+        other = next((n for n, p in by_name.items() if p == path), "")
+        if other:
+            log.error("攻打号「%s」和「%s」用了同一份 cookie", key, other)
+            sys.exit(1)
+        by_name[key] = path
+    path = by_name[name]
+    who = str(spec.get("扫码QQ") or "").strip()
+    if who and (not who.isdigit() or not 5 <= len(who) <= 12):
+        log.error("攻打号「%s」的扫码QQ 要写成 5 到 12 位数字", name)
+        sys.exit(1)
+    blocked = set()
+    scan_uin = _uin_in_cookie_file(scan_path)
+    if scan_uin:
+        blocked.add(scan_uin)
+    for key, item_path in by_name.items():
+        if key == name:
+            continue
+        uin = _uin_in_cookie_file(item_path)
+        if uin:
+            blocked.add(uin)
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    qr = (path[:-5] if path.endswith(".json") else path) + ".qrcode.png"
+    _lock_cookie(path)
+    qq = QQSession(path, qrcode_file=qr)
+    qq.use_napcat = False
+    qq.attack_account = True
+    qq.account_name = name
+    qq.notify_qq = who
+    qq.blocked_uins = blocked
+    if qq.shares_blocked_uin():
+        sys.exit(1)
+    config.setdefault("登录", {})["推送登录QQ号"] = ""
+    log.info("使用攻打号「%s」，cookie=%s", name, path)
+    return qq
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="坦克风暴：保活守护 + 每日任务 + 国战（三件独立的事）",
@@ -140,6 +251,8 @@ def main() -> int:
                "源码：https://github.com/Dimlitter/tankstorm-keepalive",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     g1 = parser.add_argument_group("登录")
+    g1.add_argument("--qq", metavar="名字", default="",
+                    help="攻打号，对应「登录.账号」。扫描不要加这个参数")
     g1.add_argument("--login", action="store_true", help="强制重新扫码登录")
     g1.add_argument("--check", action="store_true", help="验证登录态并打印上下文")
     g1.add_argument("--import-device", metavar="文件",
@@ -312,7 +425,18 @@ def main() -> int:
             log.info("今天已经跑过（state.json），退出。删掉 state.json 可强制重跑")
             return 0
 
-    qq = QQSession()
+    attacking = (args.move is not None or bool(args.atk)
+                 or args.atk_city is not None)
+    scanning = bool(args.keepalive or args.watch_cities
+                    or args.watch_pages is not None)
+    if attacking and not args.qq:
+        log.error("攻打必须用 --qq 指定攻打号，不能用扫描号的 cookies.json")
+        return 1
+    if args.qq and scanning:
+        log.error("「%s」是攻打号，不能用来扫描。扫描进程不要加 --qq", args.qq)
+        return 1
+
+    qq = open_qq(config, args.qq)
 
     # 一次性引导：把浏览器的设备记录搬进来，之后推送登录才有 dev_mid_sig 可用。
     # pt_fetch_dev_uin 只能给已有的续期，签发不出第一个，所以只能这么来。
@@ -439,10 +563,15 @@ def main() -> int:
 
     if not args.login and not qq.is_valid():
         qq.adopt_napcat(config)
-    if args.login:
+    if args.login and qq.attack_account:
+        if not socket_keepalive.relogin_with_push(qq, config):
+            return 1
+    elif args.login:
         if not qq.qr_login(on_qr=on_qr, push_uin=push_uin):
             return 1
     elif not qq.ensure_login(on_qr=on_qr, push_uin=push_uin):
+        return 1
+    if qq.shares_blocked_uin():
         return 1
 
     ctx = qzone.get_game_context(qq)

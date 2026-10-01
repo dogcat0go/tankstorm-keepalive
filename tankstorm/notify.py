@@ -133,16 +133,22 @@ def send_qq(api: str, token: str, target: str, text: str, message=None) -> bool:
     return False
 
 
-def send_admin_login_qr(config: dict, qrcode_path: str) -> bool:
-    """登录态失效时，用「登录.内部QQ」私聊管理员。没配就跳过。"""
+def send_admin_login_qr(config: dict, qrcode_path: str, target: str = "",
+                        text: str = "") -> bool:
+    """用 NapCat 把登录二维码私聊出去。地址用「登录.内部QQ」，没填则用「通知」。
+    target 是接收人；没给就发给「内部QQ.管理员」。"""
     inner = ((config.get("登录") or {}).get("内部QQ") or {})
     api = str(inner.get("地址") or "").strip()
     token = str(inner.get("Token") or "").strip()
-    admin = str(inner.get("管理员") or "").strip()
+    admin = str(target or inner.get("管理员") or "").strip()
+    if not api:
+        note = config.get("通知") or {}
+        api = str(note.get("qq_api") or "").strip()
+        token = str(note.get("qq_token") or "").strip()
     if not api or not admin:
         return False
-    text = ("坦克风暴登录态失效。用另一台设备的游戏 QQ 扫这张码，"
-            "不要把图存进同一台手机相册再扫。")
+    text = text or ("坦克风暴登录态失效。用另一台设备的游戏 QQ 扫这张码，"
+                    "不要把图存进同一台手机相册再扫。")
     message = text
     try:
         with open(qrcode_path, "rb") as f:
@@ -155,7 +161,7 @@ def send_admin_login_qr(config: dict, qrcode_path: str) -> bool:
         log.warning("读取登录二维码失败: %s", exc)
     ok = send_qq(api, token, admin, text, message=message)
     if ok:
-        log.info("已把登录二维码发给管理员")
+        log.info("已把登录二维码发给 %s", admin)
     return ok
 
 

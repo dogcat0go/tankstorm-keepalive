@@ -675,6 +675,8 @@ def _connect_and(qq, config: dict, work) -> int:
 
     if not qq.is_valid() and not relogin_with_push(qq, config):
         return 1
+    if qq.shares_blocked_uin():
+        return 1
 
     ctx = get_game_context(qq)
     host = ctx.get("server") or spec.get("default_host", "tankstorm-proxy.sincetimes.com")
@@ -806,11 +808,20 @@ def relogin_with_push(qq, config: dict) -> bool:
 
     # 推送登录：直接往手机QQ推确认，免去扫码。
     # 这解决了"二维码图存本地、同一台手机相册扫码"被腾讯拒（限制本地扫码登录）的问题。
-    push_uin = (config.get("登录", {}) or {}).get("推送登录QQ号") or qq.uin or None
+    if getattr(qq, "attack_account", False):
+        push_uin = None
+    else:
+        push_uin = (config.get("登录", {}) or {}).get("推送登录QQ号") or qq.uin or None
 
     def on_qr(path, pushed=False):
-        # 同一次失效只私聊管理员一次，后面换码不再发
-        if attempt == 1:
+        if getattr(qq, "attack_account", False):
+            name = getattr(qq, "account_name", "") or "攻打号"
+            notify.send_admin_login_qr(
+                config, path, target=getattr(qq, "notify_qq", ""),
+                text=(f"攻打号「{name}」需要扫码。用这个号的手机 QQ，"
+                      f"在另一台设备上扫这张图。不要把图存进同一台手机相册再扫。"))
+        elif attempt == 1:
+            # 扫描号同一次失效只私聊管理员一次，后面换码不再发
             notify.send_admin_login_qr(config, path)
         if pushed:
             notify.send_qrcode(
@@ -833,7 +844,8 @@ def relogin_with_push(qq, config: dict) -> bool:
         log.info("登录态失效，正在%s（第 %d 次尝试）",
                  f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码", attempt)
         if qq.qr_login(on_qr=on_qr, push_uin=push_uin):
-            notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
+            if not getattr(qq, "attack_account", False):
+                notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
             return True
         log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
         time.sleep(15)
