@@ -303,10 +303,12 @@ def _handler(config: dict):
                     if uid and (not uid.isdigit() or len(uid) > 32):
                         raise ValueError("UID 要是数字")
                     why = citydb.add_attack_order(user["id"], city_id, uid)
-                    if why:
+                    if why and why != "已经有一条还没打完":
                         raise ValueError(why)
                     from .socket_keepalive import kick_attack_login
                     login = kick_attack_login(config)
+                    if why:
+                        raise ValueError(why)
                     _json(self, 200, {"ok": True, "login": login})
                 elif path == "/api/attack-login":
                     if not citydb.attack_tier(user.get("tier") or ""):
@@ -450,9 +452,40 @@ def start(host="0.0.0.0", port=8765, config=None):
     return httpd
 
 
+def _wake_attack_orders(config) -> None:
+    """攻打进程没心跳、库里还有单时，由网页拉起。不用再点推送登录二维码。"""
+    from .socket_keepalive import kick_attack_login
+
+    gap = threading.Event()
+    noted = False
+    while not gap.wait(5):
+        try:
+            if citydb.attack_status(0).get("online") or not citydb.attack_order_open():
+                noted = False
+                continue
+            login = kick_attack_login(config)
+        except SystemExit:
+            log.error("攻打号配置有误，网页不再自动拉起")
+            return
+        except Exception:
+            log.info("自动拉起攻打没成", exc_info=True)
+            continue
+        if login == "no_account":
+            if not noted:
+                log.error("有攻打订单，但登录.账号里没有攻打号")
+            noted = True
+            continue
+        noted = False
+        if login in ("started", "qr"):
+            log.info("攻打进程不在，已按订单拉起")
+
+
 def serve(host="0.0.0.0", port=8765, config=None) -> int:
     httpd = _server(host, port, config)
     _announce(host, port, config or {})
+    threading.Thread(
+        target=_wake_attack_orders, args=(config or {},),
+        name="attack-wake", daemon=True).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
