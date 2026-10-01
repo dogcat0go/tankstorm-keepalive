@@ -498,9 +498,15 @@ def main() -> int:
                           for c, a, b in specs]
         span["启用"] = True
         from tankstorm.socket_keepalive import _page_range_jobs
-        if not _page_range_jobs(config)[0]:
+        from tankstorm import citydb
+        saved_plan = None
+        try:
+            saved_plan = citydb.get_scan_plan()
+        except Exception as exc:
+            log.info("读扫描安排失败：%s", exc)
+        if not _page_range_jobs(config)[0] and not (saved_plan and saved_plan.get("jobs")):
             log.error("页范围监视没有可用的城市。写成 1201:10-20 1301:0-8，"
-                      "或填 config「页范围监视.范围」")
+                      "或在订阅页面的扫描安排里加上，或填 config「页范围监视.范围」")
             return 1
         config.setdefault("保持活跃", {})["启用"] = True
     if args.watch_cities:

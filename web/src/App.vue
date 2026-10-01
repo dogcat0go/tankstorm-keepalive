@@ -21,6 +21,12 @@ const proc = ref(null);
 const qrSrc = ref("");
 const devLogin = ref(false);
 const registerOpen = ref(false);
+const scanGap = ref("300");
+const quietStart = ref("");
+const quietEnd = ref("");
+const scanRanges = ref([]);
+const scanNote = ref("");
+const scanQuiet = ref(false);
 let timer = 0;
 let atkTimer = 0;
 
@@ -83,6 +89,52 @@ async function enter() {
   qqTarget.value = who.user.qq_target || "";
   await refresh();
   await refreshAttacks();
+  await loadScan();
+}
+
+async function loadScan() {
+  if (!me.value || !me.value.admin) return;
+  const data = await api("/api/scan-plan");
+  scanGap.value = String(data.gap_sec ?? 300);
+  quietStart.value = data.quiet_start || "";
+  quietEnd.value = data.quiet_end || "";
+  scanQuiet.value = !!data.quiet_now;
+  scanRanges.value = (data.ranges || []).map((row) => ({
+    city_id: String(row.city_id),
+    city_name: row.city_name || "",
+    start_page: String(row.start_page),
+    end_page: String(row.end_page),
+  }));
+}
+
+async function saveScan() {
+  err.value = "";
+  scanNote.value = "";
+  const data = await api("/api/scan-plan", {
+    gap_sec: scanGap.value,
+    quiet_start: quietStart.value,
+    quiet_end: quietEnd.value,
+    ranges: scanRanges.value.map((row) => ({
+      city_id: row.city_id,
+      start_page: row.start_page,
+      end_page: row.end_page,
+    })),
+  });
+  scanGap.value = String(data.gap_sec ?? 300);
+  quietStart.value = data.quiet_start || "";
+  quietEnd.value = data.quiet_end || "";
+  scanQuiet.value = !!data.quiet_now;
+  scanRanges.value = (data.ranges || []).map((row) => ({
+    city_id: String(row.city_id),
+    city_name: row.city_name || "",
+    start_page: String(row.start_page),
+    end_page: String(row.end_page),
+  }));
+  scanNote.value = "已保存。正在跑的扫描进程下一轮按这个间隔和名单翻页";
+}
+
+function addScanCity() {
+  scanRanges.value.push({ city_id: "", city_name: "", start_page: "0", end_page: "0" });
 }
 
 async function devEnter() {
@@ -99,6 +151,7 @@ async function loadMe() {
   qqTarget.value = who.user.qq_target || "";
   await refresh();
   await refreshAttacks();
+  await loadScan();
 }
 
 async function addSub() {
@@ -209,6 +262,36 @@ onUnmounted(() => {
         · 库 <code>{{ db }}</code>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
+      <section v-if="me.admin">
+        <h2>扫描安排</h2>
+        <form class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
+          <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>
+          <label>停扫开始<input v-model="quietStart" type="time" /></label>
+          <label>停扫结束<input v-model="quietEnd" type="time" /></label>
+          <p class="muted">北京时间。例如 01:00 到 05:00 这段不翻页，游戏连接保持。23:00 到 05:00 这样跨过零点也可以。两个都空着就是全天扫。页码从 0 起，含结束页；订阅页面上的页数要减 1。一座城只填一段。</p>
+          <p v-if="scanQuiet">现在处于停扫时段，扫描会跳过。</p>
+          <table class="scan">
+            <thead>
+              <tr><th>城市 ID</th><th>城市</th><th>起始页</th><th>结束页</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, i) in scanRanges" :key="i">
+                <td><input v-model="row.city_id" inputmode="numeric" required placeholder="1201" /></td>
+                <td>{{ row.city_name || "—" }}</td>
+                <td><input v-model="row.start_page" inputmode="numeric" required /></td>
+                <td><input v-model="row.end_page" inputmode="numeric" required /></td>
+                <td><button type="button" class="ghost" @click="scanRanges.splice(i, 1)">去掉</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="!scanRanges.length" class="muted">还没有城市。加上之后，扫描进程按这里的页范围翻。</p>
+          <p>
+            <button type="button" class="ghost" @click="addScanCity">加一座城</button>
+            <button type="submit">保存扫描安排</button>
+            <span class="muted">{{ scanNote }}</span>
+          </p>
+        </form>
+      </section>
       <form @submit.prevent="addSub().catch((e) => (err = e.message))">
         <label>城市 ID<input v-model="cityId" inputmode="numeric" required placeholder="1201" /></label>
         <label>用户 UID<input v-model="uid" inputmode="numeric" required /></label>
@@ -285,6 +368,7 @@ h2 { font-size: 16px; margin: 28px 0 8px; }
 .lead { margin: 0 0 16px; color: #444; }
 form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 form.stack { display: grid; max-width: 520px; }
+form.scan-form { max-width: none; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
 input { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; }
 button { font: inherit; padding: 8px 14px; border: 0; border-radius: 6px; background: #1a1a1a; color: #fff; cursor: pointer; }
@@ -292,6 +376,7 @@ button.ghost { background: transparent; color: #333; border: 1px solid #bbb; }
 .err { color: #9b1c1c; min-height: 1.5em; }
 .muted { color: #777; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 12px; }
+table.scan td input { width: 7em; box-sizing: border-box; }
 th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
 th { font-size: 13px; color: #555; }
 .on { color: #0b6b2f; font-weight: 700; }
