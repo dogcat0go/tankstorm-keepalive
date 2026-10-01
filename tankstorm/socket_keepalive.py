@@ -163,6 +163,17 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
             brief = "、".join(f"{c} 第{a}–{b}页" for c, a, b in page_jobs)
             log.info("页范围监视：每 %.0f 秒刷新 %s", page_gap, brief)
 
+        if page_jobs or (config.get("城市监视") or {}).get("启用"):
+            if _await_role(sock, rec, spec, ctx, config):
+                log.info("登录态数据接收完毕，开始翻城")
+            else:
+                got = "、".join(getattr(rec, "latest", {}) or {}) or "无"
+                log.error("登录后没收到角色数据，读不到国家ID（已有回包：%s）。"
+                          "这一轮先不翻。先停掉其它游戏窗口再试，多半是号被另一路占着",
+                          got)
+                last_pages = time.time()
+                last_watch = time.time()
+
         sock.settimeout(1.0)
         while True:
             now = time.time()
@@ -455,8 +466,11 @@ def _scan_page_ranges(rec, sock, config, jobs, beat):
             log.error("页范围监视 城市 %s 异常：%s", city, exc)
             continue
         reason = out.get("原因") or ""
-        if any(s in reason for s in ("没有回包", "读不到国战面板", "连接断开")):
-            log.info("[页范围] %s，本轮剩下的下次再拉", reason)
+        if reason:
+            log.info("[页范围] 城市 %s：%s", city, reason)
+        if any(s in reason for s in ("没有回包", "读不到国战面板", "连接断开",
+                                     "读不到自己的国家ID")):
+            log.info("[页范围] 本轮剩下的下次再拉")
             break
         done += 1
     log.info("[页范围] 本轮完成 %d/%d 座城", done, len(jobs))
@@ -623,6 +637,29 @@ def run_farm_city_once(qq, config: dict, city_id, times=1, sweep=False,
     return _connect_and(qq, config, _work)
 
 
+def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
+    """读登录推送，直到出现自己的国家ID。手填了「国战.自己国家ID」则直接返回。"""
+    filled = int(((config or {}).get("国战") or {}).get("自己国家ID") or 0)
+    if filled or daily.read_my_country(rec):
+        return True
+    sock.settimeout(1.0)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if daily.read_my_country(rec):
+            return True
+        try:
+            chunk = sock.recv(8192)
+        except socket.timeout:
+            continue
+        if not chunk:
+            return False
+        reply = protocol.maybe_online_reply(spec, chunk, ctx)
+        if reply:
+            sock.sendall(reply)
+            log.info("收到在线探测，已回应")
+    return bool(daily.read_my_country(rec))
+
+
 def _connect_and(qq, config: dict, work) -> int:
     """连一次游戏、登录、把活交给 work，然后断开退出。
 
@@ -672,25 +709,9 @@ def _connect_and(qq, config: dict, work) -> int:
                          or protocol.heartbeat_interval(spec))
         heart = _Beater(sock, protocol.build_heartbeat(spec, ctx), interval)
 
-        # 等到角色数据（国家ID）到了再干活。只收到 RseAuthState 就开打，
-        # 后面一律是「读不到自己的国家ID」。保活连上前会走 loadIdInfo.war，
-        # 这里以前漏了，服务端有时只回认证包、不推 RseLoad。
-        sock.settimeout(1.0)
-        deadline = time.time() + 12
-        while time.time() < deadline:
-            if daily.read_my_country(rec):
-                break
-            try:
-                chunk = sock.recv(8192)
-            except socket.timeout:
-                continue
-            if not chunk:
-                break
-            reply = protocol.maybe_online_reply(spec, chunk, ctx)
-            if reply:
-                sock.sendall(reply)
-                log.info("收到在线探测，已回应")
-        if not daily.read_my_country(rec):
+        # 只收到 RseAuthState 就开打，后面一律是「读不到自己的国家ID」。
+        # 保活连上前会走 loadIdInfo.war，这里以前漏了，服务端有时只回认证包、不推 RseLoad。
+        if not _await_role(sock, rec, spec, ctx, config):
             got = "、".join(rec.latest.keys()) or "无"
             log.error("登录后没收到角色数据，读不到国家ID（已有回包：%s）。"
                       "先停掉 --keepalive 和游戏窗口再试，多半是号被另一路占着",
