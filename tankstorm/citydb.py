@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     qq_api          TEXT,
     qq_token        TEXT,
     qq_target       TEXT,
+    expires_at      TEXT,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS app_session (
@@ -151,6 +152,10 @@ def connect(readonly=False, timeout=15):
             if wcols and "user_id" not in wcols:
                 setup.execute("DROP TABLE watch_sub")
                 setup.executescript(_SCHEMA)
+                setup.commit()
+            ucols = {r[1] for r in setup.execute("PRAGMA table_info(app_user)")}
+            if ucols and "expires_at" not in ucols:
+                setup.execute("ALTER TABLE app_user ADD COLUMN expires_at TEXT")
                 setup.commit()
             _schema_ready = True
         finally:
@@ -518,6 +523,23 @@ def now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def beijing_day() -> str:
+    return datetime.now(timezone.utc).astimezone(
+        timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+
+
+def account_expired(expires_at: str) -> bool:
+    """有效期是北京时间的日期，这一天仍然有效。空表示不限期。"""
+    day = (expires_at or "").strip()[:10]
+    if not day:
+        return False
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        return True
+    return day < beijing_day()
+
+
 def beijing_ts(ts: str) -> str:
     """库存 UTC（末尾 Z）换成北京时间，给页面显示。"""
     if not ts:
@@ -537,13 +559,14 @@ def _password_hash(password: str, salt: str = "") -> str:
     return f"{salt}${dk.hex()}"
 
 
-def create_user(username: str, password: str):
-    """创建账号。用户名已存在返回 None。"""
+def create_user(username: str, password: str, expires_at: str = ""):
+    """创建账号。用户名已存在返回 None。expires_at 为北京时间日期，空表示不限期。"""
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO app_user(username, password_hash, created_at) VALUES (?,?,?)",
-            (username, _password_hash(password), now_ts()))
+            "INSERT INTO app_user(username, password_hash, expires_at, created_at) "
+            "VALUES (?,?,?,?)",
+            (username, _password_hash(password), (expires_at or "").strip(), now_ts()))
         conn.commit()
         return int(cur.lastrowid)
     except sqlite3.IntegrityError:
@@ -552,19 +575,34 @@ def create_user(username: str, password: str):
         conn.close()
 
 
+def set_user_expiry(username: str, expires_at: str) -> bool:
+    """改这个账号的有效期。没有这个用户返回 False。"""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET expires_at=? WHERE username=?",
+            ((expires_at or "").strip(), username))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def login_user(username: str, password: str):
-    """密码正确返回 session token，否则 None。"""
+    """密码正确返回 session token。密码不对返回 None，账号过期返回 False。"""
     import secrets
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT id, password_hash FROM app_user WHERE username=?",
+            "SELECT id, password_hash, IFNULL(expires_at,'') FROM app_user WHERE username=?",
             (username,)).fetchone()
         if not row:
             return None
         salt, digest = row[1].split("$", 1)
         if not secrets.compare_digest(_password_hash(password, salt).split("$", 1)[1], digest):
             return None
+        if account_expired(row[2]):
+            return False
         token = secrets.token_urlsafe(32)
         conn.execute(
             "INSERT INTO app_session(token, user_id, created_at) VALUES (?,?,?)",
@@ -581,12 +619,13 @@ def user_by_token(token: str):
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT u.id, u.username, IFNULL(u.qq_target,'') "
+            "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,'') "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
-        if not row:
+        if not row or account_expired(row[3]):
             return None
-        return {"id": row[0], "username": row[1], "qq_target": row[2]}
+        return {"id": row[0], "username": row[1], "qq_target": row[2],
+                "expires_at": row[3]}
     finally:
         conn.close()
 
@@ -727,7 +766,8 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT s.user_id, s.uid, s.last_present, IFNULL(u.qq_target,'') "
+            "SELECT s.user_id, s.uid, s.last_present, IFNULL(u.qq_target,''), "
+            "IFNULL(u.expires_at,'') "
             "FROM watch_sub s JOIN app_user u ON u.id=s.user_id "
             "WHERE s.city_id=?",
             (city_id,)).fetchall()
@@ -737,28 +777,31 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                              (city_id,)).fetchone()
         cname = cname[0] if cname else ""
         changes = []
-        for user_id, uid, last, qq_target in rows:
+        for user_id, uid, last, qq_target, expires_at in rows:
             if uid in seen:
                 now = 1
             elif finished:
                 now = 0
             else:
                 continue
-            name = ""
+            name, page = "", None
             nrow = conn.execute(
-                "SELECT name FROM player WHERE city_id=? AND uid=?",
+                "SELECT name, page FROM player WHERE city_id=? AND uid=?",
                 (city_id, uid)).fetchone()
-            if nrow and nrow[0]:
-                name = nrow[0]
+            if nrow:
+                name = nrow[0] or ""
+                if nrow[1] is not None:
+                    page = int(nrow[1]) + 1
             if last is None or int(last) != now:
                 conn.execute(
                     "UPDATE watch_sub SET last_present=? "
                     "WHERE user_id=? AND city_id=? AND uid=?",
                     (now, user_id, city_id, uid))
-            if now == 1 and (last is None or int(last) != 1):
+            if (now == 1 and (last is None or int(last) != 1)
+                    and not account_expired(expires_at)):
                 changes.append({
                     "user_id": user_id, "city_id": city_id, "city_name": cname,
-                    "uid": uid, "name": name, "present": now == 1,
+                    "uid": uid, "name": name, "page": page, "present": now == 1,
                     "qq_target": qq_target,
                 })
         conn.commit()

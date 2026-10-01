@@ -433,13 +433,13 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
     token = ((config.get("通知") or {}).get("pushplus_token") or "").strip()
     for ch in changes:
         who = ch["name"] or ch["uid"]
-        where = f"{city_id} {cname}".strip()
-        verb = "出现在" if ch["present"] else "已离开"
-        text = f"{who} {verb} {where}\nUID {ch['uid']}"
-        log.info("[订阅] %s %s %s", who, verb, where)
+        where = f"{cname} {city_id}".strip()
+        page = f"第 {ch['page']} 页" if ch.get("page") else "页数未知"
+        text = f"{who}\n城市 {where}\n{page}\nUID {ch['uid']}"
+        log.info("[订阅] %s 出现在 %s %s", who, where, page)
         notify.push_watch(config, ch, text)
         if token:
-            notify.send(config, f"坦克风暴：{who} {verb} {where}", text)
+            notify.send(config, f"坦克风暴：{who} 出现在 {where} {page}", text)
     oname = citydb.country_name(owner) if owner else ""
     log.info("―― 城市 %s %s ―― 归属国家 %s%s，面板人数 %s，本轮写入 %d 人，最后一页 %s",
              out.get("city"), cname, owner,

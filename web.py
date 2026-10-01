@@ -9,8 +9,11 @@
 
   python3 web.py
   python3 web.py --host 0.0.0.0 --port 8765
+  python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31
+  python3 web.py --set-expires 用户名 2026-12-31
 
 扫城仍用 main.py，例如 python3 main.py --watch-pages 1201:10-20。
+注册默认关闭。有效期按北京时间的日期，这一天仍然有效。
 两边读写同一份 city_players.db。
 """
 
@@ -21,9 +24,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import re
+from datetime import datetime
+
 from tankstorm.log import get_logger
 from tankstorm.paths import data_file, ensure_user_copy, user_path
-from tankstorm import webui
+from tankstorm import citydb, webui
 
 log = get_logger()
 
@@ -50,6 +56,15 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return base
 
 
+def _date(text: str) -> str:
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        log.error("有效期要写成 2026-12-31 这种日期")
+        return ""
+    return text
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="坦克风暴订阅页面（不连游戏）")
@@ -57,7 +72,40 @@ def main() -> int:
                         help="监听地址，默认 0.0.0.0。证书由反向代理处理")
     parser.add_argument("--port", type=int, default=8765, metavar="端口",
                         help="端口，默认 8765")
+    parser.add_argument("--add-user", metavar="用户名", help="后台添加账号，不启动网页")
+    parser.add_argument("--password", metavar="密码", help="和 --add-user 一起用")
+    parser.add_argument("--expires", metavar="日期", help="北京时间，这一天仍然有效")
+    parser.add_argument("--set-expires", nargs=2, metavar=("用户名", "日期"),
+                        help="改已有账号的有效期，不启动网页")
     args = parser.parse_args()
+    if args.add_user or args.set_expires:
+        if args.set_expires:
+            name, day = args.set_expires
+            day = _date(day)
+            if not day:
+                return 1
+            if not citydb.set_user_expiry(name, day):
+                log.error("没有这个账号：%s", name)
+                return 1
+            log.info("已把 %s 的有效期改到 %s", name, day)
+            return 0
+        name = args.add_user.strip()
+        password = args.password or ""
+        day = _date(args.expires or "")
+        if not re.fullmatch(r"[A-Za-z0-9_\u4e00-\u9fff]{2,32}", name):
+            log.error("用户名用 2 到 32 位字母、数字或中文")
+            return 1
+        if len(password) < 6 or len(password) > 72:
+            log.error("密码至少 6 位")
+            return 1
+        if not day:
+            return 1
+        if citydb.create_user(name, password, day) is None:
+            log.error("这个用户名已经有了。改有效期：python3 web.py --set-expires %s %s",
+                      name, day)
+            return 1
+        log.info("已添加账号 %s，有效期至 %s", name, day)
+        return 0
     config = _deep_merge(
         _load_json(data_file("config.json")),
         _load_json(user_path("config.local.json"), required=False))

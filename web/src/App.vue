@@ -14,6 +14,7 @@ const uid = ref("");
 const qqTarget = ref("");
 const note = ref("");
 const devLogin = ref(false);
+const registerOpen = ref(false);
 let timer = 0;
 
 async function api(path, body) {
@@ -37,7 +38,7 @@ async function refresh() {
 
 async function enter() {
   err.value = "";
-  const path = mode.value === "register" ? "/api/register" : "/api/login";
+  const path = mode.value === "register" && registerOpen.value ? "/api/register" : "/api/login";
   await api(path, {
     username: username.value,
     password: password.value,
@@ -99,6 +100,7 @@ function statusOf(it) {
 onMounted(async () => {
   const meta = await fetch("/api/meta").then((r) => r.json()).catch(() => ({}));
   devLogin.value = !!meta.dev_login;
+  registerOpen.value = !!meta.register;
   await loadMe();
   timer = setInterval(() => {
     if (me.value) refresh().catch(() => {});
@@ -111,15 +113,14 @@ onUnmounted(() => clearInterval(timer));
   <main>
     <h1>城市订阅</h1>
     <p class="lead" v-if="!me">
-      注册一个账号，订阅某座城里有没有某个用户 UID。数据在这台服务器的
-      city_players.db。扫城仍由 <code>python3 main.py --watch-cities</code> 写入。
+      {{ registerOpen ? "注册一个账号，" : "使用管理员开通的账号登录，" }}订阅某座城里有没有某个用户 UID。
     </p>
     <form v-if="!me" @submit.prevent="enter().catch((e) => (err = e.message))">
       <label>用户名<input v-model="username" autocomplete="username" required /></label>
       <label>密码<input v-model="password" type="password" autocomplete="current-password" required /></label>
       <label v-if="mode === 'register'">注册口令<input v-model="invite" autocomplete="off" /></label>
-      <button type="submit">{{ mode === "register" ? "注册" : "登录" }}</button>
-      <button type="button" class="ghost" @click="mode = mode === 'login' ? 'register' : 'login'">
+      <button type="submit">{{ mode === "register" && registerOpen ? "注册" : "登录" }}</button>
+      <button v-if="registerOpen" type="button" class="ghost" @click="mode = mode === 'login' ? 'register' : 'login'">
         {{ mode === "login" ? "去注册" : "去登录" }}
       </button>
       <button v-if="devLogin" type="button" class="ghost" @click="devEnter().catch((e) => (err = e.message))">
@@ -128,7 +129,8 @@ onUnmounted(() => clearInterval(timer));
     </form>
     <template v-else>
       <p class="lead">
-        {{ me.username }} · 库 <code>{{ db }}</code>
+        {{ me.username }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
+        · 库 <code>{{ db }}</code>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
       <form @submit.prevent="addSub().catch((e) => (err = e.message))">
