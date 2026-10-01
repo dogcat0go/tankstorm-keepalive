@@ -189,7 +189,7 @@
     "登录": {
         "_说明": "扫描号不带 --qq，用根目录 cookies.json。续期顺序：现成 cookie → 向 NapCat 要票据 → 长效凭据静默续期 → 推送登录 → 扫码。NapCat 地址用「登录.内部QQ」，没填则用「通知」里的 qq_api 和 qq_token。NapCat 只服务扫描号",
         "账号": {
-            "_说明": "这里只放攻打号，写在 config.local.json。可写多个，每个名字一份 cookie，例如 {\"攻打1\": {\"cookie\": \"accounts/攻打1.json\"}, \"攻打2\": {\"cookie\": \"accounts/攻打2.json\"}}。不能填 cookies.json，不能开用NapCat，登录后的 QQ 号也不能和扫描号或其他攻打号相同。命令：python3 main.py --qq 攻打1 --login，之后 python3 main.py --qq 攻打1 --move 城市ID。同一份 cookie 同时只能跑一个进程"
+            "_说明": "这里只放攻打号，写在 config.local.json。可写多个，每个名字一份 cookie。扫码QQ 是收二维码图片的 QQ，NapCat 私聊把图发过去，由攻打号自己的手机在另一台设备上扫。扫码QQ 留空则发给「内部QQ.管理员」。不能填 cookies.json，不能开用NapCat，登录后的 QQ 号也不能和扫描号或其他攻打号相同。先 python3 main.py --qq 攻打1 --login，扫完后再在后台跑 python3 main.py --qq 攻打1 --move 城市ID。同一份 cookie 同时只能跑一个进程"
         },
         "推送登录QQ号": "",
         "_推送登录QQ号说明": "填你的QQ号则用「推送登录」：腾讯直接往手机QQ推确认，点一下即可，不用扫码。留空则自动从 cookies.json 里取 uin；取不到才退回扫码。这解决了二维码存本地后用同一台手机相册扫码被拒（限制本地扫码登录）的问题",

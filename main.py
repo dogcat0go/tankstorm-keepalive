@@ -212,6 +212,10 @@ def open_qq(config: dict, name: str) -> QQSession:
             sys.exit(1)
         by_name[key] = path
     path = by_name[name]
+    who = str(spec.get("扫码QQ") or "").strip()
+    if who and (not who.isdigit() or not 5 <= len(who) <= 12):
+        log.error("攻打号「%s」的扫码QQ 要写成 5 到 12 位数字", name)
+        sys.exit(1)
     blocked = set()
     scan_uin = _uin_in_cookie_file(scan_path)
     if scan_uin:
@@ -230,11 +234,12 @@ def open_qq(config: dict, name: str) -> QQSession:
     qq = QQSession(path, qrcode_file=qr)
     qq.use_napcat = False
     qq.attack_account = True
+    qq.account_name = name
+    qq.notify_qq = who
     qq.blocked_uins = blocked
     if qq.shares_blocked_uin():
         sys.exit(1)
-    config.setdefault("登录", {})["推送登录QQ号"] = str(
-        spec.get("推送登录QQ号") or "").strip()
+    config.setdefault("登录", {})["推送登录QQ号"] = ""
     log.info("使用攻打号「%s」，cookie=%s", name, path)
     return qq
 
@@ -558,7 +563,10 @@ def main() -> int:
 
     if not args.login and not qq.is_valid():
         qq.adopt_napcat(config)
-    if args.login:
+    if args.login and qq.attack_account:
+        if not socket_keepalive.relogin_with_push(qq, config):
+            return 1
+    elif args.login:
         if not qq.qr_login(on_qr=on_qr, push_uin=push_uin):
             return 1
     elif not qq.ensure_login(on_qr=on_qr, push_uin=push_uin):
