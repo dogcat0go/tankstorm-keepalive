@@ -485,7 +485,7 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
         notify.push_watch(config, ch, text)
         if token:
             notify.send(config, f"坦克风暴：{who} 出现在 {where} {page}", text)
-        if not citydb.attack_tier(ch.get("tier") or ""):
+        if not (citydb.attack_tier(ch.get("tier") or "") and ch.get("auto_lock")):
             continue
         try:
             queued = citydb.enqueue_online_attack(ch["user_id"], city_id, ch["uid"])

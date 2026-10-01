@@ -27,6 +27,7 @@ const quietEnd = ref("");
 const scanRanges = ref([]);
 const scanNote = ref("");
 const scanQuiet = ref(false);
+const autoLock = ref(false);
 let timer = 0;
 let atkTimer = 0;
 
@@ -87,6 +88,7 @@ async function enter() {
   const who = await api("/api/me");
   me.value = who.user;
   qqTarget.value = who.user.qq_target || "";
+  autoLock.value = !!who.user.auto_lock;
   await refresh();
   await refreshAttacks();
   await loadScan();
@@ -149,9 +151,22 @@ async function loadMe() {
   const who = await r.json();
   me.value = who.user;
   qqTarget.value = who.user.qq_target || "";
+  autoLock.value = !!who.user.auto_lock;
   await refresh();
   await refreshAttacks();
   await loadScan();
+}
+
+async function saveAutoLock(ev) {
+  const on = ev.target.checked;
+  err.value = "";
+  try {
+    const data = await api("/api/auto-lock", { on });
+    autoLock.value = !!data.auto_lock;
+  } catch (e) {
+    ev.target.checked = autoLock.value;
+    err.value = e.message;
+  }
 }
 
 async function addSub() {
@@ -262,8 +277,8 @@ onUnmounted(() => {
         · 库 <code>{{ db }}</code>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
-      <section v-if="me.admin">
-        <h2>扫描安排</h2>
+      <details v-if="me.admin" class="fold">
+        <summary>扫描安排</summary>
         <form class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
           <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>
           <label>停扫开始<input v-model="quietStart" type="time" /></label>
@@ -291,14 +306,20 @@ onUnmounted(() => {
             <span class="muted">{{ scanNote }}</span>
           </p>
         </form>
-      </section>
+      </details>
       <form @submit.prevent="addSub().catch((e) => (err = e.message))">
         <label>城市 ID<input v-model="cityId" inputmode="numeric" required placeholder="1201" /></label>
         <label>用户 UID<input v-model="uid" inputmode="numeric" required /></label>
         <button type="submit">订阅</button>
       </form>
       <p class="muted">这个 UID 第一次出现在扫描结果里，发一条。之后只有从不在这座城变成在线，再发一条。这一轮扫完还没见到，就记成不在这座城。</p>
-      <p v-if="me.remote_attack" class="muted">中级和高级：订阅的人刚上线，会用已经登录过的攻打号排队去打。路径上有打不过的人就停在原地。同一个人一直在城里，下一轮不会再排。</p>
+      <p v-if="me.remote_attack" class="lock-row">
+        <label class="switch">
+          <input type="checkbox" :checked="autoLock" @change="saveAutoLock" />
+          自动锁敌
+        </label>
+        <span class="muted">{{ autoLock ? "已打开。订阅的人刚上线会排队攻打。" : "已关闭。" }}路径上有打不过的人就停在原地。同一个人一直在城里，下一轮不会再排。</span>
+      </p>
       <table>
         <thead>
           <tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>页</th><th>北京时间</th><th></th></tr>
@@ -366,6 +387,11 @@ body { margin: 0; font: 15px/1.5 sans-serif; color: #1a1a1a; background: #f6f6f4
 main { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
 h1 { font-size: 22px; margin: 0 0 8px; }
 h2 { font-size: 16px; margin: 28px 0 8px; }
+details.fold { margin: 28px 0 8px; }
+details.fold summary { font-size: 16px; font-weight: 700; cursor: pointer; }
+details.fold form { margin-top: 8px; }
+.lock-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; }
 .lead { margin: 0 0 16px; color: #444; }
 form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 form.stack { display: grid; max-width: 520px; }
