@@ -126,6 +126,8 @@ def _user_out(user: dict) -> dict:
         "username": user["username"],
         "qq_target": user["qq_target"],
         "expires_at": user.get("expires_at") or "",
+        "tier": user.get("tier") or "初级",
+        "remote_attack": citydb.attack_tier(user.get("tier") or ""),
     }
 
 
@@ -162,6 +164,13 @@ def _handler(config: dict):
                     _json(self, 500, {"error": str(exc)})
                     return
                 _json(self, 200, {"db": citydb.DB_FILE, "items": items})
+                return
+            if path == "/api/attacks":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                _json(self, 200, {"items": citydb.list_attack_orders(user["id"])})
                 return
             self._file(path)
 
@@ -204,6 +213,31 @@ def _handler(config: dict):
                     city_id, uid = _pair(data)
                     citydb.remove_watch(user["id"], city_id, uid)
                     _json(self, 200, {"ok": True})
+                elif path == "/api/attacks":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})
+                        return
+                    try:
+                        city_id = int(str(data.get("city_id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("城市 ID 要是数字") from None
+                    uid = str(data.get("uid", "")).strip()
+                    if city_id <= 0:
+                        raise ValueError("城市 ID 要大于 0")
+                    if not uid.isdigit() or len(uid) > 32:
+                        raise ValueError("UID 要是数字")
+                    why = citydb.add_attack_order(user["id"], city_id, uid)
+                    if why:
+                        raise ValueError(why)
+                    from .socket_keepalive import kick_attack_login
+                    login = kick_attack_login(config)
+                    _json(self, 200, {"ok": True, "login": login})
+                elif path == "/api/attack-login":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})
+                        return
+                    from .socket_keepalive import kick_attack_login
+                    _json(self, 200, {"ok": True, "login": kick_attack_login(config)})
                 elif path == "/api/push":
                     qq_target = str(data.get("qq_target", "")).strip()
                     if qq_target and (not qq_target.isdigit() or not 5 <= len(qq_target) <= 12):
@@ -291,7 +325,8 @@ def _announce(host, port, config):
     if _register_open(config) and host not in ("127.0.0.1", "localhost") and not _invite(config):
         log.warning("注册口令是空的，公网上任何人都能注册。填 config「订阅.注册口令」")
     if not _register_open(config):
-        log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31")
+        log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
+        log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级。中级和高级可提交远程扫码攻打")
     if _dev_login(config):
         log.warning("测试免注册已打开：POST /api/dev-login 会直接以 test 登录。正式对外前关掉「订阅.测试免注册」")
 

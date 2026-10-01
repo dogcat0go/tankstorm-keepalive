@@ -1541,7 +1541,7 @@ def _ready_to_leave(sock, rec, config, loc, my) -> str:
 
 
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
-             avoid=None, replanned=False) -> dict:
+             avoid=None, replanned=False, uid="") -> dict:
     """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
@@ -1809,7 +1809,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             log.info("[路线] %s %s 攻打失败，按最短路径重新规划，避开它",
                      blocked_at, cname)
             nxt = walk_to(rec, sock, config, target, sweep=sweep, beat=beat,
-                          avoid=set(avoid or ()) | {blocked_at}, replanned=True)
+                          avoid=set(avoid or ()) | {blocked_at}, replanned=True,
+                          uid=uid)
             out["移动"] += nxt.get("移动") or 0
             if nxt.get("走到"):
                 out["走到"] = nxt["走到"]
@@ -1823,6 +1824,20 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             out["停止原因"] = f"停在 {out['走到']}，还没挨着目标 {target}"
             return out
         tname = citydb.city_name(target) or target
+        if uid:
+            log.info("[移动] 人在 %s，只打目标 %s %s 里的 UID %s",
+                     out["走到"], target, tname, uid)
+            info = citydb.find_player(uid) or {}
+            page = int(info.get("page") or 0)
+            hitp = attack_player(
+                rec, sock, config, uid, city_id=int(target), sweep=True,
+                beat=beat, until_down=True, page=page)
+            out["攻击"] = hitp.get("成功") or 0
+            if hitp.get("击退") or out["攻击"]:
+                out["停止原因"] = "" if hitp.get("击退") else (hitp.get("停止原因") or "")
+            else:
+                out["停止原因"] = hitp.get("停止原因") or f"没打到 UID {uid}"
+            return out
         log.info("[移动] 人在 %s，开始清目标 %s %s 里的人",
                  out["走到"], target, tname)
         hit = 0

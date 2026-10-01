@@ -139,16 +139,28 @@ def load_config() -> dict:
 _QQ_LOCK = None
 
 
-def _lock_cookie(path: str) -> None:
+def _lock_cookie(path: str, fatal: bool = True) -> bool:
     """同一份 cookie 只能有一个进程。扫描号和攻打号因此不会互相覆盖票据。"""
     global _QQ_LOCK
     fh = open(path + ".lock", "a+")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        log.error("这个号已有进程在用 %s", path)
-        sys.exit(1)
+        fh.close()
+        if fatal:
+            log.error("这个号已有进程在用 %s", path)
+            sys.exit(1)
+        log.info("这个号已有进程在用 %s", path)
+        return False
     _QQ_LOCK = fh
+    return True
+
+
+def release_qq_lock() -> None:
+    global _QQ_LOCK
+    if _QQ_LOCK is not None:
+        _QQ_LOCK.close()
+        _QQ_LOCK = None
 
 
 def _cookie_path(name: str, cookie: str) -> str:
@@ -181,12 +193,13 @@ def _uin_in_cookie_file(path: str) -> str:
     return picked
 
 
-def open_qq(config: dict, name: str) -> QQSession:
+def open_qq(config: dict, name: str, fatal_lock: bool = True):
     """不带名字是扫描号：根目录 cookies.json，可以向 NapCat 要票据。
     带名字是攻打号：独立 cookie，不碰 NapCat，也不能和扫描号是同一个 QQ。"""
     scan_path = os.path.normpath(paths.user_path("cookies.json"))
     if not name:
-        _lock_cookie(scan_path)
+        if not _lock_cookie(scan_path, fatal=fatal_lock):
+            return None
         return QQSession(scan_path)
     accounts = (config.get("登录") or {}).get("账号") or {}
     spec = accounts.get(name)
@@ -230,7 +243,8 @@ def open_qq(config: dict, name: str) -> QQSession:
     if folder:
         os.makedirs(folder, exist_ok=True)
     qr = (path[:-5] if path.endswith(".json") else path) + ".qrcode.png"
-    _lock_cookie(path)
+    if not _lock_cookie(path, fatal=fatal_lock):
+        return None
     qq = QQSession(path, qrcode_file=qr)
     qq.use_napcat = False
     qq.attack_account = True
@@ -316,6 +330,9 @@ def main() -> int:
     g5.add_argument("--move", type=int, metavar="城市ID", default=None,
                     help="沿路线走到能打到这座城的相邻城，然后扫荡这座城"
                          "（type:19，每次 15 点行动力）。敌城有人就先扫荡")
+    g5.add_argument("--orders", action="store_true",
+                    help="领取页面上中级、高级提交的远程扫码攻打。必须 --qq。"
+                         "和扫描进程可以同时开")
     g5.add_argument("--route", type=int, metavar="城市ID", default=None,
                     help="规划怎么打到这座城。当前城市和自己的国家从国战面板读。"
                          "同国城市直接通过，异国城市须先占领。"
@@ -350,7 +367,7 @@ def main() -> int:
                 args.atk, args.atk_city is not None, args.watch_cities,
                 args.watch_pages is not None,
                 args.web, args.list_cities, args.route is not None,
-                args.move is not None,
+                args.move is not None, args.orders,
                 args.capture, args.fund is not None,
                 args.pve is not None)):
         parser.print_help()
@@ -362,6 +379,7 @@ def main() -> int:
                               args.atk, args.atk_city is not None, args.watch_cities,
                               args.watch_pages is not None, args.list_cities,
                               args.route is not None, args.move is not None,
+                              args.orders,
                               args.capture, args.fund is not None,
                               args.pve is not None)):
         log.error("订阅页面已和游戏分开。另开一个进程：python3 web.py")
@@ -426,7 +444,7 @@ def main() -> int:
             return 0
 
     attacking = (args.move is not None or bool(args.atk)
-                 or args.atk_city is not None)
+                 or args.atk_city is not None or args.orders)
     scanning = bool(args.keepalive or args.watch_cities
                     or args.watch_pages is not None)
     if attacking and not args.qq:
@@ -514,6 +532,9 @@ def main() -> int:
     if args.route is not None:
         return socket_keepalive.run_route_once(
             qq, config, args.route, args.city_country)
+
+    if args.orders:
+        return socket_keepalive.run_remote_orders(qq, config)
 
     if args.move is not None:
         return socket_keepalive.run_move_once(

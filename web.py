@@ -9,8 +9,9 @@
 
   python3 web.py
   python3 web.py --host 0.0.0.0 --port 8765
-  python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31
+  python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级
   python3 web.py --set-expires 用户名 2026-12-31
+  python3 web.py --set-tier 用户名 高级
 
 扫城仍用 main.py，例如 python3 main.py --watch-pages 1201:10-20。
 注册默认关闭。有效期按北京时间的日期，这一天仍然有效。
@@ -75,10 +76,24 @@ def main() -> int:
     parser.add_argument("--add-user", metavar="用户名", help="后台添加账号，不启动网页")
     parser.add_argument("--password", metavar="密码", help="和 --add-user 一起用")
     parser.add_argument("--expires", metavar="日期", help="北京时间，这一天仍然有效")
+    parser.add_argument("--tier", default="初级", metavar="档",
+                        help="和 --add-user 一起用：初级、中级或高级，默认初级")
     parser.add_argument("--set-expires", nargs=2, metavar=("用户名", "日期"),
                         help="改已有账号的有效期，不启动网页")
+    parser.add_argument("--set-tier", nargs=2, metavar=("用户名", "档"),
+                        help="把账号标成初级、中级或高级，不启动网页")
     args = parser.parse_args()
-    if args.add_user or args.set_expires:
+    if args.add_user or args.set_expires or args.set_tier:
+        if args.set_tier:
+            name, tier = args.set_tier
+            if tier not in citydb.TIERS:
+                log.error("订阅档只能是初级、中级、高级")
+                return 1
+            if not citydb.set_user_tier(name, tier):
+                log.error("没有这个账号：%s", name)
+                return 1
+            log.info("已把 %s 标为%s", name, tier)
+            return 0
         if args.set_expires:
             name, day = args.set_expires
             day = _date(day)
@@ -100,11 +115,15 @@ def main() -> int:
             return 1
         if not day:
             return 1
-        if citydb.create_user(name, password, day) is None:
+        tier = args.tier or "初级"
+        if tier not in citydb.TIERS:
+            log.error("订阅档只能是初级、中级、高级")
+            return 1
+        if citydb.create_user(name, password, day, tier) is None:
             log.error("这个用户名已经有了。改有效期：python3 web.py --set-expires %s %s",
                       name, day)
             return 1
-        log.info("已添加账号 %s，有效期至 %s", name, day)
+        log.info("已添加账号 %s，%s，有效期至 %s", name, tier, day)
         return 0
     config = _deep_merge(
         _load_json(data_file("config.json")),
