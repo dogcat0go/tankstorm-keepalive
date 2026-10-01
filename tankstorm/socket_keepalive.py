@@ -150,26 +150,35 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
 
         cities, watch_gap = _watch_city_ids(config)
         last_watch = 0.0
+        shown = tuple(cities)
         if cities:
             log.info("城市监视：每 %.0f 秒刷新 %d 座城 %s",
                      watch_gap, len(cities), ",".join(str(c) for c in cities))
         elif (config.get("城市监视") or {}).get("启用"):
-            log.info("城市监视已启用但没填「城市」，跳过")
+            log.info("城市监视已启用。config 里的城市是空的，"
+                     "在订阅页面加上城市和 UID 之后会开始刷新")
 
         sock.settimeout(1.0)
         while True:
             now = time.time()
-            if cities and now - last_watch >= watch_gap:
+            if ((config.get("城市监视") or {}).get("启用")
+                    and now - last_watch >= watch_gap):
+                cities, watch_gap = _watch_city_ids(config)
                 last_watch = now
-                try:
-                    _watch_cities_round(rec, sock, config, cities, heart)
-                except OSError as exc:
-                    return (f"城市监视时连接中断: {exc}"
-                            f"（已发 {heart.count} 次心跳）")
-                except Exception as exc:
-                    log.error("城市监视异常（保活继续）: %s", exc)
-                sock.settimeout(1.0)
-                continue
+                if tuple(cities) != shown:
+                    shown = tuple(cities)
+                    log.info("城市监视名单：%s",
+                             "、".join(str(c) for c in cities) or "(空)")
+                if cities:
+                    try:
+                        _watch_cities_round(rec, sock, config, cities, heart)
+                    except OSError as exc:
+                        return (f"城市监视时连接中断: {exc}"
+                                f"（已发 {heart.count} 次心跳）")
+                    except Exception as exc:
+                        log.error("城市监视异常（保活继续）: %s", exc)
+                    sock.settimeout(1.0)
+                    continue
             try:
                 data = sock.recv(8192)
             except socket.timeout:
@@ -310,8 +319,14 @@ def _watch_city_ids(config):
     w = config.get("城市监视") or {}
     if not w.get("启用"):
         return [], 300.0
+    from . import citydb
     ids, seen = [], set()
-    for x in (w.get("城市") or []):
+    extra = []
+    try:
+        extra = citydb.watch_city_ids()
+    except Exception as exc:
+        log.info("读订阅城市失败：%s", exc)
+    for x in list(w.get("城市") or []) + extra:
         try:
             v = int(x)
         except (TypeError, ValueError):
@@ -344,10 +359,22 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0)
         citydb.record_occupy(city_id, owner, total, ts)
     full = (start_page == 0 and not out.get("原因")
             and total is not None and len(players) >= total)
+    changes = citydb.sync_watch(
+        city_id, [str(p.get("uid") or "") for p in players], full)
     if full:
         gone = citydb.drop_stale(city_id, ts)
         if gone:
             log.info("已清掉本城过期记录 %d 条", gone)
+    token = ((config.get("通知") or {}).get("pushplus_token") or "").strip()
+    for ch in changes:
+        who = ch["name"] or ch["uid"]
+        where = f"{city_id} {cname}".strip()
+        verb = "出现在" if ch["present"] else "已离开"
+        log.info("[订阅] %s %s %s", who, verb, where)
+        if token:
+            notify.send(config, f"坦克风暴：{who} {verb} {where}",
+                        f"城市 {where}\nUID {ch['uid']}\n"
+                        f"{'在城里' if ch['present'] else '不在城里'}")
     oname = citydb.country_name(owner) if owner else ""
     log.info("―― 城市 %s %s ―― 归属国家 %s%s，面板人数 %s，本轮写入 %d 人，最后一页 %s",
              out.get("city"), cname, owner,

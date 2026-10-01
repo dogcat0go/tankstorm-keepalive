@@ -73,6 +73,13 @@ CREATE TABLE IF NOT EXISTS city_occupy (
     user_cnt        INTEGER,
     fetched_at      TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS watch_sub (
+    city_id      INTEGER NOT NULL,
+    uid          TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    last_present INTEGER,
+    PRIMARY KEY (city_id, uid)
+);
 """
 
 
@@ -488,6 +495,125 @@ def drop_stale(city_id: int, fetched_at: str) -> int:
 
 def now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def add_watch(city_id: int, uid: str) -> None:
+    """记下「这座城里有没有这个人」。已有的不改上次状态。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO watch_sub(city_id, uid, created_at) VALUES (?,?,?) "
+            "ON CONFLICT(city_id, uid) DO NOTHING",
+            (int(city_id), str(uid).strip(), now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remove_watch(city_id: int, uid: str) -> None:
+    conn = connect()
+    try:
+        conn.execute("DELETE FROM watch_sub WHERE city_id=? AND uid=?",
+                     (int(city_id), str(uid).strip()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def watch_city_ids() -> list:
+    """网页里订阅过的城市。读失败时给空列表，不拖住游戏连接。"""
+    try:
+        conn = connect(readonly=True, timeout=1)
+    except sqlite3.OperationalError:
+        return []
+    try:
+        return [int(r[0]) for r in conn.execute(
+            "SELECT DISTINCT city_id FROM watch_sub ORDER BY city_id")]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def list_watches() -> list:
+    """每条订阅现在在不在。在不在只看 player 表里还有没有这个人。"""
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT s.city_id, s.uid, s.created_at, IFNULL(c.name, ''), "
+            "p.name, p.lvl, p.fetched_at, "
+            "(SELECT MAX(fetched_at) FROM player WHERE city_id=s.city_id), "
+            "o.fetched_at "
+            "FROM watch_sub s "
+            "LEFT JOIN city c ON c.id=s.city_id "
+            "LEFT JOIN player p ON p.city_id=s.city_id AND p.uid=s.uid "
+            "LEFT JOIN city_occupy o ON o.city_id=s.city_id "
+            "ORDER BY s.created_at DESC, s.rowid DESC"
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for city_id, uid, created, cname, pname, lvl, seen, city_seen, occ_seen in rows:
+        scanned = [t for t in (city_seen, occ_seen) if t]
+        out.append({
+            "city_id": int(city_id),
+            "city_name": cname,
+            "uid": uid,
+            "name": pname or "",
+            "lvl": lvl,
+            "present": seen is not None,
+            "seen_at": seen or "",
+            "city_scanned_at": max(scanned) if scanned else "",
+            "created_at": created,
+        })
+    return out
+
+
+def sync_watch(city_id: int, seen_uids, full: bool) -> list:
+    """用这一轮拉到的人更新订阅状态。只返回相对上次有变化的。
+
+    第一次见到某条订阅只记基准，不报变化。没拉全时只把见到的人标成在城里，
+    不把没见到的标成离开。
+    """
+    city_id = int(city_id)
+    seen = {str(u).strip() for u in seen_uids if str(u).strip()}
+    conn = connect()
+    try:
+        rows = conn.execute(
+            "SELECT uid, last_present FROM watch_sub WHERE city_id=?",
+            (city_id,)).fetchall()
+        if not rows:
+            return []
+        cname = conn.execute("SELECT name FROM city WHERE id=?",
+                             (city_id,)).fetchone()
+        cname = cname[0] if cname else ""
+        changes = []
+        for uid, last in rows:
+            if uid in seen:
+                now = 1
+            elif full:
+                now = 0
+            else:
+                continue
+            name = ""
+            nrow = conn.execute(
+                "SELECT name FROM player WHERE city_id=? AND uid=?",
+                (city_id, uid)).fetchone()
+            if nrow and nrow[0]:
+                name = nrow[0]
+            if last is None or int(last) != now:
+                conn.execute(
+                    "UPDATE watch_sub SET last_present=? WHERE city_id=? AND uid=?",
+                    (now, city_id, uid))
+            if last is not None and int(last) != now:
+                changes.append({
+                    "city_id": city_id, "city_name": cname, "uid": uid,
+                    "name": name, "present": now == 1,
+                })
+        conn.commit()
+        return changes
+    finally:
+        conn.close()
 
 
 def list_city_targets(city_id: int, skip_failed=True, exclude_uid=""):
