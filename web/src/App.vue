@@ -150,7 +150,7 @@ onUnmounted(() => clearInterval(timer));
         <label>用户 UID<input v-model="uid" inputmode="numeric" required /></label>
         <button type="submit">订阅</button>
       </form>
-      <p class="muted">人离开要等这座城被完整翻完页，记录才会消失。状态变化会推到下面填的机器人。</p>
+      <p class="muted">这个 UID 第一次出现在扫描结果里，发一条。之后只有从不在这座城变成在线，再发一条。只翻一段页时，没翻到的人不会被标成离开。</p>
       <table>
         <thead>
           <tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>页</th><th>北京时间</th><th></th></tr>
@@ -183,7 +183,7 @@ onUnmounted(() => clearInterval(timer));
         <button type="submit">保存推送</button>
         <span class="muted">{{ note }}</span>
       </form>
-      <p class="muted">QQ 机器人按 OneBot HTTP（NapCat、Lagrange）调用。飞书用群自定义机器人的 Webhook。</p>
+      <p class="muted">地址保存在这里。消息由正在跑的 main.py 在扫到人时发出。QQ 机器人按 OneBot HTTP（NapCat、Lagrange）调用。飞书用群自定义机器人的 Webhook。</p>
     </template>
     <p class="err">{{ err }}</p>
   </main>
