@@ -808,6 +808,7 @@ def relogin_with_push(qq, config: dict) -> bool:
     push_uin = (config.get("登录", {}) or {}).get("推送登录QQ号") or qq.uin or None
 
     def on_qr(path, pushed=False):
+        notify.send_admin_login_qr(config, path)
         if pushed:
             notify.send_qrcode(
                 config, "坦克风暴：请在手机QQ点「确认登录」", path,

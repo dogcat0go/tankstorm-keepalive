@@ -96,11 +96,12 @@ def send_feishu(webhook: str, text: str) -> bool:
     return False
 
 
-def send_qq(api: str, token: str, target: str, text: str) -> bool:
+def send_qq(api: str, token: str, target: str, text: str, message=None) -> bool:
     """OneBot HTTP（NapCat / Lagrange 这类 QQ 机器人）。
 
     api 是机器人的 HTTP 根，例如 http://127.0.0.1:3000。
     target 是私聊 QQ 号；群消息写成 g:群号。
+    message 给定时原样作为 OneBot 的 message 字段，用来带图片。
     """
     api = (api or "").strip().rstrip("/")
     target = (target or "").strip()
@@ -118,8 +119,10 @@ def send_qq(api: str, token: str, target: str, text: str) -> bool:
     if (token or "").strip():
         headers["Authorization"] = "Bearer " + token.strip()
     try:
-        r = requests.post(api + path, json={key: ident, "message": text},
-                          headers=headers, timeout=10)
+        r = requests.post(
+            api + path,
+            json={key: ident, "message": text if message is None else message},
+            headers=headers, timeout=10)
         data = r.json()
         if data.get("status") == "ok" or data.get("retcode") == 0:
             log.info("QQ 机器人推送成功")
@@ -128,6 +131,32 @@ def send_qq(api: str, token: str, target: str, text: str) -> bool:
     except Exception as exc:
         log.warning("QQ 机器人推送失败 %s: %s", _host(api), exc)
     return False
+
+
+def send_admin_login_qr(config: dict, qrcode_path: str) -> bool:
+    """登录态失效时，用「登录.内部QQ」私聊管理员。没配就跳过。"""
+    inner = ((config.get("登录") or {}).get("内部QQ") or {})
+    api = str(inner.get("地址") or "").strip()
+    token = str(inner.get("Token") or "").strip()
+    admin = str(inner.get("管理员") or "").strip()
+    if not api or not admin:
+        return False
+    text = ("坦克风暴登录态失效。用另一台设备的游戏 QQ 扫这张码，"
+            "不要把图存进同一台手机相册再扫。")
+    message = text
+    try:
+        with open(qrcode_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        message = [
+            {"type": "text", "data": {"text": text}},
+            {"type": "image", "data": {"file": "base64://" + b64}},
+        ]
+    except OSError as exc:
+        log.warning("读取登录二维码失败: %s", exc)
+    ok = send_qq(api, token, admin, text, message=message)
+    if ok:
+        log.info("已把登录二维码发给管理员")
+    return ok
 
 
 def push_watch(config: dict, row: dict, text: str) -> None:
