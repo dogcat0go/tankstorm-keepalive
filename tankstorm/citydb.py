@@ -843,8 +843,10 @@ def attack_status(user_id: int) -> dict:
                 "seen_at": beijing_ts(seen), "qr": False}
     if phase == "login":
         detail = "正在等扫码"
-    elif phase == "running" and own:
+    elif phase == "running" and own and str(own[1] or "").strip():
         detail = f"正在打城市 {own[0]} 的 {own[1]}"
+    elif phase == "running" and own:
+        detail = f"正在清城市 {own[0]}"
     elif phase == "running":
         detail = "正在执行订单"
     else:
@@ -907,12 +909,6 @@ def claim_attack_order():
             conn.execute(
                 "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
                 ("订阅档不够或账号已过期", now, row[0]))
-            conn.commit()
-            return None
-        if not str(row[2] or "").strip():
-            conn.execute(
-                "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
-                ("没有目标 UID", now, row[0]))
             conn.commit()
             return None
         cur = conn.execute(

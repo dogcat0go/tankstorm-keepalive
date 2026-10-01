@@ -618,21 +618,29 @@ def run_move_once(qq, config: dict, city_id, sweep=False, country=0) -> int:
 
 
 def _run_aimed(qq, config: dict, city_id, uid) -> tuple:
-    """寻径到这座城，只打这一个 UID。返回 (退出码, 停止原因)。"""
+    """寻径到这座城。有 UID 只打这一个；没填则和 --move 一样，把城里的人从头打到尾。"""
     from . import country_war
 
     held = {}
+    uid = str(uid or "").strip()
 
     def _work(rec, sock, spec, ctx, beater):
         out = country_war.walk_to(
             rec, sock, config, city_id, beat=beater, uid=uid)
         held["out"] = out
-        log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                 uid, city_id, out.get("移动") or 0, out.get("走到"),
-                 out.get("攻击") if out.get("攻击") is not None else "未打")
+        if uid:
+            log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                     uid, city_id, out.get("移动") or 0, out.get("走到"),
+                     out.get("攻击") if out.get("攻击") is not None else "未打")
+            ok = bool(out.get("攻击"))
+        else:
+            log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                     city_id, out.get("移动") or 0, out.get("走到"),
+                     out.get("攻击") if out.get("攻击") is not None else "未打")
+            ok = out.get("攻击") is not None
         if out.get("停止原因"):
             log.info("   结束原因：%s", out["停止原因"])
-        return 0 if out.get("攻击") else 1
+        return 0 if ok else 1
 
     code = _connect_and(qq, config, _work)
     return code, (held.get("out") or {}).get("停止原因") or ""

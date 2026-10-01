@@ -249,7 +249,7 @@ def _handler(config: dict):
                     uid = str(data.get("uid", "")).strip()
                     if city_id <= 0:
                         raise ValueError("城市 ID 要大于 0")
-                    if not uid.isdigit() or len(uid) > 32:
+                    if uid and (not uid.isdigit() or len(uid) > 32):
                         raise ValueError("UID 要是数字")
                     why = citydb.add_attack_order(user["id"], city_id, uid)
                     if why:
