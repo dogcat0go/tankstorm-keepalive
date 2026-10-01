@@ -357,6 +357,52 @@ class QQSession:
         key = self._get_p_skey() or self.session.cookies.get("skey") or ""
         return calc_g_tk(key)
 
+    def adopt_napcat(self, config: dict) -> bool:
+        """向本机已登录的 NapCat 要空间票据。游戏页认这张票就不用扫码。"""
+        inner = ((config.get("登录") or {}).get("内部QQ") or {})
+        api = str(inner.get("地址") or "").strip().rstrip("/")
+        token = str(inner.get("Token") or "").strip()
+        if not api:
+            note = config.get("通知") or {}
+            api = str(note.get("qq_api") or "").strip().rstrip("/")
+            token = str(note.get("qq_token") or "").strip()
+        if not api:
+            return False
+        headers = {}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        try:
+            r = self.session.post(
+                api + "/get_cookies",
+                json={"domain": "game.qzone.qq.com"},
+                headers=headers, timeout=10)
+            data = r.json()
+        except Exception as exc:
+            log.info("向 NapCat 要票据失败: %s", exc)
+            return False
+        if data.get("status") != "ok" and data.get("retcode") != 0:
+            log.info("NapCat 没有交出票据: %s", data.get("message") or data.get("wording") or data.get("status"))
+            return False
+        raw = ((data.get("data") or {}).get("cookies") or "")
+        pairs = {}
+        for part in raw.split(";"):
+            key, sep, val = part.strip().partition("=")
+            if sep and key and key != "domain_id":
+                pairs[key] = val
+        if not pairs.get("skey") or not pairs.get("p_skey"):
+            log.info("NapCat 票据里没有 skey 或 p_skey")
+            return False
+        qzone_names = {"p_skey", "p_uin", "pt4_token"}
+        for key, val in pairs.items():
+            domain = ".qzone.qq.com" if key in qzone_names else ".qq.com"
+            self._set_cookie(key, val, domain=domain)
+        self._save_cookies()
+        if not self.is_valid():
+            log.info("NapCat 票据打开游戏页未通过")
+            return False
+        log.info("已用 NapCat 当前登录的票据续上，uin=%s", self.uin)
+        return True
+
     def has_long_term_ticket(self) -> bool:
         """是否持有长效登录凭据（腾讯"快速登录/下次自动登录"用的那套）。
 
