@@ -27,6 +27,8 @@
   python main.py --country-war 10   单独跑国战：自动打摩多军团 10 次
   python main.py --city-players 2203              拉芝加哥玩家（从第 0 页）
   python main.py --city-players 2203 --city-page 232  从第 232 页继续
+  python main.py --city-players 2203 --city-page 10 --city-page-end 20
+  python main.py --watch-pages 1201 --city-page 10 --city-page-end 20
   python main.py --watch-cities                    常驻：按 config 城市监视每 5 分钟刷新指定城
   python main.py --web                             订阅接口和 Vue 页面，默认监听 0.0.0.0:8765
   python main.py --atk 7826194927704102           离线打人（默认普通攻击 1 次）
@@ -126,8 +128,17 @@ def main() -> int:
                     help="配合 --city-players / --atk：城市所属国家；"
                          "拉玩家时不填则用自己的国家，打人时不填则查库")
     g5.add_argument("--city-page", type=int, metavar="页码", default=0,
-                    help="配合 --city-players：从第几页继续（0 起算。"
-                         "上次停在第 231 页就传 232）")
+                    help="从第几页开始（0 起算，含这一页。"
+                         "上次停在第 231 页就传 232。"
+                         "订阅页面上的页数要减 1）")
+    g5.add_argument("--city-page-end", type=int, metavar="页码", default=None,
+                    help="翻到第几页为止（0 起算，含这一页）。"
+                         "配合 --city-players 只拉一轮；"
+                         "配合 --watch-pages 每 5 分钟重复这段")
+    g5.add_argument("--watch-pages", type=int, metavar="城市ID", default=None,
+                    help="常驻：每 5 分钟只翻这一座城的 --city-page 到 "
+                         "--city-page-end。不删其他页上的人。"
+                         "间隔可改 config「页范围监视.间隔秒」")
     g5.add_argument("--atk", metavar="BASEID", default=None,
                     help="离线打指定玩家（type:14 普通攻击；加 --sweep 改扫荡。"
                          "不迁城，目标须在邻城）")
@@ -188,6 +199,7 @@ def main() -> int:
                 args.list, args.reset, args.task, args.import_device,
                 args.country_war, args.city_players is not None,
                 args.atk, args.atk_city is not None, args.watch_cities,
+                args.watch_pages is not None,
                 args.web, args.list_cities, args.route is not None,
                 args.move is not None,
                 args.capture, args.fund is not None,
@@ -278,6 +290,25 @@ def main() -> int:
         return 0
 
     # 保活：常驻。--keepalive --daily 时才顺带跑一轮任务
+    if args.city_page < 0 or (args.city_page_end is not None and args.city_page_end < 0):
+        log.error("页码从 0 起，不能是负数")
+        return 1
+    if args.city_page_end is not None and args.city_page_end < args.city_page:
+        log.error("结束页 %s 小于起始页 %s", args.city_page_end, args.city_page)
+        return 1
+    if args.watch_pages is not None:
+        if args.watch_pages <= 0:
+            log.error("城市 ID 要大于 0")
+            return 1
+        if args.city_page_end is None:
+            log.error("页范围监视要带 --city-page-end。页码从 0 起，含结束页")
+            return 1
+        span = config.setdefault("页范围监视", {})
+        span["启用"] = True
+        span["城市"] = args.watch_pages
+        span["起始页"] = args.city_page
+        span["结束页"] = args.city_page_end
+        config.setdefault("保持活跃", {})["启用"] = True
     if args.watch_cities:
         w = config.setdefault("城市监视", {})
         w["启用"] = True
@@ -289,14 +320,14 @@ def main() -> int:
                       "先 python3 main.py --web 加上，或在 config 里填城市 ID")
             return 1
         config.setdefault("保持活跃", {})["启用"] = True
-    if args.web and (args.keepalive or args.watch_cities):
+    if args.web and (args.keepalive or args.watch_cities or args.watch_pages is not None):
         from tankstorm import webui
         try:
             webui.start(args.web_host, args.web_port, config)
         except OSError as exc:
             log.error("订阅页面没能监听 %s:%s：%s", args.web_host, args.web_port, exc)
             return 1
-    if args.keepalive or args.watch_cities:
+    if args.keepalive or args.watch_cities or args.watch_pages is not None:
         return socket_keepalive.run(qq, config, with_daily=args.daily)
     if args.web:
         from tankstorm import webui
@@ -326,7 +357,8 @@ def main() -> int:
 
     if args.city_players is not None:
         return socket_keepalive.run_city_players_once(
-            qq, config, args.city_players, args.city_country, args.city_page)
+            qq, config, args.city_players, args.city_country, args.city_page,
+            end_page=args.city_page_end)
 
     # 离线打人：连一次、开目标城面板、type:14/19，不迁城
     if args.atk:

@@ -151,16 +151,34 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         cities, watch_gap = _watch_city_ids(config)
         last_watch = 0.0
         shown = tuple(cities)
+        page_job = _page_range_job(config)
+        last_pages = 0.0
         if cities:
             log.info("城市监视：每 %.0f 秒刷新 %d 座城 %s",
                      watch_gap, len(cities), ",".join(str(c) for c in cities))
         elif (config.get("城市监视") or {}).get("启用"):
             log.info("城市监视已启用。config 里的城市是空的，"
                      "在订阅页面加上城市和 UID 之后会开始刷新")
+        if page_job:
+            log.info("页范围监视：每 %.0f 秒刷新城市 %s 第 %d–%d 页",
+                     page_job[3], page_job[0], page_job[1], page_job[2])
 
         sock.settimeout(1.0)
         while True:
             now = time.time()
+            if page_job and now - last_pages >= page_job[3]:
+                last_pages = now
+                city_id, start, end, _gap = page_job
+                try:
+                    _scan_one_city(rec, sock, config, city_id, heart,
+                                   start_page=start, end_page=end)
+                except OSError as exc:
+                    return (f"页范围监视时连接中断: {exc}"
+                            f"（已发 {heart.count} 次心跳）")
+                except Exception as exc:
+                    log.error("页范围监视异常（保活继续）: %s", exc)
+                sock.settimeout(1.0)
+                continue
             if ((config.get("城市监视") or {}).get("启用")
                     and now - last_watch >= watch_gap):
                 cities, watch_gap = _watch_city_ids(config)
@@ -337,7 +355,27 @@ def _watch_city_ids(config):
     return ids, float(w.get("间隔秒") or 300)
 
 
-def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0):
+def _page_range_job(config):
+    """页范围监视：一座城、一段页码、间隔秒。没启用返回 None。"""
+    w = config.get("页范围监视") or {}
+    if not w.get("启用"):
+        return None
+    try:
+        city = int(w.get("城市") or 0)
+        start = int(w.get("起始页") or 0)
+        end = int(w.get("结束页"))
+        gap = float(w.get("间隔秒") or 300)
+    except (TypeError, ValueError):
+        log.error("页范围监视配置不完整：需要城市、起始页、结束页")
+        return None
+    if city <= 0 or start < 0 or end < start:
+        log.error("页范围监视页码无效：城市 %s，第 %s–%s 页", city, start, end)
+        return None
+    return city, start, end, gap
+
+
+def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
+                   end_page=None):
     """拉一座城：玩家入库，并记下当前归属国。"""
     from . import citydb, country_war
 
@@ -350,7 +388,7 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0)
 
     out = country_war.list_city_players(
         rec, sock, config, city_id, country=country_id, beat=beat,
-        on_page=on_page, start_page=start_page)
+        on_page=on_page, start_page=start_page, end_page=end_page)
     players = out.get("玩家") or []
     last = out.get("last_page")
     total = out.get("userCnt")
@@ -433,7 +471,8 @@ def run_country_war_once(qq, config: dict, rounds: int) -> int:
 
 
 def run_city_players_once(qq, config: dict, city_id: int,
-                          country_id: int = 0, start_page: int = 0) -> int:
+                          country_id: int = 0, start_page: int = 0,
+                          end_page=None) -> int:
     """连一次游戏、查询指定城市的玩家列表、写入 sqlite、断开退出。"""
     from . import citydb
 
@@ -443,7 +482,8 @@ def run_city_players_once(qq, config: dict, city_id: int,
         except Exception as exc:
             log.warning("城市目录更新失败（仍会写玩家）：%s", exc)
         out, n = _scan_one_city(rec, sock, config, city_id, beater,
-                               country_id=country_id, start_page=start_page)
+                               country_id=country_id, start_page=start_page,
+                               end_page=end_page)
         last = out.get("last_page")
         log.info("   查询期间共发心跳 %d 次；库文件 %s", beater.count, citydb.DB_FILE)
         if out.get("原因"):

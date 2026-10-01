@@ -774,22 +774,28 @@ def _wait_city_users(sock, rec, since, city_id, timeout=6.0):
 
 def list_city_players(rec, sock, config: dict, city_id: int,
                       country: int = 0, beat=None, on_page=None,
-                      start_page: int = 0) -> dict:
+                      start_page: int = 0, end_page=None) -> dict:
     """只读：打开指定城市面板，收集城里所有玩家。
 
     走 RceCountryOpt type:3（开面板，不花行动力）。玩家在
     RseCountryUserLst；人多时用 pageInx 翻页。on_page(batch, page) 每页回调。
-    start_page 从 0 起算，用来断线后续拉。返回另带 last_page。
+    start_page、end_page 都从 0 起算，结束页包含在内。不传 end_page 就翻到城尾。
+    返回另带 last_page。
     """
     conf = (config.get("国战", {}) or {})
     city_id = int(city_id)
     start_page = max(0, int(start_page or 0))
+    if end_page is not None:
+        end_page = int(end_page)
     country = int(country or conf.get("自己国家ID") or 0) \
         or _daily.read_my_country(rec)
     out = {"city": city_id, "owner": None, "userCnt": None, "玩家": [],
            "原因": "", "last_page": start_page, "start_page": start_page}
     if not city_id:
         out["原因"] = "城市 ID 不能为 0"
+        return out
+    if end_page is not None and end_page < start_page:
+        out["原因"] = f"结束页 {end_page} 小于起始页 {start_page}"
         return out
     if not country:
         out["原因"] = ("读不到自己的国家ID，停手；"
@@ -802,20 +808,21 @@ def list_city_players(rec, sock, config: dict, city_id: int,
         _daily._BEAT = beat
     try:
         return _list_city_players(rec, sock, city_id, country, out, on_page,
-                                 start_page)
+                                 start_page, end_page)
     finally:
         _daily._BEAT = prev
 
 
 def _list_city_players(rec, sock, city_id, country, out, on_page=None,
-                      start_page=0):
+                      start_page=0, end_page=None):
     # 先刷自己国家的面板，跟真客户端进世界地图的顺序一致；也用来确认连着。
     power, loc, _, panel = _panel(sock, rec, country)
     if panel is None:
         out["原因"] = "读不到国战面板，停手"
         return out
-    log.info("[城市玩家] 自己国家=%s 当前城市=%s 行动力=%s；查询城市 %s，从第 %d 页开始",
-             country, loc, power, city_id, start_page)
+    span = f"，到第 {end_page} 页止" if end_page is not None else ""
+    log.info("[城市玩家] 自己国家=%s 当前城市=%s 行动力=%s；查询城市 %s，从第 %d 页开始%s",
+             country, loc, power, city_id, start_page, span)
 
     players, seen = [], set()
     owner = None
@@ -893,6 +900,9 @@ def _list_city_players(rec, sock, city_id, country, out, on_page=None,
         if on_page:
             on_page(batch, page)
         if new == 0:
+            break
+        if end_page is not None and page >= end_page:
+            log.info("[城市玩家] 已到指定结束页 %d，本轮停", end_page)
             break
         if total is not None:
             max_pages = min(2000, max(page + 2,
