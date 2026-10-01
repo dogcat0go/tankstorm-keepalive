@@ -1396,10 +1396,11 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
         _daily._BEAT = prev
 
 
-def live_plan(sock, rec, here, target, my, avoid=None) -> dict:
+def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False) -> dict:
     """先按本地归属规划，再开面板核对路线上每座城的占领国，变了就重算。
 
     目录里的国家是原属国。9316 这类城被法国占了之后，不看面板仍会写成黑暗联盟。
+    stop_on_block 时只核这一轮：路径上有打不过的人就停，不改道。
     """
     from . import citydb
 
@@ -1408,7 +1409,7 @@ def live_plan(sock, rec, here, target, my, avoid=None) -> dict:
     fail = citydb.failed_uids()
     me = str(getattr(rec, "uid", "") or "")
     plan = citydb.plan_route(here, target, my, blocked)
-    for _ in range(6):
+    for _ in range(1 if stop_on_block else 6):
         seq = list(plan.get("路径") or [])
         if target not in seq:
             seq.append(int(target))
@@ -1440,8 +1441,18 @@ def live_plan(sock, rec, here, target, my, avoid=None) -> dict:
                     bad.append(p.get("name") or uid)
             if bad:
                 blocked.add(int(city))
+                who = "、".join(bad)
+                if stop_on_block:
+                    plan["避开"] = blocked
+                    plan["暂停"] = (
+                        f"路径上 {city} {name} 有打不过的人：{who}，暂停此次行动")
+                    log.info("[路线] %s", plan["暂停"])
+                    return plan
                 log.info("[路线] %s %s 有打不过的人：%s，规划时跳过",
-                         city, name, "、".join(bad))
+                         city, name, who)
+        if stop_on_block:
+            plan["避开"] = blocked
+            return plan
         nxt = citydb.plan_route(here, target, my, blocked)
         if (not changed and nxt.get("路径") == plan.get("路径")
                 and nxt.get("须占领") == plan.get("须占领")):
@@ -1550,7 +1561,7 @@ def _ready_to_leave(sock, rec, config, loc, my) -> str:
 
 
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
-             avoid=None, replanned=False, uid="") -> dict:
+             avoid=None, replanned=False, uid="", hold_if_blocked=False) -> dict:
     """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
@@ -1571,10 +1582,14 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         return out
     out["走到"] = int(loc)
     citydb.note_attack_here(loc)
-    plan = live_plan(sock, rec, loc, target, my, avoid)
+    plan = live_plan(sock, rec, loc, target, my, avoid,
+                     stop_on_block=hold_if_blocked)
     avoid = set(plan.get("避开") or avoid or ())
     for line in citydb.format_route(plan):
         log.info("[路线] %s", line)
+    if plan.get("暂停"):
+        out["停止原因"] = plan["暂停"]
+        return out
     if not plan.get("路径"):
         out["停止原因"] = plan.get("原因") or "没有通路"
         return out

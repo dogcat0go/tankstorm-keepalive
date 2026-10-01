@@ -298,6 +298,7 @@ onUnmounted(() => {
         <button type="submit">订阅</button>
       </form>
       <p class="muted">这个 UID 第一次出现在扫描结果里，发一条。之后只有从不在这座城变成在线，再发一条。这一轮扫完还没见到，就记成不在这座城。</p>
+      <p v-if="me.remote_attack" class="muted">中级和高级：订阅的人刚上线，会用已经登录过的攻打号排队去打。路径上有打不过的人就停在原地。同一个人一直在城里，下一轮不会再排。</p>
       <table>
         <thead>
           <tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>页</th><th>北京时间</th><th></th></tr>
