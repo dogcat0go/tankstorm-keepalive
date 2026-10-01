@@ -11,9 +11,6 @@ const items = ref([]);
 const db = ref("");
 const cityId = ref("");
 const uid = ref("");
-const feishu = ref("");
-const qqApi = ref("");
-const qqToken = ref("");
 const qqTarget = ref("");
 const note = ref("");
 const devLogin = ref(false);
@@ -48,9 +45,6 @@ async function enter() {
   });
   const who = await api("/api/me");
   me.value = who.user;
-  feishu.value = who.user.feishu_webhook || "";
-  qqApi.value = who.user.qq_api || "";
-  qqToken.value = who.user.qq_token || "";
   qqTarget.value = who.user.qq_target || "";
   await refresh();
 }
@@ -66,9 +60,6 @@ async function loadMe() {
   if (!r.ok) return;
   const who = await r.json();
   me.value = who.user;
-  feishu.value = who.user.feishu_webhook || "";
-  qqApi.value = who.user.qq_api || "";
-  qqToken.value = who.user.qq_token || "";
   qqTarget.value = who.user.qq_target || "";
   await refresh();
 }
@@ -89,13 +80,8 @@ async function removeSub(it) {
 async function savePush() {
   note.value = "";
   err.value = "";
-  await api("/api/push", {
-    feishu_webhook: feishu.value,
-    qq_api: qqApi.value,
-    qq_token: qqToken.value,
-    qq_target: qqTarget.value,
-  });
-  note.value = "推送地址已保存";
+  await api("/api/push", { qq_target: qqTarget.value });
+  note.value = "QQ 号已保存";
 }
 
 async function logout() {
@@ -170,20 +156,13 @@ onUnmounted(() => clearInterval(timer));
       <p v-if="!items.length" class="muted">还没有订阅。</p>
       <h2>推送</h2>
       <form class="stack" @submit.prevent="savePush().catch((e) => (err = e.message))">
-        <label>飞书机器人 Webhook
-          <input v-model="feishu" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
+        <label>接收 QQ
+          <input v-model="qqTarget" inputmode="numeric" autocomplete="off" placeholder="你的 QQ 号" />
         </label>
-        <label>QQ 机器人地址
-          <input v-model="qqApi" placeholder="http://127.0.0.1:3000" />
-        </label>
-        <label>QQ Token<input v-model="qqToken" autocomplete="off" /></label>
-        <label>接收人
-          <input v-model="qqTarget" placeholder="私聊填 QQ 号，群填 g:群号" />
-        </label>
-        <button type="submit">保存推送</button>
+        <button type="submit">保存</button>
         <span class="muted">{{ note }}</span>
       </form>
-      <p class="muted">地址保存在这里。消息由正在跑的 main.py 在扫到人时发出。QQ 机器人按 OneBot HTTP（NapCat、Lagrange）调用。飞书用群自定义机器人的 Webhook。</p>
+      <p class="muted">私聊发到这个 QQ。机器人地址和 Token 在服务器配置里，页面上不填写。</p>
     </template>
     <p class="err">{{ err }}</p>
   </main>

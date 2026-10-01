@@ -581,14 +581,12 @@ def user_by_token(token: str):
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT u.id, u.username, IFNULL(u.feishu_webhook,''), "
-            "IFNULL(u.qq_api,''), IFNULL(u.qq_token,''), IFNULL(u.qq_target,'') "
+            "SELECT u.id, u.username, IFNULL(u.qq_target,'') "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row:
             return None
-        return {"id": row[0], "username": row[1], "feishu_webhook": row[2],
-                "qq_api": row[3], "qq_token": row[4], "qq_target": row[5]}
+        return {"id": row[0], "username": row[1], "qq_target": row[2]}
     finally:
         conn.close()
 
@@ -628,14 +626,14 @@ def logout_token(token: str) -> None:
         conn.close()
 
 
-def save_push(user_id: int, feishu_webhook: str, qq_api: str,
-              qq_token: str, qq_target: str) -> None:
+def save_push(user_id: int, qq_target: str) -> None:
+    """只存这个账号的接收 QQ。机器人地址和 Token 在服务器配置里。"""
     conn = connect()
     try:
         conn.execute(
-            "UPDATE app_user SET feishu_webhook=?, qq_api=?, qq_token=?, qq_target=? "
+            "UPDATE app_user SET qq_target=?, feishu_webhook='', qq_api='', qq_token='' "
             "WHERE id=?",
-            (feishu_webhook, qq_api, qq_token, qq_target, int(user_id)))
+            (qq_target, int(user_id)))
         conn.commit()
     finally:
         conn.close()
@@ -727,9 +725,7 @@ def sync_watch(city_id: int, seen_uids, full: bool) -> list:
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT s.user_id, s.uid, s.last_present, "
-            "IFNULL(u.feishu_webhook,''), IFNULL(u.qq_api,''), "
-            "IFNULL(u.qq_token,''), IFNULL(u.qq_target,'') "
+            "SELECT s.user_id, s.uid, s.last_present, IFNULL(u.qq_target,'') "
             "FROM watch_sub s JOIN app_user u ON u.id=s.user_id "
             "WHERE s.city_id=?",
             (city_id,)).fetchall()
@@ -739,7 +735,7 @@ def sync_watch(city_id: int, seen_uids, full: bool) -> list:
                              (city_id,)).fetchone()
         cname = cname[0] if cname else ""
         changes = []
-        for user_id, uid, last, feishu, qq_api, qq_token, qq_target in rows:
+        for user_id, uid, last, qq_target in rows:
             if uid in seen:
                 now = 1
             elif full:
@@ -761,8 +757,7 @@ def sync_watch(city_id: int, seen_uids, full: bool) -> list:
                 changes.append({
                     "user_id": user_id, "city_id": city_id, "city_name": cname,
                     "uid": uid, "name": name, "present": now == 1,
-                    "feishu_webhook": feishu, "qq_api": qq_api,
-                    "qq_token": qq_token, "qq_target": qq_target,
+                    "qq_target": qq_target,
                 })
         conn.commit()
         return changes

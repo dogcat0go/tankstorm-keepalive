@@ -437,7 +437,7 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
         verb = "出现在" if ch["present"] else "已离开"
         text = f"{who} {verb} {where}\nUID {ch['uid']}"
         log.info("[订阅] %s %s %s", who, verb, where)
-        notify.push_watch(ch, text)
+        notify.push_watch(config, ch, text)
         if token:
             notify.send(config, f"坦克风暴：{who} {verb} {where}", text)
     oname = citydb.country_name(owner) if owner else ""

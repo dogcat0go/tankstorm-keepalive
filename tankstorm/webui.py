@@ -120,9 +120,6 @@ def _user_out(user: dict) -> dict:
     return {
         "id": user["id"],
         "username": user["username"],
-        "feishu_webhook": user["feishu_webhook"],
-        "qq_api": user["qq_api"],
-        "qq_token": user["qq_token"],
         "qq_target": user["qq_target"],
     }
 
@@ -201,14 +198,10 @@ def _handler(config: dict):
                     citydb.remove_watch(user["id"], city_id, uid)
                     _json(self, 200, {"ok": True})
                 elif path == "/api/push":
-                    feishu = str(data.get("feishu_webhook", "")).strip()
-                    qq_api = str(data.get("qq_api", "")).strip()
-                    qq_token = str(data.get("qq_token", "")).strip()
                     qq_target = str(data.get("qq_target", "")).strip()
-                    for url in (feishu, qq_api):
-                        if url and not url.startswith(("http://", "https://")):
-                            raise ValueError("地址要以 http:// 或 https:// 开头")
-                    citydb.save_push(user["id"], feishu, qq_api, qq_token, qq_target)
+                    if qq_target and (not qq_target.isdigit() or not 5 <= len(qq_target) <= 12):
+                        raise ValueError("QQ 号要是 5 到 12 位数字")
+                    citydb.save_push(user["id"], qq_target)
                     _json(self, 200, {"ok": True})
                 else:
                     self.send_error(404)

@@ -130,8 +130,9 @@ def send_qq(api: str, token: str, target: str, text: str) -> bool:
     return False
 
 
-def push_watch(row: dict, text: str) -> None:
-    """一条订阅状态变化，按这个账号填的机器人地址推。没填的跳过。"""
-    send_feishu(row.get("feishu_webhook") or "", text)
-    send_qq(row.get("qq_api") or "", row.get("qq_token") or "",
+def push_watch(config: dict, row: dict, text: str) -> None:
+    """按服务器「通知」里的机器人，私聊给这个账号填的 QQ。没填的跳过。"""
+    note = config.get("通知") or {}
+    send_feishu(note.get("feishu_webhook") or "", text)
+    send_qq(note.get("qq_api") or "", note.get("qq_token") or "",
             row.get("qq_target") or "", text)
