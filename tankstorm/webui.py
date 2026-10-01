@@ -129,6 +129,7 @@ def _user_out(user: dict) -> dict:
         "tier": user.get("tier") or "初级",
         "remote_attack": citydb.attack_tier(user.get("tier") or ""),
         "admin": bool(user.get("admin")),
+        "auto_lock": bool(user.get("auto_lock")),
     }
 
 
@@ -221,7 +222,7 @@ def _handler(config: dict):
                     _json(self, 401, {"error": "请先登录"})
                     return
                 _json(self, 200, {
-                    "items": citydb.list_attack_orders(user["id"]),
+                    "items": citydb.list_attack_orders(user["id"], limit=2),
                     "process": citydb.attack_status(user["id"]),
                 })
                 return
@@ -313,6 +314,12 @@ def _handler(config: dict):
                         return
                     from .socket_keepalive import kick_attack_login
                     _json(self, 200, {"ok": True, "login": kick_attack_login(config)})
+                elif path == "/api/auto-lock":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "自动锁敌需要中级或高级订阅"})
+                        return
+                    citydb.set_auto_lock(user["id"], bool(data.get("on")))
+                    _json(self, 200, {"ok": True, "auto_lock": bool(data.get("on"))})
                 elif path == "/api/scan-plan":
                     if not user.get("admin"):
                         _json(self, 403, {"error": "只有管理员能改扫描安排"})

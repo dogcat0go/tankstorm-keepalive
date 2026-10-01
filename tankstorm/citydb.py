@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     expires_at      TEXT,
     tier            TEXT NOT NULL DEFAULT '初级',
     admin           INTEGER NOT NULL DEFAULT 0,
+    auto_lock       INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -191,6 +192,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "admin" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN admin INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "auto_lock" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN auto_lock INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
             if ocols and "uid" not in ocols:
@@ -698,13 +703,14 @@ def user_by_token(token: str):
     try:
         row = conn.execute(
             "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,''), "
-            "IFNULL(u.tier,'初级'), IFNULL(u.admin,0) "
+            "IFNULL(u.tier,'初级'), IFNULL(u.admin,0), IFNULL(u.auto_lock,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
             return None
         return {"id": row[0], "username": row[1], "qq_target": row[2],
-                "expires_at": row[3], "tier": row[4], "admin": bool(row[5])}
+                "expires_at": row[3], "tier": row[4], "admin": bool(row[5]),
+                "auto_lock": bool(row[6])}
     finally:
         conn.close()
 
@@ -773,6 +779,17 @@ def add_attack_order(user_id: int, city_id: int, uid: str) -> str:
             (int(user_id), int(city_id), str(uid).strip(), "pending", "", now, now))
         conn.commit()
         return ""
+    finally:
+        conn.close()
+
+
+def set_auto_lock(user_id: int, on: bool) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE app_user SET auto_lock=? WHERE id=?",
+            (1 if on else 0, int(user_id)))
+        conn.commit()
     finally:
         conn.close()
 
@@ -1261,7 +1278,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
     try:
         rows = conn.execute(
             "SELECT s.user_id, s.uid, s.last_present, IFNULL(u.qq_target,''), "
-            "IFNULL(u.expires_at,''), IFNULL(u.tier,'初级') "
+            "IFNULL(u.expires_at,''), IFNULL(u.tier,'初级'), IFNULL(u.auto_lock,0) "
             "FROM watch_sub s JOIN app_user u ON u.id=s.user_id "
             "WHERE s.city_id=?",
             (city_id,)).fetchall()
@@ -1271,7 +1288,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                              (city_id,)).fetchone()
         cname = cname[0] if cname else ""
         changes = []
-        for user_id, uid, last, qq_target, expires_at, tier in rows:
+        for user_id, uid, last, qq_target, expires_at, tier, auto_lock in rows:
             if uid in seen:
                 now = 1
             elif finished:
@@ -1297,6 +1314,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                     "user_id": user_id, "city_id": city_id, "city_name": cname,
                     "uid": uid, "name": name, "page": page, "present": now == 1,
                     "qq_target": qq_target, "tier": tier or "初级",
+                    "auto_lock": bool(auto_lock),
                 })
         conn.commit()
         return changes
