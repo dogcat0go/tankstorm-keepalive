@@ -89,10 +89,16 @@ CREATE TABLE IF NOT EXISTS atk_order (
     id          INTEGER PRIMARY KEY,
     user_id     INTEGER NOT NULL,
     city_id     INTEGER NOT NULL,
+    uid         TEXT NOT NULL DEFAULT '',
     status      TEXT NOT NULL,
     reason      TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS atk_signal (
+    name  TEXT PRIMARY KEY,
+    value TEXT,
+    at    TEXT
 );
 CREATE TABLE IF NOT EXISTS app_session (
     token      TEXT PRIMARY KEY,
@@ -170,6 +176,11 @@ def connect(readonly=False, timeout=15):
             if ucols and "tier" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN tier TEXT NOT NULL DEFAULT '初级'")
+                setup.commit()
+            ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
+            if ocols and "uid" not in ocols:
+                setup.execute(
+                    "ALTER TABLE atk_order ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             _schema_ready = True
         finally:
@@ -714,7 +725,7 @@ def save_push(user_id: int, qq_target: str) -> None:
         conn.close()
 
 
-def add_attack_order(user_id: int, city_id: int) -> str:
+def add_attack_order(user_id: int, city_id: int, uid: str) -> str:
     """提交一条远程扫码攻打。已有未完成的单时返回原因，成功返回空字符串。"""
     conn = connect()
     try:
@@ -725,9 +736,9 @@ def add_attack_order(user_id: int, city_id: int) -> str:
             return "已经有一条还没打完"
         now = now_ts()
         conn.execute(
-            "INSERT INTO atk_order(user_id, city_id, status, reason, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (int(user_id), int(city_id), "pending", "", now, now))
+            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (int(user_id), int(city_id), str(uid).strip(), "pending", "", now, now))
         conn.commit()
         return ""
     finally:
@@ -738,13 +749,43 @@ def list_attack_orders(user_id: int, limit: int = 20) -> list:
     conn = connect(readonly=True)
     try:
         rows = conn.execute(
-            "SELECT id, city_id, status, IFNULL(reason,''), created_at "
+            "SELECT id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at "
             "FROM atk_order WHERE user_id=? ORDER BY id DESC LIMIT ?",
             (int(user_id), int(limit))).fetchall()
     finally:
         conn.close()
-    return [{"id": r[0], "city_id": r[1], "status": r[2], "reason": r[3],
-             "created_at": beijing_ts(r[4])} for r in rows]
+    return [{"id": r[0], "city_id": r[1], "uid": r[2], "status": r[3],
+             "reason": r[4], "created_at": beijing_ts(r[5])} for r in rows]
+
+
+def ask_attack_login() -> None:
+    """网页发起登录，但攻打进程正占着这个号。让那个进程去推二维码。"""
+    conn = connect()
+    try:
+        now = now_ts()
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES ('login','1',?) "
+            "ON CONFLICT(name) DO UPDATE SET value='1', at=excluded.at",
+            (now,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def take_attack_login() -> bool:
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='login'").fetchone()
+        if not row or row[0] != "1":
+            return False
+        conn.execute(
+            "UPDATE atk_signal SET value='0', at=? WHERE name='login'",
+            (now_ts(),))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
 
 
 def claim_attack_order():
@@ -760,16 +801,23 @@ def claim_attack_order():
             "WHERE status='running' AND updated_at<?",
             (now, cutoff))
         row = conn.execute(
-            "SELECT o.id, o.city_id, IFNULL(u.tier,'初级'), IFNULL(u.expires_at,'') "
+            "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
+            "IFNULL(u.expires_at,'') "
             "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
             "WHERE o.status='pending' ORDER BY o.id LIMIT 1").fetchone()
         if not row:
             conn.commit()
             return None
-        if not attack_tier(row[2]) or account_expired(row[3]):
+        if not attack_tier(row[3]) or account_expired(row[4]):
             conn.execute(
                 "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
                 ("订阅档不够或账号已过期", now, row[0]))
+            conn.commit()
+            return None
+        if not str(row[2] or "").strip():
+            conn.execute(
+                "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
+                ("没有目标 UID", now, row[0]))
             conn.commit()
             return None
         cur = conn.execute(
@@ -779,7 +827,7 @@ def claim_attack_order():
         conn.commit()
         if cur.rowcount != 1:
             return None
-        return {"id": row[0], "city_id": row[1]}
+        return {"id": row[0], "city_id": row[1], "uid": row[2]}
     finally:
         conn.close()
 
@@ -1066,7 +1114,7 @@ def find_player(uid: str):
         try:
             row = conn.execute(
                 "SELECT p.uid, p.city_id, p.name, p.lvl, p.country_id, p.morale, "
-                "IFNULL(o.occupy_country, c.country_id), c.name "
+                "IFNULL(o.occupy_country, c.country_id), c.name, IFNULL(p.page,0) "
                 "FROM player p LEFT JOIN city c ON c.id=p.city_id "
                 "LEFT JOIN city_occupy o ON o.city_id=p.city_id "
                 "WHERE p.uid=? ORDER BY p.fetched_at DESC LIMIT 1",
@@ -1075,7 +1123,7 @@ def find_player(uid: str):
                 return None
             return {"uid": row[0], "city_id": row[1], "name": row[2], "lvl": row[3],
                     "country_id": row[4], "morale": row[5],
-                    "city_country": row[6], "city_name": row[7]}
+                    "city_country": row[6], "city_name": row[7], "page": row[8]}
         finally:
             conn.close()
 

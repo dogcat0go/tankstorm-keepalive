@@ -139,16 +139,28 @@ def load_config() -> dict:
 _QQ_LOCK = None
 
 
-def _lock_cookie(path: str) -> None:
+def _lock_cookie(path: str, fatal: bool = True) -> bool:
     """同一份 cookie 只能有一个进程。扫描号和攻打号因此不会互相覆盖票据。"""
     global _QQ_LOCK
     fh = open(path + ".lock", "a+")
     try:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        log.error("这个号已有进程在用 %s", path)
-        sys.exit(1)
+        fh.close()
+        if fatal:
+            log.error("这个号已有进程在用 %s", path)
+            sys.exit(1)
+        log.info("这个号已有进程在用 %s", path)
+        return False
     _QQ_LOCK = fh
+    return True
+
+
+def release_qq_lock() -> None:
+    global _QQ_LOCK
+    if _QQ_LOCK is not None:
+        _QQ_LOCK.close()
+        _QQ_LOCK = None
 
 
 def _cookie_path(name: str, cookie: str) -> str:
@@ -181,12 +193,13 @@ def _uin_in_cookie_file(path: str) -> str:
     return picked
 
 
-def open_qq(config: dict, name: str) -> QQSession:
+def open_qq(config: dict, name: str, fatal_lock: bool = True):
     """不带名字是扫描号：根目录 cookies.json，可以向 NapCat 要票据。
     带名字是攻打号：独立 cookie，不碰 NapCat，也不能和扫描号是同一个 QQ。"""
     scan_path = os.path.normpath(paths.user_path("cookies.json"))
     if not name:
-        _lock_cookie(scan_path)
+        if not _lock_cookie(scan_path, fatal=fatal_lock):
+            return None
         return QQSession(scan_path)
     accounts = (config.get("登录") or {}).get("账号") or {}
     spec = accounts.get(name)
@@ -230,7 +243,8 @@ def open_qq(config: dict, name: str) -> QQSession:
     if folder:
         os.makedirs(folder, exist_ok=True)
     qr = (path[:-5] if path.endswith(".json") else path) + ".qrcode.png"
-    _lock_cookie(path)
+    if not _lock_cookie(path, fatal=fatal_lock):
+        return None
     qq = QQSession(path, qrcode_file=qr)
     qq.use_napcat = False
     qq.attack_account = True

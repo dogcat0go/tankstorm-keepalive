@@ -14,6 +14,8 @@ const uid = ref("");
 const qqTarget = ref("");
 const note = ref("");
 const attackCity = ref("");
+const attackUid = ref("");
+const attackNote = ref("");
 const orders = ref([]);
 const devLogin = ref(false);
 const registerOpen = ref(false);
@@ -86,11 +88,27 @@ async function removeSub(it) {
   await refresh();
 }
 
+function loginNote(login) {
+  if (login === "no_account") return "服务器还没配置攻打号，二维码发不出去";
+  if (login === "busy") return "攻打进程已在跑。需要扫码时，二维码会通过 QQ NT 发给扫码QQ";
+  return "若攻打号未登录，二维码会通过 QQ NT 发给扫码QQ，扫完再打这个 UID";
+}
+
 async function addOrder() {
   err.value = "";
-  await api("/api/attacks", { city_id: attackCity.value });
+  attackNote.value = "";
+  const data = await api("/api/attacks", { city_id: attackCity.value, uid: attackUid.value });
   attackCity.value = "";
+  attackUid.value = "";
+  attackNote.value = "已提交。" + loginNote(data.login);
   await refresh();
+}
+
+async function pushLogin() {
+  err.value = "";
+  attackNote.value = "";
+  const data = await api("/api/attack-login", {});
+  attackNote.value = loginNote(data.login);
 }
 
 function orderStatus(status) {
@@ -180,16 +198,22 @@ onUnmounted(() => clearInterval(timer));
       <template v-else>
         <form @submit.prevent="addOrder().catch((e) => (err = e.message))">
           <label>城市 ID<input v-model="attackCity" inputmode="numeric" required placeholder="2302" /></label>
-          <button type="submit">提交</button>
+          <label>UID<input v-model="attackUid" inputmode="numeric" required /></label>
+          <button type="submit">提交攻打</button>
         </form>
-        <p class="muted">一次只排一条。攻打号扫码登录后，用 --orders 领取。扫描不用停。</p>
+        <p>
+          <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
+        </p>
+        <p class="muted">提交后会寻径到这座城，只打这个 UID。二维码由 QQ NT 发给攻打号的扫码QQ，不要用自己的号去扫。一次只排一条。扫描不用停。</p>
+        <p class="muted">{{ attackNote }}</p>
         <table v-if="orders.length">
           <thead>
-            <tr><th>城市</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
+            <tr><th>城市</th><th>UID</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
           </thead>
           <tbody>
             <tr v-for="it in orders" :key="it.id">
               <td>{{ it.city_id }}</td>
+              <td>{{ it.uid || "—" }}</td>
               <td>{{ orderStatus(it.status) }}</td>
               <td>{{ it.reason || "—" }}</td>
               <td>{{ it.created_at || "—" }}</td>

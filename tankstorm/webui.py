@@ -221,12 +221,23 @@ def _handler(config: dict):
                         city_id = int(str(data.get("city_id", "")).strip())
                     except (TypeError, ValueError):
                         raise ValueError("城市 ID 要是数字") from None
+                    uid = str(data.get("uid", "")).strip()
                     if city_id <= 0:
                         raise ValueError("城市 ID 要大于 0")
-                    why = citydb.add_attack_order(user["id"], city_id)
+                    if not uid.isdigit() or len(uid) > 32:
+                        raise ValueError("UID 要是数字")
+                    why = citydb.add_attack_order(user["id"], city_id, uid)
                     if why:
                         raise ValueError(why)
-                    _json(self, 200, {"ok": True})
+                    from .socket_keepalive import kick_attack_login
+                    login = kick_attack_login(config)
+                    _json(self, 200, {"ok": True, "login": login})
+                elif path == "/api/attack-login":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})
+                        return
+                    from .socket_keepalive import kick_attack_login
+                    _json(self, 200, {"ok": True, "login": kick_attack_login(config)})
                 elif path == "/api/push":
                     qq_target = str(data.get("qq_target", "")).strip()
                     if qq_target and (not qq_target.isdigit() or not 5 <= len(qq_target) <= 12):

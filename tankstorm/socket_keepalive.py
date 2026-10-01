@@ -617,25 +617,97 @@ def run_move_once(qq, config: dict, city_id, sweep=False, country=0) -> int:
     return _connect_and(qq, config, _work)
 
 
+def _run_aimed(qq, config: dict, city_id, uid) -> tuple:
+    """寻径到这座城，只打这一个 UID。返回 (退出码, 停止原因)。"""
+    from . import country_war
+
+    held = {}
+
+    def _work(rec, sock, spec, ctx, beater):
+        out = country_war.walk_to(
+            rec, sock, config, city_id, beat=beater, uid=uid)
+        held["out"] = out
+        log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                 uid, city_id, out.get("移动") or 0, out.get("走到"),
+                 out.get("攻击") if out.get("攻击") is not None else "未打")
+        if out.get("停止原因"):
+            log.info("   结束原因：%s", out["停止原因"])
+        return 0 if out.get("攻击") else 1
+
+    code = _connect_and(qq, config, _work)
+    return code, (held.get("out") or {}).get("停止原因") or ""
+
+
 def run_remote_orders(qq, config: dict) -> int:
-    """领取页面上中级、高级用户提交的城，逐条走 --move 那条寻径打人。"""
+    """领取页面上中级、高级提交的城市和 UID。没登录就先把二维码发给扫码 QQ。"""
     from . import citydb
 
     log.info("开始领取远程扫码攻打")
     try:
         while True:
+            if citydb.take_attack_login() and not qq.is_valid():
+                relogin_with_push(qq, config)
             job = citydb.claim_attack_order()
             if not job:
                 time.sleep(5)
                 continue
-            log.info("领到订单 %s，前往城市 %s", job["id"], job["city_id"])
-            code = run_move_once(qq, config, job["city_id"])
+            log.info("领到订单 %s，城市 %s UID %s",
+                     job["id"], job["city_id"], job["uid"])
+            code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
             citydb.finish_attack_order(
                 job["id"], "done" if code == 0 else "failed",
-                "" if code == 0 else "未打成")
+                "" if code == 0 else (reason or "未打成"))
     except KeyboardInterrupt:
         log.info("停止领取远程扫码攻打")
         return 0
+
+
+def web_attack_account(config: dict) -> str:
+    """网页触发时用哪个攻打号。填了「登录.网页攻打号」就用它，否则用账号里的第一个。"""
+    login = config.get("登录") or {}
+    accounts = login.get("账号") or {}
+    names = [k for k, v in accounts.items() if isinstance(v, dict)]
+    named = str(login.get("网页攻打号") or "").strip()
+    if named:
+        return named if named in names else ""
+    return names[0] if names else ""
+
+
+def kick_attack_login(config: dict) -> str:
+    """网页发起：能锁到攻打号就在这里推二维码并打排队的单。锁不到就交给已在跑的攻打进程。"""
+    import threading
+
+    import main as cli
+
+    name = web_attack_account(config)
+    if not name:
+        log.error("登录.账号 里没有攻打号，二维码发不出去")
+        return "no_account"
+    qq = cli.open_qq(config, name, fatal_lock=False)
+    if qq is None:
+        from . import citydb
+        citydb.ask_attack_login()
+        log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
+        return "busy"
+
+    def _run():
+        from . import citydb
+        try:
+            if not qq.is_valid():
+                relogin_with_push(qq, config)
+            while True:
+                job = citydb.claim_attack_order()
+                if not job:
+                    break
+                code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
+                citydb.finish_attack_order(
+                    job["id"], "done" if code == 0 else "failed",
+                    "" if code == 0 else (reason or "未打成"))
+        finally:
+            cli.release_qq_lock()
+
+    threading.Thread(target=_run, name="attack-login", daemon=True).start()
+    return "started"
 
 
 def run_farm_city_once(qq, config: dict, city_id, times=1, sweep=False,
