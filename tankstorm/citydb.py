@@ -759,6 +759,19 @@ def list_attack_orders(user_id: int, limit: int = 20) -> list:
              "reason": r[4], "created_at": beijing_ts(r[5])} for r in rows]
 
 
+def set_page_qr(on: bool) -> None:
+    """没配攻打号时，登录二维码显示在网页上。扫完或进程停了就关掉。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES ('pageqr', ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            ("1" if on else "0", now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def set_attack_status(phase: str) -> None:
     """攻打进程把自己的阶段写进库。网页只读，不靠推送。"""
     payload = json.dumps({"phase": phase}, ensure_ascii=False)
@@ -800,6 +813,8 @@ def attack_status(user_id: int) -> dict:
     try:
         row = conn.execute(
             "SELECT value, at FROM atk_signal WHERE name='proc'").fetchone()
+        page_qr = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='pageqr'").fetchone()
         own = conn.execute(
             "SELECT city_id, IFNULL(uid,'') FROM atk_order "
             "WHERE user_id=? AND status='running' ORDER BY id DESC LIMIT 1",
@@ -822,9 +837,10 @@ def attack_status(user_id: int) -> dict:
                 online = (datetime.now(timezone.utc) - dt).total_seconds() <= 25
             except ValueError:
                 online = False
+    show_qr = bool(page_qr and page_qr[0] == "1" and online and phase == "login")
     if not online:
         return {"online": False, "phase": "offline", "detail": "没在跑",
-                "seen_at": beijing_ts(seen)}
+                "seen_at": beijing_ts(seen), "qr": False}
     if phase == "login":
         detail = "正在等扫码"
     elif phase == "running" and own:
@@ -834,7 +850,7 @@ def attack_status(user_id: int) -> dict:
     else:
         detail = "空闲，等订单"
     return {"online": True, "phase": phase, "detail": detail,
-            "seen_at": beijing_ts(seen)}
+            "seen_at": beijing_ts(seen), "qr": show_qr}
 
 
 def ask_attack_login() -> None:
