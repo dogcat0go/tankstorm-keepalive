@@ -28,6 +28,7 @@
   python main.py --city-players 2203              拉芝加哥玩家（从第 0 页）
   python main.py --city-players 2203 --city-page 232  从第 232 页继续
   python main.py --watch-cities                    常驻：按 config 城市监视每 5 分钟刷新指定城
+  python main.py --web                             订阅接口和 Vue 页面，默认监听 0.0.0.0:8765
   python main.py --atk 7826194927704102           离线打人（默认普通攻击 1 次）
   python main.py --atk 7826194927704102 --sweep --atk-times 2
   python main.py --atk-city 2302 --sweep          现场翻页打城：先打再看士气，击退/打不过换人
@@ -140,8 +141,16 @@ def main() -> int:
                          "归零或不在城内才换下一个；第一次就被拒记失败。"
                          "行动力低于 15 自动开恢复卡。带 --atk：指定目标所在城市")
     g5.add_argument("--watch-cities", action="store_true",
-                    help="常驻刷新 config「城市监视.城市」的归属国和玩家；"
+                    help="常驻刷新 config「城市监视.城市」和网页订阅的城；"
                          "间隔见「间隔秒」，默认 5 分钟。走保活同一条连接")
+    g5.add_argument("--web", action="store_true",
+                    help="订阅接口和 Vue 页面。读写本机 city_players.db。"
+                         "可单独跑，也可和 --watch-cities / --keepalive 一起跑。"
+                         "HTTPS 放到前面的 Caddy/Nginx")
+    g5.add_argument("--web-host", default="0.0.0.0", metavar="地址",
+                    help="监听地址，默认 0.0.0.0。证书由反向代理处理")
+    g5.add_argument("--web-port", type=int, default=8765, metavar="端口",
+                    help="订阅页面端口，默认 8765")
     g5.add_argument("--list-cities", action="store_true",
                     help="列出全部城市 ID 与中文名（读官方配置表，不用登录）")
     g5.add_argument("--move", type=int, metavar="城市ID", default=None,
@@ -179,7 +188,8 @@ def main() -> int:
                 args.list, args.reset, args.task, args.import_device,
                 args.country_war, args.city_players is not None,
                 args.atk, args.atk_city is not None, args.watch_cities,
-                args.list_cities, args.route is not None, args.move is not None,
+                args.web, args.list_cities, args.route is not None,
+                args.move is not None,
                 args.capture, args.fund is not None,
                 args.pve is not None)):
         parser.print_help()
@@ -271,13 +281,30 @@ def main() -> int:
     if args.watch_cities:
         w = config.setdefault("城市监视", {})
         w["启用"] = True
+        from tankstorm import citydb
         ids = w.get("城市") or []
-        if not ids:
-            log.error("config「城市监视.城市」是空的，先填城市 ID（可用 --list-cities 查）")
+        subs = citydb.watch_city_ids()
+        if not ids and not subs:
+            log.error("config「城市监视.城市」是空的，网页里也还没有订阅。"
+                      "先 python3 main.py --web 加上，或在 config 里填城市 ID")
             return 1
         config.setdefault("保持活跃", {})["启用"] = True
+    if args.web and (args.keepalive or args.watch_cities):
+        from tankstorm import webui
+        try:
+            webui.start(args.web_host, args.web_port, config)
+        except OSError as exc:
+            log.error("订阅页面没能监听 %s:%s：%s", args.web_host, args.web_port, exc)
+            return 1
     if args.keepalive or args.watch_cities:
         return socket_keepalive.run(qq, config, with_daily=args.daily)
+    if args.web:
+        from tankstorm import webui
+        try:
+            return webui.serve(args.web_host, args.web_port, config)
+        except OSError as exc:
+            log.error("订阅页面没能监听 %s:%s：%s", args.web_host, args.web_port, exc)
+            return 1
 
     if args.capture:
         from tankstorm import live_capture

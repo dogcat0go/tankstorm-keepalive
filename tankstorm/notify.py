@@ -65,3 +65,73 @@ def send_qrcode(config: dict, title: str, qrcode_path: str, note: str = "") -> b
         f'二维码有效期约 2 分钟，过期后脚本会自动重发。</p>'
     )
     return send(config, title, html, template="html")
+
+
+def _host(url: str) -> str:
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(url)
+        return p.netloc or url[:40]
+    except Exception:
+        return "?"
+
+
+def send_feishu(webhook: str, text: str) -> bool:
+    """飞书自定义机器人。webhook 是群里添加机器人后给的地址。"""
+    webhook = (webhook or "").strip()
+    if not webhook:
+        return False
+    try:
+        r = requests.post(webhook, json={
+            "msg_type": "text", "content": {"text": text},
+        }, timeout=10)
+        data = r.json()
+        if data.get("code") in (0, None) and data.get("StatusCode", 0) in (0, None):
+            if data.get("code", 0) == 0:
+                log.info("飞书推送成功")
+                return True
+        log.warning("飞书推送返回异常 %s: %s", _host(webhook), data)
+    except Exception as exc:
+        log.warning("飞书推送失败 %s: %s", _host(webhook), exc)
+    return False
+
+
+def send_qq(api: str, token: str, target: str, text: str) -> bool:
+    """OneBot HTTP（NapCat / Lagrange 这类 QQ 机器人）。
+
+    api 是机器人的 HTTP 根，例如 http://127.0.0.1:3000。
+    target 是私聊 QQ 号；群消息写成 g:群号。
+    """
+    api = (api or "").strip().rstrip("/")
+    target = (target or "").strip()
+    if not api or not target:
+        return False
+    group = target.startswith("g:")
+    tid = target[2:] if group else target
+    path = "/send_group_msg" if group else "/send_private_msg"
+    key = "group_id" if group else "user_id"
+    try:
+        ident = int(tid)
+    except ValueError:
+        ident = tid
+    headers = {}
+    if (token or "").strip():
+        headers["Authorization"] = "Bearer " + token.strip()
+    try:
+        r = requests.post(api + path, json={key: ident, "message": text},
+                          headers=headers, timeout=10)
+        data = r.json()
+        if data.get("status") == "ok" or data.get("retcode") == 0:
+            log.info("QQ 机器人推送成功")
+            return True
+        log.warning("QQ 机器人返回异常 %s: %s", _host(api), data)
+    except Exception as exc:
+        log.warning("QQ 机器人推送失败 %s: %s", _host(api), exc)
+    return False
+
+
+def push_watch(row: dict, text: str) -> None:
+    """一条订阅状态变化，按这个账号填的机器人地址推。没填的跳过。"""
+    send_feishu(row.get("feishu_webhook") or "", text)
+    send_qq(row.get("qq_api") or "", row.get("qq_token") or "",
+            row.get("qq_target") or "", text)

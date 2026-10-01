@@ -1,0 +1,307 @@
+# tankstorm-keepalive  Copyright (C) 2026 Dimlitter
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# 本程序是自由软件：你可以依据自由软件基金会发布的 GNU Affero 通用公共许可证
+# （第 3 版，或你选择的任何更新版本）之条款，再分发和/或修改它。
+# 本程序希望能有用，但不提供任何担保；甚至不含适销性或特定用途适用性的默示担保。
+# 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
+"""订阅接口。库是本机的 city_players.db，前端是 web/dist 里的 Vue 页面。
+
+进程只提供 HTTP。公网和 HTTPS 放在前面的 Caddy 或 Nginx，
+反代到这个端口即可，证书不用装进这里。
+"""
+
+import json
+import os
+import re
+import secrets
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from . import citydb
+from .log import get_logger
+from .paths import app_dir
+
+log = get_logger()
+
+_DIST = os.path.join(app_dir(), "web", "dist")
+_COOKIE = "ts_session"
+_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".json": "application/json",
+    ".woff2": "font/woff2",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
+
+
+def _invite(config: dict) -> str:
+    return str((config.get("订阅") or {}).get("注册口令") or "").strip()
+
+
+def _json(handler, code, obj, cookie=None):
+    body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    handler.send_response(code)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    if cookie is not None:
+        handler.send_header("Set-Cookie", cookie)
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _cookie_token(handler) -> str:
+    raw = handler.headers.get("Cookie") or ""
+    for part in raw.split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        if k.strip() == _COOKIE:
+            return v.strip()
+    return ""
+
+
+def _set_cookie(handler, token: str) -> str:
+    secure = (handler.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+    bits = [f"{_COOKIE}={token}", "HttpOnly", "Path=/", "SameSite=Lax"]
+    if secure:
+        bits.append("Secure")
+    return "; ".join(bits)
+
+
+def _clear_cookie() -> str:
+    return f"{_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax"
+
+
+def _read_json(handler):
+    n = int(handler.headers.get("Content-Length") or 0)
+    if n > 8192:
+        raise ValueError("内容太长")
+    raw = handler.rfile.read(n) if n else b""
+    if not raw:
+        return {}
+    data = json.loads(raw.decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("需要 JSON 对象")
+    return data
+
+
+def _pair(data):
+    try:
+        city_id = int(str(data.get("city_id", "")).strip())
+    except (TypeError, ValueError):
+        raise ValueError("城市 ID 要是数字") from None
+    uid = str(data.get("uid", "")).strip()
+    if city_id <= 0:
+        raise ValueError("城市 ID 要大于 0")
+    if not uid.isdigit() or len(uid) > 32:
+        raise ValueError("UID 要是数字")
+    return city_id, uid
+
+
+def _account(data):
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", ""))
+    if not re.fullmatch(r"[A-Za-z0-9_\u4e00-\u9fff]{2,32}", username):
+        raise ValueError("用户名用 2 到 32 位字母、数字或中文")
+    if len(password) < 6 or len(password) > 72:
+        raise ValueError("密码至少 6 位")
+    return username, password
+
+
+def _user_out(user: dict) -> dict:
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "feishu_webhook": user["feishu_webhook"],
+        "qq_api": user["qq_api"],
+        "qq_token": user["qq_token"],
+        "qq_target": user["qq_target"],
+    }
+
+
+def _handler(config: dict):
+    invite = _invite(config)
+
+    class H(BaseHTTPRequestHandler):
+        def _user(self):
+            return citydb.user_by_token(_cookie_token(self))
+
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            if path == "/api/me":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                _json(self, 200, {"user": _user_out(user), "invite": bool(invite)})
+                return
+            if path == "/api/subs":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                try:
+                    items = citydb.list_watches(user["id"])
+                except Exception as exc:
+                    _json(self, 500, {"error": str(exc)})
+                    return
+                _json(self, 200, {"db": citydb.DB_FILE, "items": items})
+                return
+            self._file(path)
+
+        def do_POST(self):
+            path = self.path.split("?", 1)[0]
+            try:
+                data = _read_json(self)
+            except (ValueError, json.JSONDecodeError) as exc:
+                _json(self, 400, {"error": str(exc) or "格式不对"})
+                return
+            if path == "/api/register":
+                self._register(data)
+                return
+            if path == "/api/login":
+                self._login(data)
+                return
+            if path == "/api/logout":
+                citydb.logout_token(_cookie_token(self))
+                _json(self, 200, {"ok": True}, cookie=_clear_cookie())
+                return
+            user = self._user()
+            if not user:
+                _json(self, 401, {"error": "请先登录"})
+                return
+            try:
+                if path == "/api/subs":
+                    city_id, uid = _pair(data)
+                    citydb.add_watch(user["id"], city_id, uid)
+                    _json(self, 200, {"ok": True})
+                elif path == "/api/subs/delete":
+                    city_id, uid = _pair(data)
+                    citydb.remove_watch(user["id"], city_id, uid)
+                    _json(self, 200, {"ok": True})
+                elif path == "/api/push":
+                    feishu = str(data.get("feishu_webhook", "")).strip()
+                    qq_api = str(data.get("qq_api", "")).strip()
+                    qq_token = str(data.get("qq_token", "")).strip()
+                    qq_target = str(data.get("qq_target", "")).strip()
+                    for url in (feishu, qq_api):
+                        if url and not url.startswith(("http://", "https://")):
+                            raise ValueError("地址要以 http:// 或 https:// 开头")
+                    citydb.save_push(user["id"], feishu, qq_api, qq_token, qq_target)
+                    _json(self, 200, {"ok": True})
+                else:
+                    self.send_error(404)
+            except ValueError as exc:
+                _json(self, 400, {"error": str(exc)})
+            except Exception as exc:
+                _json(self, 500, {"error": str(exc)})
+
+        def _register(self, data):
+            try:
+                username, password = _account(data)
+            except ValueError as exc:
+                _json(self, 400, {"error": str(exc)})
+                return
+            if invite and not secrets.compare_digest(str(data.get("invite", "")), invite):
+                _json(self, 403, {"error": "注册口令不对"})
+                return
+            uid = citydb.create_user(username, password)
+            if uid is None:
+                _json(self, 409, {"error": "这个用户名已经有了"})
+                return
+            token = citydb.login_user(username, password)
+            _json(self, 200, {"ok": True}, cookie=_set_cookie(self, token))
+
+        def _login(self, data):
+            try:
+                username, password = _account(data)
+            except ValueError as exc:
+                _json(self, 400, {"error": str(exc)})
+                return
+            token = citydb.login_user(username, password)
+            if not token:
+                _json(self, 401, {"error": "用户名或密码不对"})
+                return
+            _json(self, 200, {"ok": True}, cookie=_set_cookie(self, token))
+
+        def _file(self, path):
+            if path == "/":
+                path = "/index.html"
+            rel = os.path.normpath(path.lstrip("/"))
+            if rel.startswith(".."):
+                self.send_error(404)
+                return
+            full = os.path.join(_DIST, rel)
+            if not os.path.isfile(full):
+                full = os.path.join(_DIST, "index.html")
+                if not os.path.isfile(full):
+                    body = ("前端还没构建。在 web 目录执行 npm install && npm run build"
+                            ).encode("utf-8")
+                    self.send_response(503)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+            ext = os.path.splitext(full)[1].lower()
+            with open(full, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", _TYPES.get(ext, "application/octet-stream"))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, fmt, *args):
+            return
+
+    return H
+
+
+def _announce(host, port, config):
+    log.info("订阅接口 http://%s:%d/    库 %s", host, port, citydb.DB_FILE)
+    log.info("本进程只提供 HTTP。公网 HTTPS 用 Caddy 或 Nginx 反代到 %s:%d", host, port)
+    if host not in ("127.0.0.1", "localhost") and not _invite(config):
+        log.warning("注册口令是空的，公网上任何人都能注册。填 config「订阅.注册口令」")
+
+    def warm():
+        try:
+            citydb.ensure_catalog()
+        except Exception as exc:
+            log.info("城市目录暂不可用：%s", exc)
+
+    threading.Thread(target=warm, name="city-catalog", daemon=True).start()
+
+
+def _server(host, port, config):
+    class _HTTP(ThreadingHTTPServer):
+        allow_reuse_address = True
+
+    httpd = _HTTP((host, int(port)), _handler(config or {}))
+    httpd.daemon_threads = True
+    return httpd
+
+
+def start(host="0.0.0.0", port=8765, config=None):
+    """给保活进程挂一个后台接口。进程退出时一起停。"""
+    httpd = _server(host, port, config)
+    threading.Thread(target=httpd.serve_forever, name="city-web",
+                     daemon=True).start()
+    _announce(host, port, config or {})
+    return httpd
+
+
+def serve(host="0.0.0.0", port=8765, config=None) -> int:
+    httpd = _server(host, port, config)
+    _announce(host, port, config or {})
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        log.info("订阅接口已停止")
+    finally:
+        httpd.server_close()
+    return 0
