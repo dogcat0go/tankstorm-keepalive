@@ -797,8 +797,9 @@ def run_daily_once(qq, config: dict) -> int:
 def relogin_with_push(qq, config: dict) -> bool:
     """需要重新扫码时：生成二维码并通过 PushPlus 推送给用户，等待扫码。
     二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。"""
-    # 先试静默续期：skey 只活约 24 小时，但 superkey/RK/ptcz 是长效的，
-    # 能换发新 skey 而不必惊动你。成功就不用你动手了。
+    # 先向本机 NapCat 要当前票据。没有再试长效凭据静默续期。
+    if qq.adopt_napcat(config):
+        return True
     if qq.silent_renew():
         log.info("已用长效凭据静默续期，无需人工介入")
         return True

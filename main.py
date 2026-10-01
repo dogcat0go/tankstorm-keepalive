@@ -437,6 +437,8 @@ def main() -> int:
             notify.send_qrcode(config, "坦克风暴：请扫码登录", path,
                                note="请用<b>另一台设备</b>打开本条消息再扫码。")
 
+    if not args.login and not qq.is_valid():
+        qq.adopt_napcat(config)
     if args.login:
         if not qq.qr_login(on_qr=on_qr, push_uin=push_uin):
             return 1
