@@ -617,6 +617,27 @@ def run_move_once(qq, config: dict, city_id, sweep=False, country=0) -> int:
     return _connect_and(qq, config, _work)
 
 
+def run_remote_orders(qq, config: dict) -> int:
+    """领取页面上中级、高级用户提交的城，逐条走 --move 那条寻径打人。"""
+    from . import citydb
+
+    log.info("开始领取远程扫码攻打")
+    try:
+        while True:
+            job = citydb.claim_attack_order()
+            if not job:
+                time.sleep(5)
+                continue
+            log.info("领到订单 %s，前往城市 %s", job["id"], job["city_id"])
+            code = run_move_once(qq, config, job["city_id"])
+            citydb.finish_attack_order(
+                job["id"], "done" if code == 0 else "failed",
+                "" if code == 0 else "未打成")
+    except KeyboardInterrupt:
+        log.info("停止领取远程扫码攻打")
+        return 0
+
+
 def run_farm_city_once(qq, config: dict, city_id, times=1, sweep=False,
                        country=0) -> int:
     """连一次游戏、打指定城市里库中的人、断开退出。不迁城。"""

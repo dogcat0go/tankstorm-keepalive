@@ -316,6 +316,9 @@ def main() -> int:
     g5.add_argument("--move", type=int, metavar="城市ID", default=None,
                     help="沿路线走到能打到这座城的相邻城，然后扫荡这座城"
                          "（type:19，每次 15 点行动力）。敌城有人就先扫荡")
+    g5.add_argument("--orders", action="store_true",
+                    help="领取页面上中级、高级提交的远程扫码攻打。必须 --qq。"
+                         "和扫描进程可以同时开")
     g5.add_argument("--route", type=int, metavar="城市ID", default=None,
                     help="规划怎么打到这座城。当前城市和自己的国家从国战面板读。"
                          "同国城市直接通过，异国城市须先占领。"
@@ -350,7 +353,7 @@ def main() -> int:
                 args.atk, args.atk_city is not None, args.watch_cities,
                 args.watch_pages is not None,
                 args.web, args.list_cities, args.route is not None,
-                args.move is not None,
+                args.move is not None, args.orders,
                 args.capture, args.fund is not None,
                 args.pve is not None)):
         parser.print_help()
@@ -362,6 +365,7 @@ def main() -> int:
                               args.atk, args.atk_city is not None, args.watch_cities,
                               args.watch_pages is not None, args.list_cities,
                               args.route is not None, args.move is not None,
+                              args.orders,
                               args.capture, args.fund is not None,
                               args.pve is not None)):
         log.error("订阅页面已和游戏分开。另开一个进程：python3 web.py")
@@ -426,7 +430,7 @@ def main() -> int:
             return 0
 
     attacking = (args.move is not None or bool(args.atk)
-                 or args.atk_city is not None)
+                 or args.atk_city is not None or args.orders)
     scanning = bool(args.keepalive or args.watch_cities
                     or args.watch_pages is not None)
     if attacking and not args.qq:
@@ -514,6 +518,9 @@ def main() -> int:
     if args.route is not None:
         return socket_keepalive.run_route_once(
             qq, config, args.route, args.city_country)
+
+    if args.orders:
+        return socket_keepalive.run_remote_orders(qq, config)
 
     if args.move is not None:
         return socket_keepalive.run_move_once(

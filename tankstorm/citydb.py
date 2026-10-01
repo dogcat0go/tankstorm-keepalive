@@ -82,7 +82,17 @@ CREATE TABLE IF NOT EXISTS app_user (
     qq_token        TEXT,
     qq_target       TEXT,
     expires_at      TEXT,
+    tier            TEXT NOT NULL DEFAULT '初级',
     created_at      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS atk_order (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    city_id     INTEGER NOT NULL,
+    status      TEXT NOT NULL,
+    reason      TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS app_session (
     token      TEXT PRIMARY KEY,
@@ -156,6 +166,10 @@ def connect(readonly=False, timeout=15):
             ucols = {r[1] for r in setup.execute("PRAGMA table_info(app_user)")}
             if ucols and "expires_at" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN expires_at TEXT")
+                setup.commit()
+            if ucols and "tier" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN tier TEXT NOT NULL DEFAULT '初级'")
                 setup.commit()
             _schema_ready = True
         finally:
@@ -528,6 +542,14 @@ def beijing_day() -> str:
         timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
 
 
+TIERS = ("初级", "中级", "高级")
+
+
+def attack_tier(tier: str) -> bool:
+    """中级和高级可以使用远程扫码攻打。"""
+    return (tier or "初级") in ("中级", "高级")
+
+
 def account_expired(expires_at: str) -> bool:
     """有效期是北京时间的日期，这一天仍然有效。空表示不限期。"""
     day = (expires_at or "").strip()[:10]
@@ -559,18 +581,31 @@ def _password_hash(password: str, salt: str = "") -> str:
     return f"{salt}${dk.hex()}"
 
 
-def create_user(username: str, password: str, expires_at: str = ""):
+def create_user(username: str, password: str, expires_at: str = "", tier: str = "初级"):
     """创建账号。用户名已存在返回 None。expires_at 为北京时间日期，空表示不限期。"""
     conn = connect()
     try:
         cur = conn.execute(
-            "INSERT INTO app_user(username, password_hash, expires_at, created_at) "
-            "VALUES (?,?,?,?)",
-            (username, _password_hash(password), (expires_at or "").strip(), now_ts()))
+            "INSERT INTO app_user(username, password_hash, expires_at, tier, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (username, _password_hash(password), (expires_at or "").strip(),
+             tier or "初级", now_ts()))
         conn.commit()
         return int(cur.lastrowid)
     except sqlite3.IntegrityError:
         return None
+    finally:
+        conn.close()
+
+
+def set_user_tier(username: str, tier: str) -> bool:
+    """把账号标成初级、中级或高级。没有这个用户返回 False。"""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET tier=? WHERE username=?", (tier, username))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -619,13 +654,14 @@ def user_by_token(token: str):
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,'') "
+            "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,''), "
+            "IFNULL(u.tier,'初级') "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
             return None
         return {"id": row[0], "username": row[1], "qq_target": row[2],
-                "expires_at": row[3]}
+                "expires_at": row[3], "tier": row[4]}
     finally:
         conn.close()
 
@@ -673,6 +709,88 @@ def save_push(user_id: int, qq_target: str) -> None:
             "UPDATE app_user SET qq_target=?, feishu_webhook='', qq_api='', qq_token='' "
             "WHERE id=?",
             (qq_target, int(user_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def add_attack_order(user_id: int, city_id: int) -> str:
+    """提交一条远程扫码攻打。已有未完成的单时返回原因，成功返回空字符串。"""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM atk_order WHERE user_id=? AND status IN ('pending','running')",
+            (int(user_id),)).fetchone()
+        if row:
+            return "已经有一条还没打完"
+        now = now_ts()
+        conn.execute(
+            "INSERT INTO atk_order(user_id, city_id, status, reason, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (int(user_id), int(city_id), "pending", "", now, now))
+        conn.commit()
+        return ""
+    finally:
+        conn.close()
+
+
+def list_attack_orders(user_id: int, limit: int = 20) -> list:
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id, city_id, status, IFNULL(reason,''), created_at "
+            "FROM atk_order WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (int(user_id), int(limit))).fetchall()
+    finally:
+        conn.close()
+    return [{"id": r[0], "city_id": r[1], "status": r[2], "reason": r[3],
+             "created_at": beijing_ts(r[4])} for r in rows]
+
+
+def claim_attack_order():
+    """领最旧的一条排队订单。档位不够或已过期的记为失败。没有则返回 None。"""
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        now = now_ts()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=20)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        conn.execute(
+            "UPDATE atk_order SET status='pending', updated_at=? "
+            "WHERE status='running' AND updated_at<?",
+            (now, cutoff))
+        row = conn.execute(
+            "SELECT o.id, o.city_id, IFNULL(u.tier,'初级'), IFNULL(u.expires_at,'') "
+            "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
+            "WHERE o.status='pending' ORDER BY o.id LIMIT 1").fetchone()
+        if not row:
+            conn.commit()
+            return None
+        if not attack_tier(row[2]) or account_expired(row[3]):
+            conn.execute(
+                "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
+                ("订阅档不够或账号已过期", now, row[0]))
+            conn.commit()
+            return None
+        cur = conn.execute(
+            "UPDATE atk_order SET status='running', updated_at=? "
+            "WHERE id=? AND status='pending'",
+            (now, row[0]))
+        conn.commit()
+        if cur.rowcount != 1:
+            return None
+        return {"id": row[0], "city_id": row[1]}
+    finally:
+        conn.close()
+
+
+def finish_attack_order(order_id: int, status: str, reason: str = "") -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE atk_order SET status=?, reason=?, updated_at=? "
+            "WHERE id=? AND status='running'",
+            (status, reason or "", now_ts(), int(order_id)))
         conn.commit()
     finally:
         conn.close()

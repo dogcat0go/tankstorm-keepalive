@@ -13,6 +13,8 @@ const cityId = ref("");
 const uid = ref("");
 const qqTarget = ref("");
 const note = ref("");
+const attackCity = ref("");
+const orders = ref([]);
 const devLogin = ref(false);
 const registerOpen = ref(false);
 let timer = 0;
@@ -34,6 +36,12 @@ async function refresh() {
   const data = await api("/api/subs");
   items.value = data.items || [];
   db.value = data.db || "";
+  if (me.value && me.value.remote_attack) {
+    const atk = await api("/api/attacks");
+    orders.value = atk.items || [];
+  } else {
+    orders.value = [];
+  }
 }
 
 async function enter() {
@@ -76,6 +84,17 @@ async function addSub() {
 async function removeSub(it) {
   await api("/api/subs/delete", { city_id: it.city_id, uid: it.uid });
   await refresh();
+}
+
+async function addOrder() {
+  err.value = "";
+  await api("/api/attacks", { city_id: attackCity.value });
+  attackCity.value = "";
+  await refresh();
+}
+
+function orderStatus(status) {
+  return { pending: "排队", running: "正在打", done: "已打完", failed: "没打成" }[status] || status;
 }
 
 async function savePush() {
@@ -129,7 +148,7 @@ onUnmounted(() => clearInterval(timer));
     </form>
     <template v-else>
       <p class="lead">
-        {{ me.username }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
+        {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
         · 库 <code>{{ db }}</code>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
@@ -156,6 +175,28 @@ onUnmounted(() => clearInterval(timer));
         </tbody>
       </table>
       <p v-if="!items.length" class="muted">还没有订阅。</p>
+      <h2>远程扫码攻打</h2>
+      <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。中级和高级可以提交，由服务器上的攻打号领取并扫码进游戏。</p>
+      <template v-else>
+        <form @submit.prevent="addOrder().catch((e) => (err = e.message))">
+          <label>城市 ID<input v-model="attackCity" inputmode="numeric" required placeholder="2302" /></label>
+          <button type="submit">提交</button>
+        </form>
+        <p class="muted">一次只排一条。攻打号扫码登录后，用 --orders 领取。扫描不用停。</p>
+        <table v-if="orders.length">
+          <thead>
+            <tr><th>城市</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in orders" :key="it.id">
+              <td>{{ it.city_id }}</td>
+              <td>{{ orderStatus(it.status) }}</td>
+              <td>{{ it.reason || "—" }}</td>
+              <td>{{ it.created_at || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
       <h2>推送</h2>
       <form class="stack" @submit.prevent="savePush().catch((e) => (err = e.message))">
         <label>接收 QQ
