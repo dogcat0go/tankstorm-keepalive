@@ -64,7 +64,10 @@ import json
 import os
 import random
 import re
+import shutil
+import struct
 import time
+import zlib
 
 import requests
 
@@ -126,47 +129,161 @@ def calc_g_tk(p_skey: str) -> int:
     return h & 0x7FFFFFFF
 
 
-def _print_qr_ascii(png_path: str) -> None:
-    """尽力把二维码渲染成终端字符画（依赖 Pillow，失败则静默跳过）。"""
+def _paeth(a: int, b: int, c: int) -> int:
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    return b if pb <= pc else c
+
+
+def _png_dark(data: bytes) -> list[list[int]]:
+    """非隔行 PNG 解成 0/1 矩阵（1 = 深色）。只用标准库，服务器不必装 Pillow。"""
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("不是 PNG")
+    pos = 8
+    width = height = depth = color = 0
+    palette = None
+    trns = b""
+    idat = []
+    while pos + 8 <= len(data):
+        ln = struct.unpack(">I", data[pos:pos + 4])[0]
+        if pos + 12 + ln > len(data):
+            raise ValueError("PNG 截断")
+        kind = data[pos + 4:pos + 8]
+        chunk = data[pos + 8:pos + 8 + ln]
+        pos += 12 + ln
+        if kind == b"IHDR":
+            width, height, depth, color, comp, filt, inter = struct.unpack(
+                ">IIBBBBB", chunk)
+            if comp or filt or inter or depth not in (1, 2, 4, 8):
+                raise ValueError(f"不支持的 PNG（位深 {depth}）")
+        elif kind == b"PLTE":
+            palette = [tuple(chunk[i:i + 3]) for i in range(0, len(chunk), 3)]
+        elif kind == b"tRNS":
+            trns = chunk
+        elif kind == b"IDAT":
+            idat.append(chunk)
+        elif kind == b"IEND":
+            break
     try:
-        from PIL import Image
-    except ImportError:
-        return
-    try:
-        img = Image.open(png_path).convert("L")
-        w, h = img.size
-        px = img.load()
-        binary = [[1 if px[x, y] < 128 else 0 for x in range(w)] for y in range(h)]
-        ys = [y for y in range(h) if any(binary[y])]
-        xs = [x for x in range(w) if any(row[x] for row in binary)]
-        if not ys or not xs:
-            return
-        top, bottom, left, right = ys[0], ys[-1], xs[0], xs[-1]
-        # 用左上角定位图形的第一段黑色横向长度 / 7 估算模块大小
-        run = 0
-        for x in range(left, right + 1):
-            if binary[top][x]:
-                run += 1
+        channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[color]
+    except KeyError:
+        raise ValueError(f"不支持的颜色类型 {color}") from None
+    if color == 3 and not palette:
+        raise ValueError("调色板 PNG 缺少 PLTE")
+    bpp = max(1, channels * depth // 8)
+    stride = (width * channels * depth + 7) // 8
+    raw = zlib.decompress(b"".join(idat))
+    rows: list[list[int]] = []
+    i, prev = 0, bytearray(stride)
+    mask = (1 << depth) - 1
+    half = mask / 2
+    for _ in range(height):
+        ft = raw[i]
+        row = bytearray(raw[i + 1:i + 1 + stride])
+        i += 1 + stride
+        out = bytearray(stride)
+        for x, v in enumerate(row):
+            a = out[x - bpp] if x >= bpp else 0
+            b, c = prev[x], prev[x - bpp] if x >= bpp else 0
+            if ft == 1:
+                v += a
+            elif ft == 2:
+                v += b
+            elif ft == 3:
+                v += (a + b) // 2
+            elif ft == 4:
+                v += _paeth(a, b, c)
+            elif ft != 0:
+                raise ValueError(f"未知滤波器 {ft}")
+            out[x] = v & 255
+        prev = out
+        bits, bit = [], 0
+        for _px in range(width):
+            px = []
+            for _ch in range(channels):
+                px.append((out[bit // 8] >> (8 - depth - bit % 8)) & mask)
+                bit += depth
+            if color == 3:
+                idx = px[0]
+                if idx < len(trns) and trns[idx] == 0:
+                    bits.append(0)
+                    continue
+                r, g, b = palette[idx]
+                bits.append(1 if r * 30 + g * 59 + b * 11 < 12800 else 0)
+            elif color in (4, 6) and px[-1] <= half:
+                bits.append(0)
             else:
-                break
-        module = max(1, run // 7)
-        n = (right - left + 1 + module // 2) // module
-        lines = []
-        # 终端多为深色背景，反色输出（黑模块→空格）扫码成功率更高
-        for r in range(n):
-            y = top + r * module + module // 2
-            if y > bottom:
-                break
-            row = ""
-            for c in range(n):
-                x = left + c * module + module // 2
-                dark = binary[y][x] if x <= right else 0
-                row += "  " if dark else "██"
-            lines.append(row)
-        print("\n".join(lines))
-        print("(若上方二维码扫不出来，请直接打开 qrcode.png 扫码)")
-    except Exception as exc:  # 渲染失败不影响主流程
-        log.debug("二维码字符画渲染失败: %s", exc)
+                vals = px[:-1] if color in (4, 6) else px
+                bits.append(1 if sum(vals) / len(vals) < half else 0)
+        rows.append(bits)
+    return rows
+
+
+def _print_qr_ascii(png_path: str) -> None:
+    """把二维码打进日志。失败时说明原因，不再静默跳过。
+
+    旧实现依赖 Pillow，没装就直接 return。服务器上常见只装了 requests，
+    于是只剩「二维码已保存」一句，终端里没有码。这里用标准库解 PNG。
+    黑白用 ANSI 背景色写死，不跟终端主题走；白模块仍带 ██，
+    纯文本日志里也能看出形状。四周补白边，方便手机对着屏幕扫。
+    """
+    try:
+        with open(png_path, "rb") as f:
+            bitmap = _png_dark(f.read())
+    except Exception as exc:
+        log.warning("终端二维码渲染失败: %s。请打开 %s 扫码", exc, png_path)
+        return
+    height = len(bitmap)
+    width = len(bitmap[0]) if bitmap else 0
+    ys = [y for y in range(height) if any(bitmap[y])]
+    xs = [x for x in range(width) if any(bitmap[y][x] for y in range(height))]
+    if not ys or not xs:
+        log.warning("二维码是空白图，请打开 %s 扫码", png_path)
+        return
+    top, bottom, left, right = ys[0], ys[-1], xs[0], xs[-1]
+    run = 0
+    for x in range(left, right + 1):
+        if bitmap[top][x]:
+            run += 1
+        else:
+            break
+    module = max(1, run // 7)
+    n = (right - left + 1 + module // 2) // module
+    cells = []
+    for r in range(n):
+        y = top + r * module + module // 2
+        if y > bottom:
+            break
+        row_cells = []
+        for c in range(n):
+            x = left + c * module + module // 2
+            row_cells.append(1 if x <= right and bitmap[y][x] else 0)
+        cells.append(row_cells)
+    if not cells:
+        log.warning("二维码无法排成字符画，请打开 %s 扫码", png_path)
+        return
+    cols = shutil.get_terminal_size((120, 24)).columns
+    quiet = 4
+    while quiet and (len(cells[0]) + 2 * quiet) * 2 > cols - 1:
+        quiet -= 1
+    # 背景色固定黑/白。██ 留给不解释转义序列的查看器，形状还在。
+    visible = (len(cells[0]) + 2 * quiet) * 2
+    if visible > cols:
+        log.warning("终端只有 %d 列，二维码大约 %d 列，换行之后扫不中。"
+                    "请把窗口拉宽，或打开 %s", cols, visible, png_path)
+    dark_cell, light_cell = "\033[40m  \033[0m", "\033[97;107m██\033[0m"
+    pad = light_cell * quiet
+    blank = pad + light_cell * len(cells[0]) + pad
+    body = "\n".join(
+        [blank] * quiet
+        + [pad + "".join(dark_cell if d else light_cell for d in row) + pad
+           for row in cells]
+        + [blank] * quiet
+    )
+    # 消息以换行开头，后面每一行都没有时间戳前缀，扫码时不会被日志头切开。
+    log.info("\n%s\n（若扫不出来，请把终端拉宽后重试，或打开 %s）", body, png_path)
 
 
 class QQSession:
