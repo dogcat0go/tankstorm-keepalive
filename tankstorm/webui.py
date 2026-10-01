@@ -5,132 +5,80 @@
 # （第 3 版，或你选择的任何更新版本）之条款，再分发和/或修改它。
 # 本程序希望能有用，但不提供任何担保；甚至不含适销性或特定用途适用性的默示担保。
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
-"""订阅页面：读本机 city_players.db，看某个 UID 在不在某座城里。
+"""订阅接口。库是本机的 city_players.db，前端是 web/dist 里的 Vue 页面。
 
-页面和库在同一台机器上。自己的电脑用 SSH 转到这个端口再打开，
-不必把数据库文件拷出来，也不必对公网开放。
+进程只提供 HTTP。公网和 HTTPS 放在前面的 Caddy 或 Nginx，
+反代到这个端口即可，证书不用装进这里。
 """
 
 import json
+import os
+import re
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import citydb
 from .log import get_logger
+from .paths import app_dir
 
 log = get_logger()
 
-_PAGE = """<!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>城市订阅</title>
-<style>
-  body { margin: 0; font: 15px/1.5 sans-serif; color: #1a1a1a; background: #f6f6f4; }
-  main { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 22px; margin: 0 0 8px; }
-  p { margin: 0 0 16px; color: #444; }
-  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 8px; }
-  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
-  input { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; }
-  input[name=city] { width: 8em; }
-  input[name=uid] { width: 18em; }
-  button { font: inherit; padding: 8px 14px; border: 0; border-radius: 6px; background: #1a1a1a; color: #fff; cursor: pointer; }
-  button.ghost { background: transparent; color: #333; border: 1px solid #bbb; }
-  .err { color: #9b1c1c; min-height: 1.5em; }
-  table { width: 100%; border-collapse: collapse; background: #fff; }
-  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
-  th { font-size: 13px; color: #555; font-weight: 600; }
-  .on { color: #0b6b2f; font-weight: 700; }
-  .off { color: #666; }
-  code { font-size: 13px; }
-  .muted { color: #777; font-size: 13px; }
-</style>
-<main>
-  <h1>城市订阅</h1>
-  <p>看某个用户 UID 现在在不在某座城里。数字来自这台服务器上的 <code id="db"></code>。
-  另开一个进程跑 <code>python3 main.py --watch-cities</code>，订阅的城会加进刷新名单。
-  人离开要等这座城被完整翻完页，记录才会消失。</p>
-  <form id="f">
-    <label>城市 ID<input name="city" inputmode="numeric" required placeholder="1201"></label>
-    <label>用户 UID<input name="uid" inputmode="numeric" required placeholder="玩家 UID"></label>
-    <button type="submit">订阅</button>
-  </form>
-  <div class="err" id="err"></div>
-  <table>
-    <thead><tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>记录时间</th><th></th></tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
-  <p class="muted" id="empty">还没有订阅。</p>
-</main>
-<script>
-const err = document.getElementById("err");
-const rows = document.getElementById("rows");
-const empty = document.getElementById("empty");
-function esc(s) { return s == null ? "" : String(s); }
-async function load() {
-  const r = await fetch("/api/subs");
-  const data = await r.json();
-  document.getElementById("db").textContent = data.db || "";
-  rows.replaceChildren();
-  const items = data.items || [];
-  empty.hidden = items.length > 0;
-  for (const it of items) {
-    const tr = document.createElement("tr");
-    const city = document.createElement("td");
-    city.textContent = (it.city_name ? it.city_name + " " : "") + it.city_id;
-    const uid = document.createElement("td");
-    uid.textContent = it.uid;
-    const name = document.createElement("td");
-    name.textContent = it.name || "—";
-    const st = document.createElement("td");
-    st.textContent = it.present ? "在城里" : (it.city_scanned_at ? "不在这座城" : "这座城还没扫过");
-    st.className = it.present ? "on" : "off";
-    const when = document.createElement("td");
-    when.textContent = it.present ? (it.seen_at || "—") : (it.city_scanned_at || "—");
-    const op = document.createElement("td");
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "ghost";
-    b.textContent = "取消";
-    b.onclick = async () => {
-      await fetch("/api/subs/delete", {method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({city_id: it.city_id, uid: it.uid})});
-      load();
-    };
-    op.appendChild(b);
-    tr.append(city, uid, name, st, when, op);
-    rows.appendChild(tr);
-  }
+_DIST = os.path.join(app_dir(), "web", "dist")
+_COOKIE = "ts_session"
+_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".json": "application/json",
+    ".woff2": "font/woff2",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
 }
-document.getElementById("f").onsubmit = async (e) => {
-  e.preventDefault();
-  err.textContent = "";
-  const fd = new FormData(e.target);
-  const r = await fetch("/api/subs", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({city_id: fd.get("city"), uid: fd.get("uid")})});
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) { err.textContent = data.error || "没加上"; return; }
-  e.target.reset();
-  load();
-};
-load();
-setInterval(load, 4000);
-</script>
-"""
 
 
-def _json(handler, code, obj):
+def _invite(config: dict) -> str:
+    return str((config.get("订阅") or {}).get("注册口令") or "").strip()
+
+
+def _json(handler, code, obj, cookie=None):
     body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
     handler.send_response(code)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    if cookie is not None:
+        handler.send_header("Set-Cookie", cookie)
     handler.end_headers()
     handler.wfile.write(body)
 
 
+def _cookie_token(handler) -> str:
+    raw = handler.headers.get("Cookie") or ""
+    for part in raw.split(";"):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        if k.strip() == _COOKIE:
+            return v.strip()
+    return ""
+
+
+def _set_cookie(handler, token: str) -> str:
+    secure = (handler.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+    bits = [f"{_COOKIE}={token}", "HttpOnly", "Path=/", "SameSite=Lax"]
+    if secure:
+        bits.append("Secure")
+    return "; ".join(bits)
+
+
+def _clear_cookie() -> str:
+    return f"{_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax"
+
+
 def _read_json(handler):
     n = int(handler.headers.get("Content-Length") or 0)
-    if n > 4096:
+    if n > 8192:
         raise ValueError("内容太长")
     raw = handler.rfile.read(n) if n else b""
     if not raw:
@@ -154,48 +102,159 @@ def _pair(data):
     return city_id, uid
 
 
-def _handler():
-    page = _PAGE.encode("utf-8")
+def _account(data):
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", ""))
+    if not re.fullmatch(r"[A-Za-z0-9_\u4e00-\u9fff]{2,32}", username):
+        raise ValueError("用户名用 2 到 32 位字母、数字或中文")
+    if len(password) < 6 or len(password) > 72:
+        raise ValueError("密码至少 6 位")
+    return username, password
+
+
+def _user_out(user: dict) -> dict:
+    return {
+        "id": user["id"],
+        "username": user["username"],
+        "feishu_webhook": user["feishu_webhook"],
+        "qq_api": user["qq_api"],
+        "qq_token": user["qq_token"],
+        "qq_target": user["qq_target"],
+    }
+
+
+def _handler(config: dict):
+    invite = _invite(config)
 
     class H(BaseHTTPRequestHandler):
+        def _user(self):
+            return citydb.user_by_token(_cookie_token(self))
+
         def do_GET(self):
             path = self.path.split("?", 1)[0]
-            if path == "/":
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(page)))
-                self.end_headers()
-                self.wfile.write(page)
+            if path == "/api/me":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                _json(self, 200, {"user": _user_out(user), "invite": bool(invite)})
                 return
             if path == "/api/subs":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
                 try:
-                    items = citydb.list_watches()
+                    items = citydb.list_watches(user["id"])
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                     return
                 _json(self, 200, {"db": citydb.DB_FILE, "items": items})
                 return
-            self.send_error(404)
+            self._file(path)
 
         def do_POST(self):
             path = self.path.split("?", 1)[0]
             try:
                 data = _read_json(self)
-                city_id, uid = _pair(data)
             except (ValueError, json.JSONDecodeError) as exc:
                 _json(self, 400, {"error": str(exc) or "格式不对"})
                 return
+            if path == "/api/register":
+                self._register(data)
+                return
+            if path == "/api/login":
+                self._login(data)
+                return
+            if path == "/api/logout":
+                citydb.logout_token(_cookie_token(self))
+                _json(self, 200, {"ok": True}, cookie=_clear_cookie())
+                return
+            user = self._user()
+            if not user:
+                _json(self, 401, {"error": "请先登录"})
+                return
             try:
                 if path == "/api/subs":
-                    citydb.add_watch(city_id, uid)
+                    city_id, uid = _pair(data)
+                    citydb.add_watch(user["id"], city_id, uid)
                     _json(self, 200, {"ok": True})
                 elif path == "/api/subs/delete":
-                    citydb.remove_watch(city_id, uid)
+                    city_id, uid = _pair(data)
+                    citydb.remove_watch(user["id"], city_id, uid)
+                    _json(self, 200, {"ok": True})
+                elif path == "/api/push":
+                    feishu = str(data.get("feishu_webhook", "")).strip()
+                    qq_api = str(data.get("qq_api", "")).strip()
+                    qq_token = str(data.get("qq_token", "")).strip()
+                    qq_target = str(data.get("qq_target", "")).strip()
+                    for url in (feishu, qq_api):
+                        if url and not url.startswith(("http://", "https://")):
+                            raise ValueError("地址要以 http:// 或 https:// 开头")
+                    citydb.save_push(user["id"], feishu, qq_api, qq_token, qq_target)
                     _json(self, 200, {"ok": True})
                 else:
                     self.send_error(404)
+            except ValueError as exc:
+                _json(self, 400, {"error": str(exc)})
             except Exception as exc:
                 _json(self, 500, {"error": str(exc)})
+
+        def _register(self, data):
+            try:
+                username, password = _account(data)
+            except ValueError as exc:
+                _json(self, 400, {"error": str(exc)})
+                return
+            if invite and not secrets.compare_digest(str(data.get("invite", "")), invite):
+                _json(self, 403, {"error": "注册口令不对"})
+                return
+            uid = citydb.create_user(username, password)
+            if uid is None:
+                _json(self, 409, {"error": "这个用户名已经有了"})
+                return
+            token = citydb.login_user(username, password)
+            _json(self, 200, {"ok": True}, cookie=_set_cookie(self, token))
+
+        def _login(self, data):
+            try:
+                username, password = _account(data)
+            except ValueError as exc:
+                _json(self, 400, {"error": str(exc)})
+                return
+            token = citydb.login_user(username, password)
+            if not token:
+                _json(self, 401, {"error": "用户名或密码不对"})
+                return
+            _json(self, 200, {"ok": True}, cookie=_set_cookie(self, token))
+
+        def _file(self, path):
+            if path == "/":
+                path = "/index.html"
+            rel = os.path.normpath(path.lstrip("/"))
+            if rel.startswith(".."):
+                self.send_error(404)
+                return
+            full = os.path.join(_DIST, rel)
+            if not os.path.isfile(full):
+                full = os.path.join(_DIST, "index.html")
+                if not os.path.isfile(full):
+                    body = ("前端还没构建。在 web 目录执行 npm install && npm run build"
+                            ).encode("utf-8")
+                    self.send_response(503)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+            ext = os.path.splitext(full)[1].lower()
+            with open(full, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", _TYPES.get(ext, "application/octet-stream"))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def log_message(self, fmt, *args):
             return
@@ -203,13 +262,11 @@ def _handler():
     return H
 
 
-def _announce(host, port):
-    log.info("订阅页面 http://%s:%d/    库 %s", host, port, citydb.DB_FILE)
-    if host in ("127.0.0.1", "localhost"):
-        log.info("在自己的电脑上执行 ssh -L %d:127.0.0.1:%d 用户@这台服务器，"
-                 "然后打开 http://127.0.0.1:%d/", port, port, port)
-    else:
-        log.info("页面监听在 %s，能访问这个地址的人都能看订阅、也能改订阅", host)
+def _announce(host, port, config):
+    log.info("订阅接口 http://%s:%d/    库 %s", host, port, citydb.DB_FILE)
+    log.info("本进程只提供 HTTP。公网 HTTPS 用 Caddy 或 Nginx 反代到 %s:%d", host, port)
+    if host not in ("127.0.0.1", "localhost") and not _invite(config):
+        log.warning("注册口令是空的，公网上任何人都能注册。填 config「订阅.注册口令」")
 
     def warm():
         try:
@@ -220,31 +277,31 @@ def _announce(host, port):
     threading.Thread(target=warm, name="city-catalog", daemon=True).start()
 
 
-def _server(host, port):
+def _server(host, port, config):
     class _HTTP(ThreadingHTTPServer):
         allow_reuse_address = True
 
-    httpd = _HTTP((host, int(port)), _handler())
+    httpd = _HTTP((host, int(port)), _handler(config or {}))
     httpd.daemon_threads = True
     return httpd
 
 
-def start(host="127.0.0.1", port=8765):
-    """给保活进程挂一个后台页面。进程退出时页面一起停。"""
-    httpd = _server(host, port)
+def start(host="0.0.0.0", port=8765, config=None):
+    """给保活进程挂一个后台接口。进程退出时一起停。"""
+    httpd = _server(host, port, config)
     threading.Thread(target=httpd.serve_forever, name="city-web",
                      daemon=True).start()
-    _announce(host, port)
+    _announce(host, port, config or {})
     return httpd
 
 
-def serve(host="127.0.0.1", port=8765) -> int:
-    httpd = _server(host, port)
-    _announce(host, port)
+def serve(host="0.0.0.0", port=8765, config=None) -> int:
+    httpd = _server(host, port, config)
+    _announce(host, port, config or {})
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        log.info("订阅页面已停止")
+        log.info("订阅接口已停止")
     finally:
         httpd.server_close()
     return 0

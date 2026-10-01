@@ -370,11 +370,11 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0)
         who = ch["name"] or ch["uid"]
         where = f"{city_id} {cname}".strip()
         verb = "出现在" if ch["present"] else "已离开"
+        text = f"{who} {verb} {where}\nUID {ch['uid']}"
         log.info("[订阅] %s %s %s", who, verb, where)
+        notify.push_watch(ch, text)
         if token:
-            notify.send(config, f"坦克风暴：{who} {verb} {where}",
-                        f"城市 {where}\nUID {ch['uid']}\n"
-                        f"{'在城里' if ch['present'] else '不在城里'}")
+            notify.send(config, f"坦克风暴：{who} {verb} {where}", text)
     oname = citydb.country_name(owner) if owner else ""
     log.info("―― 城市 %s %s ―― 归属国家 %s%s，面板人数 %s，本轮写入 %d 人，最后一页 %s",
              out.get("city"), cname, owner,

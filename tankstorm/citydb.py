@@ -73,12 +73,28 @@ CREATE TABLE IF NOT EXISTS city_occupy (
     user_cnt        INTEGER,
     fetched_at      TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_user (
+    id              INTEGER PRIMARY KEY,
+    username        TEXT UNIQUE NOT NULL,
+    password_hash   TEXT NOT NULL,
+    feishu_webhook  TEXT,
+    qq_api          TEXT,
+    qq_token        TEXT,
+    qq_target       TEXT,
+    created_at      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_session (
+    token      TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS watch_sub (
+    user_id      INTEGER NOT NULL,
     city_id      INTEGER NOT NULL,
     uid          TEXT NOT NULL,
     created_at   TEXT NOT NULL,
     last_present INTEGER,
-    PRIMARY KEY (city_id, uid)
+    PRIMARY KEY (user_id, city_id, uid)
 );
 """
 
@@ -130,6 +146,11 @@ def connect(readonly=False, timeout=15):
             ccols = {r[1] for r in setup.execute("PRAGMA table_info(city)")}
             if "near_city" not in ccols:
                 setup.execute("ALTER TABLE city ADD COLUMN near_city TEXT")
+                setup.commit()
+            wcols = {r[1] for r in setup.execute("PRAGMA table_info(watch_sub)")}
+            if wcols and "user_id" not in wcols:
+                setup.execute("DROP TABLE watch_sub")
+                setup.executescript(_SCHEMA)
                 setup.commit()
             _schema_ready = True
         finally:
@@ -497,24 +518,113 @@ def now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def add_watch(city_id: int, uid: str) -> None:
-    """记下「这座城里有没有这个人」。已有的不改上次状态。"""
+def _password_hash(password: str, salt: str = "") -> str:
+    import hashlib
+    import secrets
+    salt = salt or secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), 120000)
+    return f"{salt}${dk.hex()}"
+
+
+def create_user(username: str, password: str):
+    """创建账号。用户名已存在返回 None。"""
     conn = connect()
     try:
+        cur = conn.execute(
+            "INSERT INTO app_user(username, password_hash, created_at) VALUES (?,?,?)",
+            (username, _password_hash(password), now_ts()))
+        conn.commit()
+        return int(cur.lastrowid)
+    except sqlite3.IntegrityError:
+        return None
+    finally:
+        conn.close()
+
+
+def login_user(username: str, password: str):
+    """密码正确返回 session token，否则 None。"""
+    import secrets
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id, password_hash FROM app_user WHERE username=?",
+            (username,)).fetchone()
+        if not row:
+            return None
+        salt, digest = row[1].split("$", 1)
+        if not secrets.compare_digest(_password_hash(password, salt).split("$", 1)[1], digest):
+            return None
+        token = secrets.token_urlsafe(32)
         conn.execute(
-            "INSERT INTO watch_sub(city_id, uid, created_at) VALUES (?,?,?) "
-            "ON CONFLICT(city_id, uid) DO NOTHING",
-            (int(city_id), str(uid).strip(), now_ts()))
+            "INSERT INTO app_session(token, user_id, created_at) VALUES (?,?,?)",
+            (token, row[0], now_ts()))
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
+def user_by_token(token: str):
+    if not token:
+        return None
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT u.id, u.username, IFNULL(u.feishu_webhook,''), "
+            "IFNULL(u.qq_api,''), IFNULL(u.qq_token,''), IFNULL(u.qq_target,'') "
+            "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
+            (token,)).fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "username": row[1], "feishu_webhook": row[2],
+                "qq_api": row[3], "qq_token": row[4], "qq_target": row[5]}
+    finally:
+        conn.close()
+
+
+def logout_token(token: str) -> None:
+    if not token:
+        return
+    conn = connect()
+    try:
+        conn.execute("DELETE FROM app_session WHERE token=?", (token,))
         conn.commit()
     finally:
         conn.close()
 
 
-def remove_watch(city_id: int, uid: str) -> None:
+def save_push(user_id: int, feishu_webhook: str, qq_api: str,
+              qq_token: str, qq_target: str) -> None:
     conn = connect()
     try:
-        conn.execute("DELETE FROM watch_sub WHERE city_id=? AND uid=?",
-                     (int(city_id), str(uid).strip()))
+        conn.execute(
+            "UPDATE app_user SET feishu_webhook=?, qq_api=?, qq_token=?, qq_target=? "
+            "WHERE id=?",
+            (feishu_webhook, qq_api, qq_token, qq_target, int(user_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def add_watch(user_id: int, city_id: int, uid: str) -> None:
+    """记下这个账号要盯的「这座城里有没有这个人」。已有的不改上次状态。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO watch_sub(user_id, city_id, uid, created_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(user_id, city_id, uid) DO NOTHING",
+            (int(user_id), int(city_id), str(uid).strip(), now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def remove_watch(user_id: int, city_id: int, uid: str) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "DELETE FROM watch_sub WHERE user_id=? AND city_id=? AND uid=?",
+            (int(user_id), int(city_id), str(uid).strip()))
         conn.commit()
     finally:
         conn.close()
@@ -535,8 +645,8 @@ def watch_city_ids() -> list:
         conn.close()
 
 
-def list_watches() -> list:
-    """每条订阅现在在不在。在不在只看 player 表里还有没有这个人。"""
+def list_watches(user_id: int) -> list:
+    """这个账号的订阅现在在不在。在不在只看 player 表里还有没有这个人。"""
     conn = connect(readonly=True)
     try:
         rows = conn.execute(
@@ -548,8 +658,9 @@ def list_watches() -> list:
             "LEFT JOIN city c ON c.id=s.city_id "
             "LEFT JOIN player p ON p.city_id=s.city_id AND p.uid=s.uid "
             "LEFT JOIN city_occupy o ON o.city_id=s.city_id "
-            "ORDER BY s.created_at DESC, s.rowid DESC"
-        ).fetchall()
+            "WHERE s.user_id=? "
+            "ORDER BY s.created_at DESC, s.rowid DESC",
+            (int(user_id),)).fetchall()
     finally:
         conn.close()
     out = []
@@ -580,7 +691,11 @@ def sync_watch(city_id: int, seen_uids, full: bool) -> list:
     conn = connect()
     try:
         rows = conn.execute(
-            "SELECT uid, last_present FROM watch_sub WHERE city_id=?",
+            "SELECT s.user_id, s.uid, s.last_present, "
+            "IFNULL(u.feishu_webhook,''), IFNULL(u.qq_api,''), "
+            "IFNULL(u.qq_token,''), IFNULL(u.qq_target,'') "
+            "FROM watch_sub s JOIN app_user u ON u.id=s.user_id "
+            "WHERE s.city_id=?",
             (city_id,)).fetchall()
         if not rows:
             return []
@@ -588,7 +703,7 @@ def sync_watch(city_id: int, seen_uids, full: bool) -> list:
                              (city_id,)).fetchone()
         cname = cname[0] if cname else ""
         changes = []
-        for uid, last in rows:
+        for user_id, uid, last, feishu, qq_api, qq_token, qq_target in rows:
             if uid in seen:
                 now = 1
             elif full:
@@ -603,12 +718,15 @@ def sync_watch(city_id: int, seen_uids, full: bool) -> list:
                 name = nrow[0]
             if last is None or int(last) != now:
                 conn.execute(
-                    "UPDATE watch_sub SET last_present=? WHERE city_id=? AND uid=?",
-                    (now, city_id, uid))
+                    "UPDATE watch_sub SET last_present=? "
+                    "WHERE user_id=? AND city_id=? AND uid=?",
+                    (now, user_id, city_id, uid))
             if last is not None and int(last) != now:
                 changes.append({
-                    "city_id": city_id, "city_name": cname, "uid": uid,
-                    "name": name, "present": now == 1,
+                    "user_id": user_id, "city_id": city_id, "city_name": cname,
+                    "uid": uid, "name": name, "present": now == 1,
+                    "feishu_webhook": feishu, "qq_api": qq_api,
+                    "qq_token": qq_token, "qq_target": qq_target,
                 })
         conn.commit()
         return changes

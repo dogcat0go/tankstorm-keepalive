@@ -18,6 +18,8 @@ endpoints-candidates.json
 # ===== 打包产物（本地试打包时生成，CI 里由 Actions 产出）=====
 build/
 dist/
+!web/dist/
+!web/dist/**
 
 # ===== 运行时生成 =====
 debug/
@@ -30,6 +32,9 @@ __pycache__/
 .venv/
 venv/
 env/
+
+# Vue 依赖。构建结果在 web/dist，服务器上不用装 Node
+web/node_modules/
 
 # ===== 编辑器 / 系统 =====
 .vscode/
