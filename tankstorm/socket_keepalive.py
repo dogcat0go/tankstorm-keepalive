@@ -425,7 +425,7 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
     full = (start_page == 0 and not out.get("原因")
             and total is not None and len(players) >= total)
     changes = citydb.sync_watch(
-        city_id, [str(p.get("uid") or "") for p in players], full)
+        city_id, [str(p.get("uid") or "") for p in players], not out.get("原因"))
     if full:
         gone = citydb.drop_stale(city_id, ts)
         if gone:

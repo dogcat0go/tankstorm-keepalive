@@ -679,11 +679,11 @@ def watch_city_ids() -> list:
 
 
 def list_watches(user_id: int) -> list:
-    """这个账号的订阅现在在不在。在不在只看 player 表里还有没有这个人。"""
+    """这个账号的订阅现在在不在。在不在看上一轮扫描记下来的状态。"""
     conn = connect(readonly=True)
     try:
         rows = conn.execute(
-            "SELECT s.city_id, s.uid, s.created_at, IFNULL(c.name, ''), "
+            "SELECT s.city_id, s.uid, s.created_at, s.last_present, IFNULL(c.name, ''), "
             "p.name, p.lvl, p.fetched_at, p.page, "
             "(SELECT MAX(fetched_at) FROM player WHERE city_id=s.city_id), "
             "o.fetched_at "
@@ -697,15 +697,17 @@ def list_watches(user_id: int) -> list:
     finally:
         conn.close()
     out = []
-    for city_id, uid, created, cname, pname, lvl, seen, page, city_seen, occ_seen in rows:
+    for city_id, uid, created, last, cname, pname, lvl, seen, page, city_seen, occ_seen in rows:
         scanned = [t for t in (city_seen, occ_seen) if t]
+        checked = last is not None
         out.append({
             "city_id": int(city_id),
             "city_name": cname,
             "uid": uid,
             "name": pname or "",
             "lvl": lvl,
-            "present": seen is not None,
+            "present": checked and int(last) == 1,
+            "checked": checked,
             "seen_at": beijing_ts(seen or ""),
             "city_scanned_at": beijing_ts(max(scanned) if scanned else ""),
             "page": None if page is None else int(page) + 1,
@@ -714,11 +716,11 @@ def list_watches(user_id: int) -> list:
     return out
 
 
-def sync_watch(city_id: int, seen_uids, full: bool) -> list:
+def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
     """用这一轮拉到的人更新订阅状态。只返回要推送的「变成在线」。
 
-    这个 UID 第一次出现在扫描结果里，推一条。之后只有从不在城变成在线才再推。
-    离开只改状态，不推。没拉全时只把见到的人标成在城里，不把没见到的标成离开。
+    这一轮正常扫完后，没见到的订阅 UID 记成不在线。扫描中断时不改这些 UID。
+    第一次出现，以及从不在线变成在线，各推一条。离开只改状态，不推。
     """
     city_id = int(city_id)
     seen = {str(u).strip() for u in seen_uids if str(u).strip()}
@@ -738,7 +740,7 @@ def sync_watch(city_id: int, seen_uids, full: bool) -> list:
         for user_id, uid, last, qq_target in rows:
             if uid in seen:
                 now = 1
-            elif full:
+            elif finished:
                 now = 0
             else:
                 continue

@@ -92,7 +92,7 @@ async function logout() {
 
 function statusOf(it) {
   if (it.present) return "在城里";
-  if (it.city_scanned_at) return "不在这座城";
+  if (it.checked) return "不在这座城";
   return "这座城还没扫过";
 }
 
@@ -136,7 +136,7 @@ onUnmounted(() => clearInterval(timer));
         <label>用户 UID<input v-model="uid" inputmode="numeric" required /></label>
         <button type="submit">订阅</button>
       </form>
-      <p class="muted">这个 UID 第一次出现在扫描结果里，发一条。之后只有从不在这座城变成在线，再发一条。只翻一段页时，没翻到的人不会被标成离开。</p>
+      <p class="muted">这个 UID 第一次出现在扫描结果里，发一条。之后只有从不在这座城变成在线，再发一条。这一轮扫完还没见到，就记成不在这座城。</p>
       <table>
         <thead>
           <tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>页</th><th>北京时间</th><th></th></tr>
@@ -148,7 +148,7 @@ onUnmounted(() => clearInterval(timer));
             <td>{{ it.name || "—" }}</td>
             <td :class="it.present ? 'on' : 'off'">{{ statusOf(it) }}</td>
             <td>{{ it.present && it.page != null ? it.page : "—" }}</td>
-            <td>{{ it.present ? it.seen_at || "—" : it.city_scanned_at || "—" }}</td>
+            <td>{{ it.present ? it.seen_at || "—" : (it.checked ? it.city_scanned_at || "—" : "—") }}</td>
             <td><button type="button" class="ghost" @click="removeSub(it)">取消</button></td>
           </tr>
         </tbody>
