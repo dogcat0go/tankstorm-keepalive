@@ -617,6 +617,142 @@ def run_move_once(qq, config: dict, city_id, sweep=False, country=0) -> int:
     return _connect_and(qq, config, _work)
 
 
+def _run_aimed(qq, config: dict, city_id, uid) -> tuple:
+    """寻径到这座城，只打这一个 UID。返回 (退出码, 停止原因)。"""
+    from . import country_war
+
+    held = {}
+
+    def _work(rec, sock, spec, ctx, beater):
+        out = country_war.walk_to(
+            rec, sock, config, city_id, beat=beater, uid=uid)
+        held["out"] = out
+        log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                 uid, city_id, out.get("移动") or 0, out.get("走到"),
+                 out.get("攻击") if out.get("攻击") is not None else "未打")
+        if out.get("停止原因"):
+            log.info("   结束原因：%s", out["停止原因"])
+        return 0 if out.get("攻击") else 1
+
+    code = _connect_and(qq, config, _work)
+    return code, (held.get("out") or {}).get("停止原因") or ""
+
+
+def _attack_status_beater(stop: threading.Event) -> None:
+    from . import citydb
+
+    while not stop.wait(10):
+        try:
+            citydb.touch_attack_status()
+        except Exception:
+            log.debug("攻打进程心跳没写上", exc_info=True)
+
+
+def _start_attack_status() -> threading.Event:
+    from . import citydb
+
+    stop = threading.Event()
+    citydb.set_attack_status("idle")
+    threading.Thread(
+        target=_attack_status_beater, args=(stop,),
+        name="attack-status", daemon=True).start()
+    return stop
+
+
+def _stop_attack_status(stop: threading.Event) -> None:
+    from . import citydb
+
+    stop.set()
+    try:
+        citydb.set_attack_status("offline")
+    except Exception:
+        log.debug("攻打进程收尾状态没写上", exc_info=True)
+
+
+def run_remote_orders(qq, config: dict) -> int:
+    """领取页面上中级、高级提交的城市和 UID。没登录就先把二维码发给扫码 QQ。"""
+    from . import citydb
+
+    log.info("开始领取远程扫码攻打")
+    stop = _start_attack_status()
+    try:
+        while True:
+            if citydb.take_attack_login() and not qq.is_valid():
+                citydb.set_attack_status("login")
+                relogin_with_push(qq, config)
+                citydb.set_attack_status("idle")
+            job = citydb.claim_attack_order()
+            if not job:
+                citydb.set_attack_status("idle")
+                time.sleep(5)
+                continue
+            log.info("领到订单 %s，城市 %s UID %s",
+                     job["id"], job["city_id"], job["uid"])
+            citydb.set_attack_status("running")
+            code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
+            citydb.finish_attack_order(
+                job["id"], "done" if code == 0 else "failed",
+                "" if code == 0 else (reason or "未打成"))
+            citydb.set_attack_status("idle")
+    except KeyboardInterrupt:
+        log.info("停止领取远程扫码攻打")
+        return 0
+    finally:
+        _stop_attack_status(stop)
+
+
+def web_attack_account(config: dict) -> str:
+    """网页触发时用哪个攻打号。填了「登录.网页攻打号」就用它，否则用账号里的第一个。"""
+    login = config.get("登录") or {}
+    accounts = login.get("账号") or {}
+    names = [k for k, v in accounts.items() if isinstance(v, dict)]
+    named = str(login.get("网页攻打号") or "").strip()
+    if named:
+        return named if named in names else ""
+    return names[0] if names else ""
+
+
+def kick_attack_login(config: dict) -> str:
+    """网页发起：能锁到攻打号就在这里推二维码并打排队的单。锁不到就交给已在跑的攻打进程。"""
+    import threading
+
+    import main as cli
+
+    name = web_attack_account(config)
+    if not name:
+        log.error("登录.账号 里没有攻打号，二维码发不出去")
+        return "no_account"
+    qq = cli.open_qq(config, name, fatal_lock=False)
+    if qq is None:
+        from . import citydb
+        citydb.ask_attack_login()
+        log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
+        return "busy"
+
+    def _run():
+        from . import citydb
+        stop = _start_attack_status()
+        try:
+            if not qq.is_valid():
+                citydb.set_attack_status("login")
+                relogin_with_push(qq, config)
+            while True:
+                job = citydb.claim_attack_order()
+                if not job:
+                    break
+                citydb.set_attack_status("running")
+                code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
+                citydb.finish_attack_order(
+                    job["id"], "done" if code == 0 else "failed",
+                    "" if code == 0 else (reason or "未打成"))
+        finally:
+            _stop_attack_status(stop)
+            cli.release_qq_lock()
+
+    threading.Thread(target=_run, name="attack-login", daemon=True).start()
+    return "started"
+
+
 def run_farm_city_once(qq, config: dict, city_id, times=1, sweep=False,
                        country=0) -> int:
     """连一次游戏、打指定城市里库中的人、断开退出。不迁城。"""
@@ -674,6 +810,8 @@ def _connect_and(qq, config: dict, work) -> int:
         return 2
 
     if not qq.is_valid() and not relogin_with_push(qq, config):
+        return 1
+    if qq.shares_blocked_uin():
         return 1
 
     ctx = get_game_context(qq)
@@ -806,11 +944,20 @@ def relogin_with_push(qq, config: dict) -> bool:
 
     # 推送登录：直接往手机QQ推确认，免去扫码。
     # 这解决了"二维码图存本地、同一台手机相册扫码"被腾讯拒（限制本地扫码登录）的问题。
-    push_uin = (config.get("登录", {}) or {}).get("推送登录QQ号") or qq.uin or None
+    if getattr(qq, "attack_account", False):
+        push_uin = None
+    else:
+        push_uin = (config.get("登录", {}) or {}).get("推送登录QQ号") or qq.uin or None
 
     def on_qr(path, pushed=False):
-        # 同一次失效只私聊管理员一次，后面换码不再发
-        if attempt == 1:
+        if getattr(qq, "attack_account", False):
+            name = getattr(qq, "account_name", "") or "攻打号"
+            notify.send_admin_login_qr(
+                config, path, target=getattr(qq, "notify_qq", ""),
+                text=(f"攻打号「{name}」需要扫码。用这个号的手机 QQ，"
+                      f"在另一台设备上扫这张图。不要把图存进同一台手机相册再扫。"))
+        elif attempt == 1:
+            # 扫描号同一次失效只私聊管理员一次，后面换码不再发
             notify.send_admin_login_qr(config, path)
         if pushed:
             notify.send_qrcode(
@@ -833,7 +980,8 @@ def relogin_with_push(qq, config: dict) -> bool:
         log.info("登录态失效，正在%s（第 %d 次尝试）",
                  f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码", attempt)
         if qq.qr_login(on_qr=on_qr, push_uin=push_uin):
-            notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
+            if not getattr(qq, "attack_account", False):
+                notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
             return True
         log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
         time.sleep(15)
