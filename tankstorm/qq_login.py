@@ -293,6 +293,8 @@ class QQSession:
         self.cookie_file = cookie_file
         self.qrcode_file = qrcode_file or QRCODE_FILE
         self.use_napcat = True
+        self.attack_account = False
+        self.blocked_uins = set()
         self.session = requests.Session()
         self.session.headers["User-Agent"] = UA
         self._load_cookies()
@@ -366,6 +368,9 @@ class QQSession:
         """向本机已登录的 NapCat 要空间票据。游戏页认这张票就不用扫码。"""
         if not self.use_napcat:
             return False
+        if self.attack_account:
+            log.error("攻打号不向 NapCat 要票据")
+            return False
         inner = ((config.get("登录") or {}).get("内部QQ") or {})
         api = str(inner.get("地址") or "").strip().rstrip("/")
         token = str(inner.get("Token") or "").strip()
@@ -409,6 +414,15 @@ class QQSession:
             return False
         log.info("已用 NapCat 当前登录的票据续上，uin=%s", self.uin)
         return True
+
+    def shares_blocked_uin(self) -> bool:
+        """攻打号的 uin 不得与扫描号或其他攻打号相同。还没登录时 uin 为空，先放过。"""
+        if not self.attack_account:
+            return False
+        if self.uin and self.uin in self.blocked_uins:
+            log.error("攻打号 uin=%s 与扫描号或其他攻打号相同，已停", self.uin)
+            return True
+        return False
 
     def has_long_term_ticket(self) -> bool:
         """是否持有长效登录凭据（腾讯"快速登录/下次自动登录"用的那套）。

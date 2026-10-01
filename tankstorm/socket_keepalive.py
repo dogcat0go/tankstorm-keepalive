@@ -675,6 +675,8 @@ def _connect_and(qq, config: dict, work) -> int:
 
     if not qq.is_valid() and not relogin_with_push(qq, config):
         return 1
+    if qq.shares_blocked_uin():
+        return 1
 
     ctx = get_game_context(qq)
     host = ctx.get("server") or spec.get("default_host", "tankstorm-proxy.sincetimes.com")
