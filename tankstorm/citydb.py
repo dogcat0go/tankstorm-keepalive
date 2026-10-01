@@ -717,10 +717,10 @@ def list_watches(user_id: int) -> list:
 
 
 def sync_watch(city_id: int, seen_uids, full: bool) -> list:
-    """用这一轮拉到的人更新订阅状态。只返回相对上次有变化的。
+    """用这一轮拉到的人更新订阅状态。只返回要推送的「变成在线」。
 
-    第一次见到某条订阅只记基准，不报变化。没拉全时只把见到的人标成在城里，
-    不把没见到的标成离开。
+    这个 UID 第一次出现在扫描结果里，推一条。之后只有从不在城变成在线才再推。
+    离开只改状态，不推。没拉全时只把见到的人标成在城里，不把没见到的标成离开。
     """
     city_id = int(city_id)
     seen = {str(u).strip() for u in seen_uids if str(u).strip()}
@@ -757,7 +757,7 @@ def sync_watch(city_id: int, seen_uids, full: bool) -> list:
                     "UPDATE watch_sub SET last_present=? "
                     "WHERE user_id=? AND city_id=? AND uid=?",
                     (now, user_id, city_id, uid))
-            if last is not None and int(last) != now:
+            if now == 1 and (last is None or int(last) != 1):
                 changes.append({
                     "user_id": user_id, "city_id": city_id, "city_name": cname,
                     "uid": uid, "name": name, "present": now == 1,
