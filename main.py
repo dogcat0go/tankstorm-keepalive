@@ -30,7 +30,7 @@
   python main.py --city-players 2203 --city-page 10 --city-page-end 20
   python main.py --watch-pages 1201:10-20 1301:0-8
   python main.py --watch-cities                    常驻：按 config 城市监视每 5 分钟刷新指定城
-  python main.py --web                             订阅接口和 Vue 页面，默认监听 0.0.0.0:8765
+  python web.py                                    订阅页面，不连游戏，默认 0.0.0.0:8765
   python main.py --atk 7826194927704102           离线打人（默认普通攻击 1 次）
   python main.py --atk 7826194927704102 --sweep --atk-times 2
   python main.py --atk-city 2302 --sweep          现场翻页打城：先打再看士气，击退/打不过换人
@@ -197,13 +197,7 @@ def main() -> int:
                     help="常驻刷新 config「城市监视.城市」和网页订阅的城；"
                          "间隔见「间隔秒」，默认 5 分钟。走保活同一条连接")
     g5.add_argument("--web", action="store_true",
-                    help="订阅接口和 Vue 页面。读写本机 city_players.db。"
-                         "可单独跑，也可和 --watch-cities / --keepalive 一起跑。"
-                         "HTTPS 放到前面的 Caddy/Nginx")
-    g5.add_argument("--web-host", default="0.0.0.0", metavar="地址",
-                    help="监听地址，默认 0.0.0.0。证书由反向代理处理")
-    g5.add_argument("--web-port", type=int, default=8765, metavar="端口",
-                    help="订阅页面端口，默认 8765")
+                    help="已分开。订阅页面请另开 python3 web.py，不再挂在这个进程里")
     g5.add_argument("--list-cities", action="store_true",
                     help="列出全部城市 ID 与中文名（读官方配置表，不用登录）")
     g5.add_argument("--move", type=int, metavar="城市ID", default=None,
@@ -248,6 +242,17 @@ def main() -> int:
                 args.pve is not None)):
         parser.print_help()
         return 0
+
+    if args.web and not any((args.login, args.check, args.keepalive, args.daily,
+                              args.list, args.reset, args.task, args.import_device,
+                              args.country_war, args.city_players is not None,
+                              args.atk, args.atk_city is not None, args.watch_cities,
+                              args.watch_pages is not None, args.list_cities,
+                              args.route is not None, args.move is not None,
+                              args.capture, args.fund is not None,
+                              args.pve is not None)):
+        log.error("订阅页面已和游戏分开。另开一个进程：python3 web.py")
+        return 1
 
     config = load_config()
     endpoints = load_json(ENDPOINTS_FILE)
@@ -364,25 +369,13 @@ def main() -> int:
         subs = citydb.watch_city_ids()
         if not ids and not subs:
             log.error("config「城市监视.城市」是空的，网页里也还没有订阅。"
-                      "先 python3 main.py --web 加上，或在 config 里填城市 ID")
+                      "先 python3 web.py 加上，或在 config 里填城市 ID")
             return 1
         config.setdefault("保持活跃", {})["启用"] = True
-    if args.web and (args.keepalive or args.watch_cities or args.watch_pages is not None):
-        from tankstorm import webui
-        try:
-            webui.start(args.web_host, args.web_port, config)
-        except OSError as exc:
-            log.error("订阅页面没能监听 %s:%s：%s", args.web_host, args.web_port, exc)
-            return 1
+    if args.web:
+        log.error("订阅页面已和游戏分开，这个进程不再监听网页。另开：python3 web.py")
     if args.keepalive or args.watch_cities or args.watch_pages is not None:
         return socket_keepalive.run(qq, config, with_daily=args.daily)
-    if args.web:
-        from tankstorm import webui
-        try:
-            return webui.serve(args.web_host, args.web_port, config)
-        except OSError as exc:
-            log.error("订阅页面没能监听 %s:%s：%s", args.web_host, args.web_port, exc)
-            return 1
 
     if args.capture:
         from tankstorm import live_capture
