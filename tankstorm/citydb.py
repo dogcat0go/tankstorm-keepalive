@@ -11,7 +11,7 @@
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -518,6 +518,17 @@ def now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def beijing_ts(ts: str) -> str:
+    """库存 UTC（末尾 Z）换成北京时间，给页面显示。"""
+    if not ts:
+        return ""
+    try:
+        dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ts
+    return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _password_hash(password: str, salt: str = "") -> str:
     import hashlib
     import secrets
@@ -578,6 +589,30 @@ def user_by_token(token: str):
             return None
         return {"id": row[0], "username": row[1], "feishu_webhook": row[2],
                 "qq_api": row[3], "qq_token": row[4], "qq_target": row[5]}
+    finally:
+        conn.close()
+
+
+def open_session(username: str) -> str:
+    """给账号发一张登录态。没有这个账号就建一个，测试入口用，不校验密码。"""
+    import secrets
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM app_user WHERE username=?", (username,)).fetchone()
+        if row:
+            user_id = row[0]
+        else:
+            cur = conn.execute(
+                "INSERT INTO app_user(username, password_hash, created_at) VALUES (?,?,?)",
+                (username, _password_hash(secrets.token_urlsafe(18)), now_ts()))
+            user_id = int(cur.lastrowid)
+        token = secrets.token_urlsafe(32)
+        conn.execute(
+            "INSERT INTO app_session(token, user_id, created_at) VALUES (?,?,?)",
+            (token, user_id, now_ts()))
+        conn.commit()
+        return token
     finally:
         conn.close()
 
@@ -651,7 +686,7 @@ def list_watches(user_id: int) -> list:
     try:
         rows = conn.execute(
             "SELECT s.city_id, s.uid, s.created_at, IFNULL(c.name, ''), "
-            "p.name, p.lvl, p.fetched_at, "
+            "p.name, p.lvl, p.fetched_at, p.page, "
             "(SELECT MAX(fetched_at) FROM player WHERE city_id=s.city_id), "
             "o.fetched_at "
             "FROM watch_sub s "
@@ -664,7 +699,7 @@ def list_watches(user_id: int) -> list:
     finally:
         conn.close()
     out = []
-    for city_id, uid, created, cname, pname, lvl, seen, city_seen, occ_seen in rows:
+    for city_id, uid, created, cname, pname, lvl, seen, page, city_seen, occ_seen in rows:
         scanned = [t for t in (city_seen, occ_seen) if t]
         out.append({
             "city_id": int(city_id),
@@ -673,8 +708,9 @@ def list_watches(user_id: int) -> list:
             "name": pname or "",
             "lvl": lvl,
             "present": seen is not None,
-            "seen_at": seen or "",
-            "city_scanned_at": max(scanned) if scanned else "",
+            "seen_at": beijing_ts(seen or ""),
+            "city_scanned_at": beijing_ts(max(scanned) if scanned else ""),
+            "page": None if page is None else int(page) + 1,
             "created_at": created,
         })
     return out
