@@ -754,6 +754,18 @@ class QQSession:
         log.error("扫码超时（%d 秒）", timeout_sec)
         return False
 
+    def renew_early(self, on_qr=None, push_uin=None) -> bool:
+        """票据还没过期时提前换一次新的，只试一轮。
+
+        qr_login 一开始就会清掉会话票据；这里不能让一次没人点确认的尝试把
+        还能用一天的 skey 弄丢，所以先留一份，没成就原样放回去。
+        """
+        jar = self.session.cookies.copy()
+        if self.qr_login(on_qr=on_qr, push_uin=push_uin):
+            return True
+        self.session.cookies = jar
+        return False
+
     def ensure_login(self, on_qr=None, push_uin=None) -> bool:
         """保证登录可用。顺序：现成 cookie → 长效凭据静默续期 → 推送/扫码登录。
 

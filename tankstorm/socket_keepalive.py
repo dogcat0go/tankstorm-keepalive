@@ -157,8 +157,15 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
             log.info("城市监视已启用但没填「城市」，跳过")
 
         sock.settimeout(1.0)
+        last_renew = 0.0
         while True:
             now = time.time()
+            # 票据续期不影响这条 socket（openkey 在连上时就换好了），
+            # 所以可以在会话里做；心跳线程照发，等人点确认的几分钟不会掉线。
+            if now - last_renew >= RENEW_RETRY_SEC and _renew_due(qq, config):
+                last_renew = now
+                relogin_with_push(qq, config, early=True)
+                continue
             if cities and now - last_watch >= watch_gap:
                 last_watch = now
                 try:
@@ -664,9 +671,38 @@ def run_daily_once(qq, config: dict) -> int:
     return _connect_and(qq, config, _work)
 
 
-def relogin_with_push(qq, config: dict) -> bool:
+RENEW_RETRY_SEC = 30 * 60     # 提前续期没人点确认时，隔多久再推一次
+
+
+def _renew_due(qq, config: dict) -> bool:
+    """票据快到期、又在你方便的时间窗里，就该主动续一次。
+
+    只靠「失效了再补救」会让重新登录落在半夜或 cron 跑任务的那一刻，没人点。
+    时间窗写成 "20:00-23:00"，跨午夜（"22:00-01:00"）也认；留空表示不限时间。
+    """
+    conf = config.get("登录", {}) or {}
+    hours = float(conf.get("提前续期小时", 24) or 0)
+    if hours <= 0 or not qq.expires_within(hours * 3600):
+        return False
+    win = str(conf.get("续期时间窗") or "").strip()
+    if not win:
+        return True
+    try:
+        (h1, m1), (h2, m2) = (map(int, p.split(":")) for p in win.split("-"))
+    except ValueError:
+        log.warning("「登录.续期时间窗」格式不对（%s），按不限时间处理", win)
+        return True
+    t = time.localtime()
+    cur, lo, hi = t.tm_hour * 60 + t.tm_min, h1 * 60 + m1, h2 * 60 + m2
+    return lo <= cur < hi if lo <= hi else (cur >= lo or cur < hi)
+
+
+def relogin_with_push(qq, config: dict, early: bool = False) -> bool:
     """需要重新扫码时：生成二维码并通过 PushPlus 推送给用户，等待扫码。
-    二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。"""
+    二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。
+
+    early=True 是提前续期：票据还没过期，只试一轮就回去继续保活，
+    没成也不丢现有 cookie（下次由 _renew_due 再触发）。"""
     # 先试静默续期：skey 只活约 24 小时，但 superkey/RK/ptcz 是长效的，
     # 能换发新 skey 而不必惊动你。成功就不用你动手了。
     if qq.silent_renew():
@@ -691,13 +727,23 @@ def relogin_with_push(qq, config: dict) -> bool:
                      "<br>把图存到手机再用同一台手机相册扫，腾讯会提示"
                      "「限制本地扫码登录」。")
 
+    how = f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码"
+    if early:
+        left = (qq.ticket_status().get("skey") or 0) / 3600
+        log.info("登录票据约 %.1f 小时后过期，正在%s提前续期", left, how)
+        if qq.renew_early(on_qr=on_qr, push_uin=push_uin):
+            notify.send(config, "坦克风暴：登录已续期", "票据已提前换新，定时任务不会撞上过期。")
+            return True
+        log.info("提前续期这一轮没人确认，%d 分钟后再推；现有登录态未受影响",
+                 RENEW_RETRY_SEC // 60)
+        return False
+
     attempt = 0
     while True:
         attempt += 1
         # 注意：这里只说"正在尝试"，别在请求发出前就宣称已推送 —— 之前那样写，
         # 推送其实失败了日志却显示"已推送"，很误导。
-        log.info("登录态失效，正在%s（第 %d 次尝试）",
-                 f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码", attempt)
+        log.info("登录态失效，正在%s（第 %d 次尝试）", how, attempt)
         if qq.qr_login(on_qr=on_qr, push_uin=push_uin):
             notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
             return True
