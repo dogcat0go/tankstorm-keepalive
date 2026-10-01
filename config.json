@@ -136,7 +136,7 @@
         "_范围说明": "例如 [{\"城市\": 1201, \"起始页\": 10, \"结束页\": 20}, {\"城市\": 1301, \"起始页\": 0, \"结束页\": 8}]。命令行不带参数的 --watch-pages 用这份名单"
     },
     "订阅": {
-        "_说明": "python main.py --web 提供注册和订阅接口。库文件是程序目录里的 city_players.db。进程只跑 HTTP，HTTPS 用 Caddy 或 Nginx 反代到 --web-port",
+        "_说明": "python3 web.py 提供注册和订阅接口，不连游戏。库文件是程序目录里的 city_players.db。进程只跑 HTTP，HTTPS 用 Caddy 或 Nginx 反代到该端口",
         "注册口令": "",
         "_注册口令说明": "公网开放时填上。空则任何人都能注册。也可以写在 config.local.json，避免进仓库",
         "测试免注册": true,
