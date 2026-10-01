@@ -19,6 +19,8 @@
 
 常用：
   python main.py --login       扫码登录（cookie 存 cookies.json，之后自动续期）
+  python main.py --qq 攻打 --login     给「登录.账号」里的另一个号扫码
+  python main.py --qq 攻打 --move 2302 用这个号寻径并打这座城
   python main.py --check       验证登录态，打印 uid/sid/level
   python main.py --keepalive   保活常驻
   python main.py --daily       跑一轮每日任务
@@ -41,6 +43,7 @@
 """
 
 import argparse
+import fcntl
 import json
 import os
 import sys
@@ -133,6 +136,61 @@ def load_config() -> dict:
     return _deep_merge(config, local)
 
 
+_QQ_LOCK = None
+
+
+def _lock_cookie(path: str) -> None:
+    """同一份 cookie 只能有一个进程。扫描号和攻打号因此不会互相覆盖票据。"""
+    global _QQ_LOCK
+    fh = open(path + ".lock", "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log.error("这个号已有进程在用 %s", path)
+        sys.exit(1)
+    _QQ_LOCK = fh
+
+
+def _cookie_path(name: str, cookie: str) -> str:
+    if not cookie or os.path.isabs(cookie) or ".." in cookie.split("/"):
+        log.error("账号「%s」的 cookie 要写成程序目录下的相对路径", name)
+        sys.exit(1)
+    path = os.path.normpath(paths.user_path(cookie))
+    root = os.path.normpath(paths.app_dir())
+    if path != root and not path.startswith(root + os.sep):
+        log.error("账号「%s」的 cookie 要写在程序目录里", name)
+        sys.exit(1)
+    return path
+
+
+def open_qq(config: dict, name: str) -> QQSession:
+    """不带名字用扫描号的 cookies.json，并向 NapCat 要票据。
+    带名字则用「登录.账号」里那一份，默认不碰 NapCat。"""
+    if not name:
+        path = paths.user_path("cookies.json")
+        _lock_cookie(path)
+        return QQSession(path)
+    accounts = (config.get("登录") or {}).get("账号") or {}
+    spec = accounts.get(name)
+    if not isinstance(spec, dict):
+        names = [k for k, v in accounts.items() if isinstance(v, dict)]
+        log.error("登录.账号 里没有「%s」%s", name,
+                  ("。已有：" + "、".join(names)) if names else "")
+        sys.exit(1)
+    path = _cookie_path(name, str(spec.get("cookie") or "").strip())
+    folder = os.path.dirname(path)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    qr = (path[:-5] if path.endswith(".json") else path) + ".qrcode.png"
+    _lock_cookie(path)
+    qq = QQSession(path, qrcode_file=qr)
+    qq.use_napcat = bool(spec.get("用NapCat"))
+    config.setdefault("登录", {})["推送登录QQ号"] = str(
+        spec.get("推送登录QQ号") or "").strip()
+    log.info("使用账号「%s」，cookie=%s", name, path)
+    return qq
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="坦克风暴：保活守护 + 每日任务 + 国战（三件独立的事）",
@@ -140,6 +198,8 @@ def main() -> int:
                "源码：https://github.com/Dimlitter/tankstorm-keepalive",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     g1 = parser.add_argument_group("登录")
+    g1.add_argument("--qq", metavar="名字", default="",
+                    help="用「登录.账号」里的这个号。不写则用根目录 cookies.json")
     g1.add_argument("--login", action="store_true", help="强制重新扫码登录")
     g1.add_argument("--check", action="store_true", help="验证登录态并打印上下文")
     g1.add_argument("--import-device", metavar="文件",
@@ -312,7 +372,7 @@ def main() -> int:
             log.info("今天已经跑过（state.json），退出。删掉 state.json 可强制重跑")
             return 0
 
-    qq = QQSession()
+    qq = open_qq(config, args.qq)
 
     # 一次性引导：把浏览器的设备记录搬进来，之后推送登录才有 dev_mid_sig 可用。
     # pt_fetch_dev_uin 只能给已有的续期，签发不出第一个，所以只能这么来。
