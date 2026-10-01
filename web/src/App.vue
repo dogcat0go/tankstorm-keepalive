@@ -17,9 +17,11 @@ const attackCity = ref("");
 const attackUid = ref("");
 const attackNote = ref("");
 const orders = ref([]);
+const proc = ref(null);
 const devLogin = ref(false);
 const registerOpen = ref(false);
 let timer = 0;
+let atkTimer = 0;
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -38,12 +40,22 @@ async function refresh() {
   const data = await api("/api/subs");
   items.value = data.items || [];
   db.value = data.db || "";
-  if (me.value && me.value.remote_attack) {
-    const atk = await api("/api/attacks");
-    orders.value = atk.items || [];
-  } else {
+}
+
+async function refreshAttacks() {
+  if (!me.value || !me.value.remote_attack) {
     orders.value = [];
+    proc.value = null;
+    return;
   }
+  const atk = await api("/api/attacks");
+  orders.value = atk.items || [];
+  proc.value = atk.process || null;
+}
+
+function procText(p) {
+  if (!p || !p.online) return "没在跑";
+  return p.detail || "空闲，等订单";
 }
 
 async function enter() {
@@ -58,6 +70,7 @@ async function enter() {
   me.value = who.user;
   qqTarget.value = who.user.qq_target || "";
   await refresh();
+  await refreshAttacks();
 }
 
 async function devEnter() {
@@ -73,6 +86,7 @@ async function loadMe() {
   me.value = who.user;
   qqTarget.value = who.user.qq_target || "";
   await refresh();
+  await refreshAttacks();
 }
 
 async function addSub() {
@@ -101,7 +115,7 @@ async function addOrder() {
   attackCity.value = "";
   attackUid.value = "";
   attackNote.value = "已提交。" + loginNote(data.login);
-  await refresh();
+  await refreshAttacks();
 }
 
 async function pushLogin() {
@@ -109,6 +123,7 @@ async function pushLogin() {
   attackNote.value = "";
   const data = await api("/api/attack-login", {});
   attackNote.value = loginNote(data.login);
+  await refreshAttacks();
 }
 
 function orderStatus(status) {
@@ -126,6 +141,8 @@ async function logout() {
   await api("/api/logout", {});
   me.value = null;
   items.value = [];
+  orders.value = [];
+  proc.value = null;
 }
 
 function statusOf(it) {
@@ -142,8 +159,14 @@ onMounted(async () => {
   timer = setInterval(() => {
     if (me.value) refresh().catch(() => {});
   }, 4000);
+  atkTimer = setInterval(() => {
+    if (me.value) refreshAttacks().catch(() => {});
+  }, 10000);
 });
-onUnmounted(() => clearInterval(timer));
+onUnmounted(() => {
+  clearInterval(timer);
+  clearInterval(atkTimer);
+});
 </script>
 
 <template>
@@ -204,7 +227,8 @@ onUnmounted(() => clearInterval(timer));
         <p>
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
-        <p class="muted">提交后会寻径到这座城，只打这个 UID。二维码由 QQ NT 发给攻打号的扫码QQ，不要用自己的号去扫。一次只排一条。扫描不用停。</p>
+        <p>攻打进程：{{ procText(proc) }}<template v-if="proc && proc.seen_at"> · {{ proc.seen_at }}</template></p>
+        <p class="muted">提交后会寻径到这座城，只打这个 UID。二维码由 QQ NT 发给攻打号的扫码QQ，不要用自己的号去扫。一次只排一条。扫描不用停。这一行每 10 秒更新，进程停了就显示没在跑。</p>
         <p class="muted">{{ attackNote }}</p>
         <table v-if="orders.length">
           <thead>

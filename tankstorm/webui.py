@@ -170,7 +170,10 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
-                _json(self, 200, {"items": citydb.list_attack_orders(user["id"])})
+                _json(self, 200, {
+                    "items": citydb.list_attack_orders(user["id"]),
+                    "process": citydb.attack_status(user["id"]),
+                })
                 return
             self._file(path)
 
