@@ -46,6 +46,10 @@ def _dev_login(config: dict) -> bool:
     return bool((config.get("订阅") or {}).get("测试免注册"))
 
 
+def _register_open(config: dict) -> bool:
+    return bool((config.get("订阅") or {}).get("开放注册"))
+
+
 def _json(handler, code, obj, cookie=None):
     body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
     handler.send_response(code)
@@ -121,12 +125,14 @@ def _user_out(user: dict) -> dict:
         "id": user["id"],
         "username": user["username"],
         "qq_target": user["qq_target"],
+        "expires_at": user.get("expires_at") or "",
     }
 
 
 def _handler(config: dict):
     invite = _invite(config)
     dev_login = _dev_login(config)
+    register_open = _register_open(config)
 
     class H(BaseHTTPRequestHandler):
         def _user(self):
@@ -135,7 +141,8 @@ def _handler(config: dict):
         def do_GET(self):
             path = self.path.split("?", 1)[0]
             if path == "/api/meta":
-                _json(self, 200, {"dev_login": dev_login, "invite": bool(invite)})
+                _json(self, 200, {"dev_login": dev_login, "invite": bool(invite),
+                                  "register": register_open})
                 return
             if path == "/api/me":
                 user = self._user()
@@ -211,6 +218,9 @@ def _handler(config: dict):
                 _json(self, 500, {"error": str(exc)})
 
         def _register(self, data):
+            if not register_open:
+                _json(self, 403, {"error": "注册已关闭"})
+                return
             try:
                 username, password = _account(data)
             except ValueError as exc:
@@ -233,6 +243,9 @@ def _handler(config: dict):
                 _json(self, 400, {"error": str(exc)})
                 return
             token = citydb.login_user(username, password)
+            if token is False:
+                _json(self, 403, {"error": "账号已过期"})
+                return
             if not token:
                 _json(self, 401, {"error": "用户名或密码不对"})
                 return
@@ -275,8 +288,10 @@ def _handler(config: dict):
 def _announce(host, port, config):
     log.info("订阅接口 http://%s:%d/    库 %s", host, port, citydb.DB_FILE)
     log.info("本进程只提供 HTTP。公网 HTTPS 用 Caddy 或 Nginx 反代到 %s:%d", host, port)
-    if host not in ("127.0.0.1", "localhost") and not _invite(config):
+    if _register_open(config) and host not in ("127.0.0.1", "localhost") and not _invite(config):
         log.warning("注册口令是空的，公网上任何人都能注册。填 config「订阅.注册口令」")
+    if not _register_open(config):
+        log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31")
     if _dev_login(config):
         log.warning("测试免注册已打开：POST /api/dev-login 会直接以 test 登录。正式对外前关掉「订阅.测试免注册」")
 
