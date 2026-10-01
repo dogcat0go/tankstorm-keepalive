@@ -317,6 +317,12 @@ def _handler(config: dict):
                         return
                     from .socket_keepalive import kick_attack_login
                     _json(self, 200, {"ok": True, "login": kick_attack_login(config)})
+                elif path == "/api/attack-pause":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "暂停攻打需要中级或高级订阅"})
+                        return
+                    citydb.set_attack_paused(bool(data.get("on")))
+                    _json(self, 200, {"ok": True, "paused": bool(data.get("on"))})
                 elif path == "/api/attack-hold":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "挂机保活需要中级或高级订阅"})
@@ -472,7 +478,8 @@ def _wake_attack_orders(config) -> None:
     noted = False
     while not gap.wait(5):
         try:
-            if citydb.attack_status(0).get("online") or not citydb.attack_order_open():
+            if (citydb.attack_paused() or citydb.attack_status(0).get("online")
+                    or not citydb.attack_order_open()):
                 noted = False
                 continue
             login = kick_attack_login(config)

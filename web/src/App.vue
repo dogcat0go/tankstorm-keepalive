@@ -73,8 +73,16 @@ function reloadQr() {
 }
 
 function procText(p) {
+  if (p && p.paused) return "已暂停";
   if (!p || !p.online) return "没在跑";
   return p.detail || "空闲，等订单";
+}
+
+async function setAttackPause(on) {
+  err.value = "";
+  const data = await api("/api/attack-pause", { on });
+  if (proc.value) proc.value.paused = !!data.paused;
+  await refreshAttacks();
 }
 
 async function enter() {
@@ -350,7 +358,11 @@ onUnmounted(() => {
         <p>
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
-        <p>攻打进程：{{ procText(proc) }}<template v-if="proc && proc.seen_at"> · {{ proc.seen_at }}</template></p>
+        <p>
+          攻打进程：{{ procText(proc) }}<template v-if="proc && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template>
+          <button v-if="proc && proc.paused" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
+          <button v-else type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
+        </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
         <p class="muted">每 10 秒刷新一次。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
@@ -401,6 +413,7 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color:
 input { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; }
 button { font: inherit; padding: 8px 14px; border: 0; border-radius: 6px; background: #1a1a1a; color: #fff; cursor: pointer; }
 button.ghost { background: transparent; color: #333; border: 1px solid #bbb; }
+p button.ghost { margin-left: 8px; }
 .err { color: #9b1c1c; min-height: 1.5em; }
 .muted { color: #777; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 12px; }

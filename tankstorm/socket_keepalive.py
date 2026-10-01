@@ -729,6 +729,10 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
                  out.get("攻击") if out.get("攻击") is not None else "未打")
         ok = out.get("攻击") is not None
     reason = out.get("停止原因") or ""
+    if reason == "已暂停":
+        citydb.defer_attack_order(job["id"])
+        log.info("订单 %s 已暂停，放回排队", job["id"])
+        return
     if reason:
         log.info("   结束原因：%s", reason)
         ok = False
@@ -737,12 +741,34 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         reason or ("" if ok else "未打成"))
 
 
+def _wait_socket(sock, spec, ctx) -> bool:
+    """等一秒并回应在线探测。连接还在返回 True。"""
+    try:
+        sock.settimeout(1.0)
+        data = sock.recv(8192)
+    except socket.timeout:
+        return True
+    if not data:
+        return False
+    reply = protocol.maybe_online_reply(spec, data, ctx)
+    if reply:
+        sock.sendall(reply)
+        log.info("收到在线探测，已回应")
+    return True
+
+
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     """同一条游戏连接上把排队的单打完。打完或打不过之后，按挂机时长继续心跳。"""
     from . import citydb
 
     idle_at = None
     while True:
+        if citydb.attack_paused():
+            idle_at = None
+            citydb.set_attack_status("paused")
+            if not _wait_socket(sock, spec, ctx):
+                raise OSError("服务器关闭连接")
+            continue
         job = citydb.claim_attack_order()
         if job:
             idle_at = None
@@ -764,17 +790,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         elif time.time() >= idle_at + minutes * 60:
             log.info("挂机保活结束，攻打连接断开")
             return 0
-        try:
-            sock.settimeout(1.0)
-            data = sock.recv(8192)
-        except socket.timeout:
-            continue
-        if not data:
+        if not _wait_socket(sock, spec, ctx):
             raise OSError("服务器关闭连接")
-        reply = protocol.maybe_online_reply(spec, data, ctx)
-        if reply:
-            sock.sendall(reply)
-            log.info("收到在线探测，已回应")
 
 
 def _connect_attack_orders(qq, config) -> int:
@@ -793,6 +810,10 @@ def run_remote_orders(qq, config: dict) -> int:
     try:
         citydb.requeue_running_orders()
         while True:
+            if citydb.attack_paused():
+                citydb.set_attack_status("paused")
+                time.sleep(5)
+                continue
             asked = citydb.take_attack_login()
             pending = citydb.attack_order_open()
             if (asked or pending) and not qq.is_valid():
@@ -867,6 +888,10 @@ def kick_attack_login(config: dict) -> str:
     with _kick_lock:
         if _kick_alive:
             return "busy"
+        from . import citydb
+        if citydb.attack_paused():
+            log.info("攻打已暂停，先不拉起")
+            return "paused"
         name = web_attack_account(config)
         if not name:
             log.error("登录.账号 里没有攻打号，二维码发不出去")
@@ -892,7 +917,7 @@ def kick_attack_login(config: dict) -> str:
                 if on_page:
                     citydb.set_page_qr(True)
                 relogin_with_push(qq, config)
-            while citydb.attack_order_open():
+            while citydb.attack_order_open() and not citydb.attack_paused():
                 citydb.requeue_running_orders()
                 _connect_attack_orders(qq, config)
         finally:

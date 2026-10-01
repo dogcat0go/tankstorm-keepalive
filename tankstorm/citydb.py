@@ -989,8 +989,11 @@ def attack_status(user_id: int) -> dict:
             "SELECT status, IFNULL(reason,'') FROM atk_order "
             "WHERE user_id=? ORDER BY id DESC LIMIT 1",
             (int(user_id),)).fetchone()
+        paused_row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='pause'").fetchone()
     finally:
         conn.close()
+    paused = bool(paused_row and paused_row[0] == "1")
     phase = "offline"
     seen = ""
     online = False
@@ -1009,9 +1012,13 @@ def attack_status(user_id: int) -> dict:
                 online = False
     show_qr = bool(page_qr and page_qr[0] == "1" and online and phase == "login")
     if not online:
-        return {"online": False, "phase": "offline", "detail": "没在跑",
-                "seen_at": beijing_ts(seen), "qr": False, "here": ""}
-    if phase == "login":
+        return {"online": False, "phase": "offline",
+                "detail": "已暂停" if paused else "没在跑",
+                "seen_at": beijing_ts(seen), "qr": False, "here": "",
+                "paused": paused}
+    if paused:
+        detail = "已暂停"
+    elif phase == "login":
         detail = "正在等扫码"
     elif phase == "hold":
         detail = "挂机保活"
@@ -1030,7 +1037,8 @@ def attack_status(user_id: int) -> dict:
         name = city_name(here_id)
         here = f"{here_id} {name}".strip() if name else str(here_id)
     return {"online": True, "phase": phase, "detail": detail,
-            "seen_at": beijing_ts(seen), "qr": show_qr, "here": here}
+            "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
+            "paused": paused}
 
 
 def _clock(text) -> str:
@@ -1184,6 +1192,28 @@ def take_attack_login() -> bool:
         conn.close()
 
 
+def attack_paused() -> bool:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='pause'").fetchone()
+        return bool(row and row[0] == "1")
+    finally:
+        conn.close()
+
+
+def set_attack_paused(on: bool) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES ('pause', ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            ("1" if on else "0", now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def attack_order_open() -> bool:
     """还有没打完的订单。网页据此在攻打进程没心跳时把它拉起来。"""
     conn = connect(readonly=True)
@@ -1242,6 +1272,19 @@ def claim_attack_order():
         if cur.rowcount != 1:
             return None
         return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5])}
+    finally:
+        conn.close()
+
+
+def defer_attack_order(order_id: int) -> None:
+    """暂停时把正在打的单放回排队。继续后会再领。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE atk_order SET status='pending', reason='', updated_at=? "
+            "WHERE id=? AND status='running'",
+            (now_ts(), int(order_id)))
+        conn.commit()
     finally:
         conn.close()
 

@@ -1252,6 +1252,9 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
         for page in range(0, max_pages):
             if out["停止原因"]:
                 break
+            if citydb.attack_paused():
+                out["停止原因"] = "已暂停"
+                break
             power, loc, _, panel = _panel(sock, rec, country)
             if loc is not None and start_loc is not None and loc != start_loc:
                 citydb.note_attack_here(loc)
@@ -1319,6 +1322,9 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     out["停止原因"] = f"{who} 打不过，这座城不可通行，路径被堵住了"
                     break
             for p in batch:
+                if citydb.attack_paused():
+                    out["停止原因"] = "已暂停"
+                    break
                 uid = str(p.get("uid") or "").strip()
                 if not uid or uid == me or uid in seen:
                     continue
@@ -1593,6 +1599,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     if not plan.get("路径"):
         out["停止原因"] = plan.get("原因") or "没有通路"
         return out
+    if citydb.attack_paused():
+        out["停止原因"] = "已暂停"
+        return out
     seq = list(plan["路径"])
     owned = citydb.city_map()
     far_i = 0
@@ -1637,6 +1646,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 log.info("[移动] 进入 %s %s，行动力 %s",
                          moved["here"], name, moved.get("power"))
         for city in seq[occupy_from:]:
+            if citydb.attack_paused():
+                out["停止原因"] = "已暂停"
+                break
             if city == target:
                 break
             blocked = _ready_to_leave(sock, rec, config, out["走到"], my)
@@ -1666,7 +1678,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 fought = farm_city(rec, sock, config, city, sweep=True,
                                    country=my, beat=beat, pass_block=True)
                 reason = fought.get("停止原因") or ""
-                if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                     out["停止原因"] = reason
                     break
                 if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
@@ -1724,7 +1736,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     fought = farm_city(rec, sock, config, city, sweep=True,
                                        country=my, beat=beat, pass_block=True)
                     reason = fought.get("停止原因") or ""
-                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
                         break
                     if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
@@ -1750,7 +1762,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     fought = farm_city(rec, sock, config, city, sweep=True,
                                        country=my, beat=beat, pass_block=True)
                     reason = fought.get("停止原因") or ""
-                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
                         break
                     if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
@@ -1771,7 +1783,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     log.info("[移动] %s %s 攻打结束：%s，成功 %d，失败 %d",
                              city, name, reason, fought.get("成功") or 0,
                              fought.get("失败") or 0)
-                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
                         break
                     if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
@@ -1806,7 +1818,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     fought = farm_city(rec, sock, config, city, sweep=True,
                                        country=my, beat=beat)
                     reason = fought.get("停止原因") or ""
-                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+                    if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
                         break
                     if fought.get("失败") and not fought.get("成功"):
@@ -1877,6 +1889,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         hit = 0
         last_cnt = None
         while True:
+            if citydb.attack_paused():
+                out["停止原因"] = "已暂停"
+                break
             info = _open_city(sock, rec, target, my)
             if not info:
                 out["停止原因"] = f"打不开目标 {target} {tname}"
@@ -1897,7 +1912,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                                country=my, beat=beat)
             hit += fought.get("成功") or 0
             reason = fought.get("停止原因") or ""
-            if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了")):
+            if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                 out["停止原因"] = reason
                 break
             if fought.get("失败") and not fought.get("成功"):
