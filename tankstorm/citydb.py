@@ -11,7 +11,7 @@
 
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -518,6 +518,17 @@ def now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def beijing_ts(ts: str) -> str:
+    """库存 UTC（末尾 Z）换成北京时间，给页面显示。"""
+    if not ts:
+        return ""
+    try:
+        dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ts
+    return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _password_hash(password: str, salt: str = "") -> str:
     import hashlib
     import secrets
@@ -675,7 +686,7 @@ def list_watches(user_id: int) -> list:
     try:
         rows = conn.execute(
             "SELECT s.city_id, s.uid, s.created_at, IFNULL(c.name, ''), "
-            "p.name, p.lvl, p.fetched_at, "
+            "p.name, p.lvl, p.fetched_at, p.page, "
             "(SELECT MAX(fetched_at) FROM player WHERE city_id=s.city_id), "
             "o.fetched_at "
             "FROM watch_sub s "
@@ -688,7 +699,7 @@ def list_watches(user_id: int) -> list:
     finally:
         conn.close()
     out = []
-    for city_id, uid, created, cname, pname, lvl, seen, city_seen, occ_seen in rows:
+    for city_id, uid, created, cname, pname, lvl, seen, page, city_seen, occ_seen in rows:
         scanned = [t for t in (city_seen, occ_seen) if t]
         out.append({
             "city_id": int(city_id),
@@ -697,8 +708,9 @@ def list_watches(user_id: int) -> list:
             "name": pname or "",
             "lvl": lvl,
             "present": seen is not None,
-            "seen_at": seen or "",
-            "city_scanned_at": max(scanned) if scanned else "",
+            "seen_at": beijing_ts(seen or ""),
+            "city_scanned_at": beijing_ts(max(scanned) if scanned else ""),
+            "page": None if page is None else int(page) + 1,
             "created_at": created,
         })
     return out

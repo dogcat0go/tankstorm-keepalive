@@ -153,7 +153,7 @@ onUnmounted(() => clearInterval(timer));
       <p class="muted">人离开要等这座城被完整翻完页，记录才会消失。状态变化会推到下面填的机器人。</p>
       <table>
         <thead>
-          <tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>记录时间</th><th></th></tr>
+          <tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>页</th><th>北京时间</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="it in items" :key="it.city_id + ':' + it.uid">
@@ -161,6 +161,7 @@ onUnmounted(() => clearInterval(timer));
             <td>{{ it.uid }}</td>
             <td>{{ it.name || "—" }}</td>
             <td :class="it.present ? 'on' : 'off'">{{ statusOf(it) }}</td>
+            <td>{{ it.present && it.page != null ? it.page : "—" }}</td>
             <td>{{ it.present ? it.seen_at || "—" : it.city_scanned_at || "—" }}</td>
             <td><button type="button" class="ghost" @click="removeSub(it)">取消</button></td>
           </tr>
