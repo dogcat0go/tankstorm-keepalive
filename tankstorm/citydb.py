@@ -772,16 +772,67 @@ def set_page_qr(on: bool) -> None:
         conn.close()
 
 
+def _proc_payload(raw) -> dict:
+    try:
+        data = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _kept_here(data: dict) -> int:
+    here = data.get("here")
+    if isinstance(here, bool) or not isinstance(here, int) or here <= 0:
+        return 0
+    return here
+
+
 def set_attack_status(phase: str) -> None:
-    """攻打进程把自己的阶段写进库。网页只读，不靠推送。"""
-    payload = json.dumps({"phase": phase}, ensure_ascii=False)
+    """攻打进程把自己的阶段写进库。网页只读，不靠推送。所在城市留着。"""
     conn = connect()
     try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='proc'").fetchone()
+        data = {"phase": phase}
+        here = _kept_here(_proc_payload(row[0] if row else ""))
+        if here:
+            data["here"] = here
         conn.execute(
             "INSERT INTO atk_signal(name, value, at) VALUES ('proc', ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            (payload, now_ts()))
+            (json.dumps(data, ensure_ascii=False), now_ts()))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def note_attack_here(city_id) -> None:
+    """记下攻打号当前所在城市。库写失败不影响正在打的那一单。进程已停则不改。"""
+    try:
+        cid = int(city_id or 0)
+    except (TypeError, ValueError):
+        return
+    if isinstance(city_id, bool) or cid <= 0:
+        return
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='proc'").fetchone()
+        if not row:
+            return
+        data = _proc_payload(row[0])
+        if not data or data.get("phase") == "offline":
+            return
+        data["here"] = cid
+        conn.execute(
+            "UPDATE atk_signal SET value=?, at=? WHERE name='proc'",
+            (json.dumps(data, ensure_ascii=False), now_ts()))
+        conn.commit()
+    except sqlite3.Error:
+        return
     finally:
         conn.close()
 
@@ -828,11 +879,11 @@ def attack_status(user_id: int) -> dict:
     phase = "offline"
     seen = ""
     online = False
+    here_id = 0
     if row:
-        try:
-            phase = json.loads(row[0] or "{}").get("phase") or "offline"
-        except json.JSONDecodeError:
-            phase = "offline"
+        parsed = _proc_payload(row[0])
+        phase = parsed.get("phase") or "offline"
+        here_id = _kept_here(parsed)
         seen = row[1] or ""
         if seen and phase != "offline":
             try:
@@ -844,7 +895,7 @@ def attack_status(user_id: int) -> dict:
     show_qr = bool(page_qr and page_qr[0] == "1" and online and phase == "login")
     if not online:
         return {"online": False, "phase": "offline", "detail": "没在跑",
-                "seen_at": beijing_ts(seen), "qr": False}
+                "seen_at": beijing_ts(seen), "qr": False, "here": ""}
     if phase == "login":
         detail = "正在等扫码"
     elif phase == "running" and own and str(own[1] or "").strip():
@@ -857,8 +908,12 @@ def attack_status(user_id: int) -> dict:
         detail = "空闲，等订单"
         if latest and latest[0] == "failed" and latest[1]:
             detail = f"空闲。上一单没打成：{latest[1]}"
+    here = ""
+    if here_id:
+        name = city_name(here_id)
+        here = f"{here_id} {name}".strip() if name else str(here_id)
     return {"online": True, "phase": phase, "detail": detail,
-            "seen_at": beijing_ts(seen), "qr": show_qr}
+            "seen_at": beijing_ts(seen), "qr": show_qr, "here": here}
 
 
 def ask_attack_login() -> None:

@@ -1022,6 +1022,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
     if panel is None:
         out["停止原因"] = "读不到国战面板，停手"
         return out
+    citydb.note_attack_here(loc)
     if not citydb.can_reach(loc, city):
         out["停止原因"] = _lost_city_reason(loc, city)
         return out
@@ -1048,6 +1049,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             continue
         panel_miss = 0
         if loc is not None and start_loc is not None and loc != start_loc:
+            citydb.note_attack_here(loc)
             out["停止原因"] = _lost_city_reason(loc, city, start_loc)
             out["遣返"] = True
             log.info("[打人] %s", out["停止原因"])
@@ -1226,6 +1228,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             return out
         cname = citydb.city_name(city_id) or str(city_id)
         here_name = citydb.city_name(loc) or loc
+        citydb.note_attack_here(loc)
         if not citydb.can_reach(loc, city_id):
             out["停止原因"] = _lost_city_reason(loc, city_id)
             log.info("[打人] %s", out["停止原因"])
@@ -1251,6 +1254,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 break
             power, loc, _, panel = _panel(sock, rec, country)
             if loc is not None and start_loc is not None and loc != start_loc:
+                citydb.note_attack_here(loc)
                 out["停止原因"] = _lost_city_reason(loc, city_id, start_loc)
                 log.info("[打人] %s", out["停止原因"])
                 break
@@ -1566,6 +1570,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         out["停止原因"] = "读不到当前所在城市"
         return out
     out["走到"] = int(loc)
+    citydb.note_attack_here(loc)
     plan = live_plan(sock, rec, loc, target, my, avoid)
     avoid = set(plan.get("避开") or avoid or ())
     for line in citydb.format_route(plan):
@@ -1612,6 +1617,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     return out
                 out["移动"] += 1
                 out["走到"] = moved["here"]
+                citydb.note_attack_here(moved["here"])
                 occupy_from = far_i + 1
                 log.info("[移动] 进入 %s %s，行动力 %s",
                          moved["here"], name, moved.get("power"))
@@ -1804,6 +1810,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 break
             out["移动"] += 1
             out["走到"] = moved["here"]
+            citydb.note_attack_here(moved["here"])
             log.info("[移动] 进入 %s %s，行动力 %s",
                      moved["here"], name, moved.get("power"))
         if blocked_at:
@@ -1821,6 +1828,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             out["移动"] += nxt.get("移动") or 0
             if nxt.get("走到"):
                 out["走到"] = nxt["走到"]
+                citydb.note_attack_here(nxt["走到"])
             if nxt.get("攻击") is not None:
                 out["攻击"] = nxt["攻击"]
             out["停止原因"] = nxt.get("停止原因") or ""

@@ -244,6 +244,7 @@ onUnmounted(() => {
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
         <p>攻打进程：{{ procText(proc) }}<template v-if="proc && proc.seen_at"> · {{ proc.seen_at }}</template></p>
+        <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
         <p class="muted">只填城市 ID，会寻径到这座城，从城里第一个人打到最后，和 --move 一样。填了 UID 就只打这一个。登录.账号 里写了攻打号时，二维码由 QQ NT 发给扫码QQ。一个都没写时，二维码显示在这页上。不要用扫描号去扫，也不要把图存进同一台手机相册再扫。一次只排一条。扫描不用停。这一行每 10 秒更新，进程停了就显示没在跑。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <p class="muted">{{ attackNote }}</p>
