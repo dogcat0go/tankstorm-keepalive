@@ -27,6 +27,7 @@ const scanRanges = ref([]);
 const scanNote = ref("");
 const scanQuiet = ref(false);
 const autoLock = ref(false);
+const holdMin = ref("0");
 let timer = 0;
 let atkTimer = 0;
 
@@ -88,6 +89,7 @@ async function enter() {
   me.value = who.user;
   qqTarget.value = who.user.qq_target || "";
   autoLock.value = !!who.user.auto_lock;
+  holdMin.value = String(who.user.hold_min ?? 0);
   await refresh();
   await refreshAttacks();
   await loadScan();
@@ -151,6 +153,7 @@ async function loadMe() {
   me.value = who.user;
   qqTarget.value = who.user.qq_target || "";
   autoLock.value = !!who.user.auto_lock;
+  holdMin.value = String(who.user.hold_min ?? 0);
   await refresh();
   await refreshAttacks();
   await loadScan();
@@ -179,6 +182,12 @@ async function addSub() {
 async function removeSub(it) {
   await api("/api/subs/delete", { city_id: it.city_id, uid: it.uid });
   await refresh();
+}
+
+async function saveHold() {
+  err.value = "";
+  const data = await api("/api/attack-hold", { minutes: holdMin.value });
+  holdMin.value = String(data.hold_min ?? 0);
 }
 
 async function addOrder() {
@@ -328,6 +337,11 @@ onUnmounted(() => {
       <h2>远程扫码攻打</h2>
       <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。中级和高级可以提交，由服务器上的攻打号领取并扫码进游戏。</p>
       <template v-else>
+        <form @submit.prevent="saveHold().catch((e) => (err = e.message))">
+          <label>挂机保活分钟<input v-model="holdMin" inputmode="numeric" required /></label>
+          <button type="submit">保存</button>
+        </form>
+        <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。0 表示打完就下线。</p>
         <form @submit.prevent="addOrder().catch((e) => (err = e.message))">
           <label>城市 ID<input v-model="attackCity" inputmode="numeric" required placeholder="2302" /></label>
           <label>UID<input v-model="attackUid" inputmode="numeric" placeholder="留空则打整座城" /></label>

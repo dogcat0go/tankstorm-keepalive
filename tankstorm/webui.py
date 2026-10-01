@@ -130,6 +130,7 @@ def _user_out(user: dict) -> dict:
         "remote_attack": citydb.attack_tier(user.get("tier") or ""),
         "admin": bool(user.get("admin")),
         "auto_lock": bool(user.get("auto_lock")),
+        "hold_min": int(user.get("hold_min") or 0),
     }
 
 
@@ -316,6 +317,17 @@ def _handler(config: dict):
                         return
                     from .socket_keepalive import kick_attack_login
                     _json(self, 200, {"ok": True, "login": kick_attack_login(config)})
+                elif path == "/api/attack-hold":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "挂机保活需要中级或高级订阅"})
+                        return
+                    why = citydb.set_attack_hold(user["id"], data.get("minutes"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {
+                        "ok": True,
+                        "hold_min": int(str(data.get("minutes")).strip()),
+                    })
                 elif path == "/api/auto-lock":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "自动锁敌需要中级或高级订阅"})
