@@ -84,7 +84,16 @@ CREATE TABLE IF NOT EXISTS app_user (
     qq_target       TEXT,
     expires_at      TEXT,
     tier            TEXT NOT NULL DEFAULT '初级',
+    admin           INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scan_plan (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    gap_sec      INTEGER NOT NULL,
+    quiet_start  TEXT NOT NULL DEFAULT '',
+    quiet_end    TEXT NOT NULL DEFAULT '',
+    ranges_json  TEXT NOT NULL DEFAULT '[]',
+    updated_at   TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS atk_order (
     id          INTEGER PRIMARY KEY,
@@ -177,6 +186,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "tier" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN tier TEXT NOT NULL DEFAULT '初级'")
+                setup.commit()
+            if ucols and "admin" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN admin INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
             if ocols and "uid" not in ocols:
@@ -610,6 +623,19 @@ def create_user(username: str, password: str, expires_at: str = "", tier: str = 
         conn.close()
 
 
+def set_user_admin(username: str, on: bool) -> bool:
+    """打开或关掉扫描安排权限。没有这个用户返回 False。"""
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET admin=? WHERE username=?",
+            (1 if on else 0, username))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def set_user_tier(username: str, tier: str) -> bool:
     """把账号标成初级、中级或高级。没有这个用户返回 False。"""
     conn = connect()
@@ -667,13 +693,13 @@ def user_by_token(token: str):
     try:
         row = conn.execute(
             "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,''), "
-            "IFNULL(u.tier,'初级') "
+            "IFNULL(u.tier,'初级'), IFNULL(u.admin,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
             return None
         return {"id": row[0], "username": row[1], "qq_target": row[2],
-                "expires_at": row[3], "tier": row[4]}
+                "expires_at": row[3], "tier": row[4], "admin": bool(row[5])}
     finally:
         conn.close()
 
@@ -914,6 +940,127 @@ def attack_status(user_id: int) -> dict:
         here = f"{here_id} {name}".strip() if name else str(here_id)
     return {"online": True, "phase": phase, "detail": detail,
             "seen_at": beijing_ts(seen), "qr": show_qr, "here": here}
+
+
+def _clock(text) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    parts = raw.split(":")
+    if len(parts) not in (2, 3) or any(not p.isdigit() for p in parts[:2]):
+        raise ValueError("时间写成 01:00 这样")
+    hour, minute = int(parts[0]), int(parts[1])
+    if hour > 23 or minute > 59:
+        raise ValueError("时间写成 01:00 这样")
+    return f"{hour:02d}:{minute:02d}"
+
+
+def scan_quiet(start: str, end: str, now=None) -> bool:
+    """北京时间落在停扫时段里。开始等于结束、或有一边空着，就不停。跨过零点也算。"""
+    if not start or not end or start == end:
+        return False
+    a = int(start[:2]) * 60 + int(start[3:5])
+    b = int(end[:2]) * 60 + int(end[3:5])
+    now = now or datetime.now(timezone(timedelta(hours=8)))
+    cur = now.hour * 60 + now.minute
+    if a < b:
+        return a <= cur < b
+    return cur >= a or cur < b
+
+
+def get_scan_plan():
+    """管理员在页面上保存过的扫描安排。还没保存过返回 None，调用方继续用 config。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT gap_sec, IFNULL(quiet_start,''), IFNULL(quiet_end,''), "
+            "IFNULL(ranges_json,'[]') FROM scan_plan WHERE id=1").fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    try:
+        raw = json.loads(row[3] or "[]")
+    except json.JSONDecodeError:
+        raw = []
+    ranges, jobs = [], []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                city = int(item.get("city_id") or 0)
+                start_page = int(item.get("start_page") or 0)
+                end_page = int(item.get("end_page"))
+            except (TypeError, ValueError):
+                continue
+            if city <= 0 or start_page < 0 or end_page < start_page:
+                continue
+            ranges.append({"city_id": city, "start_page": start_page, "end_page": end_page})
+            jobs.append((city, start_page, end_page))
+    start, end = row[1] or "", row[2] or ""
+    return {
+        "gap_sec": int(row[0] or 300),
+        "quiet_start": start,
+        "quiet_end": end,
+        "quiet": scan_quiet(start, end),
+        "ranges": ranges,
+        "jobs": jobs,
+    }
+
+
+def save_scan_plan(gap_sec, quiet_start, quiet_end, ranges) -> str:
+    """保存扫描安排。返回空字符串表示成功，否则是给页面看的原因。"""
+    try:
+        gap = int(str(gap_sec).strip())
+    except (TypeError, ValueError, AttributeError):
+        return "间隔要是数字"
+    if gap < 30 or gap > 86400:
+        return "间隔要在 30 秒到 24 小时之间"
+    try:
+        start = _clock(quiet_start)
+        end = _clock(quiet_end)
+    except ValueError as exc:
+        return str(exc)
+    if bool(start) != bool(end):
+        return "停扫时段要开始和结束都填，或者都留空"
+    if start and start == end:
+        return "停扫的开始和结束不能是同一分钟"
+    if not isinstance(ranges, list):
+        return "城市页范围要是列表"
+    if len(ranges) > 100:
+        return "一座进程最多 100 座城"
+    clean, seen = [], set()
+    for item in ranges:
+        if not isinstance(item, dict):
+            return "城市页范围有一条不是对象"
+        try:
+            city = int(str(item.get("city_id", "")).strip())
+            start_page = int(str(item.get("start_page", "")).strip())
+            end_page = int(str(item.get("end_page", "")).strip())
+        except (TypeError, ValueError, AttributeError):
+            return "城市 ID 和页码要是数字"
+        if city <= 0:
+            return "城市 ID 要大于 0"
+        if start_page < 0 or end_page < start_page or end_page > 100000:
+            return f"城市 {city} 的页码无效"
+        if city in seen:
+            return f"城市 {city} 写了两段，一座城只保留一段"
+        seen.add(city)
+        clean.append({"city_id": city, "start_page": start_page, "end_page": end_page})
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO scan_plan(id, gap_sec, quiet_start, quiet_end, ranges_json, updated_at) "
+            "VALUES (1,?,?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET gap_sec=excluded.gap_sec, "
+            "quiet_start=excluded.quiet_start, quiet_end=excluded.quiet_end, "
+            "ranges_json=excluded.ranges_json, updated_at=excluded.updated_at",
+            (gap, start, end, json.dumps(clean, ensure_ascii=False), now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
 
 
 def ask_attack_login() -> None:

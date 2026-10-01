@@ -128,6 +128,46 @@ def _user_out(user: dict) -> dict:
         "expires_at": user.get("expires_at") or "",
         "tier": user.get("tier") or "初级",
         "remote_attack": citydb.attack_tier(user.get("tier") or ""),
+        "admin": bool(user.get("admin")),
+    }
+
+
+def _scan_view(config: dict) -> dict:
+    saved = citydb.get_scan_plan()
+    stored = saved is not None
+    if saved is None:
+        w = config.get("页范围监视") or {}
+        try:
+            gap = int(w.get("间隔秒") or 300)
+        except (TypeError, ValueError):
+            gap = 300
+        ranges = []
+        for item in w.get("范围") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                city = int(item.get("城市") or 0)
+                start_page = int(item.get("起始页") or 0)
+                end_page = int(item.get("结束页"))
+            except (TypeError, ValueError):
+                continue
+            if city > 0 and start_page >= 0 and end_page >= start_page:
+                ranges.append({
+                    "city_id": city, "start_page": start_page, "end_page": end_page,
+                })
+        saved = {
+            "gap_sec": gap, "quiet_start": "", "quiet_end": "",
+            "quiet": False, "ranges": ranges,
+        }
+    for row in saved["ranges"]:
+        row["city_name"] = citydb.city_name(row["city_id"])
+    return {
+        "gap_sec": saved["gap_sec"],
+        "quiet_start": saved["quiet_start"],
+        "quiet_end": saved["quiet_end"],
+        "quiet_now": bool(saved["quiet"]),
+        "saved": stored,
+        "ranges": saved["ranges"],
     }
 
 
@@ -164,6 +204,16 @@ def _handler(config: dict):
                     _json(self, 500, {"error": str(exc)})
                     return
                 _json(self, 200, {"db": citydb.DB_FILE, "items": items})
+                return
+            if path == "/api/scan-plan":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看扫描安排"})
+                    return
+                _json(self, 200, _scan_view(config))
                 return
             if path == "/api/attacks":
                 user = self._user()
@@ -263,6 +313,16 @@ def _handler(config: dict):
                         return
                     from .socket_keepalive import kick_attack_login
                     _json(self, 200, {"ok": True, "login": kick_attack_login(config)})
+                elif path == "/api/scan-plan":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能改扫描安排"})
+                        return
+                    why = citydb.save_scan_plan(
+                        data.get("gap_sec"), data.get("quiet_start"),
+                        data.get("quiet_end"), data.get("ranges"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, _scan_view(config))
                 elif path == "/api/push":
                     qq_target = str(data.get("qq_target", "")).strip()
                     if qq_target and (not qq_target.isdigit() or not 5 <= len(qq_target) <= 12):
@@ -352,6 +412,7 @@ def _announce(host, port, config):
     if not _register_open(config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
         log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级。中级和高级可提交远程扫码攻打")
+        log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后可改间隔、停扫时段和城市页范围")
     if _dev_login(config):
         log.warning("测试免注册已打开：POST /api/dev-login 会直接以 test 登录。正式对外前关掉「订阅.测试免注册」")
 

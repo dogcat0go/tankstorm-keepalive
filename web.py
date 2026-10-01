@@ -12,6 +12,7 @@
   python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级
   python3 web.py --set-expires 用户名 2026-12-31
   python3 web.py --set-tier 用户名 高级
+  python3 web.py --set-admin 用户名 开
 
 扫城仍用 main.py，例如 python3 main.py --watch-pages 1201:10-20。
 注册默认关闭。有效期按北京时间的日期，这一天仍然有效。
@@ -82,8 +83,20 @@ def main() -> int:
                         help="改已有账号的有效期，不启动网页")
     parser.add_argument("--set-tier", nargs=2, metavar=("用户名", "档"),
                         help="把账号标成初级、中级或高级，不启动网页")
+    parser.add_argument("--set-admin", nargs=2, metavar=("用户名", "开关"),
+                        help="开或关：该账号能否在页面上改扫描安排，不启动网页")
     args = parser.parse_args()
-    if args.add_user or args.set_expires or args.set_tier:
+    if args.add_user or args.set_expires or args.set_tier or args.set_admin:
+        if args.set_admin:
+            name, flag = args.set_admin
+            if flag not in ("开", "关"):
+                log.error("开关只能是开或关")
+                return 1
+            if not citydb.set_user_admin(name, flag == "开"):
+                log.error("没有这个账号：%s", name)
+                return 1
+            log.info("已把 %s 的扫描管理%s", name, "打开" if flag == "开" else "关掉")
+            return 0
         if args.set_tier:
             name, tier = args.set_tier
             if tier not in citydb.TIERS:

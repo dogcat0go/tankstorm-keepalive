@@ -151,19 +151,26 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         cities, watch_gap = _watch_city_ids(config)
         last_watch = 0.0
         shown = tuple(cities)
-        page_jobs, page_gap = _page_range_jobs(config)
+        page_mode = bool((config.get("页范围监视") or {}).get("启用"))
+        page_jobs, page_gap, quiet, quiet_start, quiet_end = _scan_plan(config)
+        shown_pages = tuple(page_jobs)
         last_pages = 0.0
+        quiet_logged = False
         if cities:
             log.info("城市监视：每 %.0f 秒刷新 %d 座城 %s",
                      watch_gap, len(cities), ",".join(str(c) for c in cities))
         elif (config.get("城市监视") or {}).get("启用"):
             log.info("城市监视已启用。config 里的城市是空的，"
                      "在订阅页面加上城市和 UID 之后会开始刷新")
-        if page_jobs:
+        if page_mode and page_jobs:
             brief = "、".join(f"{c} 第{a}–{b}页" for c, a, b in page_jobs)
             log.info("页范围监视：每 %.0f 秒刷新 %s", page_gap, brief)
+        elif page_mode:
+            log.info("页范围监视已启用，名单还是空的。在订阅页面的扫描安排里加上城市")
+        if quiet:
+            log.info("[扫描] 现在是停扫时段 %s–%s（北京时间）", quiet_start, quiet_end)
 
-        if page_jobs or (config.get("城市监视") or {}).get("启用"):
+        if page_mode or (config.get("城市监视") or {}).get("启用"):
             if _await_role(sock, rec, spec, ctx, config):
                 log.info("登录态数据接收完毕，开始翻城")
             else:
@@ -177,19 +184,41 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         sock.settimeout(1.0)
         while True:
             now = time.time()
-            if page_jobs and now - last_pages >= page_gap:
+            city_on = bool((config.get("城市监视") or {}).get("启用"))
+            page_due = page_mode and now - last_pages >= page_gap
+            city_due = city_on and now - last_watch >= watch_gap
+            if page_due or city_due:
+                page_jobs, page_gap, quiet, quiet_start, quiet_end = _scan_plan(config)
+                if quiet:
+                    if not quiet_logged:
+                        log.info("[扫描] 停扫时段 %s–%s（北京时间），这一轮不翻页",
+                                 quiet_start, quiet_end)
+                        quiet_logged = True
+                    if page_due:
+                        last_pages = now
+                    if city_due:
+                        last_watch = now
+                    page_due = False
+                    city_due = False
+                else:
+                    quiet_logged = False
+            if page_due:
+                if tuple(page_jobs) != shown_pages:
+                    shown_pages = tuple(page_jobs)
+                    brief = "、".join(f"{c} 第{a}–{b}页" for c, a, b in page_jobs) or "(空)"
+                    log.info("页范围监视：每 %.0f 秒刷新 %s", page_gap, brief)
                 last_pages = now
-                try:
-                    _scan_page_ranges(rec, sock, config, page_jobs, heart)
-                except OSError as exc:
-                    return (f"页范围监视时连接中断: {exc}"
-                            f"（已发 {heart.count} 次心跳）")
-                except Exception as exc:
-                    log.error("页范围监视异常（保活继续）: %s", exc)
-                sock.settimeout(1.0)
+                if page_jobs:
+                    try:
+                        _scan_page_ranges(rec, sock, config, page_jobs, heart)
+                    except OSError as exc:
+                        return (f"页范围监视时连接中断: {exc}"
+                                f"（已发 {heart.count} 次心跳）")
+                    except Exception as exc:
+                        log.error("页范围监视异常（保活继续）: %s", exc)
+                    sock.settimeout(1.0)
                 continue
-            if ((config.get("城市监视") or {}).get("启用")
-                    and now - last_watch >= watch_gap):
+            if city_due:
                 cities, watch_gap = _watch_city_ids(config)
                 last_watch = now
                 if tuple(cities) != shown:
@@ -362,6 +391,22 @@ def _watch_city_ids(config):
             seen.add(v)
             ids.append(v)
     return ids, float(w.get("间隔秒") or 300)
+
+
+def _scan_plan(config):
+    """页面上保存过的安排优先。返回 (城市页范围, 间隔秒, 是否停扫, 开始, 结束)。"""
+    from . import citydb
+
+    saved = None
+    try:
+        saved = citydb.get_scan_plan()
+    except Exception as exc:
+        log.info("读扫描安排失败，沿用启动时的配置：%s", exc)
+    if saved is None:
+        jobs, gap = _page_range_jobs(config)
+        return jobs, gap, False, "", ""
+    return (saved["jobs"], float(saved["gap_sec"] or 300), bool(saved["quiet"]),
+            saved["quiet_start"], saved["quiet_end"])
 
 
 def _page_range_jobs(config):
