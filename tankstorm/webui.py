@@ -42,6 +42,10 @@ def _invite(config: dict) -> str:
     return str((config.get("订阅") or {}).get("注册口令") or "").strip()
 
 
+def _dev_login(config: dict) -> bool:
+    return bool((config.get("订阅") or {}).get("测试免注册"))
+
+
 def _json(handler, code, obj, cookie=None):
     body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
     handler.send_response(code)
@@ -125,6 +129,7 @@ def _user_out(user: dict) -> dict:
 
 def _handler(config: dict):
     invite = _invite(config)
+    dev_login = _dev_login(config)
 
     class H(BaseHTTPRequestHandler):
         def _user(self):
@@ -132,6 +137,9 @@ def _handler(config: dict):
 
         def do_GET(self):
             path = self.path.split("?", 1)[0]
+            if path == "/api/meta":
+                _json(self, 200, {"dev_login": dev_login, "invite": bool(invite)})
+                return
             if path == "/api/me":
                 user = self._user()
                 if not user:
@@ -165,6 +173,15 @@ def _handler(config: dict):
                 return
             if path == "/api/login":
                 self._login(data)
+                return
+            if path == "/api/dev-login":
+                if not dev_login:
+                    _json(self, 404, {"error": "测试入口已关闭"})
+                    return
+                token = citydb.open_session("test")
+                log.info("测试免注册：已以 test 登录")
+                _json(self, 200, {"ok": True, "username": "test"},
+                      cookie=_set_cookie(self, token))
                 return
             if path == "/api/logout":
                 citydb.logout_token(_cookie_token(self))
@@ -267,6 +284,8 @@ def _announce(host, port, config):
     log.info("本进程只提供 HTTP。公网 HTTPS 用 Caddy 或 Nginx 反代到 %s:%d", host, port)
     if host not in ("127.0.0.1", "localhost") and not _invite(config):
         log.warning("注册口令是空的，公网上任何人都能注册。填 config「订阅.注册口令」")
+    if _dev_login(config):
+        log.warning("测试免注册已打开：POST /api/dev-login 会直接以 test 登录。正式对外前关掉「订阅.测试免注册」")
 
     def warm():
         try:

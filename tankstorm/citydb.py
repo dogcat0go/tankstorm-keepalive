@@ -582,6 +582,30 @@ def user_by_token(token: str):
         conn.close()
 
 
+def open_session(username: str) -> str:
+    """给账号发一张登录态。没有这个账号就建一个，测试入口用，不校验密码。"""
+    import secrets
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM app_user WHERE username=?", (username,)).fetchone()
+        if row:
+            user_id = row[0]
+        else:
+            cur = conn.execute(
+                "INSERT INTO app_user(username, password_hash, created_at) VALUES (?,?,?)",
+                (username, _password_hash(secrets.token_urlsafe(18)), now_ts()))
+            user_id = int(cur.lastrowid)
+        token = secrets.token_urlsafe(32)
+        conn.execute(
+            "INSERT INTO app_session(token, user_id, created_at) VALUES (?,?,?)",
+            (token, user_id, now_ts()))
+        conn.commit()
+        return token
+    finally:
+        conn.close()
+
+
 def logout_token(token: str) -> None:
     if not token:
         return

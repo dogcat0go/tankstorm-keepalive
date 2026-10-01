@@ -16,6 +16,7 @@ const qqApi = ref("");
 const qqToken = ref("");
 const qqTarget = ref("");
 const note = ref("");
+const devLogin = ref(false);
 let timer = 0;
 
 async function api(path, body) {
@@ -52,6 +53,12 @@ async function enter() {
   qqToken.value = who.user.qq_token || "";
   qqTarget.value = who.user.qq_target || "";
   await refresh();
+}
+
+async function devEnter() {
+  err.value = "";
+  await api("/api/dev-login", {});
+  await loadMe();
 }
 
 async function loadMe() {
@@ -104,6 +111,8 @@ function statusOf(it) {
 }
 
 onMounted(async () => {
+  const meta = await fetch("/api/meta").then((r) => r.json()).catch(() => ({}));
+  devLogin.value = !!meta.dev_login;
   await loadMe();
   timer = setInterval(() => {
     if (me.value) refresh().catch(() => {});
@@ -126,6 +135,9 @@ onUnmounted(() => clearInterval(timer));
       <button type="submit">{{ mode === "register" ? "注册" : "登录" }}</button>
       <button type="button" class="ghost" @click="mode = mode === 'login' ? 'register' : 'login'">
         {{ mode === "login" ? "去注册" : "去登录" }}
+      </button>
+      <button v-if="devLogin" type="button" class="ghost" @click="devEnter().catch((e) => (err = e.message))">
+        测试进入
       </button>
     </form>
     <template v-else>
