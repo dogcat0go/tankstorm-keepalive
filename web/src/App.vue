@@ -18,6 +18,7 @@ const attackUid = ref("");
 const attackNote = ref("");
 const orders = ref([]);
 const proc = ref(null);
+const qrSrc = ref("");
 const devLogin = ref(false);
 const registerOpen = ref(false);
 let timer = 0;
@@ -51,6 +52,17 @@ async function refreshAttacks() {
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
   proc.value = atk.process || null;
+  qrSrc.value = proc.value && proc.value.qr ? "/api/attack-qr?t=" + Date.now() : "";
+  if (qrSrc.value) qrWait = 0;
+}
+
+let qrWait = 0;
+function reloadQr() {
+  if (!qrSrc.value || qrWait >= 12) return;
+  qrWait += 1;
+  setTimeout(() => {
+    if (qrSrc.value) qrSrc.value = "/api/attack-qr?t=" + Date.now();
+  }, 1000);
 }
 
 function procText(p) {
@@ -104,6 +116,7 @@ async function removeSub(it) {
 
 function loginNote(login) {
   if (login === "no_account") return "服务器还没配置攻打号，二维码发不出去";
+  if (login === "qr") return "用攻打号的手机 QQ 扫下面这张图。不要用扫描号，也不要把图存进同一台手机相册再扫。";
   if (login === "busy") return "攻打进程已在跑。需要扫码时，二维码会通过 QQ NT 发给扫码QQ";
   return "若攻打号未登录，二维码会通过 QQ NT 发给扫码QQ，扫完再打这个 UID";
 }
@@ -143,6 +156,7 @@ async function logout() {
   items.value = [];
   orders.value = [];
   proc.value = null;
+  qrSrc.value = "";
 }
 
 function statusOf(it) {
@@ -228,7 +242,8 @@ onUnmounted(() => {
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
         <p>攻打进程：{{ procText(proc) }}<template v-if="proc && proc.seen_at"> · {{ proc.seen_at }}</template></p>
-        <p class="muted">提交后会寻径到这座城，只打这个 UID。二维码由 QQ NT 发给攻打号的扫码QQ，不要用自己的号去扫。一次只排一条。扫描不用停。这一行每 10 秒更新，进程停了就显示没在跑。</p>
+        <p class="muted">提交后会寻径到这座城，只打这个 UID。登录.账号 里写了攻打号时，二维码由 QQ NT 发给扫码QQ。一个都没写时，二维码显示在这页上。不要用扫描号去扫，也不要把图存进同一台手机相册再扫。一次只排一条。扫描不用停。这一行每 10 秒更新，进程停了就显示没在跑。</p>
+        <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <p class="muted">{{ attackNote }}</p>
         <table v-if="orders.length">
           <thead>
@@ -279,4 +294,5 @@ th { font-size: 13px; color: #555; }
 .on { color: #0b6b2f; font-weight: 700; }
 .off { color: #666; }
 code { font-size: 13px; }
+img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px solid #ddd; }
 </style>

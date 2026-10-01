@@ -175,6 +175,28 @@ def _handler(config: dict):
                     "process": citydb.attack_status(user["id"]),
                 })
                 return
+            if path == "/api/attack-qr":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not citydb.attack_tier(user.get("tier") or ""):
+                    _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})
+                    return
+                from .socket_keepalive import page_attack_qr_path
+                fp = page_attack_qr_path()
+                if not os.path.isfile(fp):
+                    self.send_error(404)
+                    return
+                with open(fp, "rb") as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             self._file(path)
 
         def do_POST(self):

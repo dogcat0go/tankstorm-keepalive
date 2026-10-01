@@ -701,19 +701,49 @@ def run_remote_orders(qq, config: dict) -> int:
         _stop_attack_status(stop)
 
 
-def web_attack_account(config: dict) -> str:
-    """网页触发时用哪个攻打号。填了「登录.网页攻打号」就用它，否则用账号里的第一个。"""
+_PAGE_ACCOUNT = "网页"
+_PAGE_COOKIE = "accounts/web.json"
+
+
+def page_attack_qr_path() -> str:
+    """没配攻打号时，网页上显示的那张登录图。"""
+    from . import paths
+    base = paths.user_path(_PAGE_COOKIE)
+    return (base[:-5] if base.endswith(".json") else base) + ".qrcode.png"
+
+
+def _page_qr_account(config: dict, name: str) -> bool:
     login = config.get("登录") or {}
-    accounts = login.get("账号") or {}
+    if str(login.get("网页攻打号") or "").strip():
+        return False
+    spec = (login.get("账号") or {}).get(name) or {}
+    if not isinstance(spec, dict):
+        return False
+    return (str(spec.get("cookie") or "").strip() == _PAGE_COOKIE
+            and not str(spec.get("扫码QQ") or "").strip())
+
+
+def web_attack_account(config: dict) -> str:
+    """网页触发时用哪个攻打号。填了「登录.网页攻打号」就用它，否则用账号里的第一个。
+    一个都没写时，用 accounts/web.json，二维码显示在网页上。"""
+    login = config.setdefault("登录", {})
+    accounts = login.get("账号")
+    if not isinstance(accounts, dict):
+        accounts = {}
+        login["账号"] = accounts
     names = [k for k, v in accounts.items() if isinstance(v, dict)]
     named = str(login.get("网页攻打号") or "").strip()
     if named:
         return named if named in names else ""
-    return names[0] if names else ""
+    if names:
+        return names[0]
+    accounts[_PAGE_ACCOUNT] = {"cookie": _PAGE_COOKIE}
+    return _PAGE_ACCOUNT
 
 
 def kick_attack_login(config: dict) -> str:
-    """网页发起：能锁到攻打号就在这里推二维码并打排队的单。锁不到就交给已在跑的攻打进程。"""
+    """网页发起：能锁到攻打号就在这里推二维码并打排队的单。锁不到就交给已在跑的攻打进程。
+    没配攻打号时，二维码留在网页上，不经 QQ NT。"""
     import threading
 
     import main as cli
@@ -722,12 +752,14 @@ def kick_attack_login(config: dict) -> str:
     if not name:
         log.error("登录.账号 里没有攻打号，二维码发不出去")
         return "no_account"
+    on_page = _page_qr_account(config, name)
     qq = cli.open_qq(config, name, fatal_lock=False)
     if qq is None:
         from . import citydb
         citydb.ask_attack_login()
         log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
         return "busy"
+    qq.page_qr = on_page
 
     def _run():
         from . import citydb
@@ -735,6 +767,8 @@ def kick_attack_login(config: dict) -> str:
         try:
             if not qq.is_valid():
                 citydb.set_attack_status("login")
+                if on_page:
+                    citydb.set_page_qr(True)
                 relogin_with_push(qq, config)
             while True:
                 job = citydb.claim_attack_order()
@@ -746,11 +780,13 @@ def kick_attack_login(config: dict) -> str:
                     job["id"], "done" if code == 0 else "failed",
                     "" if code == 0 else (reason or "未打成"))
         finally:
+            if on_page:
+                citydb.set_page_qr(False)
             _stop_attack_status(stop)
             cli.release_qq_lock()
 
     threading.Thread(target=_run, name="attack-login", daemon=True).start()
-    return "started"
+    return "qr" if on_page else "started"
 
 
 def run_farm_city_once(qq, config: dict, city_id, times=1, sweep=False,
@@ -950,7 +986,10 @@ def relogin_with_push(qq, config: dict) -> bool:
         push_uin = (config.get("登录", {}) or {}).get("推送登录QQ号") or qq.uin or None
 
     def on_qr(path, pushed=False):
-        if getattr(qq, "attack_account", False):
+        if getattr(qq, "page_qr", False):
+            log.info("攻打号还没配置，登录二维码留在网页上：%s", path)
+            return
+        elif getattr(qq, "attack_account", False):
             name = getattr(qq, "account_name", "") or "攻打号"
             notify.send_admin_login_qr(
                 config, path, target=getattr(qq, "notify_qq", ""),
