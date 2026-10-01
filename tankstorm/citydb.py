@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS atk_order (
     uid         TEXT NOT NULL DEFAULT '',
     status      TEXT NOT NULL,
     reason      TEXT,
+    auto        INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -195,6 +196,10 @@ def connect(readonly=False, timeout=15):
             if ocols and "uid" not in ocols:
                 setup.execute(
                     "ALTER TABLE atk_order ADD COLUMN uid TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ocols and "auto" not in ocols:
+                setup.execute(
+                    "ALTER TABLE atk_order ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             _schema_ready = True
         finally:
@@ -772,6 +777,30 @@ def add_attack_order(user_id: int, city_id: int, uid: str) -> str:
         conn.close()
 
 
+def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
+    """订阅的人刚上线，排一条自动攻打。同一人还没打完就不再排。"""
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM atk_order WHERE user_id=? AND city_id=? AND uid=? "
+            "AND status IN ('pending','running')",
+            (int(user_id), int(city_id), uid)).fetchone()
+        if row:
+            return False
+        now = now_ts()
+        conn.execute(
+            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, auto, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (int(user_id), int(city_id), uid, "pending", "", 1, now, now))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
 def list_attack_orders(user_id: int, limit: int = 20) -> list:
     conn = connect(readonly=True)
     try:
@@ -1107,7 +1136,7 @@ def claim_attack_order():
             (now, cutoff))
         row = conn.execute(
             "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
-            "IFNULL(u.expires_at,'') "
+            "IFNULL(u.expires_at,''), IFNULL(o.auto,0) "
             "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
             "WHERE o.status='pending' ORDER BY o.id LIMIT 1").fetchone()
         if not row:
@@ -1126,7 +1155,7 @@ def claim_attack_order():
         conn.commit()
         if cur.rowcount != 1:
             return None
-        return {"id": row[0], "city_id": row[1], "uid": row[2]}
+        return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5])}
     finally:
         conn.close()
 
@@ -1232,7 +1261,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
     try:
         rows = conn.execute(
             "SELECT s.user_id, s.uid, s.last_present, IFNULL(u.qq_target,''), "
-            "IFNULL(u.expires_at,'') "
+            "IFNULL(u.expires_at,''), IFNULL(u.tier,'初级') "
             "FROM watch_sub s JOIN app_user u ON u.id=s.user_id "
             "WHERE s.city_id=?",
             (city_id,)).fetchall()
@@ -1242,7 +1271,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                              (city_id,)).fetchone()
         cname = cname[0] if cname else ""
         changes = []
-        for user_id, uid, last, qq_target, expires_at in rows:
+        for user_id, uid, last, qq_target, expires_at, tier in rows:
             if uid in seen:
                 now = 1
             elif finished:
@@ -1267,7 +1296,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                 changes.append({
                     "user_id": user_id, "city_id": city_id, "city_name": cname,
                     "uid": uid, "name": name, "page": page, "present": now == 1,
-                    "qq_target": qq_target,
+                    "qq_target": qq_target, "tier": tier or "初级",
                 })
         conn.commit()
         return changes

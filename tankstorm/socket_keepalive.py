@@ -485,6 +485,15 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
         notify.push_watch(config, ch, text)
         if token:
             notify.send(config, f"坦克风暴：{who} 出现在 {where} {page}", text)
+        if not citydb.attack_tier(ch.get("tier") or ""):
+            continue
+        try:
+            queued = citydb.enqueue_online_attack(ch["user_id"], city_id, ch["uid"])
+        except Exception:
+            log.info("[订阅] %s 上线攻打没排上", who, exc_info=True)
+            queued = False
+        if queued:
+            log.info("[订阅] %s 上线，已交给攻打号排队", who)
     oname = citydb.country_name(owner) if owner else ""
     log.info("―― 城市 %s %s ―― 归属国家 %s%s，面板人数 %s，本轮写入 %d 人，最后一页 %s",
              out.get("city"), cname, owner,
@@ -662,8 +671,11 @@ def run_move_once(qq, config: dict, city_id, sweep=False, country=0) -> int:
     return _connect_and(qq, config, _work)
 
 
-def _run_aimed(qq, config: dict, city_id, uid) -> tuple:
-    """寻径到这座城。有 UID 只打这一个；没填则和 --move 一样，把城里的人从头打到尾。"""
+def _run_aimed(qq, config: dict, city_id, uid, hold_if_blocked=False) -> tuple:
+    """寻径到这座城。有 UID 只打这一个；没填则和 --move 一样，把城里的人从头打到尾。
+
+    hold_if_blocked 时先核路径：有打不过的人就停在原地，不再改道。
+    """
     from . import country_war
 
     held = {}
@@ -671,7 +683,8 @@ def _run_aimed(qq, config: dict, city_id, uid) -> tuple:
 
     def _work(rec, sock, spec, ctx, beater):
         out = country_war.walk_to(
-            rec, sock, config, city_id, beat=beater, uid=uid)
+            rec, sock, config, city_id, beat=beater, uid=uid,
+            hold_if_blocked=hold_if_blocked)
         held["out"] = out
         if uid:
             log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
@@ -743,7 +756,9 @@ def run_remote_orders(qq, config: dict) -> int:
             log.info("领到订单 %s，城市 %s UID %s",
                      job["id"], job["city_id"], job["uid"])
             citydb.set_attack_status("running")
-            code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
+            code, reason = _run_aimed(
+                qq, config, job["city_id"], job["uid"],
+                hold_if_blocked=bool(job.get("auto")))
             citydb.finish_attack_order(
                 job["id"], "done" if code == 0 else "failed",
                 reason or ("" if code == 0 else "未打成"))
@@ -829,7 +844,9 @@ def kick_attack_login(config: dict) -> str:
                 if not job:
                     break
                 citydb.set_attack_status("running")
-                code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
+                code, reason = _run_aimed(
+                    qq, config, job["city_id"], job["uid"],
+                    hold_if_blocked=bool(job.get("auto")))
                 citydb.finish_attack_order(
                     job["id"], "done" if code == 0 else "failed",
                     reason or ("" if code == 0 else "未打成"))
