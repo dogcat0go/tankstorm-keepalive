@@ -151,7 +151,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         cities, watch_gap = _watch_city_ids(config)
         last_watch = 0.0
         shown = tuple(cities)
-        page_job = _page_range_job(config)
+        page_jobs, page_gap = _page_range_jobs(config)
         last_pages = 0.0
         if cities:
             log.info("城市监视：每 %.0f 秒刷新 %d 座城 %s",
@@ -159,19 +159,17 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         elif (config.get("城市监视") or {}).get("启用"):
             log.info("城市监视已启用。config 里的城市是空的，"
                      "在订阅页面加上城市和 UID 之后会开始刷新")
-        if page_job:
-            log.info("页范围监视：每 %.0f 秒刷新城市 %s 第 %d–%d 页",
-                     page_job[3], page_job[0], page_job[1], page_job[2])
+        if page_jobs:
+            brief = "、".join(f"{c} 第{a}–{b}页" for c, a, b in page_jobs)
+            log.info("页范围监视：每 %.0f 秒刷新 %s", page_gap, brief)
 
         sock.settimeout(1.0)
         while True:
             now = time.time()
-            if page_job and now - last_pages >= page_job[3]:
+            if page_jobs and now - last_pages >= page_gap:
                 last_pages = now
-                city_id, start, end, _gap = page_job
                 try:
-                    _scan_one_city(rec, sock, config, city_id, heart,
-                                   start_page=start, end_page=end)
+                    _scan_page_ranges(rec, sock, config, page_jobs, heart)
                 except OSError as exc:
                     return (f"页范围监视时连接中断: {exc}"
                             f"（已发 {heart.count} 次心跳）")
@@ -355,23 +353,41 @@ def _watch_city_ids(config):
     return ids, float(w.get("间隔秒") or 300)
 
 
-def _page_range_job(config):
-    """页范围监视：一座城、一段页码、间隔秒。没启用返回 None。"""
+def _page_range_jobs(config):
+    """页范围监视。返回 ([(城市, 起始页, 结束页), ...], 间隔秒)。没启用给空列表。"""
     w = config.get("页范围监视") or {}
+    gap = float(w.get("间隔秒") or 300)
     if not w.get("启用"):
-        return None
-    try:
-        city = int(w.get("城市") or 0)
-        start = int(w.get("起始页") or 0)
-        end = int(w.get("结束页"))
-        gap = float(w.get("间隔秒") or 300)
-    except (TypeError, ValueError):
-        log.error("页范围监视配置不完整：需要城市、起始页、结束页")
-        return None
-    if city <= 0 or start < 0 or end < start:
-        log.error("页范围监视页码无效：城市 %s，第 %s–%s 页", city, start, end)
-        return None
-    return city, start, end, gap
+        return [], gap
+    raw = w.get("范围") or []
+    if not isinstance(raw, list):
+        log.error("页范围监视.范围 要是列表")
+        raw = []
+    if not raw and w.get("城市"):
+        raw = [{"城市": w.get("城市"), "起始页": w.get("起始页") or 0,
+                "结束页": w.get("结束页")}]
+    jobs, seen = [], set()
+    for item in raw:
+        if not isinstance(item, dict):
+            log.error("页范围监视有一条不是对象，已跳过")
+            continue
+        try:
+            city = int(item.get("城市") or 0)
+            start = int(item.get("起始页") or 0)
+            end = item.get("结束页")
+            end = int(end)
+        except (TypeError, ValueError):
+            log.error("页范围监视配置不完整：%s", item)
+            continue
+        if city <= 0 or start < 0 or end < start:
+            log.error("页范围监视页码无效：城市 %s，第 %s–%s 页", city, start, end)
+            continue
+        if city in seen:
+            log.error("城市 %s 写了两段页范围，一座城只保留第一段", city)
+            continue
+        seen.add(city)
+        jobs.append((city, start, end))
+    return jobs, gap
 
 
 def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
@@ -418,6 +434,32 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
              out.get("city"), cname, owner,
              f" {oname}" if oname else "", total, n[0], last)
     return out, n[0]
+
+
+def _scan_page_ranges(rec, sock, config, jobs, beat):
+    from . import citydb
+
+    try:
+        citydb.ensure_catalog()
+    except Exception as exc:
+        log.warning("城市目录更新失败（仍会拉玩家）：%s", exc)
+    log.info("[页范围] 开始刷新 %d 座城", len(jobs))
+    done = 0
+    for city, start, end in jobs:
+        try:
+            out, _n = _scan_one_city(rec, sock, config, city, beat,
+                                     start_page=start, end_page=end)
+        except OSError:
+            raise
+        except Exception as exc:
+            log.error("页范围监视 城市 %s 异常：%s", city, exc)
+            continue
+        reason = out.get("原因") or ""
+        if any(s in reason for s in ("没有回包", "读不到国战面板", "连接断开")):
+            log.info("[页范围] %s，本轮剩下的下次再拉", reason)
+            break
+        done += 1
+    log.info("[页范围] 本轮完成 %d/%d 座城", done, len(jobs))
 
 
 def _watch_cities_round(rec, sock, config, cities, beat):
