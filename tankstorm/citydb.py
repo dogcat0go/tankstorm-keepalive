@@ -9,6 +9,7 @@
 `--city-players` 翻页写入。库文件在程序目录 `city_players.db`。
 """
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -756,6 +757,84 @@ def list_attack_orders(user_id: int, limit: int = 20) -> list:
         conn.close()
     return [{"id": r[0], "city_id": r[1], "uid": r[2], "status": r[3],
              "reason": r[4], "created_at": beijing_ts(r[5])} for r in rows]
+
+
+def set_attack_status(phase: str) -> None:
+    """攻打进程把自己的阶段写进库。网页只读，不靠推送。"""
+    payload = json.dumps({"phase": phase}, ensure_ascii=False)
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES ('proc', ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            (payload, now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def touch_attack_status() -> None:
+    """进程还活着就刷新时间。停掉之后不再把「没在跑」刷成在线。"""
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='proc'").fetchone()
+        if not row:
+            return
+        try:
+            phase = json.loads(row[0] or "{}").get("phase")
+        except json.JSONDecodeError:
+            return
+        if phase == "offline":
+            return
+        conn.execute(
+            "UPDATE atk_signal SET at=? WHERE name='proc'", (now_ts(),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def attack_status(user_id: int) -> dict:
+    """给页面看的攻打进程。超过 25 秒没心跳就当没在跑。别人的城市和 UID 不带出来。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT value, at FROM atk_signal WHERE name='proc'").fetchone()
+        own = conn.execute(
+            "SELECT city_id, IFNULL(uid,'') FROM atk_order "
+            "WHERE user_id=? AND status='running' ORDER BY id DESC LIMIT 1",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    phase = "offline"
+    seen = ""
+    online = False
+    if row:
+        try:
+            phase = json.loads(row[0] or "{}").get("phase") or "offline"
+        except json.JSONDecodeError:
+            phase = "offline"
+        seen = row[1] or ""
+        if seen and phase != "offline":
+            try:
+                dt = datetime.strptime(seen, "%Y-%m-%dT%H:%M:%SZ").replace(
+                    tzinfo=timezone.utc)
+                online = (datetime.now(timezone.utc) - dt).total_seconds() <= 25
+            except ValueError:
+                online = False
+    if not online:
+        return {"online": False, "phase": "offline", "detail": "没在跑",
+                "seen_at": beijing_ts(seen)}
+    if phase == "login":
+        detail = "正在等扫码"
+    elif phase == "running" and own:
+        detail = f"正在打城市 {own[0]} 的 {own[1]}"
+    elif phase == "running":
+        detail = "正在执行订单"
+    else:
+        detail = "空闲，等订单"
+    return {"online": True, "phase": phase, "detail": detail,
+            "seen_at": beijing_ts(seen)}
 
 
 def ask_attack_login() -> None:

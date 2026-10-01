@@ -638,28 +638,67 @@ def _run_aimed(qq, config: dict, city_id, uid) -> tuple:
     return code, (held.get("out") or {}).get("停止原因") or ""
 
 
+def _attack_status_beater(stop: threading.Event) -> None:
+    from . import citydb
+
+    while not stop.wait(10):
+        try:
+            citydb.touch_attack_status()
+        except Exception:
+            log.debug("攻打进程心跳没写上", exc_info=True)
+
+
+def _start_attack_status() -> threading.Event:
+    from . import citydb
+
+    stop = threading.Event()
+    citydb.set_attack_status("idle")
+    threading.Thread(
+        target=_attack_status_beater, args=(stop,),
+        name="attack-status", daemon=True).start()
+    return stop
+
+
+def _stop_attack_status(stop: threading.Event) -> None:
+    from . import citydb
+
+    stop.set()
+    try:
+        citydb.set_attack_status("offline")
+    except Exception:
+        log.debug("攻打进程收尾状态没写上", exc_info=True)
+
+
 def run_remote_orders(qq, config: dict) -> int:
     """领取页面上中级、高级提交的城市和 UID。没登录就先把二维码发给扫码 QQ。"""
     from . import citydb
 
     log.info("开始领取远程扫码攻打")
+    stop = _start_attack_status()
     try:
         while True:
             if citydb.take_attack_login() and not qq.is_valid():
+                citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
+                citydb.set_attack_status("idle")
             job = citydb.claim_attack_order()
             if not job:
+                citydb.set_attack_status("idle")
                 time.sleep(5)
                 continue
             log.info("领到订单 %s，城市 %s UID %s",
                      job["id"], job["city_id"], job["uid"])
+            citydb.set_attack_status("running")
             code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
             citydb.finish_attack_order(
                 job["id"], "done" if code == 0 else "failed",
                 "" if code == 0 else (reason or "未打成"))
+            citydb.set_attack_status("idle")
     except KeyboardInterrupt:
         log.info("停止领取远程扫码攻打")
         return 0
+    finally:
+        _stop_attack_status(stop)
 
 
 def web_attack_account(config: dict) -> str:
@@ -692,18 +731,22 @@ def kick_attack_login(config: dict) -> str:
 
     def _run():
         from . import citydb
+        stop = _start_attack_status()
         try:
             if not qq.is_valid():
+                citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
             while True:
                 job = citydb.claim_attack_order()
                 if not job:
                     break
+                citydb.set_attack_status("running")
                 code, reason = _run_aimed(qq, config, job["city_id"], job["uid"])
                 citydb.finish_attack_order(
                     job["id"], "done" if code == 0 else "failed",
                     "" if code == 0 else (reason or "未打成"))
         finally:
+            _stop_attack_status(stop)
             cli.release_qq_lock()
 
     threading.Thread(target=_run, name="attack-login", daemon=True).start()
