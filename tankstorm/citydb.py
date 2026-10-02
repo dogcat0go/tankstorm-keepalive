@@ -12,6 +12,7 @@
 import json
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -991,10 +992,18 @@ def set_attack_status(phase: str) -> None:
     try:
         row = conn.execute(
             "SELECT value FROM atk_signal WHERE name='proc'").fetchone()
+        prev = _proc_payload(row[0] if row else "")
         data = {"phase": phase}
-        here = _kept_here(_proc_payload(row[0] if row else ""))
+        here = _kept_here(prev)
         if here:
             data["here"] = here
+        if phase != "offline":
+            link = prev.get("link")
+            gap = prev.get("gap")
+            if isinstance(link, int) and not isinstance(link, bool) and link > 0:
+                data["link"] = link
+            if isinstance(gap, int) and not isinstance(gap, bool) and gap > 0:
+                data["gap"] = gap
         conn.execute(
             "INSERT INTO atk_signal(name, value, at) VALUES ('proc', ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
@@ -1033,6 +1042,49 @@ def note_attack_here(city_id) -> None:
         return
     finally:
         conn.close()
+
+
+def note_attack_link(interval: float) -> None:
+    """游戏心跳刚发出去。挂机时用这个判断连接是不是真的还在。"""
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='proc'").fetchone()
+        if not row:
+            return
+        data = _proc_payload(row[0])
+        if not data or data.get("phase") == "offline":
+            return
+        data["link"] = int(time.time())
+        try:
+            gap = int(float(interval))
+        except (TypeError, ValueError):
+            gap = 0
+        if gap > 0:
+            data["gap"] = gap
+        conn.execute(
+            "UPDATE atk_signal SET value=? WHERE name='proc'",
+            (json.dumps(data, ensure_ascii=False),))
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+
+def _hold_link_ok(data: dict) -> bool:
+    """游戏心跳还新鲜，说明这条连接真的保活着。"""
+    link = data.get("link")
+    if isinstance(link, bool) or not isinstance(link, int) or link <= 0:
+        return False
+    gap = data.get("gap")
+    if isinstance(gap, bool) or not isinstance(gap, int) or gap <= 0:
+        gap = 30
+    age = time.time() - link
+    return age <= max(40, gap * 2 + 10)
 
 
 def touch_attack_status() -> None:
@@ -1115,10 +1167,11 @@ def attack_status(user_id: int) -> dict:
     elif phase == "login":
         detail = "正在等扫码"
     elif phase == "hold":
+        head = "挂机保活成功" if _hold_link_ok(parsed) else "挂机保活没连上"
         if hold_left is not None and hold_left > 0:
-            detail = f"挂机保活，还剩 {(hold_left + 59) // 60} 分钟"
+            detail = f"{head}，还剩 {(hold_left + 59) // 60} 分钟"
         else:
-            detail = "挂机保活"
+            detail = head
     elif phase == "running" and own and str(own[1] or "").strip():
         detail = f"正在打城市 {own[0]} 的 {own[1]}"
     elif phase == "running" and own:

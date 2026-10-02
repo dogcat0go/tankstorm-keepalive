@@ -342,6 +342,7 @@ class _Beater:
         self.interval = max(1.0, float(interval) or 10.0)
         self.last = time.time()
         self.count = 0
+        self._link_note = 0.0
         self._stop = threading.Event()
         self._th = threading.Thread(target=self._loop, name="game-heartbeat",
                                     daemon=True)
@@ -353,6 +354,13 @@ class _Beater:
                 self.sock.sendall(self.hb)
                 self.last = time.time()
                 self.count += 1
+                if self.last - self._link_note >= 10:
+                    self._link_note = self.last
+                    try:
+                        from . import citydb
+                        citydb.note_attack_link(self.interval)
+                    except Exception:
+                        log.debug("游戏心跳时间没写上", exc_info=True)
                 if self.count % 10 == 1:
                     log.info("心跳運行中（第 %d 次，每 %.0fs）",
                              self.count, self.interval)
