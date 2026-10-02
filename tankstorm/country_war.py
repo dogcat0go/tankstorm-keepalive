@@ -1014,7 +1014,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
     out["last_act"] = last_act
     out["cd_until"] = float(cd_until or out.get("cd_until") or 0)
     out["cd_sec"] = float(out.get("cd_sec") or cooldown)
-    if citydb.in_atk_fail(uid):
+    if citydb.same_failed(uid, out.get("名字")):
         log.info("[打人] %s 已在失败库，跳过", out["名字"] or uid)
         out["停止原因"] = "已在失败库，跳过"
         return out
@@ -1331,7 +1331,10 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                         str(p.get("uid") or "").strip(), p.get("name"), fail)
                 ), None)
                 if stuck:
-                    who = stuck.get("name") or stuck.get("uid")
+                    stuck_uid = str(stuck.get("uid") or "").strip()
+                    who = (str(stuck.get("name") or "").strip()
+                           or str(fail.get(stuck_uid) or "").strip()
+                           or stuck_uid)
                     log.info("[打人] %s 在 %s %s 挡路", who, city_id, cname)
                     out["跳过"] += 1
                     out["挡路"] = who
@@ -1349,7 +1352,8 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     log.info("[打人] %s 已在失败库，跳过", p.get("name") or uid)
                     out["跳过"] += 1
                     if pass_block:
-                        who = p.get("name") or uid
+                        who = (str(p.get("name") or "").strip()
+                               or str(fail.get(uid) or "").strip() or uid)
                         out["挡路"] = who
                         out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
                         break
@@ -1372,6 +1376,11 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 reason = one.get("停止原因") or ""
                 if reason == "已在失败库，跳过":
                     out["跳过"] += 1
+                    if pass_block:
+                        who = (one.get("名字") or p.get("name") or uid)
+                        out["挡路"] = who
+                        out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
+                        break
                     continue
                 out["用卡"] += one.get("用卡") or 0
                 out["打过"] += 1
@@ -1437,6 +1446,38 @@ def _road_blocked(reason, fought=None) -> bool:
     return bool(fought.get("失败") and not fought.get("成功"))
 
 
+def _names_standing(sock, rec, city, country) -> str:
+    """这座城里现在站着谁。战败表对得上的人排在前面。"""
+    from . import citydb
+
+    fail = citydb.failed_names()
+    me = str(getattr(rec, "uid", "") or "")
+    country = int(country or 0)
+    since = _send(sock, rec, 3, country=country, city=int(city))
+    cd = _wait(sock, rec, since, 3)
+    owner = _read_path(cd, "cityData.field2") if isinstance(cd, dict) else None
+    if isinstance(owner, int) and not isinstance(owner, bool) and owner and owner != country:
+        since = _send(sock, rec, 3, country=int(owner), city=int(city))
+        _wait(sock, rec, since, 3)
+    matched, others = [], []
+    for p in _wait_city_users(sock, rec, since, city):
+        uid = str(p.get("uid") or "").strip()
+        if not uid or uid == me:
+            continue
+        live = str(p.get("name") or "").strip()
+        recorded = str(fail.get(uid) or "").strip() if isinstance(fail, dict) else ""
+        shown = live or recorded or uid
+        if citydb.same_failed(uid, live, fail):
+            if shown not in matched:
+                matched.append(shown)
+        elif shown not in others:
+            others.append(shown)
+    names = matched or others
+    if len(names) <= 6:
+        return "、".join(names)
+    return "、".join(names[:6]) + f" 等 {len(names)} 人"
+
+
 def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False,
               avoid_why=None) -> dict:
     """先按本地归属规划，再开面板核对路线上每座城的占领国，变了就重算。
@@ -1457,6 +1498,13 @@ def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False,
         text = str(name or "").strip()
         if cid > 0 and text:
             why[cid] = text
+    for city in list(blocked):
+        if why.get(int(city)):
+            continue
+        who = _names_standing(sock, rec, city, my)
+        if who:
+            why[int(city)] = who
+            log.info("[路线] %s 此前没记下挡路的人，现场是 %s", city, who)
     fail = citydb.failed_names()
     me = str(getattr(rec, "uid", "") or "")
     plan = citydb.plan_route(here, target, my, blocked, why)
@@ -1495,7 +1543,7 @@ def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False,
                     log.info("[路线] %s %s 的 %s 不在战败表（这个 uid 记的是 %s），直接打",
                              city, name, live or uid, fail.get(uid) or "空名字")
                     continue
-                bad.append(live or uid)
+                bad.append(live or str(fail.get(uid) or "").strip() or uid)
             if bad:
                 blocked.add(int(city))
                 who = "、".join(bad)
@@ -1761,6 +1809,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                                  city, name)
                 else:
                     blocked_at = city
+                    block_who = fought.get("挡路") or block_who
                     log.info("[移动] %s %s 打完还有 %d 人，避开这座城重新规划",
                              city, name, cnt)
                     break
@@ -1809,6 +1858,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                                                   info["owner"] or owner, my)
                     else:
                         blocked_at = city
+                        block_who = fought.get("挡路") or block_who
                         log.info("[移动] %s %s 打完还有人，避开这座城重新规划",
                                  city, name)
                 else:
@@ -1862,6 +1912,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                                                   info["owner"] or owner, my)
                     if not moved:
                         blocked_at = city
+                        block_who = fought.get("挡路") or block_who
                         log.info("[移动] %s %s 打完仍进不去，避开这座城重新规划",
                                  city, name)
             else:
@@ -1904,6 +1955,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                      moved["here"], name, moved.get("power"))
         if blocked_at:
             cname = citydb.city_name(blocked_at) or blocked_at
+            if not block_who:
+                block_who = _names_standing(sock, rec, blocked_at, my)
             if replanned:
                 who = block_who or (avoid_why or {}).get(blocked_at) or ""
                 if who:
