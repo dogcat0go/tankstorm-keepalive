@@ -236,7 +236,7 @@ def _handler(config: dict):
                     _json(self, 401, {"error": "请先登录"})
                     return
                 _json(self, 200, {
-                    "items": citydb.list_attack_orders(user["id"], limit=2),
+                    "items": citydb.list_attack_orders(user["id"]),
                     "process": citydb.attack_status(user["id"]),
                 })
                 return
@@ -339,8 +339,6 @@ def _handler(config: dict):
                             raise ValueError(why)
                         card_max = int(str(cards).strip())
                     why = citydb.add_attack_order(user["id"], city_id, uid, cards=card_max)
-                    if why and why != "已经有一条还没打完":
-                        raise ValueError(why)
                     from .socket_keepalive import kick_attack_login
                     login = kick_attack_login(config, user["id"])
                     if why:
@@ -350,6 +348,18 @@ def _handler(config: dict):
                         hold_min = int(str(minutes).strip())
                     _json(self, 200, {"ok": True, "login": login,
                                       "hold_min": hold_min, "card_max": card_max})
+                elif path == "/api/attacks/cancel":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "关停订单需要中级或高级订阅"})
+                        return
+                    try:
+                        order_id = int(str(data.get("id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("订单编号不对") from None
+                    why = citydb.cancel_attack_order(user["id"], order_id)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True})
                 elif path == "/api/attack-login":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})

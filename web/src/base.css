@@ -16,7 +16,8 @@ form.scan-form { max-width: none; }
 .orders { overflow-x: auto; }
 .orders table { min-width: 760px; }
 .orders th, .orders td { white-space: nowrap; }
-.orders td.reason { white-space: normal; min-width: 16em; max-width: 28em; }
+.orders td.reason { white-space: normal; min-width: 12em; max-width: 22em; }
+.orders button.ghost { margin-left: 8px; padding: 4px 10px; }
 .order-cards { display: none; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
 input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
