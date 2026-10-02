@@ -671,40 +671,6 @@ def run_move_once(qq, config: dict, city_id, sweep=False, country=0) -> int:
     return _connect_and(qq, config, _work)
 
 
-def _run_aimed(qq, config: dict, city_id, uid, hold_if_blocked=False) -> tuple:
-    """寻径到这座城。有 UID 只打这一个；没填则和 --move 一样，把城里的人从头打到尾。
-
-    hold_if_blocked 时先核路径：有打不过的人就停在原地，不再改道。
-    """
-    from . import country_war
-
-    held = {}
-    uid = str(uid or "").strip()
-
-    def _work(rec, sock, spec, ctx, beater):
-        out = country_war.walk_to(
-            rec, sock, config, city_id, beat=beater, uid=uid,
-            hold_if_blocked=hold_if_blocked)
-        held["out"] = out
-        if uid:
-            log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                     uid, city_id, out.get("移动") or 0, out.get("走到"),
-                     out.get("攻击") if out.get("攻击") is not None else "未打")
-            ok = bool(out.get("攻击"))
-        else:
-            log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                     city_id, out.get("移动") or 0, out.get("走到"),
-                     out.get("攻击") if out.get("攻击") is not None else "未打")
-            ok = out.get("攻击") is not None
-        if out.get("停止原因"):
-            log.info("   结束原因：%s", out["停止原因"])
-            ok = False
-        return 0 if ok else 1
-
-    code = _connect_and(qq, config, _work)
-    return code, (held.get("out") or {}).get("停止原因") or ""
-
-
 def _attack_status_beater(stop: threading.Event) -> None:
     from . import citydb
 
@@ -736,19 +702,86 @@ def _stop_attack_status(stop: threading.Event) -> None:
         log.debug("攻打进程收尾状态没写上", exc_info=True)
 
 
-def _finish_aimed(qq, config, job) -> None:
-    from . import citydb
+def _fight_claimed(rec, sock, config, beater, job) -> None:
+    from . import citydb, country_war
 
+    uid = str(job.get("uid") or "").strip()
+    citydb.set_attack_status("running")
     try:
-        code, reason = _run_aimed(
-            qq, config, job["city_id"], job["uid"],
+        out = country_war.walk_to(
+            rec, sock, config, job["city_id"], beat=beater, uid=uid,
             hold_if_blocked=bool(job.get("auto")))
-        citydb.finish_attack_order(
-            job["id"], "done" if code == 0 else "failed",
-            reason or ("" if code == 0 else "未打成"))
+    except OSError:
+        citydb.finish_attack_order(job["id"], "failed", "连接中断")
+        raise
     except Exception:
         log.info("订单 %s 攻打中断", job["id"], exc_info=True)
         citydb.finish_attack_order(job["id"], "failed", "攻打中断")
+        return
+    if uid:
+        log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                 uid, job["city_id"], out.get("移动") or 0, out.get("走到"),
+                 out.get("攻击") if out.get("攻击") is not None else "未打")
+        ok = bool(out.get("攻击"))
+    else:
+        log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                 job["city_id"], out.get("移动") or 0, out.get("走到"),
+                 out.get("攻击") if out.get("攻击") is not None else "未打")
+        ok = out.get("攻击") is not None
+    reason = out.get("停止原因") or ""
+    if reason:
+        log.info("   结束原因：%s", reason)
+        ok = False
+    citydb.finish_attack_order(
+        job["id"], "done" if ok else "failed",
+        reason or ("" if ok else "未打成"))
+
+
+def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
+    """同一条游戏连接上把排队的单打完。打完或打不过之后，按挂机时长继续心跳。"""
+    from . import citydb
+
+    idle_at = None
+    while True:
+        job = citydb.claim_attack_order()
+        if job:
+            idle_at = None
+            log.info("领到订单 %s，城市 %s UID %s",
+                     job["id"], job["city_id"], job["uid"])
+            _fight_claimed(rec, sock, config, beater, job)
+            continue
+        if citydb.attack_order_open():
+            continue
+        minutes = citydb.attack_hold_minutes()
+        if minutes <= 0:
+            log.info("挂机保活已关掉，攻打连接断开" if idle_at is not None
+                     else "没有下一条订单，攻打连接断开")
+            return 0
+        if idle_at is None:
+            idle_at = time.time()
+            citydb.set_attack_status("hold")
+            log.info("没有下一条订单，挂机保活 %d 分钟", minutes)
+        elif time.time() >= idle_at + minutes * 60:
+            log.info("挂机保活结束，攻打连接断开")
+            return 0
+        try:
+            sock.settimeout(1.0)
+            data = sock.recv(8192)
+        except socket.timeout:
+            continue
+        if not data:
+            raise OSError("服务器关闭连接")
+        reply = protocol.maybe_online_reply(spec, data, ctx)
+        if reply:
+            sock.sendall(reply)
+            log.info("收到在线探测，已回应")
+
+
+def _connect_attack_orders(qq, config) -> int:
+    def _work(rec, sock, spec, ctx, beater):
+        return _attack_orders(rec, sock, spec, ctx, beater, config)
+
+    return _connect_and(qq, config, _work)
 
 
 def run_remote_orders(qq, config: dict) -> int:
@@ -761,19 +794,18 @@ def run_remote_orders(qq, config: dict) -> int:
         citydb.requeue_running_orders()
         while True:
             asked = citydb.take_attack_login()
-            if (asked or citydb.attack_order_open()) and not qq.is_valid():
+            pending = citydb.attack_order_open()
+            if (asked or pending) and not qq.is_valid():
                 citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
                 citydb.set_attack_status("idle")
-            job = citydb.claim_attack_order()
-            if not job:
+                pending = citydb.attack_order_open()
+            if not pending:
                 citydb.set_attack_status("idle")
                 time.sleep(5)
                 continue
-            log.info("领到订单 %s，城市 %s UID %s",
-                     job["id"], job["city_id"], job["uid"])
-            citydb.set_attack_status("running")
-            _finish_aimed(qq, config, job)
+            citydb.requeue_running_orders()
+            _connect_attack_orders(qq, config)
             citydb.set_attack_status("idle")
     except KeyboardInterrupt:
         log.info("停止领取远程扫码攻打")
@@ -855,17 +887,14 @@ def kick_attack_login(config: dict) -> str:
         stop = _start_attack_status()
         try:
             citydb.requeue_running_orders()
-            if not qq.is_valid():
+            if citydb.attack_order_open() and not qq.is_valid():
                 citydb.set_attack_status("login")
                 if on_page:
                     citydb.set_page_qr(True)
                 relogin_with_push(qq, config)
-            while True:
-                job = citydb.claim_attack_order()
-                if not job:
-                    break
-                citydb.set_attack_status("running")
-                _finish_aimed(qq, config, job)
+            while citydb.attack_order_open():
+                citydb.requeue_running_orders()
+                _connect_attack_orders(qq, config)
         finally:
             if on_page:
                 citydb.set_page_qr(False)

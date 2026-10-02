@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     tier            TEXT NOT NULL DEFAULT '初级',
     admin           INTEGER NOT NULL DEFAULT 0,
     auto_lock       INTEGER NOT NULL DEFAULT 0,
+    hold_min        INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -196,6 +197,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "auto_lock" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN auto_lock INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "hold_min" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN hold_min INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
             if ocols and "uid" not in ocols:
@@ -703,14 +708,15 @@ def user_by_token(token: str):
     try:
         row = conn.execute(
             "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,''), "
-            "IFNULL(u.tier,'初级'), IFNULL(u.admin,0), IFNULL(u.auto_lock,0) "
+            "IFNULL(u.tier,'初级'), IFNULL(u.admin,0), IFNULL(u.auto_lock,0), "
+            "IFNULL(u.hold_min,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
             return None
         return {"id": row[0], "username": row[1], "qq_target": row[2],
                 "expires_at": row[3], "tier": row[4], "admin": bool(row[5]),
-                "auto_lock": bool(row[6])}
+                "auto_lock": bool(row[6]), "hold_min": int(row[7] or 0)}
     finally:
         conn.close()
 
@@ -781,6 +787,43 @@ def add_attack_order(user_id: int, city_id: int, uid: str) -> str:
         return ""
     finally:
         conn.close()
+
+
+def set_attack_hold(user_id: int, minutes) -> str:
+    """挂机保活分钟。0 表示打完就断开。成功返回空字符串。"""
+    try:
+        n = int(str(minutes).strip())
+    except (TypeError, ValueError, AttributeError):
+        return "挂机保活要是分钟数"
+    if n < 0 or n > 1440:
+        return "挂机保活要是 0 到 1440 分钟"
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE app_user SET hold_min=? WHERE id=?",
+            (n, int(user_id)))
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
+
+
+def attack_hold_minutes() -> int:
+    """攻打进程挂机多久。取还有效的中级、高级里最长的那一档。"""
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT IFNULL(hold_min,0), IFNULL(tier,'初级'), IFNULL(expires_at,'') "
+            "FROM app_user").fetchall()
+    finally:
+        conn.close()
+    best = 0
+    for minutes, tier, expires_at in rows:
+        if not attack_tier(tier) or account_expired(expires_at):
+            continue
+        if int(minutes) > best:
+            best = int(minutes)
+    return best
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:
@@ -970,6 +1013,8 @@ def attack_status(user_id: int) -> dict:
                 "seen_at": beijing_ts(seen), "qr": False, "here": ""}
     if phase == "login":
         detail = "正在等扫码"
+    elif phase == "hold":
+        detail = "挂机保活"
     elif phase == "running" and own and str(own[1] or "").strip():
         detail = f"正在打城市 {own[0]} 的 {own[1]}"
     elif phase == "running" and own:
