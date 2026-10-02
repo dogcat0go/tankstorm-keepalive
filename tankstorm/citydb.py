@@ -877,9 +877,10 @@ def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
     try:
         now = now_ts()
         if not online:
+            skip_unfinished_auto(user_id)
             cur = conn.execute(
                 "UPDATE atk_order SET status='pending', updated_at=? "
-                "WHERE user_id=? AND status IN ('blocked','running')",
+                "WHERE user_id=? AND IFNULL(auto,0)=0 AND status IN ('blocked','running')",
                 (now, user_id))
             if cur.rowcount:
                 log.info("登录账号 %s 的攻打线程不在，%d 条等通路或中断的订单改回排队",
@@ -2103,7 +2104,7 @@ def requeue_running_orders() -> None:
     try:
         conn.execute(
             "UPDATE atk_order SET status='pending', updated_at=? "
-            "WHERE status='running' AND user_id=?",
+            "WHERE status='running' AND user_id=? AND IFNULL(auto,0)=0",
             (now_ts(), user_id))
         conn.commit()
     finally:
@@ -2119,7 +2120,7 @@ def requeue_blocked_orders() -> None:
     try:
         cur = conn.execute(
             "UPDATE atk_order SET status='pending', updated_at=? "
-            "WHERE status='blocked' AND user_id=?",
+            "WHERE status='blocked' AND user_id=? AND IFNULL(auto,0)=0",
             (now_ts(), user_id))
         conn.commit()
         if cur.rowcount:
@@ -2129,8 +2130,33 @@ def requeue_blocked_orders() -> None:
         conn.close()
 
 
+def skip_unfinished_auto(user_id: int) -> int:
+    """自动锁敌没打完的单直接结束。正在排队、还没领的留给下一次触发。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return 0
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE atk_order SET status='failed', "
+            "reason=CASE WHEN TRIM(IFNULL(reason,''))!='' THEN reason "
+            "ELSE '没打完，等下一次索敌' END, updated_at=? "
+            "WHERE user_id=? AND IFNULL(auto,0)=1 AND status IN ('blocked','running')",
+            (now_ts(), user_id))
+        conn.commit()
+        if cur.rowcount:
+            log.info("登录账号 %s 有 %d 条自动锁敌没打完，已跳过，等下一次触发",
+                     username_of(user_id), cur.rowcount)
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
 def resume_stranded_orders() -> None:
-    """线程拉起来接着干。正在打的改回排队；挂机倒计时没了，等通路的也改回排队。"""
+    """线程拉起来接着干。自动锁敌没打完的跳过；手动单改回排队。"""
+    user_id = attack_context_user()
+    if user_id:
+        skip_unfinished_auto(user_id)
     requeue_running_orders()
     if not ((attack_hold_left() or 0) > 0):
         requeue_blocked_orders()
@@ -2148,8 +2174,14 @@ def claim_attack_order():
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=20)).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
         conn.execute(
+            "UPDATE atk_order SET status='failed', "
+            "reason=CASE WHEN TRIM(IFNULL(reason,''))!='' THEN reason "
+            "ELSE '没打完，等下一次索敌' END, updated_at=? "
+            "WHERE status='running' AND user_id=? AND updated_at<? AND IFNULL(auto,0)=1",
+            (now, user_id, cutoff))
+        conn.execute(
             "UPDATE atk_order SET status='pending', updated_at=? "
-            "WHERE status='running' AND user_id=? AND updated_at<?",
+            "WHERE status='running' AND user_id=? AND updated_at<? AND IFNULL(auto,0)=0",
             (now, user_id, cutoff))
         while True:
             row = conn.execute(
@@ -2247,7 +2279,8 @@ def next_blocked_order():
     try:
         row = conn.execute(
             "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats "
-            "FROM atk_order WHERE user_id=? AND status='blocked' ORDER BY id DESC LIMIT 1",
+            "FROM atk_order WHERE user_id=? AND status='blocked' AND IFNULL(auto,0)=0 "
+            "ORDER BY id DESC LIMIT 1",
             (user_id,)
         ).fetchone()
     finally:
