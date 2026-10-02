@@ -482,6 +482,8 @@ def plan_route(here, target, my_country, avoid=None, avoid_why=None) -> dict:
                 continue
             if cid in skip:
                 who = why.get(cid) or ""
+                if not who:
+                    who = "、".join(failed_names_in(cid))
                 if who:
                     parts.append(f"{label(cid)} 有 {who} 挡路")
                 else:
@@ -1690,6 +1692,56 @@ def list_city_targets(city_id: int, skip_failed=True, exclude_uid=""):
 
 def failed_uids() -> set:
     return set(failed_names())
+
+
+def failed_names_in(city_id) -> list:
+    """这座城里战败表记下的名字。含还没落盘的队列。没有名字时用 uid。"""
+    try:
+        city_id = int(city_id or 0)
+    except (TypeError, ValueError):
+        return []
+    if city_id <= 0:
+        return []
+
+    def _read():
+        conn = connect(timeout=DB_OP_TIMEOUT)
+        try:
+            rows = conn.execute(
+                "SELECT uid, IFNULL(name,'') FROM atk_fail "
+                "WHERE city_id=? AND IFNULL(ret,0) NOT IN (21)",
+                (city_id,)).fetchall()
+            return [(str(u).strip(), str(n or "").strip()) for u, n in rows if u]
+        finally:
+            conn.close()
+
+    rows = _run_timeout(_read, default=[])
+    names = {}
+    if isinstance(rows, list):
+        for uid, name in rows:
+            if uid:
+                names[uid] = name
+    for op in _atk_q:
+        if op[0] == "wipe":
+            names.clear()
+        elif op[0] == "clear":
+            names.pop(str(op[1]).strip(), None)
+        elif op[0] == "record":
+            uid = str(op[1]).strip()
+            if not uid:
+                continue
+            if op[4] in (21,):
+                names.pop(uid, None)
+                continue
+            if int(op[3] or 0) == city_id:
+                names[uid] = str(op[2] or "").strip()
+            else:
+                names.pop(uid, None)
+    out = []
+    for uid, name in names.items():
+        text = name or uid
+        if text and text not in out:
+            out.append(text)
+    return out
 
 
 def failed_names() -> dict:
