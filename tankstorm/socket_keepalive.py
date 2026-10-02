@@ -23,6 +23,7 @@
 没有该文件时本模块会给出清晰提示并退出，不会瞎跑。
 """
 
+import select
 import socket
 import threading
 import time
@@ -755,7 +756,19 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
 
 
 def _wait_socket(sock, spec, ctx) -> bool:
-    """等一秒并回应在线探测。连接还在返回 True。"""
+    """等一秒并回应在线探测。连接还在返回 True。
+
+    用 select 等可读，不占收发锁。心跳线程卡在发包时，挂机循环仍能每秒回到领单。
+    """
+    raw = sock
+    while hasattr(raw, "_sock"):
+        raw = raw._sock
+    try:
+        readable, _, _ = select.select([raw], [], [], 1.0)
+    except (OSError, TypeError, ValueError):
+        readable = None
+    if readable is not None and not readable:
+        return True
     try:
         sock.settimeout(1.0)
         data = sock.recv(8192)
@@ -866,6 +879,8 @@ def run_remote_orders(qq, config: dict) -> int:
             _connect_attack_orders(qq, config)
             if not ((citydb.attack_hold_left() or 0) > 0):
                 citydb.set_attack_status("idle")
+            elif citydb.attack_order_open():
+                time.sleep(1)
             else:
                 time.sleep(5)
     except KeyboardInterrupt:
@@ -964,7 +979,7 @@ def kick_attack_login(config: dict) -> str:
                     citydb.requeue_running_orders()
                 _connect_attack_orders(qq, config)
                 if (citydb.attack_hold_left() or 0) > 0:
-                    time.sleep(5)
+                    time.sleep(1 if citydb.attack_order_open() else 5)
         finally:
             if on_page:
                 citydb.set_page_qr(False)
