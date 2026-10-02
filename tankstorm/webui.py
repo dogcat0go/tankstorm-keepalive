@@ -249,7 +249,7 @@ def _handler(config: dict):
                     _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})
                     return
                 from .socket_keepalive import page_attack_qr_path
-                fp = page_attack_qr_path()
+                fp = page_attack_qr_path(config, user["id"])
                 if not os.path.isfile(fp):
                     self.send_error(404)
                     return

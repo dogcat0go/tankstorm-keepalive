@@ -1105,22 +1105,50 @@ _PAGE_ACCOUNT = "网页"
 _PAGE_COOKIE = "accounts/web.json"
 
 
-def page_attack_qr_path() -> str:
-    """没配攻打号时，网页上显示的那张登录图。"""
+def _own_page_name(user_id: int) -> str:
+    """这个登录账号自己的网页攻打号。不和别人共用。"""
+    return f"网页-{int(user_id)}"
+
+
+def _own_page_cookie(user_id: int) -> str:
+    return f"accounts/web-{int(user_id)}.json"
+
+
+def _qr_file(cookie: str) -> str:
     from . import paths
-    base = paths.user_path(_PAGE_COOKIE)
+    base = paths.user_path(cookie)
     return (base[:-5] if base.endswith(".json") else base) + ".qrcode.png"
+
+
+def page_attack_qr_path(config: dict = None, user_id: int = 0) -> str:
+    """这个登录账号的网页登录图。没传账号时仍是原来的 accounts/web.json。"""
+    cookie = _PAGE_COOKIE
+    user_id = int(user_id or 0)
+    if user_id:
+        from . import citydb
+        bound = citydb.attack_acct_of(user_id)
+        accounts = ((config or {}).get("登录") or {}).get("账号") or {}
+        spec = accounts.get(bound) if isinstance(accounts, dict) else None
+        if isinstance(spec, dict) and str(spec.get("cookie") or "").strip():
+            cookie = str(spec.get("cookie")).strip()
+        elif bound == _own_page_name(user_id):
+            cookie = _own_page_cookie(user_id)
+    return _qr_file(cookie)
 
 
 def _page_qr_account(config: dict, name: str) -> bool:
     login = config.get("登录") or {}
-    if str(login.get("网页攻打号") or "").strip():
-        return False
     spec = (login.get("账号") or {}).get(name) or {}
     if not isinstance(spec, dict):
         return False
-    return (str(spec.get("cookie") or "").strip() == _PAGE_COOKIE
-            and not str(spec.get("扫码QQ") or "").strip())
+    if str(spec.get("扫码QQ") or "").strip():
+        return False
+    cookie = str(spec.get("cookie") or "").strip()
+    if name.startswith("网页-") and cookie.startswith("accounts/web-"):
+        return True
+    if str(login.get("网页攻打号") or "").strip():
+        return False
+    return cookie == _PAGE_COOKIE
 
 
 def attack_account_for_user(config: dict, user_id: int) -> tuple:
@@ -1146,17 +1174,17 @@ def attack_account_for_user(config: dict, user_id: int) -> tuple:
             return name, ""
     bound = citydb.attack_acct_of(user_id)
     if not bound:
-        # 第一次还没绑定。没给这个人指定别的攻打号时，二维码显示在网页上。
-        if names and _PAGE_ACCOUNT not in names:
-            return "", "unbound"
-        owner = citydb.attack_acct_owner(_PAGE_ACCOUNT)
+        # 还没绑定就用这个登录账号自己的网页二维码。别人占着「网页」也不拦。
+        name = _own_page_name(user_id)
+        owner = citydb.attack_acct_owner(name)
         if owner and owner != user_id:
             return "", "taken"
-        accounts.setdefault(_PAGE_ACCOUNT, {"cookie": _PAGE_COOKIE})
-        why = citydb.bind_attack_account(user_id, _PAGE_ACCOUNT)
+        accounts[name] = {"cookie": _own_page_cookie(user_id)}
+        why = citydb.bind_attack_account(user_id, name)
         if why:
             return "", "taken"
-        return _PAGE_ACCOUNT, ""
+        log.info("登录账号 %s 还没绑定攻打号，网页二维码用「%s」", username, name)
+        return name, ""
     spec = accounts.get(bound) or {}
     who = str(spec.get("用户") or "").strip() if isinstance(spec, dict) else ""
     if who and who != username:
@@ -1166,6 +1194,8 @@ def attack_account_for_user(config: dict, user_id: int) -> tuple:
         return "", "taken"
     if bound == _PAGE_ACCOUNT:
         accounts.setdefault(_PAGE_ACCOUNT, {"cookie": _PAGE_COOKIE})
+    elif bound == _own_page_name(user_id):
+        accounts.setdefault(bound, {"cookie": _own_page_cookie(user_id)})
     elif names and bound not in names:
         return "", "no_account"
     return bound, ""
