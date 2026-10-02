@@ -23,6 +23,7 @@
 没有该文件时本模块会给出清晰提示并退出，不会瞎跑。
 """
 
+import re
 import select
 import socket
 import threading
@@ -714,6 +715,20 @@ def _stop_attack_status(stop: threading.Event) -> None:
         log.debug("攻打进程收尾状态没写上", exc_info=True)
 
 
+def _cards_used_up(reason: str) -> bool:
+    """这一单的恢复卡额度用完了，或者背包里已经没有。算打完，不算没打成。"""
+    text = str(reason or "")
+    if "国战恢复卡已用完" in text:
+        return True
+    if "恢复卡" in text and "达到上限" in text:
+        return True
+    matched = re.search(r"本次已用\s*(\d+)\s*/\s*(\d+)\s*张恢复卡", text)
+    if not matched:
+        return False
+    used, limit = int(matched.group(1)), int(matched.group(2))
+    return used >= limit
+
+
 def _fight_claimed(rec, sock, config, beater, job) -> None:
     from . import citydb, country_war
 
@@ -758,7 +773,7 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         return
     if reason:
         log.info("   结束原因：%s", reason)
-        ok = False
+        ok = _cards_used_up(reason)
     citydb.finish_attack_order(
         job["id"], "done" if ok else "failed",
         reason or ("" if ok else "未打成"),
