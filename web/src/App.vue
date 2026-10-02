@@ -198,6 +198,7 @@ async function saveAutoLock(ev) {
   try {
     const data = await api("/api/auto-lock", { on });
     autoLock.value = !!data.auto_lock;
+    err.value = attackLoginError(data.login);
     await refreshAttacks();
   } catch (e) {
     ev.target.checked = autoLock.value;
@@ -230,7 +231,7 @@ async function addOrder() {
   attackUid.value = "";
   if (data.hold_min != null) holdMin.value = String(data.hold_min);
   if (data.card_max != null) cardMax.value = String(data.card_max);
-  if (data.login === "no_account") err.value = "服务器还没配置攻打号，二维码发不出去";
+  err.value = attackLoginError(data.login);
   await refreshAttacks();
 }
 
@@ -264,8 +265,15 @@ function holdCell(it) {
 async function pushLogin() {
   err.value = "";
   const data = await api("/api/attack-login", {});
-  if (data.login === "no_account") err.value = "服务器还没配置攻打号，二维码发不出去";
+  err.value = attackLoginError(data.login);
   await refreshAttacks();
+}
+
+function attackLoginError(login) {
+  if (login === "no_account") return "服务器还没配置攻打号，二维码发不出去";
+  if (login === "taken") return "这个攻打号已经绑定别的登录账号，不能接着用";
+  if (login === "unbound") return "这个登录账号还没绑定攻打号";
+  return "";
 }
 
 function orderStatus(status) {
@@ -435,7 +443,7 @@ onUnmounted(() => {
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
-        <p class="muted">每 5 秒刷新一次。</p>
+        <p class="muted">每 5 秒刷新一次。攻打号只跟当前登录账号绑定，别的账号登录过的号不能继续用。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">
         <table>

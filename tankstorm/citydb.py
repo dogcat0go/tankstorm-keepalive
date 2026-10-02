@@ -62,12 +62,14 @@ CREATE TABLE IF NOT EXISTS player (
 );
 CREATE INDEX IF NOT EXISTS player_city ON player(city_id);
 CREATE TABLE IF NOT EXISTS atk_fail (
-    uid      TEXT PRIMARY KEY,
+    acct     TEXT NOT NULL DEFAULT '',
+    uid      TEXT NOT NULL,
     name     TEXT,
     city_id  INTEGER,
     ret      INTEGER,
     reason   TEXT,
-    at       TEXT NOT NULL
+    at       TEXT NOT NULL,
+    PRIMARY KEY (acct, uid)
 );
 CREATE TABLE IF NOT EXISTS city_occupy (
     city_id         INTEGER PRIMARY KEY,
@@ -216,6 +218,9 @@ def connect(readonly=False, timeout=15):
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN card_max INTEGER NOT NULL DEFAULT 100")
                 setup.commit()
+            if ucols and "attack_acct" not in ucols:
+                setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
+                setup.commit()
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
             if ocols and "uid" not in ocols:
                 setup.execute(
@@ -231,6 +236,21 @@ def connect(readonly=False, timeout=15):
             if ocols and "card_max" not in ocols:
                 setup.execute("ALTER TABLE atk_order ADD COLUMN card_max INTEGER")
                 setup.commit()
+            fcols = {r[1] for r in setup.execute("PRAGMA table_info(atk_fail)")}
+            if fcols and "acct" not in fcols:
+                setup.execute(
+                    "CREATE TABLE atk_fail_new ("
+                    "acct TEXT NOT NULL DEFAULT '', uid TEXT NOT NULL, name TEXT, "
+                    "city_id INTEGER, ret INTEGER, reason TEXT, at TEXT NOT NULL, "
+                    "PRIMARY KEY (acct, uid))")
+                setup.execute(
+                    "INSERT INTO atk_fail_new(acct, uid, name, city_id, ret, reason, at) "
+                    "SELECT '', uid, name, city_id, ret, reason, at FROM atk_fail")
+                setup.execute("DROP TABLE atk_fail")
+                setup.execute("ALTER TABLE atk_fail_new RENAME TO atk_fail")
+                setup.commit()
+            _assign_legacy_fails(setup)
+            setup.commit()
             _schema_ready = True
         finally:
             setup.close()
@@ -894,8 +914,25 @@ def set_attack_hold(user_id: int, minutes) -> str:
     return ""
 
 
+def _hold_owner_and_text(raw: str):
+    """挂机值是「登录账号|时间」。旧数据没有账号，只还给当时的攻打进程。"""
+    text = str(raw or "").strip()
+    if not text:
+        return 0, ""
+    if "|" in text:
+        owner, when = text.split("|", 1)
+        try:
+            return int(owner), when.strip()
+        except ValueError:
+            return 0, ""
+    return 0, text
+
+
 def note_attack_hold(until_epoch: float) -> None:
     """记下这次挂机保活到什么时候。重连时接着用，不重新计时。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return
     text = datetime.fromtimestamp(float(until_epoch), timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
     conn = connect()
@@ -903,31 +940,45 @@ def note_attack_hold(until_epoch: float) -> None:
         conn.execute(
             "INSERT INTO atk_signal(name, value, at) VALUES ('hold', ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            (text, now_ts()))
+            (f"{user_id}|{text}", now_ts()))
         conn.commit()
     finally:
         conn.close()
 
 
 def clear_attack_hold() -> None:
+    user_id = attack_context_user()
     conn = connect()
     try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='hold'").fetchone()
+        owner, _when = _hold_owner_and_text(row[0] if row else "")
+        if user_id and owner and owner != user_id:
+            return
         conn.execute("DELETE FROM atk_signal WHERE name='hold'")
         conn.commit()
     finally:
         conn.close()
 
 
-def attack_hold_left():
+def attack_hold_left(user_id=None):
     """挂机还剩多少秒。没有这次挂机返回 None，过期返回 0 或负数。"""
+    if user_id is None:
+        uid = attack_context_user()
+    else:
+        uid = int(user_id or 0)
     conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT value FROM atk_signal WHERE name='hold'").fetchone()
     finally:
         conn.close()
-    raw = str(row[0] or "").strip() if row else ""
-    if not raw:
+    owner, raw = _hold_owner_and_text(row[0] if row else "")
+    if not raw or not uid:
+        return None
+    if owner and owner != uid:
+        return None
+    if not owner and proc_user() != uid:
         return None
     try:
         dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
@@ -937,21 +988,99 @@ def attack_hold_left():
 
 
 def attack_hold_minutes() -> int:
-    """攻打进程挂机多久。取还有效的中级、高级里最长的那一档。"""
+    """这个攻打进程挂机多久。只看绑定的那个登录账号。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return 0
     conn = connect(readonly=True)
     try:
-        rows = conn.execute(
+        row = conn.execute(
             "SELECT IFNULL(hold_min,0), IFNULL(tier,'初级'), IFNULL(expires_at,'') "
-            "FROM app_user").fetchall()
+            "FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
     finally:
         conn.close()
-    best = 0
-    for minutes, tier, expires_at in rows:
-        if not attack_tier(tier) or account_expired(expires_at):
-            continue
-        if int(minutes) > best:
-            best = int(minutes)
-    return best
+    if not row or not attack_tier(row[1]) or account_expired(row[2]):
+        return 0
+    return int(row[0] or 0)
+
+
+def username_of(user_id: int) -> str:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT username FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+        return str(row[0] or "") if row else ""
+    finally:
+        conn.close()
+
+
+def user_id_by_name(username: str) -> int:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT id FROM app_user WHERE username=?",
+            (str(username or "").strip(),)).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def attack_acct_of(user_id: int) -> str:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(attack_acct,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+        return str(row[0] or "").strip() if row else ""
+    finally:
+        conn.close()
+
+
+def attack_acct_owner(account: str) -> int:
+    """这个攻打号已经绑给哪个登录账号。没有则是 0。"""
+    account = str(account or "").strip()
+    if not account:
+        return 0
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT id FROM app_user WHERE attack_acct=?",
+            (account,)).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def bind_attack_account(user_id: int, account: str) -> str:
+    """一对一绑定。成功返回空字符串。"""
+    account = str(account or "").strip()
+    user_id = int(user_id)
+    if not account:
+        return "要写攻打号的名字"
+    conn = connect()
+    try:
+        taken = conn.execute(
+            "SELECT username FROM app_user WHERE attack_acct=? AND id!=?",
+            (account, user_id)).fetchone()
+        if taken:
+            return "这个攻打号已经绑定别的登录账号"
+        mine = conn.execute(
+            "SELECT IFNULL(attack_acct,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not mine:
+            return "没有这个账号"
+        current = str(mine[0] or "").strip()
+        if current and current != account:
+            return f"这个登录账号已经绑定了攻打号「{current}」"
+        conn.execute(
+            "UPDATE app_user SET attack_acct=? WHERE id=?",
+            (account, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:
@@ -1083,6 +1212,84 @@ def _kept_here(data: dict) -> int:
     return here
 
 
+_PROC_USER = 0
+_PROC_ACCT = ""
+
+
+def _assign_legacy_fails(conn) -> None:
+    """旧的失败库没有攻打号。归给最早绑定的那一个，别的号不继承。"""
+    row = conn.execute(
+        "SELECT attack_acct FROM app_user "
+        "WHERE IFNULL(attack_acct,'')!='' ORDER BY id LIMIT 1").fetchone()
+    if not row:
+        return
+    conn.execute("UPDATE atk_fail SET acct=? WHERE acct=''", (row[0],))
+
+
+def set_attack_context(user_id: int, account: str) -> None:
+    """这个攻打进程只给这个登录账号领订单。别的进程有自己的一份。"""
+    global _PROC_USER, _PROC_ACCT
+    _PROC_USER = int(user_id or 0)
+    _PROC_ACCT = str(account or "")
+    if _PROC_ACCT:
+        conn = connect()
+        try:
+            _assign_legacy_fails(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def attack_context_user() -> int:
+    return int(_PROC_USER or 0)
+
+
+def _read_proc() -> tuple:
+    """返回 (内容, 心跳时间, 是否在线)。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT value, at FROM atk_signal WHERE name='proc'").fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {}, "", False
+    parsed = _proc_payload(row[0])
+    phase = parsed.get("phase") or "offline"
+    seen = row[1] or ""
+    online = False
+    if seen and phase != "offline":
+        try:
+            dt = datetime.strptime(seen, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc)
+            online = (datetime.now(timezone.utc) - dt).total_seconds() <= 25
+        except ValueError:
+            online = False
+    return parsed, seen, online
+
+
+def proc_online() -> bool:
+    return _read_proc()[2]
+
+
+def proc_user() -> int:
+    """正在跑的攻打进程属于哪个登录账号。旧进程没写过就是 0。"""
+    parsed, _seen, online = _read_proc()
+    if not online:
+        return 0
+    try:
+        return int(parsed.get("user") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def proc_acct() -> str:
+    parsed, _seen, online = _read_proc()
+    if not online:
+        return ""
+    return str(parsed.get("acct") or "")
+
+
 def set_attack_status(phase: str) -> None:
     """攻打进程把自己的阶段写进库。网页只读，不靠推送。所在城市留着。"""
     conn = connect()
@@ -1094,6 +1301,10 @@ def set_attack_status(phase: str) -> None:
         here = _kept_here(prev)
         if here:
             data["here"] = here
+        if _PROC_USER:
+            data["user"] = _PROC_USER
+        if _PROC_ACCT:
+            data["acct"] = _PROC_ACCT
         if phase != "offline":
             link = prev.get("link")
             gap = prev.get("gap")
@@ -1218,36 +1429,32 @@ def attack_status(user_id: int) -> dict:
             "WHERE user_id=? AND status='running' ORDER BY id DESC LIMIT 1",
             (int(user_id),)).fetchone()
         waiting = conn.execute(
-            "SELECT 1 FROM atk_order WHERE status='blocked' LIMIT 1").fetchone()
+            "SELECT 1 FROM atk_order WHERE user_id=? AND status='blocked' LIMIT 1",
+            (int(user_id),)).fetchone()
         latest = conn.execute(
             "SELECT status, IFNULL(reason,'') FROM atk_order "
             "WHERE user_id=? ORDER BY id DESC LIMIT 1",
             (int(user_id),)).fetchone()
         paused_row = conn.execute(
             "SELECT value FROM atk_signal WHERE name='pause'").fetchone()
-        hold_row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='hold'").fetchone()
     finally:
         conn.close()
-    paused = bool(paused_row and paused_row[0] == "1")
-    hold_left = None
-    raw_hold = str(hold_row[0] or "").strip() if hold_row else ""
-    if raw_hold:
-        try:
-            dt = datetime.strptime(raw_hold, "%Y-%m-%dT%H:%M:%SZ").replace(
-                tzinfo=timezone.utc)
-            hold_left = int((dt - datetime.now(timezone.utc)).total_seconds())
-        except ValueError:
-            hold_left = None
+    pause_val = str(paused_row[0] or "") if paused_row else ""
     phase = "offline"
     seen = ""
     online = False
     here_id = 0
+    proc_owner = 0
+    parsed = {}
     if row:
         parsed = _proc_payload(row[0])
         phase = parsed.get("phase") or "offline"
         here_id = _kept_here(parsed)
         seen = row[1] or ""
+        try:
+            proc_owner = int(parsed.get("user") or 0)
+        except (TypeError, ValueError):
+            proc_owner = 0
         if seen and phase != "offline":
             try:
                 dt = datetime.strptime(seen, "%Y-%m-%dT%H:%M:%SZ").replace(
@@ -1255,11 +1462,21 @@ def attack_status(user_id: int) -> dict:
                 online = (datetime.now(timezone.utc) - dt).total_seconds() <= 25
             except ValueError:
                 online = False
+    gone = {"online": False, "phase": "offline", "detail": "没在跑",
+            "seen_at": "", "qr": False, "here": "",
+            "paused": False, "hold_left": None}
+    # 攻打号和登录账号一对一。别人的进程、以及还没写上主人的旧进程，这里都不当自己的。
+    if proc_owner and proc_owner != int(user_id):
+        return gone
+    if online and not proc_owner:
+        return gone
+    paused = pause_val == str(int(user_id)) or (pause_val == "1" and proc_owner == int(user_id))
+    hold_left = attack_hold_left(int(user_id))
     show_qr = bool(page_qr and page_qr[0] == "1" and online and phase == "login")
     if not online:
         # 进程已经停了。暂停只对还在跑的进程有意义，留下的标记会让下次打开页面一直显示已暂停。
-        if paused:
-            set_attack_paused(False)
+        if pause_val in ("1", str(int(user_id))) and proc_owner in (0, int(user_id)):
+            set_attack_paused(False, int(user_id))
         return {"online": False, "phase": "offline",
                 "detail": "没在跑",
                 "seen_at": beijing_ts(seen), "qr": False, "here": "",
@@ -1449,54 +1666,121 @@ def take_attack_login() -> bool:
         conn.close()
 
 
-def attack_paused() -> bool:
+def _pause_value() -> str:
     conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT value FROM atk_signal WHERE name='pause'").fetchone()
-        return bool(row and row[0] == "1")
+        return str(row[0] or "") if row else ""
     finally:
         conn.close()
 
 
-def set_attack_paused(on: bool) -> None:
+def attack_paused() -> bool:
+    """当前这个攻打进程是不是被它的登录账号暂停了。"""
+    value = _pause_value()
+    if value in ("", "0"):
+        return False
+    user_id = attack_context_user()
+    if value == "1":
+        return bool(user_id)
+    return bool(user_id) and value == str(user_id)
+
+
+def set_attack_paused(on: bool, user_id: int = 0) -> bool:
+    """暂停或继续。不是这个登录账号的暂停标记不动。返回是否写成了目标状态。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    current = _pause_value()
+    if on:
+        if not user_id:
+            return False
+        value = str(user_id)
+    else:
+        if current in ("", "0"):
+            return True
+        if current == str(user_id):
+            value = "0"
+        elif current == "1" and user_id and proc_user() in (0, user_id):
+            value = "0"
+        else:
+            return False
     conn = connect()
     try:
         conn.execute(
             "INSERT INTO atk_signal(name, value, at) VALUES ('pause', ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            ("1" if on else "0", now_ts()))
+            (value, now_ts()))
         conn.commit()
     finally:
         conn.close()
+    return True
+
+
+def pause_attack_for(user_id: int, on: bool) -> str:
+    """网页上的暂停和继续。别人的攻打进程不能动。"""
+    user_id = int(user_id)
+    owner = proc_user()
+    if proc_online() and owner != user_id:
+        return "这个攻打号已经绑定别的登录账号"
+    acct = attack_acct_of(user_id)
+    bound = attack_acct_owner(acct) if acct else 0
+    if bound and bound != user_id:
+        return "这个攻打号已经绑定别的登录账号"
+    if not set_attack_paused(on, user_id):
+        return "这个攻打号已经绑定别的登录账号"
+    return ""
+
+
+def users_with_open_orders() -> list:
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM atk_order "
+            "WHERE status IN ('pending','running')").fetchall()
+    finally:
+        conn.close()
+    return [int(r[0]) for r in rows]
 
 
 def attack_order_open() -> bool:
-    """还有没打完的订单。网页据此在攻打进程没心跳时把它拉起来。"""
+    """还有没打完的订单。攻打进程只看自己绑定的登录账号。网页没绑定时看全部，用来决定要不要拉起。"""
+    user_id = attack_context_user()
     conn = connect(readonly=True)
     try:
-        row = conn.execute(
-            "SELECT 1 FROM atk_order WHERE status IN ('pending','running') LIMIT 1"
-        ).fetchone()
+        if user_id:
+            row = conn.execute(
+                "SELECT 1 FROM atk_order WHERE user_id=? AND status IN ('pending','running') LIMIT 1",
+                (user_id,)).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM atk_order WHERE status IN ('pending','running') LIMIT 1"
+            ).fetchone()
         return row is not None
     finally:
         conn.close()
 
 
 def requeue_running_orders() -> None:
-    """拿到攻打号之后调用。标着正在打的是上一轮进程留下的，改回排队。"""
+    """拿到攻打号之后调用。标着正在打的是上一轮进程留下的，改回排队。只动这个登录账号的单。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return
     conn = connect()
     try:
         conn.execute(
-            "UPDATE atk_order SET status='pending', updated_at=? WHERE status='running'",
-            (now_ts(),))
+            "UPDATE atk_order SET status='pending', updated_at=? "
+            "WHERE status='running' AND user_id=?",
+            (now_ts(), user_id))
         conn.commit()
     finally:
         conn.close()
 
 
 def claim_attack_order():
-    """领最新的一条排队订单。后提交的优先。档位不够的记为失败并接着看下一条。"""
+    """领这个登录账号最新的一条排队订单。后提交的优先。没有绑定就不领别人的单。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return None
     conn = connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1505,14 +1789,15 @@ def claim_attack_order():
             "%Y-%m-%dT%H:%M:%SZ")
         conn.execute(
             "UPDATE atk_order SET status='pending', updated_at=? "
-            "WHERE status='running' AND updated_at<?",
-            (now, cutoff))
+            "WHERE status='running' AND user_id=? AND updated_at<?",
+            (now, user_id, cutoff))
         while True:
             row = conn.execute(
                 "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
                 "IFNULL(u.expires_at,''), IFNULL(o.auto,0), o.card_max "
                 "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
-                "WHERE o.status='pending' ORDER BY o.id DESC LIMIT 1").fetchone()
+                "WHERE o.status='pending' AND o.user_id=? ORDER BY o.id DESC LIMIT 1",
+                (user_id,)).fetchone()
             if not row:
                 conn.commit()
                 return None
@@ -1594,12 +1879,16 @@ def note_blocked_reason(order_id: int, reason: str) -> None:
 
 
 def next_blocked_order():
-    """挂机时要盯的那一单。后提交的优先。不改状态。"""
+    """挂机时要盯的那一单。后提交的优先。不改状态。只看这个登录账号的。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return None
     conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats "
-            "FROM atk_order WHERE status='blocked' ORDER BY id DESC LIMIT 1"
+            "FROM atk_order WHERE user_id=? AND status='blocked' ORDER BY id DESC LIMIT 1",
+            (user_id,)
         ).fetchone()
     finally:
         conn.close()
@@ -1637,12 +1926,16 @@ def take_blocked_order(order_id: int):
 
 
 def fail_blocked_orders() -> None:
-    """挂机结束了。还在等通路的订单记为没打成，原因留着。"""
+    """挂机结束了。这个登录账号还在等通路的订单记为没打成，原因留着。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return
     conn = connect()
     try:
         conn.execute(
-            "UPDATE atk_order SET status='failed', updated_at=? WHERE status='blocked'",
-            (now_ts(),))
+            "UPDATE atk_order SET status='failed', updated_at=? "
+            "WHERE user_id=? AND status='blocked'",
+            (now_ts(), user_id))
         conn.commit()
     finally:
         conn.close()
@@ -1844,26 +2137,36 @@ def list_city_targets(city_id: int, skip_failed=True, exclude_uid=""):
     return out
 
 
+def _fail_acct() -> str:
+    """当前攻打进程用的攻打号。失败库按这个名字分开。"""
+    return str(_PROC_ACCT or "")
+
+
+def _fail_op_mine(op) -> bool:
+    return len(op) >= 2 and op[1] == _fail_acct()
+
+
 def failed_uids() -> set:
     return set(failed_names())
 
 
 def failed_names_in(city_id) -> list:
-    """这座城里战败表记下的名字。含还没落盘的队列。没有名字时用 uid。"""
+    """这座城里、当前攻打号战败表记下的名字。含还没落盘的队列。没有名字时用 uid。"""
     try:
         city_id = int(city_id or 0)
     except (TypeError, ValueError):
         return []
     if city_id <= 0:
         return []
+    acct = _fail_acct()
 
     def _read():
         conn = connect(timeout=DB_OP_TIMEOUT)
         try:
             rows = conn.execute(
                 "SELECT uid, IFNULL(name,'') FROM atk_fail "
-                "WHERE city_id=? AND IFNULL(ret,0) NOT IN (21)",
-                (city_id,)).fetchall()
+                "WHERE acct=? AND city_id=? AND IFNULL(ret,0) NOT IN (21)",
+                (acct, city_id)).fetchall()
             return [(str(u).strip(), str(n or "").strip()) for u, n in rows if u]
         finally:
             conn.close()
@@ -1875,19 +2178,21 @@ def failed_names_in(city_id) -> list:
             if uid:
                 names[uid] = name
     for op in _atk_q:
+        if not _fail_op_mine(op):
+            continue
         if op[0] == "wipe":
             names.clear()
         elif op[0] == "clear":
-            names.pop(str(op[1]).strip(), None)
+            names.pop(str(op[2]).strip(), None)
         elif op[0] == "record":
-            uid = str(op[1]).strip()
+            uid = str(op[2]).strip()
             if not uid:
                 continue
-            if op[4] in (21,):
+            if op[5] in (21,):
                 names.pop(uid, None)
                 continue
-            if int(op[3] or 0) == city_id:
-                names[uid] = str(op[2] or "").strip()
+            if int(op[4] or 0) == city_id:
+                names[uid] = str(op[3] or "").strip()
             else:
                 names.pop(uid, None)
     out = []
@@ -1899,25 +2204,30 @@ def failed_names_in(city_id) -> list:
 
 
 def failed_names() -> dict:
-    """战败表里的 uid → 当时记下的名字。ret=21 不算打不过。含还没落盘的队列。"""
+    """当前攻打号战败表里的 uid → 当时记下的名字。ret=21 不算打不过。含还没落盘的队列。"""
+    acct = _fail_acct()
+
     def _read():
         conn = connect(timeout=DB_OP_TIMEOUT)
         try:
             rows = conn.execute(
                 "SELECT uid, IFNULL(name,'') FROM atk_fail "
-                "WHERE IFNULL(ret,0) NOT IN (21)").fetchall()
+                "WHERE acct=? AND IFNULL(ret,0) NOT IN (21)",
+                (acct,)).fetchall()
             return {str(u).strip(): str(n or "").strip() for u, n in rows if u}
         finally:
             conn.close()
     got = _run_timeout(_read, default={})
     names = dict(got) if isinstance(got, dict) else {}
     for op in _atk_q:
+        if not _fail_op_mine(op):
+            continue
         if op[0] == "wipe":
             names.clear()
         elif op[0] == "clear":
-            names.pop(str(op[1]).strip(), None)
+            names.pop(str(op[2]).strip(), None)
         elif op[0] == "record":
-            names[str(op[1]).strip()] = str(op[2] or "").strip()
+            names[str(op[2]).strip()] = str(op[3] or "").strip()
     return names
 
 
@@ -1941,17 +2251,20 @@ def same_failed(uid, live_name, names=None) -> bool:
 
 
 def in_atk_fail(uid) -> bool:
-    """这个人现在算不算失败库里的。先看本轮还没落盘的队列，再查库。"""
+    """这个人现在算不算当前攻打号失败库里的。先看本轮还没落盘的队列，再查库。"""
     uid = str(uid or "").strip()
     if not uid:
         return False
+    acct = _fail_acct()
     pending = None
     for op in _atk_q:
+        if not _fail_op_mine(op):
+            continue
         if op[0] == "wipe":
             pending = False
-        elif op[0] == "clear" and op[1] == uid:
+        elif op[0] == "clear" and op[2] == uid:
             pending = False
-        elif op[0] == "record" and op[1] == uid:
+        elif op[0] == "record" and op[2] == uid:
             pending = True
     if pending is True:
         return True
@@ -1962,8 +2275,8 @@ def in_atk_fail(uid) -> bool:
         conn = connect(readonly=True, timeout=DB_OP_TIMEOUT)
         try:
             row = conn.execute(
-                "SELECT 1 FROM atk_fail WHERE uid=? AND IFNULL(ret,0) NOT IN (21)",
-                (uid,)).fetchone()
+                "SELECT 1 FROM atk_fail WHERE acct=? AND uid=? AND IFNULL(ret,0) NOT IN (21)",
+                (acct, uid)).fetchone()
             return bool(row)
         finally:
             conn.close()
@@ -1979,20 +2292,22 @@ _atk_q = []
 def record_atk_fail(uid, city_id=0, ret=None, reason="", name=""):
     uid = str(uid or "").strip()
     if uid:
-        _atk_q.append(("record", uid, name or "", int(city_id or 0), ret, reason or ""))
+        _atk_q.append(("record", _fail_acct(), uid, name or "", int(city_id or 0),
+                       ret, reason or ""))
 
 
 def clear_atk_fail(uid=None):
+    acct = _fail_acct()
     if uid is None:
-        _atk_q.append(("wipe",))
+        _atk_q.append(("wipe", acct))
         return
     uid = str(uid or "").strip()
     if uid:
-        _atk_q.append(("clear", uid))
+        _atk_q.append(("clear", acct, uid))
 
 
 def flush_atk_fail():
-    """战斗结束再写盘。超过 DB_OP_TIMEOUT 就放弃，不堵下一轮。"""
+    """战斗结束再写盘。超过 DB_OP_TIMEOUT 就放弃，不堵下一轮。只动记下时那个攻打号的记录。"""
     global _atk_q
     if not _atk_q:
         return
@@ -2003,18 +2318,20 @@ def flush_atk_fail():
         try:
             for op in batch:
                 if op[0] == "wipe":
-                    conn.execute("DELETE FROM atk_fail")
+                    conn.execute("DELETE FROM atk_fail WHERE acct=?", (op[1],))
                 elif op[0] == "clear":
-                    conn.execute("DELETE FROM atk_fail WHERE uid=?", (op[1],))
-                else:
-                    _, uid, name, city_id, ret, reason = op
                     conn.execute(
-                        "INSERT INTO atk_fail(uid, name, city_id, ret, reason, at) "
-                        "VALUES (?,?,?,?,?,?) "
-                        "ON CONFLICT(uid) DO UPDATE SET "
+                        "DELETE FROM atk_fail WHERE acct=? AND uid=?",
+                        (op[1], op[2]))
+                else:
+                    _, acct, uid, name, city_id, ret, reason = op
+                    conn.execute(
+                        "INSERT INTO atk_fail(acct, uid, name, city_id, ret, reason, at) "
+                        "VALUES (?,?,?,?,?,?,?) "
+                        "ON CONFLICT(acct, uid) DO UPDATE SET "
                         "name=excluded.name, city_id=excluded.city_id, "
                         "ret=excluded.ret, reason=excluded.reason, at=excluded.at",
-                        (uid, name, city_id, ret, reason, now_ts()))
+                        (acct, uid, name, city_id, ret, reason, now_ts()))
             conn.commit()
         finally:
             conn.close()
