@@ -228,6 +228,7 @@ def connect(readonly=False, timeout=15):
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN attack_qq_block INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
+            _forget_page_names(setup)
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
             if ocols and "uid" not in ocols:
                 setup.execute(
@@ -1034,6 +1035,46 @@ def user_id_by_name(username: str) -> int:
         conn.close()
 
 
+def placeholder_attack_acct(name: str) -> bool:
+    """「网页」「网页-3」这种是页面二维码的临时名字，不是攻打 QQ。"""
+    name = str(name or "").strip()
+    if name == "网页":
+        return True
+    rest = name[3:] if name.startswith("网页-") else ""
+    return bool(rest) and rest.isdigit()
+
+
+def _forget_page_names(conn) -> None:
+    """还没扫上 QQ 的「网页」占位清掉。扫上过的，攻打号就写成那个 QQ。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(app_user)")}
+    if "attack_acct" not in cols or "attack_qq" not in cols:
+        return
+    conn.execute(
+        "UPDATE app_user SET attack_acct='' "
+        "WHERE IFNULL(attack_qq,'')='' AND ("
+        "attack_acct='网页' OR "
+        "(attack_acct LIKE '网页-%' AND substr(attack_acct, 4) GLOB '[0-9]*'))")
+    conn.execute(
+        "UPDATE app_user SET attack_acct=attack_qq "
+        "WHERE IFNULL(attack_qq,'')!='' AND ("
+        "IFNULL(attack_acct,'')='' OR attack_acct='网页' OR "
+        "(attack_acct LIKE '网页-%' AND substr(attack_acct, 4) GLOB '[0-9]*'))")
+
+
+def bound_attack_qq() -> tuple:
+    """服务器上已经记下的那一个攻打 QQ。没有则是 (0, '', '')。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT id, username, attack_qq FROM app_user "
+            "WHERE IFNULL(attack_qq,'')!='' ORDER BY id LIMIT 1").fetchone()
+        if not row:
+            return 0, "", ""
+        return int(row[0]), str(row[1] or ""), str(row[2] or "").strip()
+    finally:
+        conn.close()
+
+
 def attack_acct_of(user_id: int) -> str:
     conn = connect(readonly=True)
     try:
@@ -1108,21 +1149,31 @@ def confirm_attack_qq(user_id: int, uin: str) -> bool:
         blocked = int(row[1] or 0)
         who = str(row[2] or "")
         if not bound:
-            other = conn.execute(
-                "SELECT username FROM app_user WHERE attack_qq=? AND id!=?",
-                (uin, user_id)).fetchone()
-            if other:
+            holder = conn.execute(
+                "SELECT username, attack_qq FROM app_user "
+                "WHERE id!=? AND IFNULL(attack_qq,'')!='' LIMIT 1",
+                (user_id,)).fetchone()
+            if holder:
                 conn.execute(
                     "UPDATE app_user SET attack_qq_block=1 WHERE id=?",
                     (user_id,))
                 conn.commit()
-                log.error("QQ %s 已经绑在登录账号 %s 上，%s 这次对不上，已暂停",
-                          uin, other[0], who)
+                log.error("攻打 QQ %s 已经绑在登录账号 %s 上，%s 不能再记一个，已暂停",
+                          holder[1], holder[0], who)
                 set_attack_paused(True, user_id)
                 return False
-            conn.execute(
-                "UPDATE app_user SET attack_qq=?, attack_qq_block=0 WHERE id=?",
-                (uin, user_id))
+            acct = conn.execute(
+                "SELECT IFNULL(attack_acct,'') FROM app_user WHERE id=?",
+                (user_id,)).fetchone()
+            current = str(acct[0] or "").strip() if acct else ""
+            if not current or placeholder_attack_acct(current):
+                conn.execute(
+                    "UPDATE app_user SET attack_qq=?, attack_acct=?, attack_qq_block=0 WHERE id=?",
+                    (uin, uin, user_id))
+            else:
+                conn.execute(
+                    "UPDATE app_user SET attack_qq=?, attack_qq_block=0 WHERE id=?",
+                    (uin, user_id))
             conn.commit()
             log.info("登录账号 %s 第一次扫码，绑定攻打 QQ %s", who, uin)
             return True

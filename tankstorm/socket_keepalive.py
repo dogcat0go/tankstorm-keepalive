@@ -1105,15 +1105,6 @@ _PAGE_ACCOUNT = "网页"
 _PAGE_COOKIE = "accounts/web.json"
 
 
-def _own_page_name(user_id: int) -> str:
-    """这个登录账号自己的网页攻打号。不和别人共用。"""
-    return f"网页-{int(user_id)}"
-
-
-def _own_page_cookie(user_id: int) -> str:
-    return f"accounts/web-{int(user_id)}.json"
-
-
 def _qr_file(cookie: str) -> str:
     from . import paths
     base = paths.user_path(cookie)
@@ -1121,34 +1112,29 @@ def _qr_file(cookie: str) -> str:
 
 
 def page_attack_qr_path(config: dict = None, user_id: int = 0) -> str:
-    """这个登录账号的网页登录图。没传账号时仍是原来的 accounts/web.json。"""
+    """网页上的登录图。配置里给这个人指定了别的 cookie 就用那一份，否则是 accounts/web.json。"""
     cookie = _PAGE_COOKIE
     user_id = int(user_id or 0)
     if user_id:
         from . import citydb
         bound = citydb.attack_acct_of(user_id)
-        accounts = ((config or {}).get("登录") or {}).get("账号") or {}
-        spec = accounts.get(bound) if isinstance(accounts, dict) else None
-        if isinstance(spec, dict) and str(spec.get("cookie") or "").strip():
-            cookie = str(spec.get("cookie")).strip()
-        elif bound == _own_page_name(user_id):
-            cookie = _own_page_cookie(user_id)
+        if bound and not citydb.placeholder_attack_acct(bound) and not bound.isdigit():
+            accounts = ((config or {}).get("登录") or {}).get("账号") or {}
+            spec = accounts.get(bound) if isinstance(accounts, dict) else None
+            if isinstance(spec, dict) and str(spec.get("cookie") or "").strip():
+                cookie = str(spec.get("cookie")).strip()
     return _qr_file(cookie)
 
 
 def _page_qr_account(config: dict, name: str) -> bool:
     login = config.get("登录") or {}
+    if str(login.get("网页攻打号") or "").strip():
+        return False
     spec = (login.get("账号") or {}).get(name) or {}
     if not isinstance(spec, dict):
         return False
-    if str(spec.get("扫码QQ") or "").strip():
-        return False
-    cookie = str(spec.get("cookie") or "").strip()
-    if name.startswith("网页-") and cookie.startswith("accounts/web-"):
-        return True
-    if str(login.get("网页攻打号") or "").strip():
-        return False
-    return cookie == _PAGE_COOKIE
+    return (str(spec.get("cookie") or "").strip() == _PAGE_COOKIE
+            and not str(spec.get("扫码QQ") or "").strip())
 
 
 def attack_account_for_user(config: dict, user_id: int) -> tuple:
@@ -1173,18 +1159,19 @@ def attack_account_for_user(config: dict, user_id: int) -> tuple:
                 return "", "taken"
             return name, ""
     bound = citydb.attack_acct_of(user_id)
-    if not bound:
-        # 还没绑定就用这个登录账号自己的网页二维码。别人占着「网页」也不拦。
-        name = _own_page_name(user_id)
-        owner = citydb.attack_acct_owner(name)
-        if owner and owner != user_id:
-            return "", "taken"
-        accounts[name] = {"cookie": _own_page_cookie(user_id)}
-        why = citydb.bind_attack_account(user_id, name)
-        if why:
-            return "", "taken"
-        log.info("登录账号 %s 还没绑定攻打号，网页二维码用「%s」", username, name)
-        return name, ""
+    if citydb.placeholder_attack_acct(bound):
+        bound = ""
+    qq = citydb.attack_qq_of(user_id)
+    holder_id, holder_name, holder_qq = citydb.bound_attack_qq()
+    if holder_id and holder_id != user_id:
+        log.info("攻打 QQ %s 已经绑在 %s 上，%s 不能调用", holder_qq, holder_name, username)
+        return "", "taken"
+    if qq or not bound:
+        # 攻打号就是扫上的 QQ。还没扫过时只出网页二维码，不先写一个「网页」绑定。
+        accounts.setdefault(_PAGE_ACCOUNT, {"cookie": _PAGE_COOKIE})
+        if not qq:
+            log.info("登录账号 %s 还没有攻打 QQ，二维码显示在网页上", username)
+        return _PAGE_ACCOUNT, ""
     spec = accounts.get(bound) or {}
     who = str(spec.get("用户") or "").strip() if isinstance(spec, dict) else ""
     if who and who != username:
@@ -1192,11 +1179,7 @@ def attack_account_for_user(config: dict, user_id: int) -> tuple:
     owner = citydb.attack_acct_owner(bound)
     if owner and owner != user_id:
         return "", "taken"
-    if bound == _PAGE_ACCOUNT:
-        accounts.setdefault(_PAGE_ACCOUNT, {"cookie": _PAGE_COOKIE})
-    elif bound == _own_page_name(user_id):
-        accounts.setdefault(bound, {"cookie": _own_page_cookie(user_id)})
-    elif names and bound not in names:
+    if names and bound not in names:
         return "", "no_account"
     return bound, ""
 
@@ -1249,10 +1232,11 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
         if _kick_alive and _kick_user == user_id:
             return "busy"
         if _kick_alive and _kick_user != user_id:
-            return "taken"
-        if (citydb.proc_online() and citydb.proc_user() == user_id
-                and citydb.proc_acct() in ("", name)):
-            citydb.set_attack_context(user_id, name)
+            if citydb.attack_qq_of(_kick_user):
+                return "taken"
+            return "scanning"
+        if citydb.proc_online() and citydb.proc_user() == user_id:
+            citydb.set_attack_context(user_id, citydb.attack_qq_of(user_id) or name)
             if citydb.attack_paused():
                 if citydb.attack_qq_blocked(user_id):
                     citydb.ask_attack_login()
@@ -1267,8 +1251,9 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
             log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
             return "busy"
         if citydb.proc_online() and citydb.proc_user() not in (0, user_id):
-            if not citydb.proc_acct() or citydb.proc_acct() == name:
+            if citydb.attack_qq_of(citydb.proc_user()):
                 return "taken"
+            return "scanning"
         on_page = _page_qr_account(config, name)
         qq = cli.open_qq(config, name, fatal_lock=False)
         if qq is None:
@@ -1285,7 +1270,8 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
     def _run():
         global _kick_alive, _kick_user
         from . import citydb
-        citydb.set_attack_context(user_id, name)
+        remembered = citydb.attack_qq_of(user_id) if name == _PAGE_ACCOUNT else name
+        citydb.set_attack_context(user_id, remembered)
         stop = _start_attack_status()
         try:
             citydb.requeue_running_orders()
@@ -1536,6 +1522,8 @@ def note_attack_qq(qq) -> bool:
     ok = citydb.confirm_attack_qq(user_id, uin)
     qq._attack_qq_seen = (user_id, uin)
     qq._attack_qq_bad = not ok
+    if ok and (getattr(qq, "account_name", "") or "") == _PAGE_ACCOUNT:
+        citydb.set_attack_context(user_id, uin)
     return ok
 
 

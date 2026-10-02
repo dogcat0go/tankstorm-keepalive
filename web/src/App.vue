@@ -272,7 +272,8 @@ async function pushLogin() {
 
 function attackLoginError(login) {
   if (login === "no_account") return "服务器还没配置攻打号，二维码发不出去";
-  if (login === "taken") return "这个攻打号已经绑定别的登录账号，不能接着用";
+  if (login === "taken") return "这个攻打 QQ 已经绑定别的登录账号，不能接着用";
+  if (login === "scanning") return "攻打 QQ 还没扫上，正在等另一个登录账号扫码";
   if (login === "unbound") return "这个登录账号还没绑定攻打号";
   return "";
 }
@@ -444,7 +445,7 @@ onUnmounted(() => {
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
-        <p class="muted">每 5 秒刷新一次。还没绑定攻打号时，点推送登录会在下面显示这个账号自己的二维码，不会占用别人已经绑过的号。扫上的 QQ 会记下，以后换成别的 QQ 就暂停。</p>
+        <p class="muted">每 5 秒刷新一次。攻打号就是扫上的 QQ。还没扫过时，点推送登录会在下面出二维码，扫上才绑定。已经绑过的 QQ 不能被别的登录账号调用。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">
         <table>
