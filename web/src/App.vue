@@ -29,6 +29,7 @@ const scanNote = ref("");
 const scanQuiet = ref(false);
 const autoLock = ref(false);
 const holdMin = ref("0");
+const cardMax = ref("100");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
 let timer = 0;
@@ -104,6 +105,7 @@ async function enter() {
   qqTarget.value = who.user.qq_target || "";
   autoLock.value = !!who.user.auto_lock;
   holdMin.value = String(who.user.hold_min ?? 0);
+  cardMax.value = String(who.user.card_max ?? 100);
   await loadCities();
   await refresh();
   await refreshAttacks();
@@ -183,6 +185,7 @@ async function loadMe() {
   qqTarget.value = who.user.qq_target || "";
   autoLock.value = !!who.user.auto_lock;
   holdMin.value = String(who.user.hold_min ?? 0);
+  cardMax.value = String(who.user.card_max ?? 100);
   await loadCities();
   await refresh();
   await refreshAttacks();
@@ -220,10 +223,12 @@ async function addOrder() {
     city_id: attackCity.value,
     uid: attackUid.value,
     minutes: holdMin.value,
+    cards: cardMax.value,
   });
   attackCity.value = "";
   attackUid.value = "";
   if (data.hold_min != null) holdMin.value = String(data.hold_min);
+  if (data.card_max != null) cardMax.value = String(data.card_max);
   if (data.login === "no_account") err.value = "服务器还没配置攻打号，二维码发不出去";
   await refreshAttacks();
 }
@@ -411,6 +416,7 @@ onUnmounted(() => {
           </label>
           <label>UID<input v-model="attackUid" inputmode="numeric" placeholder="留空则打整座城" /></label>
           <label>挂机保活分钟<input v-model="holdMin" class="mins" inputmode="numeric" required /></label>
+          <label>最多恢复卡<input v-model="cardMax" class="mins" inputmode="numeric" required /></label>
           <button type="submit">提交攻打</button>
         </form>
         <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。0 表示打完就下线。</p>

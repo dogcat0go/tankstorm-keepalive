@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     admin           INTEGER NOT NULL DEFAULT 0,
     auto_lock       INTEGER NOT NULL DEFAULT 0,
     hold_min        INTEGER NOT NULL DEFAULT 0,
+    card_max        INTEGER NOT NULL DEFAULT 100,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS atk_order (
     reason      TEXT,
     auto        INTEGER NOT NULL DEFAULT 0,
     beats       INTEGER,
+    card_max    INTEGER,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -203,6 +205,10 @@ def connect(readonly=False, timeout=15):
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN hold_min INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
+            if ucols and "card_max" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN card_max INTEGER NOT NULL DEFAULT 100")
+                setup.commit()
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
             if ocols and "uid" not in ocols:
                 setup.execute(
@@ -214,6 +220,9 @@ def connect(readonly=False, timeout=15):
                 setup.commit()
             if ocols and "beats" not in ocols:
                 setup.execute("ALTER TABLE atk_order ADD COLUMN beats INTEGER")
+                setup.commit()
+            if ocols and "card_max" not in ocols:
+                setup.execute("ALTER TABLE atk_order ADD COLUMN card_max INTEGER")
                 setup.commit()
             _schema_ready = True
         finally:
@@ -713,14 +722,15 @@ def user_by_token(token: str):
         row = conn.execute(
             "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,''), "
             "IFNULL(u.tier,'初级'), IFNULL(u.admin,0), IFNULL(u.auto_lock,0), "
-            "IFNULL(u.hold_min,0) "
+            "IFNULL(u.hold_min,0), IFNULL(u.card_max,100) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
             return None
         return {"id": row[0], "username": row[1], "qq_target": row[2],
                 "expires_at": row[3], "tier": row[4], "admin": bool(row[5]),
-                "auto_lock": bool(row[6]), "hold_min": int(row[7] or 0)}
+                "auto_lock": bool(row[6]), "hold_min": int(row[7] or 0),
+                "card_max": int(row[8] if row[8] is not None else 100)}
     finally:
         conn.close()
 
@@ -773,8 +783,10 @@ def save_push(user_id: int, qq_target: str) -> None:
         conn.close()
 
 
-def add_attack_order(user_id: int, city_id: int, uid: str) -> str:
+def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
     """提交一条远程扫码攻打。已有未完成的单时返回原因，成功返回空字符串。"""
+    if cards is None:
+        cards = 100
     conn = connect()
     try:
         row = conn.execute(
@@ -784,13 +796,33 @@ def add_attack_order(user_id: int, city_id: int, uid: str) -> str:
             return "已经有一条还没打完"
         now = now_ts()
         conn.execute(
-            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (int(user_id), int(city_id), str(uid).strip(), "pending", "", now, now))
+            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, card_max, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (int(user_id), int(city_id), str(uid).strip(), "pending", "",
+             int(cards), now, now))
         conn.commit()
         return ""
     finally:
         conn.close()
+
+
+def set_attack_cards(user_id: int, cards) -> str:
+    """这一单最多用几张恢复卡。成功返回空字符串。"""
+    try:
+        n = int(str(cards).strip())
+    except (TypeError, ValueError, AttributeError):
+        return "恢复卡数量要是数字"
+    if n < 0 or n > 999:
+        return "恢复卡数量要是 0 到 999"
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE app_user SET card_max=? WHERE id=?",
+            (n, int(user_id)))
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
 
 
 def set_attack_hold(user_id: int, minutes) -> str:
@@ -896,11 +928,15 @@ def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
             (int(user_id), int(city_id), uid)).fetchone()
         if row:
             return False
+        saved = conn.execute(
+            "SELECT IFNULL(card_max,100) FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+        cards = int(saved[0]) if saved else 100
         now = now_ts()
         conn.execute(
-            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, auto, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (int(user_id), int(city_id), uid, "pending", "", 1, now, now))
+            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, auto, card_max, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (int(user_id), int(city_id), uid, "pending", "", 1, cards, now, now))
         conn.commit()
         return True
     finally:
@@ -1316,7 +1352,7 @@ def claim_attack_order():
             (now, cutoff))
         row = conn.execute(
             "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
-            "IFNULL(u.expires_at,''), IFNULL(o.auto,0) "
+            "IFNULL(u.expires_at,''), IFNULL(o.auto,0), o.card_max "
             "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
             "WHERE o.status='pending' ORDER BY o.id LIMIT 1").fetchone()
         if not row:
@@ -1335,7 +1371,8 @@ def claim_attack_order():
         conn.commit()
         if cur.rowcount != 1:
             return None
-        return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5])}
+        return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5]),
+                "cards": None if row[6] is None else int(row[6])}
     finally:
         conn.close()
 

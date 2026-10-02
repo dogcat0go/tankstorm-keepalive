@@ -710,9 +710,16 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
     citydb.set_attack_status("running")
     tally = {"n": 0, "note": lambda n: citydb.note_attack_beats(job["id"], n)}
     citydb.note_attack_beats(job["id"], 0)
+    fight_config = config
+    if job.get("cards") is not None:
+        fight_config = dict(config)
+        war = dict(config.get("国战") or {})
+        war["单次最多用几张恢复卡"] = int(job["cards"])
+        fight_config["国战"] = war
+        log.info("订单 %s 最多用 %d 张恢复卡", job["id"], int(job["cards"]))
     try:
         out = country_war.walk_to(
-            rec, sock, config, job["city_id"], beat=beater, uid=uid,
+            rec, sock, fight_config, job["city_id"], beat=beater, uid=uid,
             hold_if_blocked=bool(job.get("auto")), tally=tally)
     except OSError:
         citydb.finish_attack_order(
