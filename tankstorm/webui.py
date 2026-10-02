@@ -235,10 +235,13 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
-                _json(self, 200, {
+                body = {
                     "items": citydb.list_attack_orders(user["id"], limit=2),
                     "process": citydb.attack_status(user["id"]),
-                })
+                }
+                if user.get("admin"):
+                    body["fighters"] = citydb.list_attack_fighters()
+                _json(self, 200, body)
                 return
             if path == "/api/attack-qr":
                 user = self._user()
@@ -511,14 +514,14 @@ def start(host="0.0.0.0", port=8765, config=None):
 
 
 def _wake_attack_orders(config) -> None:
-    """攻打进程没心跳、库里还有单时，由网页拉起这个登录账号自己的攻打号。"""
+    """主进程：每个已绑定的攻打 QQ 各看一条线程。有订单或还在挂机、线程不在时拉起。"""
     from .socket_keepalive import kick_attack_login
 
     gap = threading.Event()
     noted = set()
     while not gap.wait(5):
         try:
-            users = citydb.users_with_open_orders()
+            users = citydb.users_needing_attack()
         except Exception:
             log.info("自动拉起攻打没成", exc_info=True)
             continue

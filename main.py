@@ -47,6 +47,7 @@ import fcntl
 import json
 import os
 import sys
+import threading
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -136,31 +137,38 @@ def load_config() -> dict:
     return _deep_merge(config, local)
 
 
-_QQ_LOCK = None
+_QQ_LOCKS = {}
+_QQ_LOCK_GUARD = threading.Lock()
 
 
 def _lock_cookie(path: str, fatal: bool = True) -> bool:
-    """同一份 cookie 只能有一个进程。扫描号和攻打号因此不会互相覆盖票据。"""
-    global _QQ_LOCK
-    fh = open(path + ".lock", "a+")
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    """同一份 cookie 只能有一个进程。不同攻打 QQ 各锁各的，可以同时开着。"""
+    with _QQ_LOCK_GUARD:
+        if path in _QQ_LOCKS:
+            return True
+        fh = open(path + ".lock", "a+")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.close()
+            if fatal:
+                log.error("这个号已有进程在用 %s", path)
+                sys.exit(1)
+            log.info("这个号已有进程在用 %s", path)
+            return False
+        _QQ_LOCKS[path] = fh
+        return True
+
+
+def release_qq_lock(path: str = "") -> None:
+    """放开这一份 cookie。不传路径就不动，避免把别的攻打 QQ 的锁放掉。"""
+    path = str(path or "")
+    if not path:
+        return
+    with _QQ_LOCK_GUARD:
+        fh = _QQ_LOCKS.pop(path, None)
+    if fh is not None:
         fh.close()
-        if fatal:
-            log.error("这个号已有进程在用 %s", path)
-            sys.exit(1)
-        log.info("这个号已有进程在用 %s", path)
-        return False
-    _QQ_LOCK = fh
-    return True
-
-
-def release_qq_lock() -> None:
-    global _QQ_LOCK
-    if _QQ_LOCK is not None:
-        _QQ_LOCK.close()
-        _QQ_LOCK = None
 
 
 def _cookie_path(name: str, cookie: str) -> str:
