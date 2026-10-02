@@ -80,8 +80,9 @@ function reloadQr() {
 }
 
 function procText(p) {
-  if (!p || !p.online) return "没在跑";
-  if (p.paused) return "已暂停";
+  if (!p) return "没在跑";
+  if (!p.online) return p.paused && p.detail ? p.detail : "没在跑";
+  if (p.paused && p.phase !== "login") return p.detail || "已暂停";
   return p.detail || "空闲，等订单";
 }
 
@@ -439,11 +440,11 @@ onUnmounted(() => {
         </p>
         <p class="proc">
           <span class="proc-text">攻打进程：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
-          <button v-if="proc && proc.online && proc.paused" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
+          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login'" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
-        <p class="muted">每 5 秒刷新一次。攻打号只跟当前登录账号绑定，别的账号登录过的号不能继续用。</p>
+        <p class="muted">每 5 秒刷新一次。攻打号只跟当前登录账号绑定。第一次扫上的 QQ 会记下，以后换成别的 QQ 就暂停。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">
         <table>

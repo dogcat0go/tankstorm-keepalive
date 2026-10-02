@@ -699,7 +699,7 @@ def _start_attack_status() -> threading.Event:
 
     stop = threading.Event()
     user_id = citydb.attack_context_user()
-    if user_id:
+    if user_id and not citydb.attack_qq_blocked(user_id):
         citydb.set_attack_paused(False, user_id)
     citydb.set_attack_status("idle")
     threading.Thread(
@@ -714,7 +714,9 @@ def _stop_attack_status(stop: threading.Event) -> None:
     stop.set()
     try:
         citydb.clear_attack_hold()
-        citydb.set_attack_paused(False, citydb.attack_context_user())
+        user_id = citydb.attack_context_user()
+        if not citydb.attack_qq_blocked(user_id):
+            citydb.set_attack_paused(False, user_id)
         citydb.set_attack_status("offline")
     except Exception:
         log.debug("攻打进程收尾状态没写上", exc_info=True)
@@ -1059,6 +1061,10 @@ def run_remote_orders(qq, config: dict) -> int:
         while True:
             if citydb.attack_paused():
                 citydb.set_attack_status("paused")
+                if citydb.attack_qq_blocked(user_id) and citydb.take_attack_login():
+                    citydb.set_attack_status("login")
+                    relogin_with_push(qq, config, force_qr=True)
+                    continue
                 time.sleep(5)
                 continue
             asked = citydb.take_attack_login()
@@ -1207,6 +1213,11 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
                 and citydb.proc_acct() in ("", name)):
             citydb.set_attack_context(user_id, name)
             if citydb.attack_paused():
+                if citydb.attack_qq_blocked(user_id):
+                    citydb.ask_attack_login()
+                    citydb.set_attack_context(0, "")
+                    log.info("攻打 QQ 和绑定的不一致，登录二维码由正在跑的进程重推")
+                    return "busy"
                 log.info("攻打已暂停，先不拉起")
                 citydb.set_attack_context(0, "")
                 return "paused"
@@ -1237,14 +1248,33 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
         stop = _start_attack_status()
         try:
             citydb.requeue_running_orders()
-            if citydb.attack_order_open() and not qq.is_valid():
+            if citydb.attack_qq_blocked(user_id) or (
+                    citydb.attack_order_open() and not qq.is_valid()):
                 citydb.set_attack_status("login")
                 if on_page:
                     citydb.set_page_qr(True)
-                relogin_with_push(qq, config)
-            while not citydb.attack_paused() and (
-                    citydb.attack_order_open()
-                    or (citydb.attack_hold_left() or 0) > 0):
+                relogin_with_push(
+                    qq, config, force_qr=citydb.attack_qq_blocked(user_id))
+                if on_page:
+                    citydb.set_page_qr(False)
+            while True:
+                if citydb.attack_paused():
+                    citydb.set_attack_status("paused")
+                    if citydb.attack_qq_blocked(user_id) and citydb.take_attack_login():
+                        citydb.set_attack_status("login")
+                        if on_page:
+                            citydb.set_page_qr(True)
+                        relogin_with_push(qq, config, force_qr=True)
+                        if on_page:
+                            citydb.set_page_qr(False)
+                        continue
+                    if not citydb.attack_qq_blocked(user_id):
+                        break
+                    time.sleep(5)
+                    continue
+                if not (citydb.attack_order_open()
+                        or (citydb.attack_hold_left() or 0) > 0):
+                    break
                 if citydb.attack_order_open():
                     citydb.requeue_running_orders()
                 _connect_attack_orders(qq, config)
@@ -1321,6 +1351,8 @@ def _connect_and(qq, config: dict, work) -> int:
         return 2
 
     if not qq.is_valid() and not relogin_with_push(qq, config):
+        return 1
+    if not note_attack_qq(qq):
         return 1
     if qq.shares_blocked_uin():
         return 1
@@ -1443,15 +1475,39 @@ def run_daily_once(qq, config: dict) -> int:
     return _connect_and(qq, config, _work)
 
 
-def relogin_with_push(qq, config: dict) -> bool:
+def note_attack_qq(qq) -> bool:
+    """攻打号登录之后核对一次。第一次扫上的 QQ 绑到当前登录账号。
+    对不上就暂停，返回 False。同一个 QQ 这一进程里只核对一次。"""
+    if not getattr(qq, "attack_account", False):
+        return True
+    from . import citydb
+
+    user_id = citydb.attack_context_user()
+    uin = str(getattr(qq, "uin", "") or "").strip()
+    if not user_id or not uin.isdigit():
+        return True
+    seen = getattr(qq, "_attack_qq_seen", None)
+    if seen == (user_id, uin):
+        if getattr(qq, "_attack_qq_bad", False):
+            citydb.set_attack_paused(True, user_id)
+            return False
+        return True
+    ok = citydb.confirm_attack_qq(user_id, uin)
+    qq._attack_qq_seen = (user_id, uin)
+    qq._attack_qq_bad = not ok
+    return ok
+
+
+def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
     """需要重新扫码时：生成二维码并通过 PushPlus 推送给用户，等待扫码。
-    二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。"""
+    二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。
+    force_qr 为真时不再用旧票据续上，必须重新扫。攻打 QQ 对不上时用这个。"""
     # 先向本机 NapCat 要当前票据。没有再试长效凭据静默续期。
-    if qq.adopt_napcat(config):
+    if not force_qr and qq.adopt_napcat(config):
         return True
-    if qq.silent_renew():
+    if not force_qr and qq.silent_renew():
         log.info("已用长效凭据静默续期，无需人工介入")
-        return True
+        return note_attack_qq(qq)
 
     # 推送登录：直接往手机QQ推确认，免去扫码。
     # 这解决了"二维码图存本地、同一台手机相册扫码"被腾讯拒（限制本地扫码登录）的问题。
@@ -1496,7 +1552,7 @@ def relogin_with_push(qq, config: dict) -> bool:
         if qq.qr_login(on_qr=on_qr, push_uin=push_uin):
             if not getattr(qq, "attack_account", False):
                 notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
-            return True
+            return note_attack_qq(qq)
         log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
         time.sleep(15)
 
