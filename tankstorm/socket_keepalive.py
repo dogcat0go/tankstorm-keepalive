@@ -793,6 +793,19 @@ def _order_result(job, out) -> tuple:
     return "finish", "failed", "未打成"
 
 
+def _interrupt_reason(exc) -> str:
+    """中断时把具体错误写进说明。只写「攻打中断」看不出是什么错。"""
+    name = type(exc).__name__
+    detail = " ".join(str(exc).split()).strip()
+    if detail and name not in detail:
+        text = f"{name}：{detail}"
+    else:
+        text = detail or name
+    if len(text) > 160:
+        text = text[:160].rstrip() + "…"
+    return "攻打中断：" + text
+
+
 def _fight_claimed(rec, sock, config, beater, job) -> None:
     from . import citydb, country_war
 
@@ -823,10 +836,11 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
             citydb.finish_attack_order(
                 job["id"], "failed", "连接中断", beats=int(tally.get("n") or 0))
             raise
-        except Exception:
-            log.info("订单 %s 攻打中断", job["id"], exc_info=True)
+        except Exception as exc:
+            why = _interrupt_reason(exc)
+            log.info("订单 %s %s", job["id"], why, exc_info=True)
             citydb.finish_attack_order(
-                job["id"], "failed", "攻打中断", beats=int(tally.get("n") or 0))
+                job["id"], "failed", why, beats=int(tally.get("n") or 0))
             return
         if uid:
             log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
