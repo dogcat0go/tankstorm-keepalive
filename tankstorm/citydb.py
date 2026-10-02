@@ -1046,6 +1046,10 @@ def _forget_page_names(conn) -> None:
             "WHERE IFNULL(attack_qq,'')='' AND attack_acct GLOB '[0-9]*' "
             "AND length(attack_acct) BETWEEN 5 AND 12")
         conn.execute("UPDATE app_user SET attack_acct=''")
+    if "attack_qq_block" in cols:
+        conn.execute(
+            "UPDATE app_user SET attack_qq_block=0 "
+            "WHERE IFNULL(attack_qq,'')='' AND IFNULL(attack_qq_block,0)!=0")
     row = conn.execute(
         "SELECT attack_qq FROM app_user WHERE IFNULL(attack_qq,'')!='' "
         "ORDER BY id LIMIT 1").fetchone()
@@ -1092,16 +1096,16 @@ def attack_qq_of(user_id: int) -> str:
 
 
 def attack_qq_blocked(user_id: int) -> bool:
-    """这个登录账号上次核对攻打 QQ 没对上。对上之前攻打保持暂停。"""
+    """这个登录账号已经绑了攻打 QQ，但上次核对没对上。还没绑过的不算。"""
     user_id = int(user_id or 0)
     if not user_id:
         return False
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT IFNULL(attack_qq_block,0) FROM app_user WHERE id=?",
+            "SELECT IFNULL(attack_qq,''), IFNULL(attack_qq_block,0) FROM app_user WHERE id=?",
             (user_id,)).fetchone()
-        return bool(row and int(row[0] or 0))
+        return bool(row and str(row[0] or "").strip() and int(row[1] or 0))
     finally:
         conn.close()
 
@@ -1130,13 +1134,8 @@ def confirm_attack_qq(user_id: int, uin: str) -> bool:
                 "WHERE id!=? AND IFNULL(attack_qq,'')!='' LIMIT 1",
                 (user_id,)).fetchone()
             if holder:
-                conn.execute(
-                    "UPDATE app_user SET attack_qq_block=1 WHERE id=?",
-                    (user_id,))
-                conn.commit()
-                log.error("攻打 QQ %s 已经绑在登录账号 %s 上，%s 不能再记一个，已暂停",
+                log.error("攻打 QQ %s 已经绑在登录账号 %s 上，%s 还没有攻打 QQ，这次不记",
                           holder[1], holder[0], who)
-                set_attack_paused(True, user_id)
                 return False
             conn.execute(
                 "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
