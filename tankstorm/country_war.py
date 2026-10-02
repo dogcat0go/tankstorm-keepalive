@@ -1483,7 +1483,8 @@ def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False,
     """先按本地归属规划，再开面板核对路线上每座城的占领国，变了就重算。
 
     目录里的国家是原属国。9316 这类城被法国占了之后，不看面板仍会写成黑暗联盟。
-    stop_on_block 时只核这一轮：路径上有打不过的人就停，不改道。
+    stop_on_block 时，路上有打不过的人就避开这座城再规划一次。
+    新路线是通路就接着走；再遇到人挡，或没有别的路，就停。
     """
     from . import citydb
 
@@ -1508,11 +1509,15 @@ def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False,
     fail = citydb.failed_names()
     me = str(getattr(rec, "uid", "") or "")
     plan = citydb.plan_route(here, target, my, blocked, why)
-    for _ in range(1 if stop_on_block else 6):
+    # 自动单只给一次改道。非自动单仍按归属变化最多重算 6 次。
+    rounds = 2 if stop_on_block else 6
+    replanned_block = False
+    for _ in range(rounds):
         seq = list(plan.get("路径") or [])
         if target not in seq:
             seq.append(int(target))
         changed = False
+        hit = None
         for city in seq:
             if city in known:
                 continue
@@ -1549,15 +1554,35 @@ def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False,
                 who = "、".join(bad)
                 why[int(city)] = who
                 if stop_on_block:
-                    plan["避开"] = blocked
-                    plan["暂停"] = f"{city} {name} 有 {who} 挡路，路径不通"
-                    log.info("[路线] %s", plan["暂停"])
-                    return plan
+                    hit = (int(city), name, who)
+                    break
                 log.info("[路线] %s %s 有 %s 挡路，规划时跳过",
                          city, name, who)
         if stop_on_block:
             plan["避开"] = blocked
-            return plan
+            if hit is None:
+                return plan
+            city, name, who = hit
+            pause = f"{city} {name} 有 {who} 挡路，路径不通"
+            if replanned_block:
+                plan["暂停"] = pause
+                log.info("[路线] %s", plan["暂停"])
+                return plan
+            log.info("[路线] %s %s 有 %s 挡路，避开这座城再规划一次",
+                     city, name, who)
+            nxt = citydb.plan_route(here, target, my, blocked, why)
+            path = [int(c) for c in (nxt.get("路径") or [])]
+            # 人当前所在的城可以留在路线开头，其余已避开的城再出现就算没绕开。
+            still = [c for c in path if c in blocked and c != int(here)]
+            if not path or still:
+                plan["暂停"] = pause
+                log.info("[路线] %s", plan["暂停"])
+                return plan
+            plan = nxt
+            plan["避开"] = blocked
+            replanned_block = True
+            log.info("[路线] 避开 %s %s 后还有通路，继续", city, name)
+            continue
         nxt = citydb.plan_route(here, target, my, blocked, why)
         if (not changed and nxt.get("路径") == plan.get("路径")
                 and nxt.get("须占领") == plan.get("须占领")):
