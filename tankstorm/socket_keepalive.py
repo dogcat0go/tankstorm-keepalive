@@ -698,7 +698,9 @@ def _start_attack_status() -> threading.Event:
     from . import citydb
 
     stop = threading.Event()
-    citydb.set_attack_paused(False)
+    user_id = citydb.attack_context_user()
+    if user_id:
+        citydb.set_attack_paused(False, user_id)
     citydb.set_attack_status("idle")
     threading.Thread(
         target=_attack_status_beater, args=(stop,),
@@ -712,7 +714,7 @@ def _stop_attack_status(stop: threading.Event) -> None:
     stop.set()
     try:
         citydb.clear_attack_hold()
-        citydb.set_attack_paused(False)
+        citydb.set_attack_paused(False, citydb.attack_context_user())
         citydb.set_attack_status("offline")
     except Exception:
         log.debug("攻打进程收尾状态没写上", exc_info=True)
@@ -1010,11 +1012,45 @@ def _connect_attack_orders(qq, config) -> int:
     return _connect_and(qq, config, _work)
 
 
-def run_remote_orders(qq, config: dict) -> int:
-    """领取页面上中级、高级提交的城市和 UID。没登录就先把二维码发给扫码 QQ。"""
+def _bind_named_account(config: dict, name: str) -> int:
+    """配置里写了「用户」就绑到那个登录账号。返回登录账号 id，没有则是 0。"""
     from . import citydb
 
-    log.info("开始领取远程扫码攻打")
+    spec = ((config.get("登录") or {}).get("账号") or {}).get(name) or {}
+    if not isinstance(spec, dict):
+        return citydb.attack_acct_owner(name)
+    who = str(spec.get("用户") or "").strip()
+    if not who:
+        return citydb.attack_acct_owner(name)
+    user_id = citydb.user_id_by_name(who)
+    if not user_id:
+        log.error("攻打号「%s」写的用户「%s」不存在", name, who)
+        return 0
+    why = citydb.bind_attack_account(user_id, name)
+    if why:
+        log.error("攻打号「%s」绑不上 %s：%s", name, who, why)
+        return 0
+    return user_id
+
+
+def run_remote_orders(qq, config: dict) -> int:
+    """领取页面上中级、高级提交的城市和 UID。没登录就先把二维码发给扫码 QQ。
+    只领这个攻打号绑定的那个登录账号的订单。"""
+    from . import citydb
+
+    name = getattr(qq, "account_name", "") or ""
+    user_id = _bind_named_account(config, name)
+    told = False
+    while not user_id:
+        if not told:
+            log.error("攻打号「%s」还没绑定登录账号，不领订单。绑定：python3 web.py --bind-attack 用户名 %s",
+                      name or "攻打号", name or "攻打号名")
+            told = True
+        time.sleep(5)
+        user_id = _bind_named_account(config, name)
+    citydb.set_attack_context(user_id, name)
+    who = citydb.username_of(user_id)
+    log.info("开始领取远程扫码攻打，攻打号「%s」只打登录账号 %s 的订单", name, who)
     stop = _start_attack_status()
     try:
         citydb.requeue_running_orders()
@@ -1081,6 +1117,43 @@ def _page_qr_account(config: dict, name: str) -> bool:
             and not str(spec.get("扫码QQ") or "").strip())
 
 
+def attack_account_for_user(config: dict, user_id: int) -> tuple:
+    """这个登录账号该用哪个攻打号。返回 (名字, 错误)。错误是 taken 或 no_account。"""
+    from . import citydb
+
+    user_id = int(user_id or 0)
+    login = config.setdefault("登录", {})
+    accounts = login.get("账号")
+    if not isinstance(accounts, dict):
+        accounts = {}
+        login["账号"] = accounts
+    names = [k for k, v in accounts.items() if isinstance(v, dict)]
+    username = citydb.username_of(user_id)
+    for name in names:
+        spec = accounts.get(name) or {}
+        who = str(spec.get("用户") or "").strip()
+        if who and who == username:
+            why = citydb.bind_attack_account(user_id, name)
+            if why:
+                return "", "taken"
+            return name, ""
+    bound = citydb.attack_acct_of(user_id)
+    if not bound:
+        return "", "unbound"
+    spec = accounts.get(bound) or {}
+    who = str(spec.get("用户") or "").strip() if isinstance(spec, dict) else ""
+    if who and who != username:
+        return "", "taken"
+    owner = citydb.attack_acct_owner(bound)
+    if owner and owner != user_id:
+        return "", "taken"
+    if bound == _PAGE_ACCOUNT:
+        accounts.setdefault(_PAGE_ACCOUNT, {"cookie": _PAGE_COOKIE})
+    elif names and bound not in names:
+        return "", "no_account"
+    return bound, ""
+
+
 def web_attack_account(config: dict) -> str:
     """网页触发时用哪个攻打号。填了「登录.网页攻打号」就用它，否则用账号里的第一个。
     一个都没写时，用 accounts/web.json，二维码显示在网页上。"""
@@ -1103,36 +1176,64 @@ _kick_lock = threading.Lock()
 _kick_alive = False
 
 
-def kick_attack_login(config: dict) -> str:
-    """网页发起：能锁到攻打号就在这里推二维码并打排队的单。锁不到就交给已在跑的攻打进程。
-    没配攻打号时，二维码留在网页上，不经 QQ NT。本进程里同时只拉起一次。"""
+_kick_user = 0
+
+
+def kick_attack_login(config: dict, user_id: int = 0) -> str:
+    """网页发起：能锁到这个登录账号自己的攻打号就推二维码并打他的单。
+    别人已经绑定或正在用的攻打号不接手。没配攻打号时，二维码留在网页上。"""
     import main as cli
 
-    global _kick_alive
+    global _kick_alive, _kick_user
+    from . import citydb
+    user_id = int(user_id or 0)
+    if not user_id:
+        return "no_account"
+    name, why = attack_account_for_user(config, user_id)
+    if why:
+        if why == "taken":
+            log.info("登录账号 %s 不能使用别人的攻打号", citydb.username_of(user_id))
+        elif why == "unbound":
+            log.info("登录账号 %s 还没绑定攻打号", citydb.username_of(user_id))
+        else:
+            log.error("登录.账号 里没有可以给 %s 用的攻打号", citydb.username_of(user_id))
+        return why
     with _kick_lock:
-        if _kick_alive:
+        if _kick_alive and _kick_user == user_id:
             return "busy"
-        from . import citydb
-        if citydb.attack_paused():
-            log.info("攻打已暂停，先不拉起")
-            return "paused"
-        name = web_attack_account(config)
-        if not name:
-            log.error("登录.账号 里没有攻打号，二维码发不出去")
-            return "no_account"
+        if _kick_alive and _kick_user != user_id:
+            return "taken"
+        if (citydb.proc_online() and citydb.proc_user() == user_id
+                and citydb.proc_acct() in ("", name)):
+            citydb.set_attack_context(user_id, name)
+            if citydb.attack_paused():
+                log.info("攻打已暂停，先不拉起")
+                citydb.set_attack_context(0, "")
+                return "paused"
+            citydb.ask_attack_login()
+            citydb.set_attack_context(0, "")
+            log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
+            return "busy"
+        if citydb.proc_online() and citydb.proc_user() not in (0, user_id):
+            if not citydb.proc_acct() or citydb.proc_acct() == name:
+                return "taken"
         on_page = _page_qr_account(config, name)
         qq = cli.open_qq(config, name, fatal_lock=False)
         if qq is None:
-            from . import citydb
-            citydb.ask_attack_login()
-            log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
-            return "busy"
+            if citydb.proc_user() == user_id:
+                citydb.ask_attack_login()
+                log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
+                return "busy"
+            log.info("攻打号「%s」已有进程在用，不交给别的登录账号", name)
+            return "taken"
         qq.page_qr = on_page
         _kick_alive = True
+        _kick_user = user_id
 
     def _run():
-        global _kick_alive
+        global _kick_alive, _kick_user
         from . import citydb
+        citydb.set_attack_context(user_id, name)
         stop = _start_attack_status()
         try:
             citydb.requeue_running_orders()
@@ -1153,8 +1254,10 @@ def kick_attack_login(config: dict) -> str:
             if on_page:
                 citydb.set_page_qr(False)
             _stop_attack_status(stop)
+            citydb.set_attack_context(0, "")
             with _kick_lock:
                 _kick_alive = False
+                _kick_user = 0
             cli.release_qq_lock()
 
     threading.Thread(target=_run, name="attack-login", daemon=True).start()

@@ -332,7 +332,7 @@ def _handler(config: dict):
                     if why and why != "已经有一条还没打完":
                         raise ValueError(why)
                     from .socket_keepalive import kick_attack_login
-                    login = kick_attack_login(config)
+                    login = kick_attack_login(config, user["id"])
                     if why:
                         raise ValueError(why)
                     hold_min = int(user.get("hold_min") or 0)
@@ -345,12 +345,15 @@ def _handler(config: dict):
                         _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})
                         return
                     from .socket_keepalive import kick_attack_login
-                    _json(self, 200, {"ok": True, "login": kick_attack_login(config)})
+                    _json(self, 200, {"ok": True, "login": kick_attack_login(config, user["id"])})
                 elif path == "/api/attack-pause":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "暂停攻打需要中级或高级订阅"})
                         return
-                    citydb.set_attack_paused(bool(data.get("on")))
+                    why = citydb.pause_attack_for(user["id"], bool(data.get("on")))
+                    if why:
+                        _json(self, 403, {"error": why})
+                        return
                     _json(self, 200, {"ok": True, "paused": bool(data.get("on"))})
                 elif path == "/api/attack-hold":
                     if not citydb.attack_tier(user.get("tier") or ""):
@@ -370,10 +373,12 @@ def _handler(config: dict):
                     on = bool(data.get("on"))
                     citydb.set_auto_lock(user["id"], on)
                     queued = citydb.queue_present_locks(user["id"]) if on else 0
+                    login = ""
                     if queued:
                         from .socket_keepalive import kick_attack_login
-                        kick_attack_login(config)
-                    _json(self, 200, {"ok": True, "auto_lock": on, "queued": queued})
+                        login = kick_attack_login(config, user["id"])
+                    _json(self, 200, {"ok": True, "auto_lock": on, "queued": queued,
+                                      "login": login})
                 elif path == "/api/scan-plan":
                     if not user.get("admin"):
                         _json(self, 403, {"error": "只有管理员能改扫描安排"})
@@ -505,32 +510,46 @@ def start(host="0.0.0.0", port=8765, config=None):
 
 
 def _wake_attack_orders(config) -> None:
-    """攻打进程没心跳、库里还有单时，由网页拉起。不用再点推送登录二维码。"""
+    """攻打进程没心跳、库里还有单时，由网页拉起这个登录账号自己的攻打号。"""
     from .socket_keepalive import kick_attack_login
 
     gap = threading.Event()
-    noted = False
+    noted = set()
     while not gap.wait(5):
         try:
-            if (citydb.attack_paused() or citydb.attack_status(0).get("online")
-                    or not citydb.attack_order_open()):
-                noted = False
-                continue
-            login = kick_attack_login(config)
-        except SystemExit:
-            log.error("攻打号配置有误，网页不再自动拉起")
-            return
+            users = citydb.users_with_open_orders()
         except Exception:
             log.info("自动拉起攻打没成", exc_info=True)
             continue
-        if login == "no_account":
-            if not noted:
-                log.error("有攻打订单，但登录.账号里没有攻打号")
-            noted = True
-            continue
-        noted = False
-        if login in ("started", "qr"):
-            log.info("攻打进程不在，已按订单拉起")
+        for user_id in users:
+            try:
+                status = citydb.attack_status(user_id)
+                if status.get("online"):
+                    noted.discard(user_id)
+                    continue
+                login = kick_attack_login(config, user_id)
+            except SystemExit:
+                log.error("攻打号配置有误，网页不再自动拉起")
+                return
+            except Exception:
+                log.info("自动拉起攻打没成", exc_info=True)
+                continue
+            if login in ("taken", "no_account", "unbound"):
+                if user_id not in noted:
+                    if login == "taken":
+                        log.error("登录账号 %s 的订单不能用别人的攻打号",
+                                  citydb.username_of(user_id))
+                    elif login == "unbound":
+                        log.error("登录账号 %s 还没绑定攻打号",
+                                  citydb.username_of(user_id))
+                    else:
+                        log.error("登录账号 %s 有攻打订单，但没有可绑定的攻打号",
+                                  citydb.username_of(user_id))
+                noted.add(user_id)
+                continue
+            noted.discard(user_id)
+            if login in ("started", "qr"):
+                log.info("攻打进程不在，已按订单拉起")
 
 
 def serve(host="0.0.0.0", port=8765, config=None) -> int:
