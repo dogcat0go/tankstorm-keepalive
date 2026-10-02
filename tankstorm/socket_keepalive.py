@@ -1067,9 +1067,7 @@ def run_remote_orders(qq, config: dict) -> int:
     log.info("开始领取远程扫码攻打，攻打号「%s」只打登录账号 %s 的订单", name, who)
     stop = _start_attack_status()
     try:
-        citydb.requeue_running_orders()
-        if not ((citydb.attack_hold_left() or 0) > 0):
-            citydb.fail_blocked_orders()
+        citydb.resume_stranded_orders()
         while True:
             current = citydb.attack_context_user()
             if current:
@@ -1082,6 +1080,7 @@ def run_remote_orders(qq, config: dict) -> int:
                     continue
                 time.sleep(5)
                 continue
+            citydb.resume_stranded_orders()
             asked = citydb.take_attack_login()
             pending = citydb.attack_order_open()
             left = citydb.attack_hold_left()
@@ -1363,7 +1362,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
     stop = None
     try:
         stop = _start_attack_status()
-        citydb.requeue_running_orders()
+        citydb.resume_stranded_orders()
         if qq.is_valid():
             note_attack_qq(qq)
         if citydb.attack_qq_blocked(_owner()) or not qq.is_valid():
@@ -1385,15 +1384,12 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     if on_page:
                         citydb.set_page_qr(False, user_id)
                     continue
-                if not citydb.attack_qq_blocked(_owner()):
-                    break
                 time.sleep(5)
                 continue
+            citydb.resume_stranded_orders()
             if not (citydb.attack_order_open()
                     or (citydb.attack_hold_left() or 0) > 0):
                 break
-            if citydb.attack_order_open():
-                citydb.requeue_running_orders()
             _connect_attack_orders(qq, config)
             if (citydb.attack_hold_left() or 0) > 0:
                 time.sleep(1 if citydb.attack_order_open() else 5)
