@@ -444,7 +444,7 @@ onUnmounted(() => {
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
-        <p class="muted">每 5 秒刷新一次。还没绑定攻打号时，第一次点推送登录，二维码显示在这下面。扫上的 QQ 会记下，以后换成别的 QQ 就暂停。</p>
+        <p class="muted">每 5 秒刷新一次。还没绑定攻打号时，点推送登录会在下面显示这个账号自己的二维码，不会占用别人已经绑过的号。扫上的 QQ 会记下，以后换成别的 QQ 就暂停。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">
         <table>
