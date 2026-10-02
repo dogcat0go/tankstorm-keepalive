@@ -1736,7 +1736,7 @@ def _defeated_text(loc) -> str:
 
 
 def _clear_sent_home(sock, rec, loc, my) -> str:
-    """清整座城时，人在首都且士气不满，就是被遣返。不消耗恢复卡。"""
+    """清城途中被打回首都，且士气不满。不消耗恢复卡。人一开始就在首都时不走这里。"""
     if not _is_capital(loc):
         return ""
     _, _, _, panel = _panel(sock, rec, my)
@@ -1746,9 +1746,12 @@ def _clear_sent_home(sock, rec, loc, my) -> str:
     return ""
 
 
-def _halt_for_home(sock, rec, config, loc, my, uid) -> str:
-    """清城被打回首都就停。打某个人时仍按原来的方式补士气再出城。"""
-    if not str(uid or "").strip():
+def _halt_for_home(sock, rec, config, loc, my, uid, allow_leave=False) -> str:
+    """清城途中被打回首都就停。人一开始就在首都时，补士气再出城，和 --move 一样。
+
+    打某个人时仍按原来的方式补士气再出城。
+    """
+    if not str(uid or "").strip() and not allow_leave:
         home = _clear_sent_home(sock, rec, loc, my)
         if home:
             log.info("[移动] %s", home)
@@ -1800,6 +1803,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         out["停止原因"] = "读不到当前所在城市"
         return out
     out["走到"] = int(loc)
+    start_here = int(loc)
     citydb.note_attack_here(loc)
     plan = live_plan(sock, rec, loc, target, my, avoid,
                      stop_on_block=hold_if_blocked, avoid_why=avoid_why)
@@ -1836,8 +1840,15 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         if stopped:
             out["停止原因"] = stopped
             return out
+        def _still_at_start_capital() -> bool:
+            """这一单开始时人就在首都，还没走出这步。按 --move 补士气再出城。"""
+            return (not out["移动"] and int(out["走到"]) == start_here
+                    and _is_capital(start_here))
+
         if far_i:
-            blocked = _halt_for_home(sock, rec, config, out["走到"], my, uid)
+            blocked = _halt_for_home(
+                sock, rec, config, out["走到"], my, uid,
+                allow_leave=_still_at_start_capital())
             if blocked:
                 out["停止原因"] = blocked
                 return out
@@ -1873,7 +1884,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 break
             if city == target:
                 break
-            blocked = _halt_for_home(sock, rec, config, out["走到"], my, uid)
+            blocked = _halt_for_home(
+                sock, rec, config, out["走到"], my, uid,
+                allow_leave=_still_at_start_capital())
             if blocked:
                 out["停止原因"] = blocked
                 break
