@@ -238,6 +238,11 @@ function beatText(it) {
   return String(it.beats);
 }
 
+function orderCity(it) {
+  if (!it) return "";
+  return it.city_name ? it.city_id + " " + it.city_name : String(it.city_id ?? "");
+}
+
 function holdClock() {
   if (!holdUntil.value) return "";
   const sec = Math.max(0, Math.round((holdUntil.value - clock.value) / 1000));
@@ -423,31 +428,42 @@ onUnmounted(() => {
         <p>
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
-        <p>
-          攻打进程：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template>
+        <p class="proc">
+          <span class="proc-text">攻打进程：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
           <button v-if="proc && proc.online && proc.paused" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
         <p class="muted">每 10 秒刷新一次。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
-        <div class="wide" v-if="orders.length">
+        <div class="orders" v-if="orders.length">
         <table>
           <thead>
             <tr><th>城市</th><th>UID</th><th>击退敌方数量</th><th>状态</th><th>说明</th><th>保活剩余倒计时</th><th>北京时间</th></tr>
           </thead>
           <tbody>
             <tr v-for="it in orders" :key="it.id">
-              <td>{{ it.city_id }}</td>
+              <td>{{ orderCity(it) }}</td>
               <td>{{ it.uid || "整座城" }}</td>
               <td>{{ beatText(it) }}</td>
               <td>{{ orderStatus(it.status) }}</td>
-              <td>{{ it.reason || "—" }}</td>
+              <td class="reason">{{ it.reason || "—" }}</td>
               <td>{{ holdCell(it) }}</td>
               <td>{{ it.created_at || "—" }}</td>
             </tr>
           </tbody>
         </table>
+        <div class="order-cards">
+          <article class="order-card" v-for="it in orders" :key="'c' + it.id">
+            <p><span class="k">城市</span>{{ orderCity(it) }}</p>
+            <p><span class="k">UID</span>{{ it.uid || "整座城" }}</p>
+            <p><span class="k">击退敌方数量</span>{{ beatText(it) }}</p>
+            <p><span class="k">状态</span>{{ orderStatus(it.status) }}</p>
+            <p class="reason"><span class="k">说明</span>{{ it.reason || "—" }}</p>
+            <p><span class="k">保活剩余倒计时</span>{{ holdCell(it) }}</p>
+            <p><span class="k">北京时间</span>{{ it.created_at || "—" }}</p>
+          </article>
+        </div>
         </div>
       </template>
       <h2>推送</h2>
@@ -479,6 +495,12 @@ form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 form.stack { display: grid; max-width: 520px; }
 form.scan-form { max-width: none; }
 .wide { overflow-x: auto; }
+.proc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.orders { overflow-x: auto; }
+.orders table { min-width: 760px; }
+.orders th, .orders td { white-space: nowrap; }
+.orders td.reason { white-space: normal; min-width: 16em; max-width: 28em; }
+.order-cards { display: none; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
 input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
 input.mins { width: 6em; }
@@ -496,4 +518,16 @@ th { font-size: 13px; color: #555; }
 .off { color: #666; }
 code { font-size: 13px; }
 img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px solid #ddd; }
+@media (max-width: 720px) {
+  main { padding: 16px 12px 40px; }
+  form.attack-row { display: grid; grid-template-columns: 1fr 1fr; }
+  form.attack-row > button { grid-column: 1 / -1; }
+  .proc-text { flex: 1 1 100%; }
+  .orders table { display: none; }
+  .order-cards { display: grid; gap: 10px; margin-top: 12px; }
+  .order-card { background: #fff; border-radius: 8px; padding: 12px; }
+  .order-card p { margin: 0 0 6px; }
+  .order-card .k { display: block; color: #777; font-size: 12px; }
+  .order-card .reason { white-space: normal; word-break: break-word; }
+}
 </style>
