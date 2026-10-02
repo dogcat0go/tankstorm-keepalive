@@ -1111,13 +1111,16 @@ def _qr_file(cookie: str) -> str:
 
 
 def page_attack_qr_path(config: dict = None, user_id: int = 0) -> str:
-    """网页上的登录图。正在等扫码时用进程写出的那张图，否则按这个登录账号的 cookie。"""
+    """网页上的登录图。还没绑定的账号用自己的网页二维码，不读正在跑的攻打进程。"""
     from . import citydb
+    user_id = int(user_id or 0)
+    mine = citydb.page_login_path(user_id)
+    if mine:
+        return mine
     shared = citydb.login_qr_path()
     if shared:
         return shared
     cookie = _PAGE_COOKIE
-    user_id = int(user_id or 0)
     if user_id:
         username = citydb.username_of(user_id)
         accounts = ((config or {}).get("登录") or {}).get("账号") or {}
@@ -1199,6 +1202,76 @@ _kick_alive = False
 _kick_user = 0
 
 
+_page_login_guard = threading.Lock()
+_page_login_users = set()
+
+
+def _page_login_cookie(user_id: int) -> str:
+    import os
+
+    from . import paths
+    folder = paths.user_path("accounts")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, f"page-login-{int(user_id)}.json")
+
+
+def start_unbound_page_qr(config: dict, user_id: int) -> str:
+    """还没绑定攻打 QQ 时，只在网页上出二维码。不读、不拉、不改正在跑的攻打进程。"""
+    import fcntl
+    import os
+
+    from . import citydb
+    from .qq_login import QQSession
+
+    user_id = int(user_id)
+    with _page_login_guard:
+        if user_id in _page_login_users:
+            return "qr"
+        _page_login_users.add(user_id)
+    cookie = _page_login_cookie(user_id)
+    qr = (cookie[:-5] if cookie.endswith(".json") else cookie) + ".qrcode.png"
+    try:
+        os.remove(cookie)
+    except OSError:
+        pass
+    try:
+        lockf = open(cookie + ".lock", "a+")
+        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        with _page_login_guard:
+            _page_login_users.discard(user_id)
+        return "qr"
+    citydb.set_page_login(user_id, qr)
+    qq = QQSession(cookie, qrcode_file=qr)
+    who = citydb.username_of(user_id)
+
+    def _run():
+        try:
+            while not citydb.attack_qq_of(user_id):
+                if qq.qr_login(on_qr=lambda path, pushed=False: log.info(
+                        "登录账号 %s 还没有攻打 QQ，二维码在网页上：%s", who, path)):
+                    uin = str(getattr(qq, "uin", "") or "").strip()
+                    if uin.isdigit() and citydb.confirm_attack_qq(user_id, uin):
+                        log.info("登录账号 %s 扫码绑定攻打 QQ %s", who, uin)
+                    break
+                time.sleep(15)
+        finally:
+            citydb.clear_page_login(user_id)
+            try:
+                os.remove(cookie)
+            except OSError:
+                pass
+            try:
+                lockf.close()
+            except OSError:
+                pass
+            with _page_login_guard:
+                _page_login_users.discard(user_id)
+
+    threading.Thread(target=_run, name=f"page-login-{user_id}", daemon=True).start()
+    return "qr"
+
+
 def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> str:
     """网页发起：能锁到这个登录账号自己的攻打号就推二维码并打他的单。
     别人已经绑了攻打 QQ 的不接手。claim 为真才是这个人点了推送登录，
@@ -1210,6 +1283,10 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
     user_id = int(user_id or 0)
     if not user_id:
         return "no_account"
+    if claim and not citydb.attack_qq_of(user_id):
+        log.info("登录账号 %s 还没有攻打 QQ，二维码直接显示在网页上",
+                 citydb.username_of(user_id))
+        return start_unbound_page_qr(config, user_id)
     name, why = attack_account_for_user(config, user_id)
     if why:
         if why == "taken":
