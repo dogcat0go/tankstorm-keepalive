@@ -1139,6 +1139,30 @@ def take_attack_login() -> bool:
         conn.close()
 
 
+def attack_order_open() -> bool:
+    """还有没打完的订单。网页据此在攻打进程没心跳时把它拉起来。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM atk_order WHERE status IN ('pending','running') LIMIT 1"
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
+def requeue_running_orders() -> None:
+    """拿到攻打号之后调用。标着正在打的是上一轮进程留下的，改回排队。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE atk_order SET status='pending', updated_at=? WHERE status='running'",
+            (now_ts(),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def claim_attack_order():
     """领最旧的一条排队订单。档位不够或已过期的记为失败。没有则返回 None。"""
     conn = connect()

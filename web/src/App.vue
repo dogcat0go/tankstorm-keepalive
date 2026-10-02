@@ -15,7 +15,6 @@ const qqTarget = ref("");
 const note = ref("");
 const attackCity = ref("");
 const attackUid = ref("");
-const attackNote = ref("");
 const orders = ref([]);
 const proc = ref(null);
 const qrSrc = ref("");
@@ -182,30 +181,19 @@ async function removeSub(it) {
   await refresh();
 }
 
-function loginNote(login, cityOnly) {
-  if (login === "no_account") return "服务器还没配置攻打号，二维码发不出去";
-  if (login === "qr") return "用攻打号的手机 QQ 扫下面这张图。不要用扫描号，也不要把图存进同一台手机相册再扫。";
-  if (login === "busy") return "攻打进程已在跑。需要扫码时，二维码会通过 QQ NT 发给扫码QQ";
-  if (cityOnly) return "若攻打号未登录，二维码会通过 QQ NT 发给扫码QQ，扫完再把这座城从头打到尾";
-  return "若攻打号未登录，二维码会通过 QQ NT 发给扫码QQ，扫完再打这个 UID";
-}
-
 async function addOrder() {
   err.value = "";
-  attackNote.value = "";
-  const cityOnly = !String(attackUid.value || "").trim();
   const data = await api("/api/attacks", { city_id: attackCity.value, uid: attackUid.value });
   attackCity.value = "";
   attackUid.value = "";
-  attackNote.value = "已提交。" + loginNote(data.login, cityOnly);
+  if (data.login === "no_account") err.value = "服务器还没配置攻打号，二维码发不出去";
   await refreshAttacks();
 }
 
 async function pushLogin() {
   err.value = "";
-  attackNote.value = "";
   const data = await api("/api/attack-login", {});
-  attackNote.value = loginNote(data.login);
+  if (data.login === "no_account") err.value = "服务器还没配置攻打号，二维码发不出去";
   await refreshAttacks();
 }
 
@@ -350,9 +338,8 @@ onUnmounted(() => {
         </p>
         <p>攻打进程：{{ procText(proc) }}<template v-if="proc && proc.seen_at"> · {{ proc.seen_at }}</template></p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
-        <p class="muted">只填城市 ID，会寻径到这座城，从城里第一个人打到最后，和 --move 一样。填了 UID 就只打这一个。登录.账号 里写了攻打号时，二维码由 QQ NT 发给扫码QQ。一个都没写时，二维码显示在这页上。不要用扫描号去扫，也不要把图存进同一台手机相册再扫。一次只排一条。扫描不用停。这一行每 10 秒更新，进程停了就显示没在跑。</p>
+        <p class="muted">每 10 秒刷新一次。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
-        <p class="muted">{{ attackNote }}</p>
         <table v-if="orders.length">
           <thead>
             <tr><th>城市</th><th>UID</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
