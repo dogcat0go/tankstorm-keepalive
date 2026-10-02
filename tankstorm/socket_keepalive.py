@@ -870,6 +870,29 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
             log.info("订单 %s 清城时被打回首都，订单结束", job["id"])
         elif status == "ended":
             log.info("订单 %s 已手动关停", job["id"])
+        if job.get("auto") and status == "done":
+            try:
+                back = country_war.retreat_toward(
+                    rec, sock, fight_config, beat=beater)
+            except OSError:
+                why = why or "朝马奇诺后退时连接中断"
+                log.info("订单 %s %s", job["id"], why)
+                citydb.finish_attack_order(
+                    job["id"], "done", why, beats=beats)
+                raise
+            except Exception as exc:
+                log.info("订单 %s 朝马奇诺后退失败", job["id"], exc_info=True)
+                if not why:
+                    detail = _interrupt_reason(exc)
+                    if detail.startswith("攻打中断："):
+                        detail = detail[len("攻打中断："):]
+                    why = f"朝马奇诺后退时：{detail}"
+            else:
+                note = str((back or {}).get("说明") or "").strip()
+                if note and not why:
+                    why = note
+                if note:
+                    log.info("订单 %s %s", job["id"], note)
         keep = status == "done" and not why and not uid
         citydb.finish_attack_order(
             job["id"], status, why, beats=beats, keep_reason=keep)

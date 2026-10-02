@@ -335,6 +335,21 @@ def city_name(city_id: int) -> str:
         conn.close()
 
 
+def city_id_named(name: str) -> int:
+    """按城名找目录里的 id。同名取最小的那个。没有这座城返回 0。"""
+    text = str(name or "").strip()
+    if not text:
+        return 0
+    ensure_catalog()
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM city WHERE name=? ORDER BY id", (text,)).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
 def country_name(country_id) -> str:
     if not country_id:
         return ""
