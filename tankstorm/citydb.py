@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS watch_sub (
     uid          TEXT NOT NULL,
     created_at   TEXT NOT NULL,
     last_present INTEGER,
+    lock_sent    INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, city_id, uid)
 );
 """
@@ -185,6 +186,11 @@ def connect(readonly=False, timeout=15):
             if wcols and "user_id" not in wcols:
                 setup.execute("DROP TABLE watch_sub")
                 setup.executescript(_SCHEMA)
+                setup.commit()
+                wcols = {r[1] for r in setup.execute("PRAGMA table_info(watch_sub)")}
+            if wcols and "lock_sent" not in wcols:
+                setup.execute(
+                    "ALTER TABLE watch_sub ADD COLUMN lock_sent INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             ucols = {r[1] for r in setup.execute("PRAGMA table_info(app_user)")}
             if ucols and "expires_at" not in ucols:
@@ -959,19 +965,29 @@ def set_auto_lock(user_id: int, on: bool) -> None:
         conn.close()
 
 
-def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
-    """订阅的人刚上线，排一条自动攻打。同一人还没打完就不再排。"""
+def online_attack_busy(user_id: int, city_id: int, uid: str) -> bool:
+    """这个人已经有一条还没打完的自动或手动订单。"""
     uid = str(uid or "").strip()
     if not uid:
         return False
-    conn = connect()
+    conn = connect(readonly=True)
     try:
         row = conn.execute(
             "SELECT 1 FROM atk_order WHERE user_id=? AND city_id=? AND uid=? "
             "AND status IN ('pending','running','blocked')",
             (int(user_id), int(city_id), uid)).fetchone()
-        if row:
-            return False
+        return row is not None
+    finally:
+        conn.close()
+
+
+def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
+    """给这个订阅排一条自动攻打。同一人还没打完就不再排。"""
+    uid = str(uid or "").strip()
+    if not uid or online_attack_busy(user_id, city_id, uid):
+        return False
+    conn = connect()
+    try:
         saved = conn.execute(
             "SELECT IFNULL(card_max,100) FROM app_user WHERE id=?",
             (int(user_id),)).fetchone()
@@ -985,6 +1001,43 @@ def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
         return True
     finally:
         conn.close()
+
+
+def mark_lock_sent(user_id: int, city_id: int, uid: str) -> None:
+    """这一次人在城里，攻打已经排过，扫描不要重复排。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE watch_sub SET lock_sent=1 WHERE user_id=? AND city_id=? AND uid=?",
+            (int(user_id), int(city_id), str(uid or "").strip()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def queue_present_locks(user_id: int) -> int:
+    """自动锁敌刚打开。已经在城里、这轮还没排过的订阅，各排一条。"""
+    conn = connect()
+    try:
+        user = conn.execute(
+            "SELECT IFNULL(tier,'初级'), IFNULL(expires_at,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+        if not user or not attack_tier(user[0]) or account_expired(user[1]):
+            return 0
+        rows = conn.execute(
+            "SELECT city_id, uid FROM watch_sub "
+            "WHERE user_id=? AND last_present=1 AND IFNULL(lock_sent,0)=0",
+            (int(user_id),)).fetchall()
+    finally:
+        conn.close()
+    n = 0
+    for city_id, uid in rows:
+        queued = enqueue_online_attack(user_id, city_id, uid)
+        if queued or online_attack_busy(user_id, city_id, uid):
+            mark_lock_sent(user_id, city_id, uid)
+        if queued:
+            n += 1
+    return n
 
 
 def list_attack_orders(user_id: int, limit: int = 20) -> list:
@@ -1691,10 +1744,11 @@ def list_watches(user_id: int) -> list:
 
 
 def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
-    """用这一轮拉到的人更新订阅状态。只返回要推送的「变成在线」。
+    """用这一轮拉到的人更新订阅状态。
 
     这一轮正常扫完后，没见到的订阅 UID 记成不在线。扫描中断时不改这些 UID。
-    第一次出现，以及从不在线变成在线，各推一条。离开只改状态，不推。
+    push 为真的是刚变成在线，要推送。arm 为真的是自动锁敌该排一条攻打。
+    离开只改状态，不推。人离开后，下一次再见到可以再排。
     """
     city_id = int(city_id)
     seen = {str(u).strip() for u in seen_uids if str(u).strip()}
@@ -1702,7 +1756,8 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
     try:
         rows = conn.execute(
             "SELECT s.user_id, s.uid, s.last_present, IFNULL(u.qq_target,''), "
-            "IFNULL(u.expires_at,''), IFNULL(u.tier,'初级'), IFNULL(u.auto_lock,0) "
+            "IFNULL(u.expires_at,''), IFNULL(u.tier,'初级'), IFNULL(u.auto_lock,0), "
+            "IFNULL(s.lock_sent,0) "
             "FROM watch_sub s JOIN app_user u ON u.id=s.user_id "
             "WHERE s.city_id=?",
             (city_id,)).fetchall()
@@ -1712,7 +1767,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                              (city_id,)).fetchone()
         cname = cname[0] if cname else ""
         changes = []
-        for user_id, uid, last, qq_target, expires_at, tier, auto_lock in rows:
+        for user_id, uid, last, qq_target, expires_at, tier, auto_lock, lock_sent in rows:
             if uid in seen:
                 now = 1
             elif finished:
@@ -1727,18 +1782,29 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                 name = nrow[0] or ""
                 if nrow[1] is not None:
                     page = int(nrow[1]) + 1
-            if last is None or int(last) != now:
+            just = last is None or int(last) != 1
+            sent = int(lock_sent or 0)
+            if last is None or int(last) != now or (now == 0 and sent):
                 conn.execute(
-                    "UPDATE watch_sub SET last_present=? "
+                    "UPDATE watch_sub SET last_present=?, lock_sent=? "
                     "WHERE user_id=? AND city_id=? AND uid=?",
-                    (now, user_id, city_id, uid))
-            if (now == 1 and (last is None or int(last) != 1)
-                    and not account_expired(expires_at)):
+                    (now, 0 if now == 0 else sent, user_id, city_id, uid))
+            if account_expired(expires_at):
+                continue
+            armed = bool(auto_lock) and attack_tier(tier or "")
+            if now == 1 and just:
                 changes.append({
                     "user_id": user_id, "city_id": city_id, "city_name": cname,
-                    "uid": uid, "name": name, "page": page, "present": now == 1,
+                    "uid": uid, "name": name, "page": page, "present": True,
                     "qq_target": qq_target, "tier": tier or "初级",
-                    "auto_lock": bool(auto_lock),
+                    "auto_lock": bool(auto_lock), "push": True, "arm": armed,
+                })
+            elif now == 1 and armed and not sent:
+                changes.append({
+                    "user_id": user_id, "city_id": city_id, "city_name": cname,
+                    "uid": uid, "name": name, "page": page, "present": True,
+                    "qq_target": qq_target, "tier": tier or "初级",
+                    "auto_lock": True, "push": False, "arm": True,
                 })
         conn.commit()
         return changes

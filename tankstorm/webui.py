@@ -367,8 +367,13 @@ def _handler(config: dict):
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "自动锁敌需要中级或高级订阅"})
                         return
-                    citydb.set_auto_lock(user["id"], bool(data.get("on")))
-                    _json(self, 200, {"ok": True, "auto_lock": bool(data.get("on"))})
+                    on = bool(data.get("on"))
+                    citydb.set_auto_lock(user["id"], on)
+                    queued = citydb.queue_present_locks(user["id"]) if on else 0
+                    if queued:
+                        from .socket_keepalive import kick_attack_login
+                        kick_attack_login(config)
+                    _json(self, 200, {"ok": True, "auto_lock": on, "queued": queued})
                 elif path == "/api/scan-plan":
                     if not user.get("admin"):
                         _json(self, 403, {"error": "只有管理员能改扫描安排"})
