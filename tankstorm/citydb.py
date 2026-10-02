@@ -62,12 +62,14 @@ CREATE TABLE IF NOT EXISTS player (
 );
 CREATE INDEX IF NOT EXISTS player_city ON player(city_id);
 CREATE TABLE IF NOT EXISTS atk_fail (
-    uid      TEXT PRIMARY KEY,
+    acct     TEXT NOT NULL DEFAULT '',
+    uid      TEXT NOT NULL,
     name     TEXT,
     city_id  INTEGER,
     ret      INTEGER,
     reason   TEXT,
-    at       TEXT NOT NULL
+    at       TEXT NOT NULL,
+    PRIMARY KEY (acct, uid)
 );
 CREATE TABLE IF NOT EXISTS city_occupy (
     city_id         INTEGER PRIMARY KEY,
@@ -234,6 +236,21 @@ def connect(readonly=False, timeout=15):
             if ocols and "card_max" not in ocols:
                 setup.execute("ALTER TABLE atk_order ADD COLUMN card_max INTEGER")
                 setup.commit()
+            fcols = {r[1] for r in setup.execute("PRAGMA table_info(atk_fail)")}
+            if fcols and "acct" not in fcols:
+                setup.execute(
+                    "CREATE TABLE atk_fail_new ("
+                    "acct TEXT NOT NULL DEFAULT '', uid TEXT NOT NULL, name TEXT, "
+                    "city_id INTEGER, ret INTEGER, reason TEXT, at TEXT NOT NULL, "
+                    "PRIMARY KEY (acct, uid))")
+                setup.execute(
+                    "INSERT INTO atk_fail_new(acct, uid, name, city_id, ret, reason, at) "
+                    "SELECT '', uid, name, city_id, ret, reason, at FROM atk_fail")
+                setup.execute("DROP TABLE atk_fail")
+                setup.execute("ALTER TABLE atk_fail_new RENAME TO atk_fail")
+                setup.commit()
+            _assign_legacy_fails(setup)
+            setup.commit()
             _schema_ready = True
         finally:
             setup.close()
@@ -1199,11 +1216,28 @@ _PROC_USER = 0
 _PROC_ACCT = ""
 
 
+def _assign_legacy_fails(conn) -> None:
+    """旧的失败库没有攻打号。归给最早绑定的那一个，别的号不继承。"""
+    row = conn.execute(
+        "SELECT attack_acct FROM app_user "
+        "WHERE IFNULL(attack_acct,'')!='' ORDER BY id LIMIT 1").fetchone()
+    if not row:
+        return
+    conn.execute("UPDATE atk_fail SET acct=? WHERE acct=''", (row[0],))
+
+
 def set_attack_context(user_id: int, account: str) -> None:
     """这个攻打进程只给这个登录账号领订单。别的进程有自己的一份。"""
     global _PROC_USER, _PROC_ACCT
     _PROC_USER = int(user_id or 0)
     _PROC_ACCT = str(account or "")
+    if _PROC_ACCT:
+        conn = connect()
+        try:
+            _assign_legacy_fails(conn)
+            conn.commit()
+        finally:
+            conn.close()
 
 
 def attack_context_user() -> int:
@@ -2103,26 +2137,36 @@ def list_city_targets(city_id: int, skip_failed=True, exclude_uid=""):
     return out
 
 
+def _fail_acct() -> str:
+    """当前攻打进程用的攻打号。失败库按这个名字分开。"""
+    return str(_PROC_ACCT or "")
+
+
+def _fail_op_mine(op) -> bool:
+    return len(op) >= 2 and op[1] == _fail_acct()
+
+
 def failed_uids() -> set:
     return set(failed_names())
 
 
 def failed_names_in(city_id) -> list:
-    """这座城里战败表记下的名字。含还没落盘的队列。没有名字时用 uid。"""
+    """这座城里、当前攻打号战败表记下的名字。含还没落盘的队列。没有名字时用 uid。"""
     try:
         city_id = int(city_id or 0)
     except (TypeError, ValueError):
         return []
     if city_id <= 0:
         return []
+    acct = _fail_acct()
 
     def _read():
         conn = connect(timeout=DB_OP_TIMEOUT)
         try:
             rows = conn.execute(
                 "SELECT uid, IFNULL(name,'') FROM atk_fail "
-                "WHERE city_id=? AND IFNULL(ret,0) NOT IN (21)",
-                (city_id,)).fetchall()
+                "WHERE acct=? AND city_id=? AND IFNULL(ret,0) NOT IN (21)",
+                (acct, city_id)).fetchall()
             return [(str(u).strip(), str(n or "").strip()) for u, n in rows if u]
         finally:
             conn.close()
@@ -2134,19 +2178,21 @@ def failed_names_in(city_id) -> list:
             if uid:
                 names[uid] = name
     for op in _atk_q:
+        if not _fail_op_mine(op):
+            continue
         if op[0] == "wipe":
             names.clear()
         elif op[0] == "clear":
-            names.pop(str(op[1]).strip(), None)
+            names.pop(str(op[2]).strip(), None)
         elif op[0] == "record":
-            uid = str(op[1]).strip()
+            uid = str(op[2]).strip()
             if not uid:
                 continue
-            if op[4] in (21,):
+            if op[5] in (21,):
                 names.pop(uid, None)
                 continue
-            if int(op[3] or 0) == city_id:
-                names[uid] = str(op[2] or "").strip()
+            if int(op[4] or 0) == city_id:
+                names[uid] = str(op[3] or "").strip()
             else:
                 names.pop(uid, None)
     out = []
@@ -2158,25 +2204,30 @@ def failed_names_in(city_id) -> list:
 
 
 def failed_names() -> dict:
-    """战败表里的 uid → 当时记下的名字。ret=21 不算打不过。含还没落盘的队列。"""
+    """当前攻打号战败表里的 uid → 当时记下的名字。ret=21 不算打不过。含还没落盘的队列。"""
+    acct = _fail_acct()
+
     def _read():
         conn = connect(timeout=DB_OP_TIMEOUT)
         try:
             rows = conn.execute(
                 "SELECT uid, IFNULL(name,'') FROM atk_fail "
-                "WHERE IFNULL(ret,0) NOT IN (21)").fetchall()
+                "WHERE acct=? AND IFNULL(ret,0) NOT IN (21)",
+                (acct,)).fetchall()
             return {str(u).strip(): str(n or "").strip() for u, n in rows if u}
         finally:
             conn.close()
     got = _run_timeout(_read, default={})
     names = dict(got) if isinstance(got, dict) else {}
     for op in _atk_q:
+        if not _fail_op_mine(op):
+            continue
         if op[0] == "wipe":
             names.clear()
         elif op[0] == "clear":
-            names.pop(str(op[1]).strip(), None)
+            names.pop(str(op[2]).strip(), None)
         elif op[0] == "record":
-            names[str(op[1]).strip()] = str(op[2] or "").strip()
+            names[str(op[2]).strip()] = str(op[3] or "").strip()
     return names
 
 
@@ -2200,17 +2251,20 @@ def same_failed(uid, live_name, names=None) -> bool:
 
 
 def in_atk_fail(uid) -> bool:
-    """这个人现在算不算失败库里的。先看本轮还没落盘的队列，再查库。"""
+    """这个人现在算不算当前攻打号失败库里的。先看本轮还没落盘的队列，再查库。"""
     uid = str(uid or "").strip()
     if not uid:
         return False
+    acct = _fail_acct()
     pending = None
     for op in _atk_q:
+        if not _fail_op_mine(op):
+            continue
         if op[0] == "wipe":
             pending = False
-        elif op[0] == "clear" and op[1] == uid:
+        elif op[0] == "clear" and op[2] == uid:
             pending = False
-        elif op[0] == "record" and op[1] == uid:
+        elif op[0] == "record" and op[2] == uid:
             pending = True
     if pending is True:
         return True
@@ -2221,8 +2275,8 @@ def in_atk_fail(uid) -> bool:
         conn = connect(readonly=True, timeout=DB_OP_TIMEOUT)
         try:
             row = conn.execute(
-                "SELECT 1 FROM atk_fail WHERE uid=? AND IFNULL(ret,0) NOT IN (21)",
-                (uid,)).fetchone()
+                "SELECT 1 FROM atk_fail WHERE acct=? AND uid=? AND IFNULL(ret,0) NOT IN (21)",
+                (acct, uid)).fetchone()
             return bool(row)
         finally:
             conn.close()
@@ -2238,20 +2292,22 @@ _atk_q = []
 def record_atk_fail(uid, city_id=0, ret=None, reason="", name=""):
     uid = str(uid or "").strip()
     if uid:
-        _atk_q.append(("record", uid, name or "", int(city_id or 0), ret, reason or ""))
+        _atk_q.append(("record", _fail_acct(), uid, name or "", int(city_id or 0),
+                       ret, reason or ""))
 
 
 def clear_atk_fail(uid=None):
+    acct = _fail_acct()
     if uid is None:
-        _atk_q.append(("wipe",))
+        _atk_q.append(("wipe", acct))
         return
     uid = str(uid or "").strip()
     if uid:
-        _atk_q.append(("clear", uid))
+        _atk_q.append(("clear", acct, uid))
 
 
 def flush_atk_fail():
-    """战斗结束再写盘。超过 DB_OP_TIMEOUT 就放弃，不堵下一轮。"""
+    """战斗结束再写盘。超过 DB_OP_TIMEOUT 就放弃，不堵下一轮。只动记下时那个攻打号的记录。"""
     global _atk_q
     if not _atk_q:
         return
@@ -2262,18 +2318,20 @@ def flush_atk_fail():
         try:
             for op in batch:
                 if op[0] == "wipe":
-                    conn.execute("DELETE FROM atk_fail")
+                    conn.execute("DELETE FROM atk_fail WHERE acct=?", (op[1],))
                 elif op[0] == "clear":
-                    conn.execute("DELETE FROM atk_fail WHERE uid=?", (op[1],))
-                else:
-                    _, uid, name, city_id, ret, reason = op
                     conn.execute(
-                        "INSERT INTO atk_fail(uid, name, city_id, ret, reason, at) "
-                        "VALUES (?,?,?,?,?,?) "
-                        "ON CONFLICT(uid) DO UPDATE SET "
+                        "DELETE FROM atk_fail WHERE acct=? AND uid=?",
+                        (op[1], op[2]))
+                else:
+                    _, acct, uid, name, city_id, ret, reason = op
+                    conn.execute(
+                        "INSERT INTO atk_fail(acct, uid, name, city_id, ret, reason, at) "
+                        "VALUES (?,?,?,?,?,?,?) "
+                        "ON CONFLICT(acct, uid) DO UPDATE SET "
                         "name=excluded.name, city_id=excluded.city_id, "
                         "ret=excluded.ret, reason=excluded.reason, at=excluded.at",
-                        (uid, name, city_id, ret, reason, now_ts()))
+                        (acct, uid, name, city_id, ret, reason, now_ts()))
             conn.commit()
         finally:
             conn.close()
