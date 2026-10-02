@@ -392,7 +392,7 @@ def city_map() -> dict:
     return g
 
 
-def plan_route(here, target, my_country, avoid=None) -> dict:
+def plan_route(here, target, my_country, avoid=None, avoid_why=None) -> dict:
     """规划从当前城打到目标城的走法。只算路线，不发移动包。
 
     归属国与自己相同的城可以直接经过。别国的城要先占领，才能落脚或当走廊。
@@ -424,41 +424,82 @@ def plan_route(here, target, my_country, avoid=None) -> dict:
         return g[cid]["owner"] == my
 
     skip = {int(c) for c in (avoid or ())}
+    why = {}
+    for key, name in (avoid_why or {}).items():
+        try:
+            cid = int(key)
+        except (TypeError, ValueError):
+            continue
+        text = str(name or "").strip()
+        if cid > 0 and text:
+            why[cid] = text
+
+    def is_fort(cid):
+        home = g[cid].get("home") or 0
+        return fort_locked(cid) and not mine(cid) and home != 21
 
     def blocked(cid):
-        home = g[cid].get("home") or 0
-        return cid in skip or (fort_locked(cid) and not mine(cid) and home != 21)
+        return cid in skip or is_fort(cid)
 
-    pq = [(0, 0, here)]          # (须占领数, 步数, 城市)
-    best = {here: (0, 0)}
-    prev = {here: None}
-    found = None
-    while pq:
-        occ, hops, u = heapq.heappop(pq)
-        if (occ, hops) != best.get(u):
-            continue
-        if u == target or target in g[u]["near"]:
-            found = u
-            break
-        for v in g[u]["near"]:
-            if v == target or blocked(v):
+    def search(forbid):
+        pq = [(0, 0, here)]          # (须占领数, 步数, 城市)
+        best = {here: (0, 0)}
+        prev = {here: None}
+        found = None
+        while pq:
+            occ, hops, u = heapq.heappop(pq)
+            if (occ, hops) != best.get(u):
                 continue
-            add = 0 if mine(v) else 1
-            nxt = (occ + add, hops + 1)
-            if nxt < best.get(v, (10 ** 9, 10 ** 9)):
-                best[v] = nxt
-                prev[v] = u
-                heapq.heappush(pq, (*nxt, v))
-    if found is None:
-        out["原因"] = (f"从 {label(here)} 到 {label(target)} 没有通路。"
-                      "编号第2位是1或2、又不是自己国家的城不能占领，也不能借道")
+            if u == target or target in g[u]["near"]:
+                found = u
+                break
+            for v in g[u]["near"]:
+                if v == target or forbid(v):
+                    continue
+                add = 0 if mine(v) else 1
+                nxt = (occ + add, hops + 1)
+                if nxt < best.get(v, (10 ** 9, 10 ** 9)):
+                    best[v] = nxt
+                    prev[v] = u
+                    heapq.heappush(pq, (*nxt, v))
+        if found is None:
+            return None
+        path = []
+        cur = found
+        while cur is not None:
+            path.append(cur)
+            cur = prev[cur]
+        path.reverse()
+        return path
+
+    path = search(blocked)
+    if path is None:
+        opened = search(lambda cid: False)
+        parts = []
+        forts = []
+        for cid in opened or []:
+            if cid == here:
+                continue
+            if cid in skip:
+                who = why.get(cid) or ""
+                if who:
+                    parts.append(f"{label(cid)} 有 {who} 挡路")
+                else:
+                    parts.append(f"{label(cid)} 有打不过的人挡路")
+            elif is_fort(cid):
+                forts.append(label(cid))
+        if forts:
+            shown = "、".join(forts[:6])
+            if len(forts) > 6:
+                shown += f" 等 {len(forts)} 座城"
+            parts.append(
+                f"{shown} 不是自己国家，编号第2位是1或2，不能占领，也不能借道")
+        if parts:
+            out["原因"] = f"从 {label(here)} 到 {label(target)} 没有通路。" + "；".join(parts)
+        else:
+            out["原因"] = f"从 {label(here)} 到 {label(target)} 没有通路。城市之间没有相连的路"
         return out
-    path = []
-    cur = found
-    while cur is not None:
-        path.append(cur)
-        cur = prev[cur]
-    path.reverse()
+    found = path[-1]
     must = [c for c in path if c != here and not mine(c)]
     out["落点"] = found
     out["路径"] = path
@@ -954,7 +995,8 @@ def list_attack_orders(user_id: int, limit: int = 20) -> list:
     finally:
         conn.close()
     return [{"id": r[0], "city_id": r[1], "uid": r[2], "status": r[3],
-             "reason": r[4], "created_at": beijing_ts(r[5]), "beats": r[6]}
+             "reason": r[4], "created_at": beijing_ts(r[5]), "beats": r[6],
+             "city_name": city_name(r[1])}
             for r in rows]
 
 

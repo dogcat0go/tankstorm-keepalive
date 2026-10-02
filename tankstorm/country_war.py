@@ -1332,9 +1332,10 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 ), None)
                 if stuck:
                     who = stuck.get("name") or stuck.get("uid")
-                    log.info("[打人] %s 已在失败库，这座城不可通行", who)
+                    log.info("[打人] %s 在 %s %s 挡路", who, city_id, cname)
                     out["跳过"] += 1
-                    out["停止原因"] = f"{who} 打不过，这座城不可通行，路径被堵住了"
+                    out["挡路"] = who
+                    out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
                     break
             for p in batch:
                 if citydb.attack_paused():
@@ -1348,8 +1349,9 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     log.info("[打人] %s 已在失败库，跳过", p.get("name") or uid)
                     out["跳过"] += 1
                     if pass_block:
-                        out["停止原因"] = (f"{p.get('name') or uid} 打不过，"
-                                          "这座城不可通行，路径被堵住了")
+                        who = p.get("name") or uid
+                        out["挡路"] = who
+                        out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
                         break
                     continue
                 one = attack_player(
@@ -1381,9 +1383,15 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 if one.get("记失败"):
                     fail.add(uid)
                     out["失败"] += 1
+                    who = one.get("名字") or p.get("name") or uid
+                    names = out.setdefault("挡路人", [])
+                    if who not in names:
+                        names.append(who)
                     if pass_block:
                         who = one.get("名字") or p.get("name") or uid
-                        out["停止原因"] = f"{who} 打不过，这座城不可通行，路径被堵住了"
+                        who = "、".join(out.get("挡路人") or []) or who
+                        out["挡路"] = who
+                        out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
                         break
                     continue
                 if "ret=21" in reason or "被拒" in reason:
@@ -1413,12 +1421,24 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             _nap(0.4)
         if not out["停止原因"]:
             out["停止原因"] = "这座城打完了" if out["打过"] else "这一页没有可打的人"
+        if not out.get("挡路") and out.get("挡路人"):
+            out["挡路"] = "、".join(out["挡路人"])
         return out
     finally:
         _daily._BEAT = prev
 
 
-def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False) -> dict:
+def _road_blocked(reason, fought=None) -> bool:
+    """这座城打不过，要避开重算。失败库里的人，或这一轮一个都没打赢。"""
+    text = reason or ""
+    if "挡路" in text or "不可通行" in text:
+        return True
+    fought = fought or {}
+    return bool(fought.get("失败") and not fought.get("成功"))
+
+
+def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False,
+              avoid_why=None) -> dict:
     """先按本地归属规划，再开面板核对路线上每座城的占领国，变了就重算。
 
     目录里的国家是原属国。9316 这类城被法国占了之后，不看面板仍会写成黑暗联盟。
@@ -1428,9 +1448,18 @@ def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False) -> d
 
     known = {}
     blocked = {int(c) for c in (avoid or ())}
+    why = {}
+    for key, name in (avoid_why or {}).items():
+        try:
+            cid = int(key)
+        except (TypeError, ValueError):
+            continue
+        text = str(name or "").strip()
+        if cid > 0 and text:
+            why[cid] = text
     fail = citydb.failed_uids()
     me = str(getattr(rec, "uid", "") or "")
-    plan = citydb.plan_route(here, target, my, blocked)
+    plan = citydb.plan_route(here, target, my, blocked, why)
     for _ in range(1 if stop_on_block else 6):
         seq = list(plan.get("路径") or [])
         if target not in seq:
@@ -1464,18 +1493,18 @@ def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False) -> d
             if bad:
                 blocked.add(int(city))
                 who = "、".join(bad)
+                why[int(city)] = who
                 if stop_on_block:
                     plan["避开"] = blocked
-                    plan["暂停"] = (
-                        f"路径上 {city} {name} 有打不过的人：{who}，暂停此次行动")
+                    plan["暂停"] = f"{city} {name} 有 {who} 挡路，路径不通"
                     log.info("[路线] %s", plan["暂停"])
                     return plan
-                log.info("[路线] %s %s 有打不过的人：%s，规划时跳过",
+                log.info("[路线] %s %s 有 %s 挡路，规划时跳过",
                          city, name, who)
         if stop_on_block:
             plan["避开"] = blocked
             return plan
-        nxt = citydb.plan_route(here, target, my, blocked)
+        nxt = citydb.plan_route(here, target, my, blocked, why)
         if (not changed and nxt.get("路径") == plan.get("路径")
                 and nxt.get("须占领") == plan.get("须占领")):
             plan = nxt
@@ -1584,7 +1613,7 @@ def _ready_to_leave(sock, rec, config, loc, my) -> str:
 
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
              avoid=None, replanned=False, uid="", hold_if_blocked=False,
-             tally=None) -> dict:
+             tally=None, avoid_why=None) -> dict:
     """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
@@ -1606,7 +1635,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     out["走到"] = int(loc)
     citydb.note_attack_here(loc)
     plan = live_plan(sock, rec, loc, target, my, avoid,
-                     stop_on_block=hold_if_blocked)
+                     stop_on_block=hold_if_blocked, avoid_why=avoid_why)
     avoid = set(plan.get("避开") or avoid or ())
     for line in citydb.format_route(plan):
         log.info("[路线] %s", line)
@@ -1630,6 +1659,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         far_i = i
     occupy_from = 1
     blocked_at = 0
+    block_who = ""
 
     prev = _daily._BEAT
     if beat is not None:
@@ -1699,8 +1729,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                     out["停止原因"] = reason
                     break
-                if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
+                if _road_blocked(reason, fought):
                     blocked_at = city
+                    block_who = fought.get("挡路") or block_who
                     log.info("[移动] %s %s 有打不过的敌方，这座城不可通行，准备改道",
                              city, name)
                     break
@@ -1757,8 +1788,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
                         break
-                    if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
+                    if _road_blocked(reason, fought):
                         blocked_at = city
+                        block_who = fought.get("挡路") or block_who
                         log.info("[移动] %s %s 有打不过的敌方，这座城不可通行，准备改道",
                                  city, name)
                         break
@@ -1783,8 +1815,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
                         break
-                    if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
+                    if _road_blocked(reason, fought):
                         blocked_at = city
+                        block_who = fought.get("挡路") or block_who
                         log.info("[移动] %s %s 有打不过的敌方，这座城不可通行，准备改道",
                                  city, name)
                         break
@@ -1804,8 +1837,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
                         break
-                    if "不可通行" in reason or (fought.get("失败") and not fought.get("成功")):
+                    if _road_blocked(reason, fought):
                         blocked_at = city
+                        block_who = fought.get("挡路") or block_who
                         log.info("[移动] %s %s 有打不过的敌方，这座城不可通行，准备改道",
                                  city, name)
                         break
@@ -1840,7 +1874,11 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                         out["停止原因"] = reason
                         break
                     if fought.get("失败") and not fought.get("成功"):
-                        out["停止原因"] = f"{city} {name} 剩下的人都打不过，暂停移动，路径被堵住了"
+                        who = fought.get("挡路") or ""
+                        if who:
+                            out["停止原因"] = f"{city} {name} 有 {who} 挡路，路径不通"
+                        else:
+                            out["停止原因"] = f"{city} {name} 剩下的人都打不过，路径不通"
                         break
                     info = _open_city(sock, rec, city, my)
                     if info and info.get("here") == int(city):
@@ -1861,15 +1899,24 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         if blocked_at:
             cname = citydb.city_name(blocked_at) or blocked_at
             if replanned:
-                out["停止原因"] = (
-                    f"路径上 {blocked_at} {cname} 有打不过的人，这条路不通。"
-                    f"避开这座城重新规划后还是过不去，已停止")
+                who = block_who or (avoid_why or {}).get(blocked_at) or ""
+                if who:
+                    out["停止原因"] = (
+                        f"{blocked_at} {cname} 有 {who} 挡路，路径不通。"
+                        f"避开这座城重新规划后还是过不去")
+                else:
+                    out["停止原因"] = (
+                        f"路径上 {blocked_at} {cname} 有打不过的人，这条路不通。"
+                        f"避开这座城重新规划后还是过不去")
                 return out
             log.info("[路线] %s %s 攻打失败，按最短路径重新规划，避开它",
                      blocked_at, cname)
+            why = dict(avoid_why or {})
+            if block_who:
+                why[int(blocked_at)] = block_who
             nxt = walk_to(rec, sock, config, target, sweep=sweep, beat=beat,
                           avoid=set(avoid or ()) | {blocked_at}, replanned=True,
-                          uid=uid, tally=tally)
+                          uid=uid, tally=tally, avoid_why=why)
             out["移动"] += nxt.get("移动") or 0
             if nxt.get("走到"):
                 out["走到"] = nxt["走到"]
