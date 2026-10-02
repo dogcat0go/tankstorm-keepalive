@@ -793,6 +793,45 @@ def _wait_socket(sock, spec, ctx) -> bool:
     return True
 
 
+_HOLD_HERE_GAP = 10.0
+
+
+def _refresh_hold_here(rec, sock, config, last_at, last_here):
+    """挂机保活时读一次国战面板，把当前城市写给网页。
+
+    只在开战和移动时记位置的话，挂机这几小时人被打回去，页面还停在老城市。
+    """
+    now = time.time()
+    if now - last_at < _HOLD_HERE_GAP:
+        return last_at, last_here
+    from . import citydb, country_war
+
+    conf = config.get("国战") or {}
+    try:
+        country = int(conf.get("自己国家ID") or 0)
+    except (TypeError, ValueError):
+        country = 0
+    if country <= 0:
+        country = country_war._daily.read_my_country(rec) or 0
+    if not country:
+        if last_at <= 0:
+            log.info("挂机保活读不到自己的国家，所在城市先不更新")
+        return now, last_here
+    try:
+        _power, loc, _times, panel = country_war._panel(sock, rec, int(country))
+    except Exception:
+        log.info("挂机保活时没读到所在城市", exc_info=True)
+        return now, last_here
+    if panel is None or isinstance(loc, bool) or not isinstance(loc, int) or loc <= 0:
+        return now, last_here
+    citydb.note_attack_here(loc)
+    if loc != last_here:
+        name = citydb.city_name(loc)
+        where = f"{loc} {name}".strip() if name else str(loc)
+        log.info("挂机保活，人在 %s", where)
+    return now, loc
+
+
 def _begin_attack_hold(fresh=False) -> bool:
     """队列空了就按配置开始或继续挂机。该结束时返回 False。"""
     from . import citydb
@@ -824,6 +863,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     from . import citydb
 
     stated = False
+    here_at = 0.0
+    here_id = 0
     while True:
         if citydb.attack_paused():
             citydb.set_attack_status("paused")
@@ -842,7 +883,11 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             continue
         if not _begin_attack_hold(fresh=not stated):
             return 0
+        if not stated:
+            here_at = 0.0
         stated = True
+        here_at, here_id = _refresh_hold_here(
+            rec, sock, config, here_at, here_id)
         if not _wait_socket(sock, spec, ctx):
             log.info("挂机时游戏连接断了，准备重连")
             return 0
