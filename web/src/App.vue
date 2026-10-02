@@ -303,7 +303,7 @@ onMounted(async () => {
   }, 4000);
   atkTimer = setInterval(() => {
     if (me.value) refreshAttacks().catch(() => {});
-  }, 10000);
+  }, 5000);
   clockTimer = setInterval(() => {
     clock.value = Date.now();
   }, 1000);
@@ -434,7 +434,7 @@ onUnmounted(() => {
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
-        <p class="muted">每 10 秒刷新一次。</p>
+        <p class="muted">每 5 秒刷新一次。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">
         <table>
