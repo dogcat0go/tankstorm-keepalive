@@ -1124,7 +1124,8 @@ def _page_qr_account(config: dict, name: str) -> bool:
 
 
 def attack_account_for_user(config: dict, user_id: int) -> tuple:
-    """这个登录账号该用哪个攻打号。返回 (名字, 错误)。错误是 taken 或 no_account。"""
+    """这个登录账号该用哪个攻打号。返回 (名字, 错误)。
+    还没绑定、也没在配置里指定时，第一次用网页上的二维码。"""
     from . import citydb
 
     user_id = int(user_id or 0)
@@ -1145,7 +1146,17 @@ def attack_account_for_user(config: dict, user_id: int) -> tuple:
             return name, ""
     bound = citydb.attack_acct_of(user_id)
     if not bound:
-        return "", "unbound"
+        # 第一次还没绑定。没给这个人指定别的攻打号时，二维码显示在网页上。
+        if names and _PAGE_ACCOUNT not in names:
+            return "", "unbound"
+        owner = citydb.attack_acct_owner(_PAGE_ACCOUNT)
+        if owner and owner != user_id:
+            return "", "taken"
+        accounts.setdefault(_PAGE_ACCOUNT, {"cookie": _PAGE_COOKIE})
+        why = citydb.bind_attack_account(user_id, _PAGE_ACCOUNT)
+        if why:
+            return "", "taken"
+        return _PAGE_ACCOUNT, ""
     spec = accounts.get(bound) or {}
     who = str(spec.get("用户") or "").strip() if isinstance(spec, dict) else ""
     if who and who != username:
@@ -1248,8 +1259,8 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
         stop = _start_attack_status()
         try:
             citydb.requeue_running_orders()
-            if citydb.attack_qq_blocked(user_id) or (
-                    citydb.attack_order_open() and not qq.is_valid()):
+            # 点「推送登录二维码」就要出码。没订单时也要，否则第一次绑定后页面上没有图。
+            if citydb.attack_qq_blocked(user_id) or not qq.is_valid():
                 citydb.set_attack_status("login")
                 if on_page:
                     citydb.set_page_qr(True)
