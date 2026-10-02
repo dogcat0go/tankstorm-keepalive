@@ -135,6 +135,7 @@ def _user_out(user: dict) -> dict:
         "retreat_mode": user.get("retreat_mode") or "hops",
         "retreat_hops": int(user.get("retreat_hops") or 3),
         "retreat_city": int(user.get("retreat_city") or 0),
+        "lock_cards": int(user.get("lock_cards") if user.get("lock_cards") is not None else 3),
     }
 
 
@@ -399,6 +400,15 @@ def _handler(config: dict):
                         "ok": True,
                         "hold_min": int(str(data.get("minutes")).strip()),
                     })
+                elif path == "/api/lock-cards":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "锁敌恢复卡限制需要中级或高级订阅"})
+                        return
+                    why = citydb.set_lock_cards(user["id"], data.get("cards"))
+                    if why:
+                        raise ValueError(why)
+                    saved = citydb.user_by_token(_cookie_token(self)) or user
+                    _json(self, 200, {"ok": True, "user": _user_out(saved)})
                 elif path == "/api/retreat":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "打完后退需要中级或高级订阅"})
