@@ -1392,7 +1392,7 @@ def requeue_running_orders() -> None:
 
 
 def claim_attack_order():
-    """领最旧的一条排队订单。档位不够或已过期的记为失败。没有则返回 None。"""
+    """领最新的一条排队订单。后提交的优先。档位不够的记为失败并接着看下一条。"""
     conn = connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1403,29 +1403,29 @@ def claim_attack_order():
             "UPDATE atk_order SET status='pending', updated_at=? "
             "WHERE status='running' AND updated_at<?",
             (now, cutoff))
-        row = conn.execute(
-            "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
-            "IFNULL(u.expires_at,''), IFNULL(o.auto,0), o.card_max "
-            "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
-            "WHERE o.status='pending' ORDER BY o.id LIMIT 1").fetchone()
-        if not row:
+        while True:
+            row = conn.execute(
+                "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
+                "IFNULL(u.expires_at,''), IFNULL(o.auto,0), o.card_max "
+                "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
+                "WHERE o.status='pending' ORDER BY o.id DESC LIMIT 1").fetchone()
+            if not row:
+                conn.commit()
+                return None
+            if not attack_tier(row[3]) or account_expired(row[4]):
+                conn.execute(
+                    "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
+                    ("订阅档不够或账号已过期", now, row[0]))
+                continue
+            cur = conn.execute(
+                "UPDATE atk_order SET status='running', updated_at=? "
+                "WHERE id=? AND status='pending'",
+                (now, row[0]))
             conn.commit()
-            return None
-        if not attack_tier(row[3]) or account_expired(row[4]):
-            conn.execute(
-                "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
-                ("订阅档不够或账号已过期", now, row[0]))
-            conn.commit()
-            return None
-        cur = conn.execute(
-            "UPDATE atk_order SET status='running', updated_at=? "
-            "WHERE id=? AND status='pending'",
-            (now, row[0]))
-        conn.commit()
-        if cur.rowcount != 1:
-            return None
-        return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5]),
-                "cards": None if row[6] is None else int(row[6])}
+            if cur.rowcount != 1:
+                return None
+            return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5]),
+                    "cards": None if row[6] is None else int(row[6])}
     finally:
         conn.close()
 
