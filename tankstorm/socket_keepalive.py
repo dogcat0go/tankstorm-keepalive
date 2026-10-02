@@ -729,13 +729,26 @@ def _cards_used_up(reason: str) -> bool:
     return used >= limit
 
 
+def _person_blocking(reason: str) -> bool:
+    """停下来是因为路上有打不过的人。目标城里清不完不算，那不是通路的问题。"""
+    text = str(reason or "")
+    if "这座城清不完" in text:
+        return False
+    if "挡路" in text or "打不过的人" in text:
+        return True
+    if "都打不过" in text and "路径" in text:
+        return True
+    return "这条路就不通" in text
+
+
 def _fight_claimed(rec, sock, config, beater, job) -> None:
     from . import citydb, country_war
 
     uid = str(job.get("uid") or "").strip()
     citydb.set_attack_status("running")
-    tally = {"n": 0, "note": lambda n: citydb.note_attack_beats(job["id"], n)}
-    citydb.note_attack_beats(job["id"], 0)
+    start_beats = int(job.get("beats") or 0)
+    tally = {"n": start_beats, "note": lambda n: citydb.note_attack_beats(job["id"], n)}
+    citydb.note_attack_beats(job["id"], start_beats)
     fight_config = config
     if job.get("cards") is not None:
         fight_config = dict(config)
@@ -774,10 +787,16 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
     if reason:
         log.info("   结束原因：%s", reason)
         ok = _cards_used_up(reason)
+    beats = int(tally.get("n") or 0)
+    if (reason and not ok and _person_blocking(reason)
+            and citydb.attack_hold_minutes() > 0):
+        citydb.park_attack_order(job["id"], reason, beats=beats)
+        log.info("订单 %s 有人挡路，挂机期间继续看路径", job["id"])
+        return
     citydb.finish_attack_order(
         job["id"], "done" if ok else "failed",
         reason or ("" if ok else "未打成"),
-        beats=int(tally.get("n") or 0))
+        beats=beats)
 
 
 def _wait_socket(sock, spec, ctx) -> bool:
@@ -809,6 +828,7 @@ def _wait_socket(sock, spec, ctx) -> bool:
 
 
 _HOLD_HERE_GAP = 10.0
+_PATH_GAP = 10.0
 
 
 def _refresh_hold_here(rec, sock, config, last_at, last_here):
@@ -847,6 +867,73 @@ def _refresh_hold_here(rec, sock, config, last_at, last_here):
     return now, loc
 
 
+def _my_country(rec, config) -> int:
+    from . import country_war
+
+    conf = config.get("国战") or {}
+    try:
+        country = int(conf.get("自己国家ID") or 0)
+    except (TypeError, ValueError):
+        country = 0
+    if country <= 0:
+        country = country_war._daily.read_my_country(rec) or 0
+    return int(country or 0)
+
+
+def _blocked_path_open(rec, sock, config, job):
+    """看原来的订单现在有没有通路。通了返回 True。还不通时带上原因。"""
+    from . import citydb, country_war
+
+    my = _my_country(rec, config)
+    if not my:
+        return False, "读不到自己的国家ID"
+    _power, loc, _times, panel = country_war._panel(sock, rec, my)
+    if panel is None or isinstance(loc, bool) or not isinstance(loc, int) or loc <= 0:
+        return False, "读不到当前所在城市"
+    citydb.note_attack_here(loc)
+    plan = country_war.live_plan(
+        sock, rec, loc, int(job["city_id"]), my,
+        stop_on_block=bool(job.get("auto")))
+    if plan.get("暂停") or not plan.get("路径"):
+        return False, plan.get("暂停") or plan.get("原因") or "没有通路"
+    return True, ""
+
+
+def _watch_blocked_path(rec, sock, config, beater, path_at: float) -> float:
+    """挂机时盯着被挡住的订单。路径一通就立刻接着打。"""
+    from . import citydb
+
+    job = citydb.next_blocked_order()
+    if not job:
+        return path_at
+    now = time.time()
+    if now - path_at < _PATH_GAP:
+        return path_at
+    if citydb.attack_paused():
+        return now
+    try:
+        open_path, why = _blocked_path_open(rec, sock, config, job)
+    except Exception:
+        log.info("订单 %s 看路径失败", job["id"], exc_info=True)
+        return time.time()
+    if citydb.attack_paused():
+        return time.time()
+    if not open_path:
+        citydb.note_blocked_reason(job["id"], why)
+        log.info("订单 %s 路径还不通：%s", job["id"], why)
+        return time.time()
+    if citydb.attack_order_open():
+        log.info("订单 %s 路径通了，先打新到的订单", job["id"])
+        return 0.0
+    taken = citydb.take_blocked_order(job["id"])
+    if not taken:
+        return time.time()
+    log.info("订单 %s 路径通了，立刻接着打", taken["id"])
+    _fight_claimed(rec, sock, config, beater, taken)
+    citydb.set_attack_status("hold")
+    return time.time()
+
+
 def _begin_attack_hold(fresh=False) -> bool:
     """队列空了就按配置开始或继续挂机。该结束时返回 False。"""
     from . import citydb
@@ -854,6 +941,7 @@ def _begin_attack_hold(fresh=False) -> bool:
     minutes = citydb.attack_hold_minutes()
     left = citydb.attack_hold_left()
     if minutes <= 0:
+        citydb.fail_blocked_orders()
         if left is not None:
             citydb.clear_attack_hold()
             log.info("挂机保活已关掉，攻打连接断开")
@@ -865,6 +953,7 @@ def _begin_attack_hold(fresh=False) -> bool:
         log.info("没有下一条订单，挂机保活 %d 分钟", minutes)
         fresh = True
     elif left <= 0:
+        citydb.fail_blocked_orders()
         citydb.clear_attack_hold()
         log.info("挂机保活结束，攻打连接断开")
         return False
@@ -880,6 +969,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     stated = False
     here_at = 0.0
     here_id = 0
+    path_at = 0.0
     while True:
         if citydb.attack_paused():
             citydb.set_attack_status("paused")
@@ -900,9 +990,11 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             return 0
         if not stated:
             here_at = 0.0
+            path_at = 0.0
         stated = True
         here_at, here_id = _refresh_hold_here(
             rec, sock, config, here_at, here_id)
+        path_at = _watch_blocked_path(rec, sock, config, beater, path_at)
         if not _wait_socket(sock, spec, ctx):
             log.info("挂机时游戏连接断了，准备重连")
             return 0
@@ -923,6 +1015,8 @@ def run_remote_orders(qq, config: dict) -> int:
     stop = _start_attack_status()
     try:
         citydb.requeue_running_orders()
+        if not ((citydb.attack_hold_left() or 0) > 0):
+            citydb.fail_blocked_orders()
         while True:
             if citydb.attack_paused():
                 citydb.set_attack_status("paused")
@@ -939,6 +1033,7 @@ def run_remote_orders(qq, config: dict) -> int:
                 pending = citydb.attack_order_open()
                 left = citydb.attack_hold_left()
             if not pending and not ((left or 0) > 0):
+                citydb.fail_blocked_orders()
                 if left is not None:
                     citydb.clear_attack_hold()
                 citydb.set_attack_status("idle")
@@ -948,6 +1043,7 @@ def run_remote_orders(qq, config: dict) -> int:
                 citydb.requeue_running_orders()
             _connect_attack_orders(qq, config)
             if not ((citydb.attack_hold_left() or 0) > 0):
+                citydb.fail_blocked_orders()
                 citydb.set_attack_status("idle")
             elif citydb.attack_order_open():
                 time.sleep(1)

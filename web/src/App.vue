@@ -268,7 +268,7 @@ async function pushLogin() {
 }
 
 function orderStatus(status) {
-  return { pending: "排队", running: "正在打", done: "已打完", failed: "没打成" }[status] || status;
+  return { pending: "排队", running: "正在打", blocked: "等通路", done: "已打完", failed: "没打成" }[status] || status;
 }
 
 async function savePush() {
@@ -424,7 +424,7 @@ onUnmounted(() => {
           <label>最多恢复卡<input v-model="cardMax" class="mins" inputmode="numeric" required /></label>
           <button type="submit">提交攻打</button>
         </form>
-        <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。0 表示打完就下线。</p>
+        <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。有打不过的人挡路时，这段时间会继续看路径，通了立刻接着打原来的订单。0 表示打完就下线。</p>
         <p>
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
