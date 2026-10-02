@@ -229,6 +229,7 @@ def connect(readonly=False, timeout=15):
                     "ALTER TABLE app_user ADD COLUMN attack_qq_block INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             _forget_page_names(setup)
+            _ensure_attack_qq_map(setup)
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
             if ocols and "uid" not in ocols:
                 setup.execute(
@@ -1067,8 +1068,21 @@ def _forget_page_names(conn) -> None:
             "(acct LIKE '网页-%' AND substr(acct, 4) GLOB '[0-9]*')")
 
 
+def _ensure_attack_qq_map(conn) -> None:
+    """一个攻打 QQ 只记在一个登录账号上。还没绑定的空值不占这条映射。"""
+    dup = conn.execute(
+        "SELECT attack_qq FROM app_user WHERE IFNULL(attack_qq,'')!='' "
+        "GROUP BY attack_qq HAVING COUNT(*)>1 LIMIT 1").fetchone()
+    if dup:
+        log.error("攻打 QQ %s 记在了多个登录账号上，先不建唯一映射", dup[0])
+        return
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS app_user_attack_qq "
+        "ON app_user(attack_qq) WHERE IFNULL(attack_qq,'')!=''")
+
+
 def bound_attack_qq() -> tuple:
-    """服务器上已经记下的那一个攻打 QQ。没有则是 (0, '', '')。"""
+    """最早记下的一条登录账号和攻打 QQ 的映射。没有则是 (0, '', '')。"""
     conn = connect(readonly=True)
     try:
         row = conn.execute(
@@ -1079,6 +1093,35 @@ def bound_attack_qq() -> tuple:
         return int(row[0]), str(row[1] or ""), str(row[2] or "").strip()
     finally:
         conn.close()
+
+
+def attack_qq_owner(uin: str) -> tuple:
+    """这个攻打 QQ 记在哪个登录账号上。没有则是 (0, '')。"""
+    uin = str(uin or "").strip()
+    if not uin:
+        return 0, ""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT id, username FROM app_user WHERE attack_qq=?",
+            (uin,)).fetchone()
+        if not row:
+            return 0, ""
+        return int(row[0]), str(row[1] or "")
+    finally:
+        conn.close()
+
+
+def mapped_attack_user_ids() -> list:
+    """已经有攻打 QQ 映射的登录账号，按 id 排。"""
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id FROM app_user WHERE IFNULL(attack_qq,'')!='' ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [int(row[0]) for row in rows]
 
 
 QQ_MISMATCH = "扫码的 QQ 和绑定的不一致，已暂停"
@@ -1130,17 +1173,22 @@ def confirm_attack_qq(user_id: int, uin: str) -> bool:
         who = str(row[2] or "")
         if not bound:
             holder = conn.execute(
-                "SELECT username, attack_qq FROM app_user "
-                "WHERE id!=? AND IFNULL(attack_qq,'')!='' LIMIT 1",
-                (user_id,)).fetchone()
+                "SELECT id, username FROM app_user WHERE attack_qq=? AND id!=?",
+                (uin, user_id)).fetchone()
             if holder:
-                log.error("攻打 QQ %s 已经绑在登录账号 %s 上，%s 还没有攻打 QQ，这次不记",
-                          holder[1], holder[0], who)
+                log.error("攻打 QQ %s 已经绑在登录账号 %s 上，%s 不能再记这一个",
+                          uin, holder[1], who)
                 return False
-            conn.execute(
-                "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
-                (uin, user_id))
-            conn.commit()
+            try:
+                conn.execute(
+                    "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
+                    (uin, user_id))
+                conn.commit()
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                log.error("攻打 QQ %s 已经绑在别的登录账号上，%s 不能再记这一个",
+                          uin, who)
+                return False
             log.info("登录账号 %s 第一次扫码，绑定攻打 QQ %s", who, uin)
             return True
         if bound == uin:
@@ -1175,13 +1223,10 @@ def bind_attack_account(user_id: int, account: str) -> str:
     conn = connect()
     try:
         other = conn.execute(
-            "SELECT username, IFNULL(attack_qq,'') FROM app_user "
-            "WHERE id!=? AND IFNULL(attack_qq,'')!=''",
-            (user_id,)).fetchone()
+            "SELECT username FROM app_user WHERE id!=? AND attack_qq=?",
+            (user_id, account)).fetchone()
         if other:
-            if str(other[1]) == account:
-                return "这个攻打 QQ 已经绑定别的登录账号"
-            return f"攻打 QQ {other[1]} 已经绑在 {other[0]} 上"
+            return "这个攻打 QQ 已经绑定别的登录账号"
         mine = conn.execute(
             "SELECT IFNULL(attack_qq,'') FROM app_user WHERE id=?",
             (user_id,)).fetchone()
@@ -1190,10 +1235,14 @@ def bind_attack_account(user_id: int, account: str) -> str:
         current = str(mine[0] or "").strip()
         if current and current != account:
             return f"这个登录账号已经绑定了攻打 QQ「{current}」"
-        conn.execute(
-            "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
-            (account, user_id))
-        conn.commit()
+        try:
+            conn.execute(
+                "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
+                (account, user_id))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            return "这个攻打 QQ 已经绑定别的登录账号"
     finally:
         conn.close()
     return ""
@@ -1385,10 +1434,13 @@ def _with_page_qr(status: dict, user_id: int) -> dict:
 
 
 def unbound_login_waiting() -> bool:
-    """有人正在等扫码，服务器上还没有攻打 QQ。自动拉起不要把这张二维码抢走。"""
+    """有个攻打进程正在等扫码，而且它的登录账号还没有攻打 QQ。自动拉起不要把这张码抢走。"""
     if not proc_online() or proc_phase() != "login":
         return False
-    return not bound_attack_qq()[2]
+    owner = proc_user()
+    if not owner:
+        return True
+    return not attack_qq_of(owner)
 
 
 def _proc_payload(raw) -> dict:
@@ -1411,16 +1463,16 @@ _PROC_ACCT = ""
 
 
 def _assign_legacy_fails(conn) -> None:
-    """还没归到 QQ 上的失败记录，归给已经绑定的那一个攻打 QQ。"""
-    row = conn.execute(
-        "SELECT attack_qq FROM app_user "
-        "WHERE IFNULL(attack_qq,'')!='' ORDER BY id LIMIT 1").fetchone()
-    if not row or not str(row[0] or "").strip():
+    """还没归号的失败记录。只有一条映射时才归给那个攻打 QQ，避免记错人。"""
+    rows = conn.execute(
+        "SELECT attack_qq FROM app_user WHERE IFNULL(attack_qq,'')!=''"
+    ).fetchall()
+    if len(rows) != 1 or not str(rows[0][0] or "").strip():
         return
     conn.execute(
         "UPDATE atk_fail SET acct=? WHERE acct='' OR acct='网页' OR "
         "(acct LIKE '网页-%' AND substr(acct, 4) GLOB '[0-9]*')",
-        (str(row[0]).strip(),))
+        (str(rows[0][0]).strip(),))
 
 
 def set_attack_context(user_id: int, account: str) -> None:
@@ -1989,11 +2041,8 @@ def pause_attack_for(user_id: int, on: bool) -> str:
     """网页上的暂停和继续。别人的攻打进程不能动。"""
     user_id = int(user_id)
     owner = proc_user()
-    if proc_online() and owner != user_id:
-        return "这个攻打号已经绑定别的登录账号"
-    holder_id, _holder_name, _holder_qq = bound_attack_qq()
-    if holder_id and holder_id != user_id:
-        return "这个攻打 QQ 已经绑定别的登录账号"
+    if proc_online() and owner not in (0, user_id):
+        return "攻打进程正在给别的登录账号用"
     if not on and attack_qq_blocked(user_id):
         return QQ_MISMATCH
     if not set_attack_paused(on, user_id):

@@ -1015,7 +1015,8 @@ def _connect_attack_orders(qq, config) -> int:
 
 
 def _bind_named_account(config: dict, name: str) -> int:
-    """配置里写了「用户」就用那个登录账号。没写就用已经记下攻打 QQ 的那一个。"""
+    """配置里写了「用户」就用那个登录账号。名字是 attack-数字 时用这条映射。
+    都没有、而且只有一个登录账号绑了攻打 QQ 时，才用那一个。"""
     from . import citydb
 
     spec = ((config.get("登录") or {}).get("账号") or {}).get(name) or {}
@@ -1027,8 +1028,12 @@ def _bind_named_account(config: dict, name: str) -> int:
                 log.error("攻打号「%s」写的用户「%s」不存在", name, who)
                 return 0
             return user_id
-    holder_id, _name, _qq = citydb.bound_attack_qq()
-    return holder_id
+    if name.startswith("attack-") and name[7:].isdigit():
+        return int(name[7:])
+    mapped = citydb.mapped_attack_user_ids()
+    if len(mapped) == 1:
+        return mapped[0]
+    return 0
 
 
 def run_remote_orders(qq, config: dict) -> int:
@@ -1144,13 +1149,14 @@ def _page_qr_account(config: dict, name: str) -> bool:
     spec = (login.get("账号") or {}).get(name) or {}
     if not isinstance(spec, dict):
         return False
-    return (str(spec.get("cookie") or "").strip() == _PAGE_COOKIE
-            and not str(spec.get("扫码QQ") or "").strip())
+    cookie = str(spec.get("cookie") or "").strip()
+    own = cookie == _PAGE_COOKIE or cookie.startswith("accounts/attack-")
+    return own and not str(spec.get("扫码QQ") or "").strip()
 
 
 def attack_account_for_user(config: dict, user_id: int) -> tuple:
-    """这个登录账号该用哪个攻打号。返回 (名字, 错误)。
-    还没绑定、也没在配置里指定时，第一次用网页上的二维码。"""
+    """这个登录账号对应哪一份攻打票据。返回 (名字, 错误)。
+    配置里写了「用户」就用那一份，否则用这个登录账号自己的映射。"""
     from . import citydb
 
     user_id = int(user_id or 0)
@@ -1161,20 +1167,17 @@ def attack_account_for_user(config: dict, user_id: int) -> tuple:
         login["账号"] = accounts
     names = [k for k, v in accounts.items() if isinstance(v, dict)]
     username = citydb.username_of(user_id)
-    holder_id, holder_name, holder_qq = citydb.bound_attack_qq()
-    if holder_id and holder_id != user_id:
-        log.info("攻打 QQ %s 已经绑在 %s 上，%s 不能调用", holder_qq, holder_name, username)
-        return "", "taken"
     for name in names:
         spec = accounts.get(name) or {}
         who = str(spec.get("用户") or "").strip()
         if who and who == username:
             return name, ""
-    # 攻打号就是扫上的 QQ。还没扫过时只出网页二维码，不先写绑定。
-    accounts.setdefault(_PAGE_ACCOUNT, {"cookie": _PAGE_COOKIE})
+    # 每个登录账号一条映射，票据单独放，不和别人的攻打 QQ 共用。
+    slot = f"attack-{user_id}"
+    accounts.setdefault(slot, {"cookie": f"accounts/{slot}.json"})
     if not citydb.attack_qq_of(user_id):
-        log.info("登录账号 %s 还没有攻打 QQ，二维码显示在网页上", username)
-    return _PAGE_ACCOUNT, ""
+        log.info("登录账号 %s 还没有攻打 QQ", username)
+    return slot, ""
 
 
 def web_attack_account(config: dict) -> str:
@@ -1204,6 +1207,16 @@ _kick_user = 0
 
 _page_login_guard = threading.Lock()
 _page_login_users = set()
+
+
+def _store_attack_cookie(user_id: int, src: str) -> None:
+    """扫上之后，把这次登录票据留在这个登录账号自己的映射文件里。"""
+    import os
+
+    from . import paths
+    dest = paths.user_path(f"accounts/attack-{int(user_id)}.json")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    os.replace(src, dest)
 
 
 def _page_login_cookie(user_id: int) -> str:
@@ -1246,21 +1259,25 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
     who = citydb.username_of(user_id)
 
     def _run():
+        nonlocal cookie
         try:
             while not citydb.attack_qq_of(user_id):
                 if qq.qr_login(on_qr=lambda path, pushed=False: log.info(
                         "登录账号 %s 还没有攻打 QQ，二维码在网页上：%s", who, path)):
                     uin = str(getattr(qq, "uin", "") or "").strip()
                     if uin.isdigit() and citydb.confirm_attack_qq(user_id, uin):
+                        _store_attack_cookie(user_id, cookie)
                         log.info("登录账号 %s 扫码绑定攻打 QQ %s", who, uin)
+                        cookie = ""
                     break
                 time.sleep(15)
         finally:
             citydb.clear_page_login(user_id)
-            try:
-                os.remove(cookie)
-            except OSError:
-                pass
+            if cookie:
+                try:
+                    os.remove(cookie)
+                except OSError:
+                    pass
             try:
                 lockf.close()
             except OSError:
@@ -1273,9 +1290,9 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
 
 
 def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> str:
-    """网页发起：能锁到这个登录账号自己的攻打号就推二维码并打他的单。
-    别人已经绑了攻打 QQ 的不接手。claim 为真才是这个人点了推送登录，
-    还没扫上的二维码和 cookie 里已经有的 QQ 都记到这个人。按订单自动拉起不能抢。"""
+    """网页发起：用这个登录账号自己的攻打 QQ 打单。
+    还没绑定、并且是本人点了推送登录时，只在网页上出二维码，不碰正在跑的进程。
+    进程正被别的登录账号占用时返回 busy，不改对方的映射。按订单自动拉起也不能抢。"""
     import main as cli
 
     global _kick_alive, _kick_user
@@ -1302,12 +1319,9 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
                 citydb.set_login_for(user_id)
             return "busy"
         if _kick_alive and _kick_user != user_id:
-            if citydb.attack_qq_of(_kick_user) or not claim:
-                return "taken" if citydb.attack_qq_of(_kick_user) else "busy"
-            citydb.hand_login_to(user_id)
-            _kick_user = user_id
-            log.info("攻打 QQ 还没扫上，记到登录账号 %s", citydb.username_of(user_id))
-            return "qr" if citydb.proc_phase() == "login" else "busy"
+            log.info("攻打进程正在给登录账号 %s 用，%s 的映射不接手",
+                     citydb.username_of(_kick_user), citydb.username_of(user_id))
+            return "busy"
         if citydb.proc_online() and citydb.proc_user() == user_id:
             if claim:
                 citydb.set_login_for(user_id)
@@ -1322,12 +1336,9 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
             log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
             return "busy"
         if citydb.proc_online() and citydb.proc_user() not in (0, user_id):
-            if citydb.attack_qq_of(citydb.proc_user()) or not claim:
-                return "taken" if citydb.attack_qq_of(citydb.proc_user()) else "busy"
-            citydb.hand_login_to(user_id)
-            _kick_user = user_id
-            log.info("攻打 QQ 还没扫上，记到登录账号 %s", citydb.username_of(user_id))
-            return "qr" if citydb.proc_phase() == "login" else "busy"
+            log.info("攻打进程正在给登录账号 %s 用，%s 的映射不接手",
+                     citydb.username_of(citydb.proc_user()), citydb.username_of(user_id))
+            return "busy"
         citydb.set_login_for(user_id)
         on_page = _page_qr_account(config, name)
         qq = cli.open_qq(config, name, fatal_lock=False)
@@ -1338,8 +1349,8 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
                 citydb.ask_attack_login()
                 log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
                 return "busy"
-            log.info("攻打号「%s」已有进程在用，不交给别的登录账号", name)
-            return "taken"
+            log.info("攻打号「%s」已有进程在用", name)
+            return "busy"
         qq.page_qr = on_page
         _kick_alive = True
         _kick_user = user_id
@@ -1349,7 +1360,7 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
         from . import citydb
         # 点推送的人写在 login_for。不要用线程启动时的账号盖掉，否则会记到别人头上。
         owner = citydb.login_for() or user_id
-        remembered = citydb.attack_qq_of(owner) if name == _PAGE_ACCOUNT else name
+        remembered = citydb.attack_qq_of(owner)
         citydb.set_attack_context(owner, remembered)
 
         def _owner() -> int:
