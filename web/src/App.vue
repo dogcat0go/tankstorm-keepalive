@@ -10,6 +10,7 @@ const err = ref("");
 const items = ref([]);
 const db = ref("");
 const cityId = ref("");
+const cities = ref([]);
 const uid = ref("");
 const qqTarget = ref("");
 const note = ref("");
@@ -98,9 +99,24 @@ async function enter() {
   qqTarget.value = who.user.qq_target || "";
   autoLock.value = !!who.user.auto_lock;
   holdMin.value = String(who.user.hold_min ?? 0);
+  await loadCities();
   await refresh();
   await refreshAttacks();
   await loadScan();
+}
+
+async function loadCities() {
+  try {
+    const data = await api("/api/cities");
+    cities.value = data.items || [];
+  } catch (e) {
+    err.value = e.message;
+  }
+}
+
+function cityLabel(c) {
+  const same = cities.value.filter((x) => x.name === c.name).length;
+  return same > 1 ? c.name + " " + c.id : c.name;
 }
 
 async function loadScan() {
@@ -162,6 +178,7 @@ async function loadMe() {
   qqTarget.value = who.user.qq_target || "";
   autoLock.value = !!who.user.auto_lock;
   holdMin.value = String(who.user.hold_min ?? 0);
+  await loadCities();
   await refresh();
   await refreshAttacks();
   await loadScan();
@@ -292,12 +309,17 @@ onUnmounted(() => {
           <p v-if="scanQuiet">现在处于停扫时段，扫描会跳过。</p>
           <table class="scan">
             <thead>
-              <tr><th>城市 ID</th><th>城市</th><th>起始页</th><th>结束页</th><th></th></tr>
+              <tr><th>城市</th><th>起始页</th><th>结束页</th><th></th></tr>
             </thead>
             <tbody>
               <tr v-for="(row, i) in scanRanges" :key="i">
-                <td><input v-model="row.city_id" inputmode="numeric" required placeholder="1201" /></td>
-                <td>{{ row.city_name || "—" }}</td>
+                <td>
+                  <select v-model="row.city_id" required>
+                    <option value="" disabled>选择城市</option>
+                    <option v-if="row.city_id && !cities.some((c) => String(c.id) === String(row.city_id))" :value="String(row.city_id)">{{ row.city_name || row.city_id }}</option>
+                    <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+                  </select>
+                </td>
                 <td><input v-model="row.start_page" inputmode="numeric" required /></td>
                 <td><input v-model="row.end_page" inputmode="numeric" required /></td>
                 <td><button type="button" class="ghost" @click="scanRanges.splice(i, 1)">去掉</button></td>
@@ -313,7 +335,12 @@ onUnmounted(() => {
         </form>
       </details>
       <form @submit.prevent="addSub().catch((e) => (err = e.message))">
-        <label>城市 ID<input v-model="cityId" inputmode="numeric" required placeholder="1201" /></label>
+        <label>城市
+          <select v-model="cityId" required>
+            <option value="" disabled>选择城市</option>
+            <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+          </select>
+        </label>
         <label>用户 UID<input v-model="uid" inputmode="numeric" required /></label>
         <button type="submit">订阅</button>
       </form>
@@ -351,7 +378,12 @@ onUnmounted(() => {
         </form>
         <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。0 表示打完就下线。</p>
         <form @submit.prevent="addOrder().catch((e) => (err = e.message))">
-          <label>城市 ID<input v-model="attackCity" inputmode="numeric" required placeholder="2302" /></label>
+          <label>城市
+            <select v-model="attackCity" required>
+              <option value="" disabled>选择城市</option>
+              <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+            </select>
+          </label>
           <label>UID<input v-model="attackUid" inputmode="numeric" placeholder="留空则打整座城" /></label>
           <button type="submit">提交攻打</button>
         </form>
@@ -410,7 +442,7 @@ form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 form.stack { display: grid; max-width: 520px; }
 form.scan-form { max-width: none; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
-input { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; }
+input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
 button { font: inherit; padding: 8px 14px; border: 0; border-radius: 6px; background: #1a1a1a; color: #fff; cursor: pointer; }
 button.ghost { background: transparent; color: #333; border: 1px solid #bbb; }
 p button.ghost { margin-left: 8px; }
@@ -418,6 +450,7 @@ p button.ghost { margin-left: 8px; }
 .muted { color: #777; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 12px; }
 table.scan td input { width: 7em; box-sizing: border-box; }
+table.scan td select { min-width: 9em; }
 th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
 th { font-size: 13px; color: #555; }
 .on { color: #0b6b2f; font-weight: 700; }

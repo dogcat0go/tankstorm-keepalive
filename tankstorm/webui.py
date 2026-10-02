@@ -195,6 +195,18 @@ def _handler(config: dict):
                     return
                 _json(self, 200, {"user": _user_out(user), "invite": bool(invite)})
                 return
+            if path == "/api/cities":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                try:
+                    rows = citydb.list_cities()
+                except Exception as exc:
+                    _json(self, 500, {"error": str(exc)})
+                    return
+                _json(self, 200, {"items": [{"id": r[0], "name": r[1]} for r in rows]})
+                return
             if path == "/api/subs":
                 user = self._user()
                 if not user:
