@@ -779,6 +779,11 @@ def _defeated(reason: str) -> bool:
     return "被别人打败" in text or "回到首都" in text or "出不了首都" in text
 
 
+def _empty_city(reason: str) -> bool:
+    """清城扫完这几页，一个人都没有。"""
+    return str(reason or "") in ("这几页没有可打的人", "这一页没有可打的人")
+
+
 def _order_result(job, out) -> tuple:
     """这一单打完怎么收。返回 (动作, 状态, 原因)。
 
@@ -876,6 +881,12 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         beats = int(tally.get("n") or 0)
         if why:
             log.info("   结束原因：%s", why)
+        if (not uid and not job.get("auto") and action == "finish" and status == "failed"
+                and _empty_city(why)):
+            minutes = citydb.clear_wait_minutes()
+            if minutes > 0 and citydb.schedule_empty_order(job["id"], minutes, beats=beats):
+                log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], minutes)
+                return
         if action == "defer":
             citydb.defer_attack_order(job["id"])
             log.info("订单 %s 已暂停，放回排队", job["id"])
@@ -1154,6 +1165,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         if _run_requested_move(rec, sock, config, beater):
             continue
         citydb.skip_unfinished_auto(citydb.attack_context_user())
+        citydb.release_due_waits()
         job = citydb.claim_attack_order()
         if job:
             stated = False
@@ -1244,6 +1256,7 @@ def run_remote_orders(qq, config: dict) -> int:
                 time.sleep(5)
                 continue
             citydb.resume_stranded_orders()
+            citydb.release_due_waits()
             asked = citydb.take_attack_login()
             pending = citydb.attack_order_open()
             left = citydb.attack_hold_left()
