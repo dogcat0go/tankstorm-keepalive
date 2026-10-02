@@ -131,6 +131,7 @@ def _user_out(user: dict) -> dict:
         "admin": bool(user.get("admin")),
         "auto_lock": bool(user.get("auto_lock")),
         "hold_min": int(user.get("hold_min") or 0),
+        "card_max": int(user.get("card_max") if user.get("card_max") is not None else 100),
     }
 
 
@@ -320,7 +321,14 @@ def _handler(config: dict):
                         why = citydb.set_attack_hold(user["id"], minutes)
                         if why:
                             raise ValueError(why)
-                    why = citydb.add_attack_order(user["id"], city_id, uid)
+                    cards = data.get("cards", None)
+                    card_max = int(user.get("card_max") if user.get("card_max") is not None else 100)
+                    if cards is not None and str(cards).strip() != "":
+                        why = citydb.set_attack_cards(user["id"], cards)
+                        if why:
+                            raise ValueError(why)
+                        card_max = int(str(cards).strip())
+                    why = citydb.add_attack_order(user["id"], city_id, uid, cards=card_max)
                     if why and why != "已经有一条还没打完":
                         raise ValueError(why)
                     from .socket_keepalive import kick_attack_login
@@ -330,7 +338,8 @@ def _handler(config: dict):
                     hold_min = int(user.get("hold_min") or 0)
                     if minutes is not None and str(minutes).strip() != "":
                         hold_min = int(str(minutes).strip())
-                    _json(self, 200, {"ok": True, "login": login, "hold_min": hold_min})
+                    _json(self, 200, {"ok": True, "login": login,
+                                      "hold_min": hold_min, "card_max": card_max})
                 elif path == "/api/attack-login":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})

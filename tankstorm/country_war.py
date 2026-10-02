@@ -396,7 +396,7 @@ def run(rec, sock, config: dict, rounds: int = 0, beat=None,
     cooldown = float(_CD_GEARS[0])
     rounds = int(rounds or conf.get("默认次数", 0))
     use_card = bool(conf.get("自动使用国战恢复卡", False))
-    card_limit = int(conf.get("单次最多用几张恢复卡", 1))
+    card_limit = int(conf.get("单次最多用几张恢复卡", 100))
     card_item = int(conf.get("国战恢复卡物品ID", CARD_ITEM_ID))
 
     out = {"扫荡": 0, "攻击": 0, "召唤": 0, "战功": 0, "用卡": 0, "停止原因": "",
@@ -1006,7 +1006,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
 
     city, owner = out["城市"], out["国家"]
     card_item = int((conf or {}).get("国战恢复卡物品ID") or CARD_ITEM_ID)
-    card_limit = max(0, int((conf or {}).get("单次最多用几张恢复卡", 1)))
+    card_limit = max(0, int((conf or {}).get("单次最多用几张恢复卡", 100)))
     cap = 80 if until_down else max(1, int(times or 1))
     if until_down and int(times or 0) > 1:
         cap = int(times)
