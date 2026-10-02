@@ -863,22 +863,45 @@ def save_push(user_id: int, qq_target: str) -> None:
 
 
 def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
-    """提交一条远程扫码攻打。已有未完成的单时返回原因，成功返回空字符串。"""
+    """提交一条远程扫码攻打。攻打线程还在时，已有未完成的单就返回原因。
+
+    线程已经退出时，等通路和中断的单改回排队，这次提交可以继续。成功返回空字符串。
+    """
     if cards is None:
         cards = 100
+    user_id = int(user_id)
+    uid = str(uid).strip()
+    city_id = int(city_id)
+    online = proc_online(user_id)
     conn = connect()
     try:
-        row = conn.execute(
-            "SELECT 1 FROM atk_order WHERE user_id=? AND status IN ('pending','running','blocked')",
-            (int(user_id),)).fetchone()
-        if row:
-            return "已经有一条还没打完"
         now = now_ts()
+        if not online:
+            cur = conn.execute(
+                "UPDATE atk_order SET status='pending', updated_at=? "
+                "WHERE user_id=? AND status IN ('blocked','running')",
+                (now, user_id))
+            if cur.rowcount:
+                log.info("登录账号 %s 的攻打线程不在，%d 条等通路或中断的订单改回排队",
+                         username_of(user_id), cur.rowcount)
+        else:
+            row = conn.execute(
+                "SELECT 1 FROM atk_order WHERE user_id=? "
+                "AND status IN ('pending','running','blocked')",
+                (user_id,)).fetchone()
+            if row:
+                return "已经有一条还没打完"
+        dup = conn.execute(
+            "SELECT 1 FROM atk_order WHERE user_id=? AND city_id=? AND IFNULL(uid,'')=? "
+            "AND status IN ('pending','running','blocked')",
+            (user_id, city_id, uid)).fetchone()
+        if dup:
+            conn.commit()
+            return ""
         conn.execute(
             "INSERT INTO atk_order(user_id, city_id, uid, status, reason, card_max, created_at, updated_at) "
             "VALUES (?,?,?,?,?,?,?,?)",
-            (int(user_id), int(city_id), str(uid).strip(), "pending", "",
-             int(cards), now, now))
+            (user_id, city_id, uid, "pending", "", int(cards), now, now))
         conn.commit()
         return ""
     finally:
@@ -2037,14 +2060,14 @@ def users_with_open_orders() -> list:
     try:
         rows = conn.execute(
             "SELECT DISTINCT user_id FROM atk_order "
-            "WHERE status IN ('pending','running')").fetchall()
+            "WHERE status IN ('pending','running','blocked')").fetchall()
     finally:
         conn.close()
     return [int(r[0]) for r in rows]
 
 
 def users_needing_attack() -> list:
-    """主进程要照看的登录账号：还有订单，或者攻打 QQ 的挂机还没结束。"""
+    """主进程要照看的登录账号：还有订单（含等通路），或者攻打 QQ 的挂机还没结束。"""
     ids = set(users_with_open_orders())
     for user_id in mapped_attack_user_ids():
         left = attack_hold_left(user_id)
@@ -2085,6 +2108,32 @@ def requeue_running_orders() -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def requeue_blocked_orders() -> None:
+    """等通路的订单改回排队。只在挂机已经结束、线程要重新领单时用。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE atk_order SET status='pending', updated_at=? "
+            "WHERE status='blocked' AND user_id=?",
+            (now_ts(), user_id))
+        conn.commit()
+        if cur.rowcount:
+            log.info("登录账号 %s 的攻打线程要继续，%d 条等通路的订单改回排队",
+                     username_of(user_id), cur.rowcount)
+    finally:
+        conn.close()
+
+
+def resume_stranded_orders() -> None:
+    """线程拉起来接着干。正在打的改回排队；挂机倒计时没了，等通路的也改回排队。"""
+    requeue_running_orders()
+    if not ((attack_hold_left() or 0) > 0):
+        requeue_blocked_orders()
 
 
 def claim_attack_order():
