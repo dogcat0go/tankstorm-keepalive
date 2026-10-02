@@ -527,6 +527,8 @@ def _wake_attack_orders(config) -> None:
                 if status.get("online"):
                     noted.discard(user_id)
                     continue
+                if citydb.unbound_login_waiting():
+                    continue
                 login = kick_attack_login(config, user_id)
             except SystemExit:
                 log.error("攻打号配置有误，网页不再自动拉起")

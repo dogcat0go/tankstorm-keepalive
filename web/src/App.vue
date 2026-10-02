@@ -273,7 +273,6 @@ async function pushLogin() {
 function attackLoginError(login) {
   if (login === "no_account") return "服务器还没配置攻打号，二维码发不出去";
   if (login === "taken") return "这个攻打 QQ 已经绑定别的登录账号，不能接着用";
-  if (login === "scanning") return "攻打 QQ 还没扫上，正在等另一个登录账号扫码";
   if (login === "unbound") return "这个登录账号还没绑定攻打号";
   return "";
 }

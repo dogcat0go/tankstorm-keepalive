@@ -1309,9 +1309,44 @@ def set_page_qr(on: bool) -> None:
             "INSERT INTO atk_signal(name, value, at) VALUES ('pageqr', ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
             ("1" if on else "0", now_ts()))
+        if not on:
+            conn.execute(
+                "INSERT INTO atk_signal(name, value, at) VALUES ('qrpath', '', ?) "
+                "ON CONFLICT(name) DO UPDATE SET value='', at=excluded.at",
+                (now_ts(),))
         conn.commit()
     finally:
         conn.close()
+
+
+def note_login_qr(path: str) -> None:
+    """这次扫码的图写在哪。别的登录账号点推送时，页面读这一份，而不是自己猜路径。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES ('qrpath', ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            (str(path or ""), now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def login_qr_path() -> str:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='qrpath'").fetchone()
+    finally:
+        conn.close()
+    return str(row[0] or "").strip() if row else ""
+
+
+def unbound_login_waiting() -> bool:
+    """有人正在等扫码，服务器上还没有攻打 QQ。自动拉起不要把这张二维码抢走。"""
+    if not proc_online() or proc_phase() != "login":
+        return False
+    return not bound_attack_qq()[2]
 
 
 def _proc_payload(raw) -> dict:
@@ -1408,6 +1443,58 @@ def proc_acct() -> str:
     if not online:
         return ""
     return str(parsed.get("acct") or "")
+
+
+def proc_phase() -> str:
+    parsed, _seen, online = _read_proc()
+    if not online:
+        return "offline"
+    return str(parsed.get("phase") or "offline")
+
+
+def login_for() -> int:
+    """这次扫码要绑到哪个登录账号。没有另外指定就是 0。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='login_for'").fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return 0
+    try:
+        return int(row[0] or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def hand_login_to(user_id: int) -> None:
+    """还没绑定攻打 QQ，把正在等的扫码交给当前这个登录账号，页面上才能看到二维码。"""
+    user_id = int(user_id)
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES ('login_for', ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            (str(user_id), now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+    set_attack_context(user_id, attack_qq_of(user_id))
+    set_attack_status("login")
+    set_page_qr(True)
+
+
+def clear_login_for() -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES ('login_for', '0', ?) "
+            "ON CONFLICT(name) DO UPDATE SET value='0', at=excluded.at",
+            (now_ts(),))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def set_attack_status(phase: str) -> None:
@@ -1804,12 +1891,13 @@ def _pause_value() -> str:
         conn.close()
 
 
-def attack_paused() -> bool:
-    """当前这个攻打进程是不是被它的登录账号暂停了。"""
+def attack_paused(user_id: int = 0) -> bool:
+    """当前这个攻打进程是不是被它的登录账号暂停了。
+    传入 user_id 时按这个登录账号查，不改进程自己记下的主人。"""
     value = _pause_value()
     if value in ("", "0"):
         return False
-    user_id = attack_context_user()
+    user_id = int(user_id or attack_context_user() or 0)
     if value == "1":
         return bool(user_id)
     return bool(user_id) and value == str(user_id)

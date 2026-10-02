@@ -1055,6 +1055,9 @@ def run_remote_orders(qq, config: dict) -> int:
         if not ((citydb.attack_hold_left() or 0) > 0):
             citydb.fail_blocked_orders()
         while True:
+            current = citydb.attack_context_user()
+            if current:
+                user_id = current
             if citydb.attack_paused():
                 citydb.set_attack_status("paused")
                 if citydb.attack_qq_blocked(user_id) and citydb.take_attack_login():
@@ -1108,11 +1111,14 @@ def _qr_file(cookie: str) -> str:
 
 
 def page_attack_qr_path(config: dict = None, user_id: int = 0) -> str:
-    """网页上的登录图。配置里把某个号的「用户」写成这个人，就用那个 cookie，否则是 accounts/web.json。"""
+    """网页上的登录图。正在等扫码时用进程写出的那张图，否则按这个登录账号的 cookie。"""
+    from . import citydb
+    shared = citydb.login_qr_path()
+    if shared:
+        return shared
     cookie = _PAGE_COOKIE
     user_id = int(user_id or 0)
     if user_id:
-        from . import citydb
         username = citydb.username_of(user_id)
         accounts = ((config or {}).get("登录") or {}).get("账号") or {}
         if isinstance(accounts, dict):
@@ -1195,7 +1201,7 @@ _kick_user = 0
 
 def kick_attack_login(config: dict, user_id: int = 0) -> str:
     """网页发起：能锁到这个登录账号自己的攻打号就推二维码并打他的单。
-    别人已经绑定或正在用的攻打号不接手。没配攻打号时，二维码留在网页上。"""
+    别人已经绑了攻打 QQ 的不接手。还没扫上时，点推送登录就把二维码交给这个人。"""
     import main as cli
 
     global _kick_alive, _kick_user
@@ -1218,26 +1224,30 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
         if _kick_alive and _kick_user != user_id:
             if citydb.attack_qq_of(_kick_user):
                 return "taken"
-            return "scanning"
+            citydb.hand_login_to(user_id)
+            _kick_user = user_id
+            log.info("攻打 QQ 还没扫上，二维码交给 %s", citydb.username_of(user_id))
+            return "qr"
         if citydb.proc_online() and citydb.proc_user() == user_id:
-            citydb.set_attack_context(user_id, citydb.attack_qq_of(user_id) or name)
-            if citydb.attack_paused():
+            if citydb.attack_paused(user_id):
                 if citydb.attack_qq_blocked(user_id):
                     citydb.ask_attack_login()
-                    citydb.set_attack_context(0, "")
                     log.info("攻打 QQ 和绑定的不一致，登录二维码由正在跑的进程重推")
                     return "busy"
                 log.info("攻打已暂停，先不拉起")
-                citydb.set_attack_context(0, "")
                 return "paused"
             citydb.ask_attack_login()
-            citydb.set_attack_context(0, "")
             log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
             return "busy"
         if citydb.proc_online() and citydb.proc_user() not in (0, user_id):
             if citydb.attack_qq_of(citydb.proc_user()):
                 return "taken"
-            return "scanning"
+            if citydb.proc_phase() == "login":
+                citydb.hand_login_to(user_id)
+                _kick_user = user_id
+                log.info("攻打 QQ 还没扫上，二维码交给 %s", citydb.username_of(user_id))
+                return "qr"
+            return "taken"
         on_page = _page_qr_account(config, name)
         qq = cli.open_qq(config, name, fatal_lock=False)
         if qq is None:
@@ -1256,22 +1266,27 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
         from . import citydb
         remembered = citydb.attack_qq_of(user_id) if name == _PAGE_ACCOUNT else name
         citydb.set_attack_context(user_id, remembered)
+
+        def _owner() -> int:
+            # 扫码还没完成时，别的登录账号点了推送，进程改记到那个人身上。
+            return citydb.attack_context_user() or user_id
+
         stop = _start_attack_status()
         try:
             citydb.requeue_running_orders()
             # 点「推送登录二维码」就要出码。没订单时也要，否则第一次绑定后页面上没有图。
-            if citydb.attack_qq_blocked(user_id) or not qq.is_valid():
+            if citydb.attack_qq_blocked(_owner()) or not qq.is_valid():
                 citydb.set_attack_status("login")
                 if on_page:
                     citydb.set_page_qr(True)
                 relogin_with_push(
-                    qq, config, force_qr=citydb.attack_qq_blocked(user_id))
+                    qq, config, force_qr=citydb.attack_qq_blocked(_owner()))
                 if on_page:
                     citydb.set_page_qr(False)
             while True:
                 if citydb.attack_paused():
                     citydb.set_attack_status("paused")
-                    if citydb.attack_qq_blocked(user_id) and citydb.take_attack_login():
+                    if citydb.attack_qq_blocked(_owner()) and citydb.take_attack_login():
                         citydb.set_attack_status("login")
                         if on_page:
                             citydb.set_page_qr(True)
@@ -1279,7 +1294,7 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
                         if on_page:
                             citydb.set_page_qr(False)
                         continue
-                    if not citydb.attack_qq_blocked(user_id):
+                    if not citydb.attack_qq_blocked(_owner()):
                         break
                     time.sleep(5)
                     continue
@@ -1493,7 +1508,7 @@ def note_attack_qq(qq) -> bool:
         return True
     from . import citydb
 
-    user_id = citydb.attack_context_user()
+    user_id = citydb.login_for() or citydb.attack_context_user()
     uin = str(getattr(qq, "uin", "") or "").strip()
     if not user_id or not uin.isdigit():
         return True
@@ -1507,6 +1522,7 @@ def note_attack_qq(qq) -> bool:
     qq._attack_qq_seen = (user_id, uin)
     qq._attack_qq_bad = not ok
     if ok:
+        citydb.clear_login_for()
         citydb.set_attack_context(user_id, uin)
     return ok
 
@@ -1515,6 +1531,9 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
     """需要重新扫码时：生成二维码并通过 PushPlus 推送给用户，等待扫码。
     二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。
     force_qr 为真时不再用旧票据续上，必须重新扫。攻打 QQ 对不上时用这个。"""
+    if getattr(qq, "attack_account", False) and getattr(qq, "qrcode_file", ""):
+        from . import citydb
+        citydb.note_login_qr(qq.qrcode_file)
     # 先向本机 NapCat 要当前票据。没有再试长效凭据静默续期。
     if not force_qr and qq.adopt_napcat(config):
         return True
