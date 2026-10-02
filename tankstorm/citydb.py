@@ -1158,10 +1158,13 @@ def attack_status(user_id: int) -> dict:
                 online = False
     show_qr = bool(page_qr and page_qr[0] == "1" and online and phase == "login")
     if not online:
+        # 进程已经停了。暂停只对还在跑的进程有意义，留下的标记会让下次打开页面一直显示已暂停。
+        if paused:
+            set_attack_paused(False)
         return {"online": False, "phase": "offline",
-                "detail": "已暂停" if paused else "没在跑",
+                "detail": "没在跑",
                 "seen_at": beijing_ts(seen), "qr": False, "here": "",
-                "paused": paused, "hold_left": None}
+                "paused": False, "hold_left": None}
     if paused:
         detail = "已暂停"
     elif phase == "login":

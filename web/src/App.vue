@@ -80,8 +80,8 @@ function reloadQr() {
 }
 
 function procText(p) {
-  if (p && p.paused) return "已暂停";
   if (!p || !p.online) return "没在跑";
+  if (p.paused) return "已暂停";
   return p.detail || "空闲，等订单";
 }
 
@@ -424,9 +424,9 @@ onUnmounted(() => {
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
         <p>
-          攻打进程：{{ procText(proc) }}<template v-if="proc && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template>
-          <button v-if="proc && proc.paused" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
-          <button v-else type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
+          攻打进程：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template>
+          <button v-if="proc && proc.online && proc.paused" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
+          <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
         <p class="muted">每 10 秒刷新一次。</p>
