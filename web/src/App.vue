@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import "./base.css";
 
 const me = ref(null);
@@ -9,6 +9,7 @@ const password = ref("");
 const invite = ref("");
 const err = ref("");
 const items = ref([]);
+const subOpen = ref({});
 const db = ref("");
 const cityId = ref("");
 const cities = ref([]);
@@ -316,6 +317,42 @@ function statusOf(it) {
   return "这座城还没扫过";
 }
 
+function whenOf(it) {
+  if (it.present) return it.seen_at || "—";
+  if (it.checked) return it.city_scanned_at || "—";
+  return "—";
+}
+
+function cityText(it) {
+  return it.city_name ? it.city_name + " " + it.city_id : String(it.city_id);
+}
+
+const players = computed(() => {
+  const order = [];
+  const map = {};
+  for (const it of items.value) {
+    let group = map[it.uid];
+    if (!group) {
+      group = { uid: it.uid, name: "", present: false, cities: [] };
+      map[it.uid] = group;
+      order.push(group);
+    }
+    if (!group.name && it.name) group.name = it.name;
+    if (it.present) group.present = true;
+    group.cities.push(it);
+  }
+  return order;
+});
+
+function isSubOpen(uid) {
+  const saved = subOpen.value[uid];
+  return saved == null ? true : saved;
+}
+
+function onSubToggle(uid, ev) {
+  subOpen.value = { ...subOpen.value, [uid]: ev.target.open };
+}
+
 onMounted(async () => {
   const meta = await fetch("/api/meta").then((r) => r.json()).catch(() => ({}));
   devLogin.value = !!meta.dev_login;
@@ -407,23 +444,23 @@ onUnmounted(() => {
         </form>
         <p class="muted">只对自动锁敌打完的订单。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
       </div>
-      <table>
-        <thead>
-          <tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>页</th><th>北京时间</th><th></th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="it in items" :key="it.city_id + ':' + it.uid">
-            <td>{{ it.city_name ? it.city_name + " " : "" }}{{ it.city_id }}</td>
-            <td>{{ it.uid }}</td>
-            <td>{{ it.name || "—" }}</td>
-            <td :class="it.present ? 'on' : 'off'">{{ statusOf(it) }}</td>
-            <td>{{ it.present && it.page != null ? it.page : "—" }}</td>
-            <td>{{ it.present ? it.seen_at || "—" : (it.checked ? it.city_scanned_at || "—" : "—") }}</td>
-            <td><button type="button" class="ghost" @click="removeSub(it)">取消</button></td>
-          </tr>
-        </tbody>
-      </table>
       <p v-if="!items.length" class="muted">还没有订阅。</p>
+      <div v-else class="subs">
+        <details v-for="p in players" :key="p.uid" class="sub" :open="isSubOpen(p.uid)" @toggle="onSubToggle(p.uid, $event)">
+          <summary>
+            <span class="sub-name">{{ p.name || p.uid }}</span>
+            <span v-if="p.name" class="muted">{{ p.uid }}</span>
+            <span v-if="p.present" class="on">在城里</span>
+            <span class="muted">{{ p.cities.length }} 座城</span>
+          </summary>
+          <div v-for="it in p.cities" :key="it.city_id" class="sub-city">
+            <span class="sub-where">{{ cityText(it) }}</span>
+            <span class="sub-status" :class="it.present ? 'on' : 'off'">{{ statusOf(it) }}<template v-if="it.present && it.page != null"> · 第{{ it.page }}页</template></span>
+            <span class="sub-time muted">{{ whenOf(it) }}</span>
+            <button type="button" class="ghost" @click="removeSub(it)">取消</button>
+          </div>
+        </details>
+      </div>
       <h2>远程扫码攻打</h2>
       <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。中级和高级可以提交，由服务器上的攻打号领取并扫码进游戏。</p>
       <template v-else>

@@ -21,6 +21,16 @@ form.scan-form { max-width: none; }
 .here-row select { min-width: 8em; }
 .storms { margin-top: 8px; }
 .storms p { margin: 2px 0; }
+.subs { margin-top: 12px; display: grid; gap: 8px; }
+.sub { background: #fff; border-radius: 8px; padding: 4px 12px 8px; }
+.sub summary { cursor: pointer; display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; padding: 8px 0; list-style: none; }
+.sub summary::-webkit-details-marker { display: none; }
+.sub summary::before { content: "▸"; color: #777; }
+.sub[open] summary::before { content: "▾"; }
+.sub-name { font-weight: 700; word-break: keep-all; }
+.sub-city { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 8px 0 8px 1.1em; border-top: 1px solid #eee; }
+.sub-where, .sub-status, .sub-time { white-space: nowrap; }
+.sub-city .ghost { margin-left: auto; padding: 4px 10px; }
 .orders { overflow-x: auto; }
 .orders table { min-width: 760px; }
 .orders th, .orders td { white-space: nowrap; }
