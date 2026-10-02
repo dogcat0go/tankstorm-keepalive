@@ -834,7 +834,7 @@ def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT 1 FROM atk_order WHERE user_id=? AND status IN ('pending','running')",
+            "SELECT 1 FROM atk_order WHERE user_id=? AND status IN ('pending','running','blocked')",
             (int(user_id),)).fetchone()
         if row:
             return "已经有一条还没打完"
@@ -968,7 +968,7 @@ def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
     try:
         row = conn.execute(
             "SELECT 1 FROM atk_order WHERE user_id=? AND city_id=? AND uid=? "
-            "AND status IN ('pending','running')",
+            "AND status IN ('pending','running','blocked')",
             (int(user_id), int(city_id), uid)).fetchone()
         if row:
             return False
@@ -1164,6 +1164,8 @@ def attack_status(user_id: int) -> dict:
             "SELECT city_id, IFNULL(uid,'') FROM atk_order "
             "WHERE user_id=? AND status='running' ORDER BY id DESC LIMIT 1",
             (int(user_id),)).fetchone()
+        waiting = conn.execute(
+            "SELECT 1 FROM atk_order WHERE status='blocked' LIMIT 1").fetchone()
         latest = conn.execute(
             "SELECT status, IFNULL(reason,'') FROM atk_order "
             "WHERE user_id=? ORDER BY id DESC LIMIT 1",
@@ -1219,6 +1221,8 @@ def attack_status(user_id: int) -> dict:
             detail = f"{head}，还剩 {(hold_left + 59) // 60} 分钟"
         else:
             detail = head
+        if waiting:
+            detail = f"{detail}，正在看路径"
     elif phase == "running" and own and str(own[1] or "").strip():
         detail = f"正在打城市 {own[0]} 的 {own[1]}"
     elif phase == "running" and own:
@@ -1502,6 +1506,90 @@ def defer_attack_order(order_id: int) -> None:
             "UPDATE atk_order SET status='pending', reason='', beats=NULL, updated_at=? "
             "WHERE id=? AND status='running'",
             (now_ts(), int(order_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def park_attack_order(order_id: int, reason: str = "", beats=None) -> None:
+    """有人挡路。订单先停在这里，挂机期间路径通了再接着打。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE atk_order SET status='blocked', reason=?, beats=?, updated_at=? "
+            "WHERE id=? AND status='running'",
+            (reason or "", None if beats is None else int(beats),
+             now_ts(), int(order_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def note_blocked_reason(order_id: int, reason: str) -> None:
+    """路径还是不通。把最新的原因写回等通路的订单。"""
+    text = str(reason or "").strip()
+    if not text:
+        return
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE atk_order SET reason=?, updated_at=? WHERE id=? AND status='blocked'",
+            (text, now_ts(), int(order_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def next_blocked_order():
+    """挂机时要盯的那一单。后提交的优先。不改状态。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats "
+            "FROM atk_order WHERE status='blocked' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[3]),
+            "cards": None if row[4] is None else int(row[4]),
+            "beats": 0 if row[5] is None else int(row[5])}
+
+
+def take_blocked_order(order_id: int):
+    """路径通了，把等通路的订单拿回来接着打。"""
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats "
+            "FROM atk_order WHERE id=? AND status='blocked'",
+            (int(order_id),)).fetchone()
+        if not row:
+            conn.commit()
+            return None
+        cur = conn.execute(
+            "UPDATE atk_order SET status='running', updated_at=? "
+            "WHERE id=? AND status='blocked'",
+            (now_ts(), int(order_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return None
+        return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[3]),
+                "cards": None if row[4] is None else int(row[4]),
+                "beats": 0 if row[5] is None else int(row[5])}
+    finally:
+        conn.close()
+
+
+def fail_blocked_orders() -> None:
+    """挂机结束了。还在等通路的订单记为没打成，原因留着。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE atk_order SET status='failed', updated_at=? WHERE status='blocked'",
+            (now_ts(),))
         conn.commit()
     finally:
         conn.close()
