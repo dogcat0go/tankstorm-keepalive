@@ -1199,9 +1199,10 @@ _kick_alive = False
 _kick_user = 0
 
 
-def kick_attack_login(config: dict, user_id: int = 0) -> str:
+def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> str:
     """网页发起：能锁到这个登录账号自己的攻打号就推二维码并打他的单。
-    别人已经绑了攻打 QQ 的不接手。还没扫上时，点推送登录就把二维码交给这个人。"""
+    别人已经绑了攻打 QQ 的不接手。claim 为真才是这个人点了推送登录，
+    还没扫上的二维码和 cookie 里已经有的 QQ 都记到这个人。按订单自动拉起不能抢。"""
     import main as cli
 
     global _kick_alive, _kick_user
@@ -1220,15 +1221,19 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
         return why
     with _kick_lock:
         if _kick_alive and _kick_user == user_id:
+            if claim:
+                citydb.set_login_for(user_id)
             return "busy"
         if _kick_alive and _kick_user != user_id:
-            if citydb.attack_qq_of(_kick_user):
-                return "taken"
+            if citydb.attack_qq_of(_kick_user) or not claim:
+                return "taken" if citydb.attack_qq_of(_kick_user) else "busy"
             citydb.hand_login_to(user_id)
             _kick_user = user_id
-            log.info("攻打 QQ 还没扫上，二维码交给 %s", citydb.username_of(user_id))
-            return "qr"
+            log.info("攻打 QQ 还没扫上，记到登录账号 %s", citydb.username_of(user_id))
+            return "qr" if citydb.proc_phase() == "login" else "busy"
         if citydb.proc_online() and citydb.proc_user() == user_id:
+            if claim:
+                citydb.set_login_for(user_id)
             if citydb.attack_paused(user_id):
                 if citydb.attack_qq_blocked(user_id):
                     citydb.ask_attack_login()
@@ -1240,17 +1245,18 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
             log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
             return "busy"
         if citydb.proc_online() and citydb.proc_user() not in (0, user_id):
-            if citydb.attack_qq_of(citydb.proc_user()):
-                return "taken"
-            if citydb.proc_phase() == "login":
-                citydb.hand_login_to(user_id)
-                _kick_user = user_id
-                log.info("攻打 QQ 还没扫上，二维码交给 %s", citydb.username_of(user_id))
-                return "qr"
-            return "taken"
+            if citydb.attack_qq_of(citydb.proc_user()) or not claim:
+                return "taken" if citydb.attack_qq_of(citydb.proc_user()) else "busy"
+            citydb.hand_login_to(user_id)
+            _kick_user = user_id
+            log.info("攻打 QQ 还没扫上，记到登录账号 %s", citydb.username_of(user_id))
+            return "qr" if citydb.proc_phase() == "login" else "busy"
+        citydb.set_login_for(user_id)
         on_page = _page_qr_account(config, name)
         qq = cli.open_qq(config, name, fatal_lock=False)
         if qq is None:
+            if citydb.login_for() == user_id:
+                citydb.clear_login_for()
             if citydb.proc_user() == user_id:
                 citydb.ask_attack_login()
                 log.info("攻打进程已在跑，登录二维码由它通过 QQ NT 推送")
@@ -1264,16 +1270,20 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
     def _run():
         global _kick_alive, _kick_user
         from . import citydb
-        remembered = citydb.attack_qq_of(user_id) if name == _PAGE_ACCOUNT else name
-        citydb.set_attack_context(user_id, remembered)
+        # 点推送的人写在 login_for。不要用线程启动时的账号盖掉，否则会记到别人头上。
+        owner = citydb.login_for() or user_id
+        remembered = citydb.attack_qq_of(owner) if name == _PAGE_ACCOUNT else name
+        citydb.set_attack_context(owner, remembered)
 
         def _owner() -> int:
-            # 扫码还没完成时，别的登录账号点了推送，进程改记到那个人身上。
-            return citydb.attack_context_user() or user_id
+            return citydb.login_for() or citydb.attack_context_user() or user_id
 
         stop = _start_attack_status()
         try:
             citydb.requeue_running_orders()
+            # cookie 里已经有 QQ 时，立刻记到点推送的这个人，不等订单把进程拉到别人身上。
+            if qq.is_valid():
+                note_attack_qq(qq)
             # 点「推送登录二维码」就要出码。没订单时也要，否则第一次绑定后页面上没有图。
             if citydb.attack_qq_blocked(_owner()) or not qq.is_valid():
                 citydb.set_attack_status("login")
@@ -1312,6 +1322,7 @@ def kick_attack_login(config: dict, user_id: int = 0) -> str:
             _stop_attack_status(stop)
             citydb.set_attack_context(0, "")
             with _kick_lock:
+                citydb.clear_login_for()
                 _kick_alive = False
                 _kick_user = 0
             cli.release_qq_lock()
@@ -1508,6 +1519,7 @@ def note_attack_qq(qq) -> bool:
         return True
     from . import citydb
 
+    # login_for 是点了「推送登录」的那个网页账号。没有的话才用进程自己的主人。
     user_id = citydb.login_for() or citydb.attack_context_user()
     uin = str(getattr(qq, "uin", "") or "").strip()
     if not user_id or not uin.isdigit():

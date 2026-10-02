@@ -1468,8 +1468,8 @@ def login_for() -> int:
         return 0
 
 
-def hand_login_to(user_id: int) -> None:
-    """还没绑定攻打 QQ，把正在等的扫码交给当前这个登录账号，页面上才能看到二维码。"""
+def set_login_for(user_id: int) -> None:
+    """这次攻打 QQ 记到哪个登录账号。只由这个人自己的推送登录来写，不按订单去改。"""
     user_id = int(user_id)
     conn = connect()
     try:
@@ -1480,9 +1480,19 @@ def hand_login_to(user_id: int) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def hand_login_to(user_id: int) -> None:
+    """还没绑定攻打 QQ，把这次扫码交给当前点推送的登录账号。正在等扫码时，二维码也转到他的页面上。"""
+    user_id = int(user_id)
+    set_login_for(user_id)
     set_attack_context(user_id, attack_qq_of(user_id))
-    set_attack_status("login")
-    set_page_qr(True)
+    phase = proc_phase()
+    if phase in ("", "offline"):
+        phase = "login"
+    set_attack_status(phase)
+    if phase == "login":
+        set_page_qr(True)
 
 
 def clear_login_for() -> None:

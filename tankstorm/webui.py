@@ -345,7 +345,8 @@ def _handler(config: dict):
                         _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})
                         return
                     from .socket_keepalive import kick_attack_login
-                    _json(self, 200, {"ok": True, "login": kick_attack_login(config, user["id"])})
+                    _json(self, 200, {"ok": True, "login": kick_attack_login(
+                        config, user["id"], claim=True)})
                 elif path == "/api/attack-pause":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "暂停攻打需要中级或高级订阅"})
@@ -523,13 +524,19 @@ def _wake_attack_orders(config) -> None:
             continue
         for user_id in users:
             try:
+                if not citydb.attack_qq_of(user_id):
+                    if user_id not in noted:
+                        log.info("登录账号 %s 还有订单，攻打 QQ 还没绑到这个人，不自动扫码",
+                                 citydb.username_of(user_id))
+                        noted.add(user_id)
+                    continue
                 status = citydb.attack_status(user_id)
                 if status.get("online"):
                     noted.discard(user_id)
                     continue
                 if citydb.unbound_login_waiting():
                     continue
-                login = kick_attack_login(config, user_id)
+                login = kick_attack_login(config, user_id, claim=False)
             except SystemExit:
                 log.error("攻打号配置有误，网页不再自动拉起")
                 return
