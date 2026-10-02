@@ -221,6 +221,13 @@ def connect(readonly=False, timeout=15):
             if ucols and "attack_acct" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
                 setup.commit()
+            if ucols and "attack_qq" not in ucols:
+                setup.execute("ALTER TABLE app_user ADD COLUMN attack_qq TEXT")
+                setup.commit()
+            if ucols and "attack_qq_block" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN attack_qq_block INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
             if ocols and "uid" not in ocols:
                 setup.execute(
@@ -1053,6 +1060,95 @@ def attack_acct_owner(account: str) -> int:
         conn.close()
 
 
+QQ_MISMATCH = "扫码的 QQ 和绑定的不一致，已暂停"
+
+
+def attack_qq_of(user_id: int) -> str:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(attack_qq,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+        return str(row[0] or "").strip() if row else ""
+    finally:
+        conn.close()
+
+
+def attack_qq_blocked(user_id: int) -> bool:
+    """这个登录账号上次核对攻打 QQ 没对上。对上之前攻打保持暂停。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return False
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(attack_qq_block,0) FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        return bool(row and int(row[0] or 0))
+    finally:
+        conn.close()
+
+
+def confirm_attack_qq(user_id: int, uin: str) -> bool:
+    """第一次扫码登录的 QQ 绑到这个登录账号。之后只核对这一次。
+    对上返回 True。对不上就暂停这个账号的攻打，返回 False。"""
+    user_id = int(user_id or 0)
+    uin = str(uin or "").strip()
+    if not user_id or not uin.isdigit():
+        return True
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(attack_qq,''), IFNULL(attack_qq_block,0), username "
+            "FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not row:
+            return True
+        bound = str(row[0] or "").strip()
+        blocked = int(row[1] or 0)
+        who = str(row[2] or "")
+        if not bound:
+            other = conn.execute(
+                "SELECT username FROM app_user WHERE attack_qq=? AND id!=?",
+                (uin, user_id)).fetchone()
+            if other:
+                conn.execute(
+                    "UPDATE app_user SET attack_qq_block=1 WHERE id=?",
+                    (user_id,))
+                conn.commit()
+                log.error("QQ %s 已经绑在登录账号 %s 上，%s 这次对不上，已暂停",
+                          uin, other[0], who)
+                set_attack_paused(True, user_id)
+                return False
+            conn.execute(
+                "UPDATE app_user SET attack_qq=?, attack_qq_block=0 WHERE id=?",
+                (uin, user_id))
+            conn.commit()
+            log.info("登录账号 %s 第一次扫码，绑定攻打 QQ %s", who, uin)
+            return True
+        if bound == uin:
+            if blocked:
+                conn.execute(
+                    "UPDATE app_user SET attack_qq_block=0 WHERE id=?",
+                    (user_id,))
+                conn.commit()
+                log.info("登录账号 %s 的攻打 QQ %s 已对上，暂停解开", who, uin)
+                set_attack_paused(False, user_id)
+            else:
+                log.info("登录账号 %s 的攻打 QQ %s 核对通过", who, uin)
+            return True
+        conn.execute(
+            "UPDATE app_user SET attack_qq_block=1 WHERE id=?",
+            (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    log.error("登录账号 %s 绑定的攻打 QQ 是 %s，这次登录的是 %s，已暂停",
+              who, bound, uin)
+    set_attack_paused(True, user_id)
+    return False
+
+
 def bind_attack_account(user_id: int, account: str) -> str:
     """一对一绑定。成功返回空字符串。"""
     account = str(account or "").strip()
@@ -1465,24 +1561,32 @@ def attack_status(user_id: int) -> dict:
     gone = {"online": False, "phase": "offline", "detail": "没在跑",
             "seen_at": "", "qr": False, "here": "",
             "paused": False, "hold_left": None}
+    blocked = attack_qq_blocked(int(user_id))
+    mismatch = {"online": False, "phase": "offline", "detail": QQ_MISMATCH,
+                "seen_at": beijing_ts(seen), "qr": False, "here": "",
+                "paused": True, "hold_left": None}
     # 攻打号和登录账号一对一。别人的进程、以及还没写上主人的旧进程，这里都不当自己的。
     if proc_owner and proc_owner != int(user_id):
-        return gone
+        return mismatch if blocked else gone
     if online and not proc_owner:
-        return gone
-    paused = pause_val == str(int(user_id)) or (pause_val == "1" and proc_owner == int(user_id))
+        return mismatch if blocked else gone
+    paused = blocked or pause_val == str(int(user_id)) or (
+        pause_val == "1" and proc_owner == int(user_id))
     hold_left = attack_hold_left(int(user_id))
     show_qr = bool(page_qr and page_qr[0] == "1" and online and phase == "login")
     if not online:
         # 进程已经停了。暂停只对还在跑的进程有意义，留下的标记会让下次打开页面一直显示已暂停。
-        if pause_val in ("1", str(int(user_id))) and proc_owner in (0, int(user_id)):
+        # QQ 对不上的暂停留着，下次拉起也不能接着打。
+        if not blocked and pause_val in ("1", str(int(user_id))) and proc_owner in (0, int(user_id)):
             set_attack_paused(False, int(user_id))
+        if blocked:
+            return mismatch
         return {"online": False, "phase": "offline",
                 "detail": "没在跑",
                 "seen_at": beijing_ts(seen), "qr": False, "here": "",
                 "paused": False, "hold_left": None}
-    if paused:
-        detail = "已暂停"
+    if paused and phase != "login":
+        detail = QQ_MISMATCH if blocked else "已暂停"
     elif phase == "login":
         detail = "正在等扫码"
     elif phase == "hold":
@@ -1726,6 +1830,8 @@ def pause_attack_for(user_id: int, on: bool) -> str:
     bound = attack_acct_owner(acct) if acct else 0
     if bound and bound != user_id:
         return "这个攻打号已经绑定别的登录账号"
+    if not on and attack_qq_blocked(user_id):
+        return QQ_MISMATCH
     if not set_attack_paused(on, user_id):
         return "这个攻打号已经绑定别的登录账号"
     return ""
