@@ -1199,8 +1199,23 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
     return out
 
 
+def _note_repel(out, tally) -> None:
+    """记下击退一个人。tally 里的 note 把累计人数写到订单上。"""
+    out["击退"] = int(out.get("击退") or 0) + 1
+    if not tally:
+        return
+    tally["n"] = int(tally.get("n") or 0) + 1
+    note = tally.get("note")
+    if not note:
+        return
+    try:
+        note(tally["n"])
+    except Exception:
+        pass
+
+
 def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
-              country=0, beat=None, pass_block=False) -> dict:
+              country=0, beat=None, pass_block=False, tally=None) -> dict:
     """现场翻页打这座城。打中后看士气损失，低于 150 才写入 atk_fail；
     打不到不入库。不读玩家库。跳过失败库，行动力低于 15 自动开卡，不迁城。"""
     from . import citydb
@@ -1209,7 +1224,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
     city_id = int(city_id or 0)
     country = int(country or conf.get("自己国家ID") or 0) \
         or _daily.read_my_country(rec)
-    out = {"成功": 0, "失败": 0, "跳过": 0, "用卡": 0, "打过": 0,
+    out = {"成功": 0, "失败": 0, "跳过": 0, "用卡": 0, "打过": 0, "击退": 0,
            "停止原因": "", "城市": city_id}
     if not city_id:
         out["停止原因"] = "没给城市 ID"
@@ -1361,6 +1376,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 if one.get("成功"):
                     out["成功"] += one["成功"]
                 if one.get("击退"):
+                    _note_repel(out, tally)
                     continue
                 if one.get("记失败"):
                     fail.add(uid)
@@ -1567,7 +1583,8 @@ def _ready_to_leave(sock, rec, config, loc, my) -> str:
 
 
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
-             avoid=None, replanned=False, uid="", hold_if_blocked=False) -> dict:
+             avoid=None, replanned=False, uid="", hold_if_blocked=False,
+             tally=None) -> dict:
     """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
@@ -1578,7 +1595,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     target = int(target or 0)
     conf = config.get("国战") or {}
     my = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
-    out = {"停止原因": "", "走到": 0, "移动": 0, "目标": target}
+    out = {"停止原因": "", "走到": 0, "移动": 0, "目标": target, "击退": 0}
     if not my:
         out["停止原因"] = "读不到自己的国家ID"
         return out
@@ -1676,7 +1693,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             elif owner != my and cnt:
                 log.info("[移动] %s %s 有 %d 个敌方，先打这座城", city, name, cnt)
                 fought = farm_city(rec, sock, config, city, sweep=True,
-                                   country=my, beat=beat, pass_block=True)
+                                   country=my, beat=beat, pass_block=True,
+                                   tally=tally)
                 reason = fought.get("停止原因") or ""
                 if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                     out["停止原因"] = reason
@@ -1734,7 +1752,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     log.info("[移动] %s %s 再看还有 %d 人，所属 %s，改为先打",
                              city, name, cnt, owner)
                     fought = farm_city(rec, sock, config, city, sweep=True,
-                                       country=my, beat=beat, pass_block=True)
+                                       country=my, beat=beat, pass_block=True, tally=tally)
                     reason = fought.get("停止原因") or ""
                     if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
@@ -1760,7 +1778,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 if not moved and "城里还有" in (why or ""):
                     log.info("[移动] %s %s %s，改为先打", city, name, why)
                     fought = farm_city(rec, sock, config, city, sweep=True,
-                                       country=my, beat=beat, pass_block=True)
+                                       country=my, beat=beat, pass_block=True, tally=tally)
                     reason = fought.get("停止原因") or ""
                     if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
@@ -1778,7 +1796,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 if not moved and "ret=30" in (why or ""):
                     log.info("[移动] %s %s 占领被拒 ret=30，先尝试攻打", city, name)
                     fought = farm_city(rec, sock, config, city, sweep=True,
-                                       country=my, beat=beat, pass_block=True)
+                                       country=my, beat=beat, pass_block=True, tally=tally)
                     reason = fought.get("停止原因") or ""
                     log.info("[移动] %s %s 攻打结束：%s，成功 %d，失败 %d",
                              city, name, reason, fought.get("成功") or 0,
@@ -1816,7 +1834,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     log.info("[移动] %s %s 进不去（城里 %d 人），先把人清掉再进",
                              city, name, cnt)
                     fought = farm_city(rec, sock, config, city, sweep=True,
-                                       country=my, beat=beat)
+                                       country=my, beat=beat, tally=tally)
                     reason = fought.get("停止原因") or ""
                     if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):
                         out["停止原因"] = reason
@@ -1851,7 +1869,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                      blocked_at, cname)
             nxt = walk_to(rec, sock, config, target, sweep=sweep, beat=beat,
                           avoid=set(avoid or ()) | {blocked_at}, replanned=True,
-                          uid=uid)
+                          uid=uid, tally=tally)
             out["移动"] += nxt.get("移动") or 0
             if nxt.get("走到"):
                 out["走到"] = nxt["走到"]
@@ -1879,6 +1897,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 rec, sock, config, uid, city_id=int(target), sweep=True,
                 beat=beat, until_down=True, page=page)
             out["攻击"] = hitp.get("成功") or 0
+            if hitp.get("击退"):
+                _note_repel(out, tally)
             if hitp.get("击退") or out["攻击"]:
                 out["停止原因"] = "" if hitp.get("击退") else (hitp.get("停止原因") or "")
             else:
@@ -1909,7 +1929,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             last_cnt = left
             log.info("[移动] 目标 %s %s 还有 %d 人", target, tname, left)
             fought = farm_city(rec, sock, config, target, sweep=True,
-                               country=my, beat=beat)
+                               country=my, beat=beat, tally=tally)
             hit += fought.get("成功") or 0
             reason = fought.get("停止原因") or ""
             if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停")):

@@ -708,16 +708,20 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
 
     uid = str(job.get("uid") or "").strip()
     citydb.set_attack_status("running")
+    tally = {"n": 0, "note": lambda n: citydb.note_attack_beats(job["id"], n)}
+    citydb.note_attack_beats(job["id"], 0)
     try:
         out = country_war.walk_to(
             rec, sock, config, job["city_id"], beat=beater, uid=uid,
-            hold_if_blocked=bool(job.get("auto")))
+            hold_if_blocked=bool(job.get("auto")), tally=tally)
     except OSError:
-        citydb.finish_attack_order(job["id"], "failed", "连接中断")
+        citydb.finish_attack_order(
+            job["id"], "failed", "连接中断", beats=int(tally.get("n") or 0))
         raise
     except Exception:
         log.info("订单 %s 攻打中断", job["id"], exc_info=True)
-        citydb.finish_attack_order(job["id"], "failed", "攻打中断")
+        citydb.finish_attack_order(
+            job["id"], "failed", "攻打中断", beats=int(tally.get("n") or 0))
         return
     if uid:
         log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
@@ -739,7 +743,8 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         ok = False
     citydb.finish_attack_order(
         job["id"], "done" if ok else "failed",
-        reason or ("" if ok else "未打成"))
+        reason or ("" if ok else "未打成"),
+        beats=int(tally.get("n") or 0))
 
 
 def _wait_socket(sock, spec, ctx) -> bool:
