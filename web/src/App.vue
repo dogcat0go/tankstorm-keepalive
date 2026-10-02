@@ -472,7 +472,6 @@ label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15
 form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 form.stack { display: grid; max-width: 520px; }
 form.scan-form { max-width: none; }
-form.attack-row { flex-wrap: nowrap; overflow-x: auto; }
 .wide { overflow-x: auto; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
 input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
