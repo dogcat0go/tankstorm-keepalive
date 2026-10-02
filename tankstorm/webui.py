@@ -121,6 +121,7 @@ def _account(data):
 
 
 def _user_out(user: dict) -> dict:
+    plan = citydb.clear_settings(int(user.get("id") or 0))
     return {
         "id": user["id"],
         "username": user["username"],
@@ -136,6 +137,10 @@ def _user_out(user: dict) -> dict:
         "retreat_hops": int(user.get("retreat_hops") or 3),
         "retreat_city": int(user.get("retreat_city") or 0),
         "lock_cards": int(user.get("lock_cards") if user.get("lock_cards") is not None else 3),
+        "clear_mode": plan["mode"],
+        "clear_from": plan["page_from"],
+        "clear_to": plan["page_to"],
+        "clear_priority": plan["priority"],
     }
 
 
@@ -406,6 +411,17 @@ def _handler(config: dict):
                         _json(self, 403, {"error": "锁敌恢复卡限制需要中级或高级订阅"})
                         return
                     why = citydb.set_lock_cards(user["id"], data.get("cards"))
+                    if why:
+                        raise ValueError(why)
+                    saved = citydb.user_by_token(_cookie_token(self)) or user
+                    _json(self, 200, {"ok": True, "user": _user_out(saved)})
+                elif path == "/api/clear-plan":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "清城高级配置需要中级或高级订阅"})
+                        return
+                    why = citydb.set_clear_plan(
+                        user["id"], data.get("mode"), data.get("page_from"),
+                        data.get("page_to"), data.get("priority"))
                     if why:
                         raise ValueError(why)
                     saved = citydb.user_by_token(_cookie_token(self)) or user

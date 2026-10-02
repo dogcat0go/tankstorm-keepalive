@@ -849,9 +849,11 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         citydb.begin_lock_cards()
     try:
         try:
+            plan = citydb.clear_fight_plan() if not uid else None
             out = country_war.walk_to(
                 rec, sock, fight_config, job["city_id"], beat=beater, uid=uid,
-                hold_if_blocked=bool(job.get("auto")), tally=tally)
+                hold_if_blocked=bool(job.get("auto")), tally=tally,
+                clear_plan=plan)
         except OSError:
             citydb.finish_attack_order(
                 job["id"], "failed", "连接中断", beats=int(tally.get("n") or 0))
