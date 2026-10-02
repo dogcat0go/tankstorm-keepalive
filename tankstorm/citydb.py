@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS atk_order (
     status      TEXT NOT NULL,
     reason      TEXT,
     auto        INTEGER NOT NULL DEFAULT 0,
+    beats       INTEGER,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -210,6 +211,9 @@ def connect(readonly=False, timeout=15):
             if ocols and "auto" not in ocols:
                 setup.execute(
                     "ALTER TABLE atk_order ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ocols and "beats" not in ocols:
+                setup.execute("ALTER TABLE atk_order ADD COLUMN beats INTEGER")
                 setup.commit()
             _schema_ready = True
         finally:
@@ -907,13 +911,14 @@ def list_attack_orders(user_id: int, limit: int = 20) -> list:
     conn = connect(readonly=True)
     try:
         rows = conn.execute(
-            "SELECT id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at "
+            "SELECT id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at, beats "
             "FROM atk_order WHERE user_id=? ORDER BY id DESC LIMIT ?",
             (int(user_id), int(limit))).fetchall()
     finally:
         conn.close()
     return [{"id": r[0], "city_id": r[1], "uid": r[2], "status": r[3],
-             "reason": r[4], "created_at": beijing_ts(r[5])} for r in rows]
+             "reason": r[4], "created_at": beijing_ts(r[5]), "beats": r[6]}
+            for r in rows]
 
 
 def set_page_qr(on: bool) -> None:
@@ -1068,7 +1073,7 @@ def attack_status(user_id: int) -> dict:
         return {"online": False, "phase": "offline",
                 "detail": "已暂停" if paused else "没在跑",
                 "seen_at": beijing_ts(seen), "qr": False, "here": "",
-                "paused": paused}
+                "paused": paused, "hold_left": None}
     if paused:
         detail = "已暂停"
     elif phase == "login":
@@ -1092,9 +1097,12 @@ def attack_status(user_id: int) -> dict:
     if here_id:
         name = city_name(here_id)
         here = f"{here_id} {name}".strip() if name else str(here_id)
+    show_hold = (not paused and phase == "hold"
+                 and hold_left is not None and hold_left > 0)
     return {"online": True, "phase": phase, "detail": detail,
             "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
-            "paused": paused}
+            "paused": paused,
+            "hold_left": int(hold_left) if show_hold else None}
 
 
 def _clock(text) -> str:
@@ -1332,12 +1340,29 @@ def claim_attack_order():
         conn.close()
 
 
+def note_attack_beats(order_id: int, n: int) -> None:
+    """正在打的订单记下已经击退几个人。写库失败不影响继续打。"""
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "UPDATE atk_order SET beats=? WHERE id=? AND status='running'",
+            (int(n), int(order_id)))
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+
 def defer_attack_order(order_id: int) -> None:
     """暂停时把正在打的单放回排队。继续后会再领。"""
     conn = connect()
     try:
         conn.execute(
-            "UPDATE atk_order SET status='pending', reason='', updated_at=? "
+            "UPDATE atk_order SET status='pending', reason='', beats=NULL, updated_at=? "
             "WHERE id=? AND status='running'",
             (now_ts(), int(order_id)))
         conn.commit()
@@ -1345,13 +1370,19 @@ def defer_attack_order(order_id: int) -> None:
         conn.close()
 
 
-def finish_attack_order(order_id: int, status: str, reason: str = "") -> None:
+def finish_attack_order(order_id: int, status: str, reason: str = "", beats=None) -> None:
     conn = connect()
     try:
-        conn.execute(
-            "UPDATE atk_order SET status=?, reason=?, updated_at=? "
-            "WHERE id=? AND status='running'",
-            (status, reason or "", now_ts(), int(order_id)))
+        if beats is None:
+            conn.execute(
+                "UPDATE atk_order SET status=?, reason=?, updated_at=? "
+                "WHERE id=? AND status='running'",
+                (status, reason or "", now_ts(), int(order_id)))
+        else:
+            conn.execute(
+                "UPDATE atk_order SET status=?, reason=?, beats=?, updated_at=? "
+                "WHERE id=? AND status='running'",
+                (status, reason or "", int(beats), now_ts(), int(order_id)))
         conn.commit()
     finally:
         conn.close()

@@ -315,6 +315,11 @@ def _handler(config: dict):
                         raise ValueError("城市 ID 要大于 0")
                     if uid and (not uid.isdigit() or len(uid) > 32):
                         raise ValueError("UID 要是数字")
+                    minutes = data.get("minutes", None)
+                    if minutes is not None and str(minutes).strip() != "":
+                        why = citydb.set_attack_hold(user["id"], minutes)
+                        if why:
+                            raise ValueError(why)
                     why = citydb.add_attack_order(user["id"], city_id, uid)
                     if why and why != "已经有一条还没打完":
                         raise ValueError(why)
@@ -322,7 +327,10 @@ def _handler(config: dict):
                     login = kick_attack_login(config)
                     if why:
                         raise ValueError(why)
-                    _json(self, 200, {"ok": True, "login": login})
+                    hold_min = int(user.get("hold_min") or 0)
+                    if minutes is not None and str(minutes).strip() != "":
+                        hold_min = int(str(minutes).strip())
+                    _json(self, 200, {"ok": True, "login": login, "hold_min": hold_min})
                 elif path == "/api/attack-login":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})

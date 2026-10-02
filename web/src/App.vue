@@ -29,8 +29,11 @@ const scanNote = ref("");
 const scanQuiet = ref(false);
 const autoLock = ref(false);
 const holdMin = ref("0");
+const holdUntil = ref(0);
+const clock = ref(Date.now());
 let timer = 0;
 let atkTimer = 0;
+let clockTimer = 0;
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -60,6 +63,8 @@ async function refreshAttacks() {
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
   proc.value = atk.process || null;
+  const left = proc.value && proc.value.hold_left;
+  holdUntil.value = left > 0 ? Date.now() + left * 1000 : 0;
   qrSrc.value = proc.value && proc.value.qr ? "/api/attack-qr?t=" + Date.now() : "";
   if (qrSrc.value) qrWait = 0;
 }
@@ -209,19 +214,40 @@ async function removeSub(it) {
   await refresh();
 }
 
-async function saveHold() {
-  err.value = "";
-  const data = await api("/api/attack-hold", { minutes: holdMin.value });
-  holdMin.value = String(data.hold_min ?? 0);
-}
-
 async function addOrder() {
   err.value = "";
-  const data = await api("/api/attacks", { city_id: attackCity.value, uid: attackUid.value });
+  const data = await api("/api/attacks", {
+    city_id: attackCity.value,
+    uid: attackUid.value,
+    minutes: holdMin.value,
+  });
   attackCity.value = "";
   attackUid.value = "";
+  if (data.hold_min != null) holdMin.value = String(data.hold_min);
   if (data.login === "no_account") err.value = "服务器还没配置攻打号，二维码发不出去";
   await refreshAttacks();
+}
+
+function beatText(it) {
+  if (it.beats == null) return "—";
+  return String(it.beats);
+}
+
+function holdClock() {
+  if (!holdUntil.value) return "";
+  const sec = Math.max(0, Math.round((holdUntil.value - clock.value) / 1000));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  return h ? h + ":" + pad(m) + ":" + pad(s) : m + ":" + pad(s);
+}
+
+function holdCell(it) {
+  const text = holdClock();
+  if (!text || it.status === "pending" || it.status === "running") return "—";
+  const finished = orders.value.find((row) => row.status !== "pending" && row.status !== "running");
+  return finished && finished.id === it.id ? text : "—";
 }
 
 async function pushLogin() {
@@ -268,10 +294,14 @@ onMounted(async () => {
   atkTimer = setInterval(() => {
     if (me.value) refreshAttacks().catch(() => {});
   }, 10000);
+  clockTimer = setInterval(() => {
+    clock.value = Date.now();
+  }, 1000);
 });
 onUnmounted(() => {
   clearInterval(timer);
   clearInterval(atkTimer);
+  clearInterval(clockTimer);
 });
 </script>
 
@@ -372,12 +402,7 @@ onUnmounted(() => {
       <h2>远程扫码攻打</h2>
       <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。中级和高级可以提交，由服务器上的攻打号领取并扫码进游戏。</p>
       <template v-else>
-        <form @submit.prevent="saveHold().catch((e) => (err = e.message))">
-          <label>挂机保活分钟<input v-model="holdMin" inputmode="numeric" required /></label>
-          <button type="submit">保存</button>
-        </form>
-        <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。0 表示打完就下线。</p>
-        <form @submit.prevent="addOrder().catch((e) => (err = e.message))">
+        <form class="attack-row" @submit.prevent="addOrder().catch((e) => (err = e.message))">
           <label>城市
             <select v-model="attackCity" required>
               <option value="" disabled>选择城市</option>
@@ -385,8 +410,10 @@ onUnmounted(() => {
             </select>
           </label>
           <label>UID<input v-model="attackUid" inputmode="numeric" placeholder="留空则打整座城" /></label>
+          <label>挂机保活分钟<input v-model="holdMin" class="mins" inputmode="numeric" required /></label>
           <button type="submit">提交攻打</button>
         </form>
+        <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。0 表示打完就下线。</p>
         <p>
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
@@ -398,20 +425,24 @@ onUnmounted(() => {
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
         <p class="muted">每 10 秒刷新一次。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
-        <table v-if="orders.length">
+        <div class="wide" v-if="orders.length">
+        <table>
           <thead>
-            <tr><th>城市</th><th>UID</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
+            <tr><th>城市</th><th>UID</th><th>击退敌方数量</th><th>状态</th><th>说明</th><th>保活剩余倒计时</th><th>北京时间</th></tr>
           </thead>
           <tbody>
             <tr v-for="it in orders" :key="it.id">
               <td>{{ it.city_id }}</td>
               <td>{{ it.uid || "整座城" }}</td>
+              <td>{{ beatText(it) }}</td>
               <td>{{ orderStatus(it.status) }}</td>
               <td>{{ it.reason || "—" }}</td>
+              <td>{{ holdCell(it) }}</td>
               <td>{{ it.created_at || "—" }}</td>
             </tr>
           </tbody>
         </table>
+        </div>
       </template>
       <h2>推送</h2>
       <form class="stack" @submit.prevent="savePush().catch((e) => (err = e.message))">
@@ -441,8 +472,11 @@ label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15
 form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 form.stack { display: grid; max-width: 520px; }
 form.scan-form { max-width: none; }
+form.attack-row { flex-wrap: nowrap; overflow-x: auto; }
+.wide { overflow-x: auto; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
 input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
+input.mins { width: 6em; }
 button { font: inherit; padding: 8px 14px; border: 0; border-radius: 6px; background: #1a1a1a; color: #fff; cursor: pointer; }
 button.ghost { background: transparent; color: #333; border: 1px solid #bbb; }
 p button.ghost { margin-left: 8px; }
