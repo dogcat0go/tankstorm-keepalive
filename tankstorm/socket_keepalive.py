@@ -697,6 +697,7 @@ def _stop_attack_status(stop: threading.Event) -> None:
 
     stop.set()
     try:
+        citydb.clear_attack_hold()
         citydb.set_attack_status("offline")
     except Exception:
         log.debug("攻打进程收尾状态没写上", exc_info=True)
@@ -757,41 +758,59 @@ def _wait_socket(sock, spec, ctx) -> bool:
     return True
 
 
+def _begin_attack_hold(fresh=False) -> bool:
+    """队列空了就按配置开始或继续挂机。该结束时返回 False。"""
+    from . import citydb
+
+    minutes = citydb.attack_hold_minutes()
+    left = citydb.attack_hold_left()
+    if minutes <= 0:
+        if left is not None:
+            citydb.clear_attack_hold()
+            log.info("挂机保活已关掉，攻打连接断开")
+        else:
+            log.info("没有下一条订单，攻打连接断开")
+        return False
+    if left is None:
+        citydb.note_attack_hold(time.time() + minutes * 60)
+        log.info("没有下一条订单，挂机保活 %d 分钟", minutes)
+        fresh = True
+    elif left <= 0:
+        citydb.clear_attack_hold()
+        log.info("挂机保活结束，攻打连接断开")
+        return False
+    if fresh:
+        citydb.set_attack_status("hold")
+    return True
+
+
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     """同一条游戏连接上把排队的单打完。打完或打不过之后，按挂机时长继续心跳。"""
     from . import citydb
 
-    idle_at = None
+    stated = False
     while True:
         if citydb.attack_paused():
-            idle_at = None
             citydb.set_attack_status("paused")
             if not _wait_socket(sock, spec, ctx):
                 raise OSError("服务器关闭连接")
             continue
         job = citydb.claim_attack_order()
         if job:
-            idle_at = None
+            stated = False
+            citydb.clear_attack_hold()
             log.info("领到订单 %s，城市 %s UID %s",
                      job["id"], job["city_id"], job["uid"])
             _fight_claimed(rec, sock, config, beater, job)
             continue
         if citydb.attack_order_open():
             continue
-        minutes = citydb.attack_hold_minutes()
-        if minutes <= 0:
-            log.info("挂机保活已关掉，攻打连接断开" if idle_at is not None
-                     else "没有下一条订单，攻打连接断开")
+        if not _begin_attack_hold(fresh=not stated):
             return 0
-        if idle_at is None:
-            idle_at = time.time()
-            citydb.set_attack_status("hold")
-            log.info("没有下一条订单，挂机保活 %d 分钟", minutes)
-        elif time.time() >= idle_at + minutes * 60:
-            log.info("挂机保活结束，攻打连接断开")
-            return 0
+        stated = True
         if not _wait_socket(sock, spec, ctx):
-            raise OSError("服务器关闭连接")
+            log.info("挂机时游戏连接断了，准备重连")
+            return 0
 
 
 def _connect_attack_orders(qq, config) -> int:
@@ -816,18 +835,27 @@ def run_remote_orders(qq, config: dict) -> int:
                 continue
             asked = citydb.take_attack_login()
             pending = citydb.attack_order_open()
-            if (asked or pending) and not qq.is_valid():
+            left = citydb.attack_hold_left()
+            if (asked or pending or (left or 0) > 0) and not qq.is_valid():
                 citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
-                citydb.set_attack_status("idle")
+                if not ((citydb.attack_hold_left() or 0) > 0):
+                    citydb.set_attack_status("idle")
                 pending = citydb.attack_order_open()
-            if not pending:
+                left = citydb.attack_hold_left()
+            if not pending and not ((left or 0) > 0):
+                if left is not None:
+                    citydb.clear_attack_hold()
                 citydb.set_attack_status("idle")
                 time.sleep(5)
                 continue
-            citydb.requeue_running_orders()
+            if pending:
+                citydb.requeue_running_orders()
             _connect_attack_orders(qq, config)
-            citydb.set_attack_status("idle")
+            if not ((citydb.attack_hold_left() or 0) > 0):
+                citydb.set_attack_status("idle")
+            else:
+                time.sleep(5)
     except KeyboardInterrupt:
         log.info("停止领取远程扫码攻打")
         return 0
@@ -917,9 +945,14 @@ def kick_attack_login(config: dict) -> str:
                 if on_page:
                     citydb.set_page_qr(True)
                 relogin_with_push(qq, config)
-            while citydb.attack_order_open() and not citydb.attack_paused():
-                citydb.requeue_running_orders()
+            while not citydb.attack_paused() and (
+                    citydb.attack_order_open()
+                    or (citydb.attack_hold_left() or 0) > 0):
+                if citydb.attack_order_open():
+                    citydb.requeue_running_orders()
                 _connect_attack_orders(qq, config)
+                if (citydb.attack_hold_left() or 0) > 0:
+                    time.sleep(5)
         finally:
             if on_page:
                 citydb.set_page_qr(False)

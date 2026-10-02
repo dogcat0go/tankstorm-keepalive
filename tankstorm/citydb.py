@@ -808,6 +808,48 @@ def set_attack_hold(user_id: int, minutes) -> str:
     return ""
 
 
+def note_attack_hold(until_epoch: float) -> None:
+    """记下这次挂机保活到什么时候。重连时接着用，不重新计时。"""
+    text = datetime.fromtimestamp(float(until_epoch), timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES ('hold', ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            (text, now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def clear_attack_hold() -> None:
+    conn = connect()
+    try:
+        conn.execute("DELETE FROM atk_signal WHERE name='hold'")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def attack_hold_left():
+    """挂机还剩多少秒。没有这次挂机返回 None，过期返回 0 或负数。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='hold'").fetchone()
+    finally:
+        conn.close()
+    raw = str(row[0] or "").strip() if row else ""
+    if not raw:
+        return None
+    try:
+        dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return int((dt - datetime.now(timezone.utc)).total_seconds())
+
+
 def attack_hold_minutes() -> int:
     """攻打进程挂机多久。取还有效的中级、高级里最长的那一档。"""
     conn = connect(readonly=True)
@@ -991,9 +1033,20 @@ def attack_status(user_id: int) -> dict:
             (int(user_id),)).fetchone()
         paused_row = conn.execute(
             "SELECT value FROM atk_signal WHERE name='pause'").fetchone()
+        hold_row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name='hold'").fetchone()
     finally:
         conn.close()
     paused = bool(paused_row and paused_row[0] == "1")
+    hold_left = None
+    raw_hold = str(hold_row[0] or "").strip() if hold_row else ""
+    if raw_hold:
+        try:
+            dt = datetime.strptime(raw_hold, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc)
+            hold_left = int((dt - datetime.now(timezone.utc)).total_seconds())
+        except ValueError:
+            hold_left = None
     phase = "offline"
     seen = ""
     online = False
@@ -1021,7 +1074,10 @@ def attack_status(user_id: int) -> dict:
     elif phase == "login":
         detail = "正在等扫码"
     elif phase == "hold":
-        detail = "挂机保活"
+        if hold_left is not None and hold_left > 0:
+            detail = f"挂机保活，还剩 {(hold_left + 59) // 60} 分钟"
+        else:
+            detail = "挂机保活"
     elif phase == "running" and own and str(own[1] or "").strip():
         detail = f"正在打城市 {own[0]} 的 {own[1]}"
     elif phase == "running" and own:
