@@ -774,6 +774,8 @@ def _order_result(job, out) -> tuple:
     attacked = bool((out or {}).get("攻击")) if uid else (out or {}).get("攻击") is not None
     if reason == "已暂停":
         return "defer", "", ""
+    if reason == "已手动关停":
+        return "finish", "ended", reason
     if auto:
         if bool((out or {}).get("击退")) or (not reason and attacked):
             return "finish", "done", reason
@@ -796,8 +798,14 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
 
     uid = str(job.get("uid") or "").strip()
     citydb.set_attack_status("running")
+    citydb.set_fighting_order(job["id"])
     start_beats = int(job.get("beats") or 0)
-    tally = {"n": start_beats, "note": lambda n: citydb.note_attack_beats(job["id"], n)}
+
+    def _beat_note(n, name=""):
+        who = "" if uid else str(name or "").strip()
+        citydb.note_attack_beats(job["id"], n, who)
+
+    tally = {"n": start_beats, "note": _beat_note}
     citydb.note_attack_beats(job["id"], start_beats)
     fight_config = config
     if job.get("cards") is not None:
@@ -807,45 +815,52 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         fight_config["国战"] = war
         log.info("订单 %s 最多用 %d 张恢复卡", job["id"], int(job["cards"]))
     try:
-        out = country_war.walk_to(
-            rec, sock, fight_config, job["city_id"], beat=beater, uid=uid,
-            hold_if_blocked=bool(job.get("auto")), tally=tally)
-    except OSError:
+        try:
+            out = country_war.walk_to(
+                rec, sock, fight_config, job["city_id"], beat=beater, uid=uid,
+                hold_if_blocked=bool(job.get("auto")), tally=tally)
+        except OSError:
+            citydb.finish_attack_order(
+                job["id"], "failed", "连接中断", beats=int(tally.get("n") or 0))
+            raise
+        except Exception:
+            log.info("订单 %s 攻打中断", job["id"], exc_info=True)
+            citydb.finish_attack_order(
+                job["id"], "failed", "攻打中断", beats=int(tally.get("n") or 0))
+            return
+        if uid:
+            log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                     uid, job["city_id"], out.get("移动") or 0, out.get("走到"),
+                     out.get("攻击") if out.get("攻击") is not None else "未打")
+        else:
+            log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                     job["city_id"], out.get("移动") or 0, out.get("走到"),
+                     out.get("攻击") if out.get("攻击") is not None else "未打")
+        action, status, why = _order_result(job, out)
+        beats = int(tally.get("n") or 0)
+        if why:
+            log.info("   结束原因：%s", why)
+        if action == "defer":
+            citydb.defer_attack_order(job["id"])
+            log.info("订单 %s 已暂停，放回排队", job["id"])
+            return
+        if action == "park" and citydb.attack_hold_minutes() > 0:
+            citydb.park_attack_order(job["id"], why, beats=beats)
+            log.info("订单 %s 有人挡路，挂机期间继续看路径", job["id"])
+            return
+        if action == "park":
+            status = "failed"
+        if job.get("auto") and status == "failed":
+            log.info("订单 %s 是自动锁敌，没打完，跳过，等下一次触发", job["id"])
+        elif status == "ended" and why != "已手动关停":
+            log.info("订单 %s 清城时被打回首都，订单结束", job["id"])
+        elif status == "ended":
+            log.info("订单 %s 已手动关停", job["id"])
+        keep = status == "done" and not why and not uid
         citydb.finish_attack_order(
-            job["id"], "failed", "连接中断", beats=int(tally.get("n") or 0))
-        raise
-    except Exception:
-        log.info("订单 %s 攻打中断", job["id"], exc_info=True)
-        citydb.finish_attack_order(
-            job["id"], "failed", "攻打中断", beats=int(tally.get("n") or 0))
-        return
-    if uid:
-        log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                 uid, job["city_id"], out.get("移动") or 0, out.get("走到"),
-                 out.get("攻击") if out.get("攻击") is not None else "未打")
-    else:
-        log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                 job["city_id"], out.get("移动") or 0, out.get("走到"),
-                 out.get("攻击") if out.get("攻击") is not None else "未打")
-    action, status, why = _order_result(job, out)
-    beats = int(tally.get("n") or 0)
-    if why:
-        log.info("   结束原因：%s", why)
-    if action == "defer":
-        citydb.defer_attack_order(job["id"])
-        log.info("订单 %s 已暂停，放回排队", job["id"])
-        return
-    if action == "park" and citydb.attack_hold_minutes() > 0:
-        citydb.park_attack_order(job["id"], why, beats=beats)
-        log.info("订单 %s 有人挡路，挂机期间继续看路径", job["id"])
-        return
-    if action == "park":
-        status = "failed"
-    if job.get("auto") and status == "failed":
-        log.info("订单 %s 是自动锁敌，没打完，跳过，等下一次触发", job["id"])
-    elif status == "ended":
-        log.info("订单 %s 清城时被打回首都，订单结束", job["id"])
-    citydb.finish_attack_order(job["id"], status, why, beats=beats)
+            job["id"], status, why, beats=beats, keep_reason=keep)
+    finally:
+        citydb.set_fighting_order(0)
 
 
 def _wait_socket(sock, spec, ctx) -> bool:

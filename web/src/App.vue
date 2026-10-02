@@ -229,6 +229,16 @@ function orderStatus(status) {
   return { pending: "排队", running: "正在打", blocked: "等通路", done: "已打完", failed: "没打成", ended: "已结束" }[status] || status;
 }
 
+function orderOpen(it) {
+  return !!it && (it.status === "pending" || it.status === "running" || it.status === "blocked");
+}
+
+async function cancelOrder(it) {
+  err.value = "";
+  await api("/api/attacks/cancel", { id: it.id });
+  await refreshAttacks();
+}
+
 async function savePush() {
   note.value = "";
   err.value = "";
@@ -358,7 +368,7 @@ onUnmounted(() => {
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
-        <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没绑定的，点推送登录会在下面出二维码。同一个 QQ 不能绑给两个登录账号。</p>
+        <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，点推送登录会在下面出二维码。同一个 QQ 不能绑给两个登录账号。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">
         <table>
@@ -370,7 +380,7 @@ onUnmounted(() => {
               <td>{{ orderCity(it) }}</td>
               <td>{{ it.uid || "整座城" }}</td>
               <td>{{ beatText(it) }}</td>
-              <td>{{ orderStatus(it.status) }}</td>
+              <td>{{ orderStatus(it.status) }}<button v-if="orderOpen(it)" type="button" class="ghost" @click="cancelOrder(it).catch((e) => (err = e.message))">关停</button></td>
               <td class="reason">{{ it.reason || "—" }}</td>
               <td>{{ holdCell(it) }}</td>
               <td>{{ it.created_at || "—" }}</td>
@@ -386,6 +396,7 @@ onUnmounted(() => {
             <p class="reason"><span class="k">说明</span>{{ it.reason || "—" }}</p>
             <p><span class="k">保活剩余倒计时</span>{{ holdCell(it) }}</p>
             <p><span class="k">北京时间</span>{{ it.created_at || "—" }}</p>
+            <p v-if="orderOpen(it)"><button type="button" class="ghost" @click="cancelOrder(it).catch((e) => (err = e.message))">关停</button></p>
           </article>
         </div>
         </div>
