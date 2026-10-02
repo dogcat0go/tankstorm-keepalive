@@ -25,6 +25,10 @@ const registerOpen = ref(false);
 const autoLock = ref(false);
 const holdMin = ref("0");
 const cardMax = ref("100");
+const retreatMode = ref("hops");
+const retreatHops = ref("3");
+const retreatCity = ref("0");
+const retreatNote = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
 let timer = 0;
@@ -97,12 +101,9 @@ async function enter() {
     invite: invite.value,
   });
   const who = await api("/api/me");
-  me.value = who.user;
-  qqTarget.value = who.user.qq_target || "";
-  autoLock.value = !!who.user.auto_lock;
-  holdMin.value = String(who.user.hold_min ?? 0);
-  cardMax.value = String(who.user.card_max ?? 100);
+  takeUser(who.user);
   await loadCities();
+  pinRetreatCity();
   await refresh();
   await refreshAttacks();
 }
@@ -131,14 +132,43 @@ async function loadMe() {
   const r = await fetch("/api/me", { credentials: "same-origin" });
   if (!r.ok) return;
   const who = await r.json();
-  me.value = who.user;
-  qqTarget.value = who.user.qq_target || "";
-  autoLock.value = !!who.user.auto_lock;
-  holdMin.value = String(who.user.hold_min ?? 0);
-  cardMax.value = String(who.user.card_max ?? 100);
+  takeUser(who.user);
   await loadCities();
+  pinRetreatCity();
   await refresh();
   await refreshAttacks();
+}
+
+function takeUser(user) {
+  me.value = user;
+  qqTarget.value = user.qq_target || "";
+  autoLock.value = !!user.auto_lock;
+  holdMin.value = String(user.hold_min ?? 0);
+  cardMax.value = String(user.card_max ?? 100);
+  const picked = user.retreat_mode;
+  retreatMode.value = picked === "off" || picked === "city" || picked === "hops" ? picked : "hops";
+  retreatHops.value = String(user.retreat_hops ?? 3);
+  retreatCity.value = String(user.retreat_city || 0);
+}
+
+function pinRetreatCity() {
+  if (retreatMode.value === "hops" && retreatCity.value === "0") {
+    const hit = cities.value.find((c) => c.name === "马奇诺");
+    if (hit) retreatCity.value = String(hit.id);
+  }
+}
+
+async function saveRetreat() {
+  err.value = "";
+  retreatNote.value = "";
+  const data = await api("/api/retreat", {
+    mode: retreatMode.value,
+    hops: retreatHops.value,
+    city_id: retreatCity.value,
+  });
+  if (data.user) takeUser(data.user);
+  pinRetreatCity();
+  retreatNote.value = "已保存";
 }
 
 async function saveAutoLock(ev) {
@@ -326,6 +356,23 @@ onUnmounted(() => {
         </label>
         <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。</span>
       </p>
+      <form v-if="me.remote_attack" class="lock-row retreat-row" @submit.prevent="saveRetreat().catch((e) => (err = e.message))">
+        <span class="switch">打完后退</span>
+        <label class="choice"><input type="radio" value="off" v-model="retreatMode" />不后退</label>
+        <label class="choice"><input type="radio" value="hops" v-model="retreatMode" />后退几座城</label>
+        <label class="choice"><input type="radio" value="city" v-model="retreatMode" />退到指定城市</label>
+        <label v-if="retreatMode === 'hops'">座数<input v-model="retreatHops" class="mins" inputmode="numeric" required /></label>
+        <label v-if="retreatMode !== 'off'">{{ retreatMode === 'hops' ? '朝向' : '退到' }}
+          <select v-model="retreatCity" :required="retreatMode === 'city'">
+            <option v-if="retreatMode === 'city'" value="0" disabled>选择城市</option>
+            <option v-if="retreatMode === 'hops' && !cities.some((c) => c.name === '马奇诺')" value="0">马奇诺</option>
+            <option v-for="c in cities" :key="'r' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+          </select>
+        </label>
+        <button type="submit">保存</button>
+        <span class="muted">{{ retreatNote }}</span>
+      </form>
+      <p v-if="me.remote_attack" class="muted">只对自动锁敌打完的订单。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
       <table>
         <thead>
           <tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>页</th><th>北京时间</th><th></th></tr>

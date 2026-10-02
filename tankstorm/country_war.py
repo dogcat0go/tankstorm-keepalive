@@ -1840,47 +1840,78 @@ def retreat_stop(path, hops=3) -> int:
     return seq[min(len(seq) - 1, hops)]
 
 
-def retreat_toward(rec, sock, config, name="马奇诺", hops=3, beat=None) -> dict:
-    """自动索敌打完后，朝这座城只退 hops 座。走进这几座城，不打目标城。"""
+def retreat_toward(rec, sock, config, name="马奇诺", hops=3, beat=None,
+                   city_id=0, mode="hops") -> dict:
+    """自动索敌打完后的后退。hops 朝目标只走几座城；city 走进指定城。都不打目标城。"""
     from . import citydb
 
-    label = str(name or "马奇诺").strip() or "马奇诺"
+    mode = str(mode or "hops")
+    if mode not in ("hops", "city"):
+        mode = "hops"
+    label = str(name or "").strip()
+    try:
+        target = int(city_id or 0)
+    except (TypeError, ValueError):
+        target = 0
     try:
         hops = int(hops or 0)
     except (TypeError, ValueError):
         hops = 3
     if hops <= 0:
         hops = 3
-    out = {"说明": "", "走到": 0, "步数": 0}
-    target = citydb.city_id_named(label)
-    if not target:
-        out["说明"] = f"城市目录里没有{label}"
+    out = {"说明": "", "走到": 0, "步数": 0, "方式": mode}
+    if mode == "hops" and not label:
+        label = "马奇诺"
+    if target <= 0 and label:
+        target = citydb.city_id_named(label)
+    if target > 0 and not label:
+        label = citydb.city_name(target) or str(target)
+    if target <= 0 or (mode == "city" and not citydb.city_name(target)):
+        out["说明"] = f"城市目录里没有{label or '这座城'}"
         return out
-    moved = walk_to(rec, sock, config, target, beat=beat,
-                    march_only=True, max_steps=hops)
+    if mode == "city":
+        moved = walk_to(rec, sock, config, target, beat=beat,
+                        march_only=True, enter_target=True)
+    else:
+        moved = walk_to(rec, sock, config, target, beat=beat,
+                        march_only=True, max_steps=hops)
     landed = int(moved.get("走到") or 0)
     steps = int(moved.get("步数") or 0)
     why = str(moved.get("停止原因") or "").strip()
+    landed_name = citydb.city_name(landed) or str(landed or "")
     out["走到"] = landed
     out["步数"] = steps
+    if mode == "city":
+        if why:
+            out["说明"] = f"退到{label}时停下：{why}"
+        elif steps <= 0 and landed == target:
+            out["说明"] = f"人已经在 {target} {label}，不用再退"
+        elif landed == target:
+            out["说明"] = f"已退到 {landed} {landed_name}".strip()
+        elif steps <= 0:
+            out["说明"] = f"没能退到 {target} {label}"
+        else:
+            out["说明"] = f"朝{label}退了{steps}城，停在 {landed} {landed_name}".strip()
+        return out
     if why:
         out["说明"] = f"朝{label}后退时停下：{why}"
     elif steps <= 0:
         out["说明"] = f"人已经在{label}这一侧的{hops}城内，不用再退"
     else:
-        landed_name = citydb.city_name(landed) or str(landed)
         out["说明"] = f"朝{label}退了{steps}城，停在 {landed} {landed_name}".strip()
     return out
 
 
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
              avoid=None, replanned=False, uid="", hold_if_blocked=False,
-             tally=None, avoid_why=None, march_only=False, max_steps=None) -> dict:
+             tally=None, avoid_why=None, march_only=False, max_steps=None,
+             enter_target=False) -> dict:
     """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
     编号第 2 位是 1 或 2、又不是自己国家的城不能占领，直接暂停。
     march_only 只走路，不打目标城。max_steps 是最多走进几座城，不含起点。
+    enter_target 为真时，后退要走进目标城，而不是停在相邻城。
     """
     from . import citydb
 
@@ -1922,6 +1953,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     seq = list(plan["路径"])
     if max_steps is not None:
         seq = seq[: max_steps + 1]
+    elif march_only and enter_target and seq and int(seq[-1]) != int(target):
+        seq.append(int(target))
     owned = citydb.city_map()
     far_i = 0
     for i, c in enumerate(seq):
@@ -2219,7 +2252,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             nxt = walk_to(rec, sock, config, target, sweep=sweep, beat=beat,
                           avoid=set(avoid or ()) | {blocked_at}, replanned=True,
                           uid=uid, tally=tally, avoid_why=why,
-                          march_only=march_only, max_steps=left)
+                          march_only=march_only, max_steps=left,
+                          enter_target=enter_target)
             out["移动"] += nxt.get("移动") or 0
             out["步数"] = int(out.get("步数") or 0) + int(nxt.get("步数") or 0)
             if nxt.get("走到"):

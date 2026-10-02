@@ -91,6 +91,9 @@ CREATE TABLE IF NOT EXISTS app_user (
     auto_lock       INTEGER NOT NULL DEFAULT 0,
     hold_min        INTEGER NOT NULL DEFAULT 0,
     card_max        INTEGER NOT NULL DEFAULT 100,
+    retreat_mode    TEXT NOT NULL DEFAULT 'hops',
+    retreat_hops    INTEGER NOT NULL DEFAULT 3,
+    retreat_city    INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -217,6 +220,18 @@ def connect(readonly=False, timeout=15):
             if ucols and "card_max" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN card_max INTEGER NOT NULL DEFAULT 100")
+                setup.commit()
+            if ucols and "retreat_mode" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN retreat_mode TEXT NOT NULL DEFAULT 'hops'")
+                setup.commit()
+            if ucols and "retreat_hops" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN retreat_hops INTEGER NOT NULL DEFAULT 3")
+                setup.commit()
+            if ucols and "retreat_city" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN retreat_city INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "attack_acct" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
@@ -816,7 +831,8 @@ def user_by_token(token: str):
         row = conn.execute(
             "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,''), "
             "IFNULL(u.tier,'初级'), IFNULL(u.admin,0), IFNULL(u.auto_lock,0), "
-            "IFNULL(u.hold_min,0), IFNULL(u.card_max,100) "
+            "IFNULL(u.hold_min,0), IFNULL(u.card_max,100), "
+            "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
@@ -824,7 +840,10 @@ def user_by_token(token: str):
         return {"id": row[0], "username": row[1], "qq_target": row[2],
                 "expires_at": row[3], "tier": row[4], "admin": bool(row[5]),
                 "auto_lock": bool(row[6]), "hold_min": int(row[7] or 0),
-                "card_max": int(row[8] if row[8] is not None else 100)}
+                "card_max": int(row[8] if row[8] is not None else 100),
+                "retreat_mode": row[9] or "hops",
+                "retreat_hops": int(row[10] or 3),
+                "retreat_city": int(row[11] or 0)}
     finally:
         conn.close()
 
@@ -1273,6 +1292,69 @@ def bind_attack_account(user_id: int, account: str) -> str:
     finally:
         conn.close()
     return ""
+
+
+def set_retreat(user_id: int, mode, hops, city_id) -> str:
+    """打完后退。hops 是朝一座城退几座，city 是退进指定城。两种不能同时用。"""
+    mode = str(mode or "").strip()
+    if mode not in ("off", "hops", "city"):
+        return "后退策略要选不后退、后退几座城或退到指定城市"
+    try:
+        n = int(str(hops).strip())
+    except (TypeError, ValueError, AttributeError):
+        return "后退座数要是数字"
+    if n < 1 or n > 20:
+        return "后退座数要是 1 到 20"
+    try:
+        cid = int(str(city_id if city_id is not None else "0").strip() or "0")
+    except (TypeError, ValueError, AttributeError):
+        return "城市不对"
+    if cid < 0:
+        return "城市不对"
+    if mode == "city" and cid <= 0:
+        return "要选退到哪座城"
+    if cid > 0 and not city_name(cid):
+        return "这座城不在目录里"
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE app_user SET retreat_mode=?, retreat_hops=?, retreat_city=? WHERE id=?",
+            (mode, n, cid, int(user_id)))
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
+
+
+def retreat_settings(user_id: int = 0) -> dict:
+    """这个登录账号的打完后退。没填朝向时，后退几座城默认朝马奇诺。"""
+    if not user_id:
+        user_id = attack_context_user()
+    mode, hops, city_id = "hops", 3, 0
+    if user_id:
+        conn = connect(readonly=True)
+        try:
+            row = conn.execute(
+                "SELECT IFNULL(retreat_mode,'hops'), IFNULL(retreat_hops,3), "
+                "IFNULL(retreat_city,0) FROM app_user WHERE id=?",
+                (int(user_id),)).fetchone()
+        finally:
+            conn.close()
+        if row:
+            mode = str(row[0] or "hops")
+            hops = int(row[1] or 3)
+            city_id = int(row[2] or 0)
+    if mode not in ("off", "hops", "city"):
+        mode = "hops"
+    if hops < 1:
+        hops = 3
+    name = ""
+    if mode == "hops" and city_id <= 0:
+        name = "马奇诺"
+        city_id = city_id_named(name)
+    elif city_id > 0:
+        name = city_name(city_id) or str(city_id)
+    return {"mode": mode, "hops": hops, "city_id": city_id, "name": name}
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:
