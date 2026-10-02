@@ -370,6 +370,15 @@ def _handler(config: dict):
                     from .socket_keepalive import kick_attack_login
                     _json(self, 200, {"ok": True, "login": kick_attack_login(
                         config, user["id"], claim=True)})
+                elif path == "/api/attack-move":
+                    if not citydb.attack_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "移动到指定城市需要中级或高级订阅"})
+                        return
+                    why = citydb.request_attack_move(user["id"], data.get("city_id"))
+                    if why:
+                        raise ValueError(why)
+                    status = citydb.attack_status(user["id"])
+                    _json(self, 200, {"ok": True, "move_note": status.get("move_note") or ""})
                 elif path == "/api/attack-pause":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "暂停攻打需要中级或高级订阅"})
