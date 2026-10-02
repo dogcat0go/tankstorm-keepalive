@@ -1823,20 +1823,71 @@ def _ready_to_leave(sock, rec, config, loc, my) -> str:
     return ""
 
 
+def retreat_stop(path, hops=3) -> int:
+    """路径第 0 个是当前城。沿路最多走进 hops 座，返回落点。走不了返回 0。"""
+    seq = []
+    for city in path or []:
+        try:
+            seq.append(int(city))
+        except (TypeError, ValueError):
+            continue
+    try:
+        hops = int(hops or 0)
+    except (TypeError, ValueError):
+        return 0
+    if len(seq) <= 1 or hops <= 0:
+        return 0
+    return seq[min(len(seq) - 1, hops)]
+
+
+def retreat_toward(rec, sock, config, name="马奇诺", hops=3, beat=None) -> dict:
+    """自动索敌打完后，朝这座城只退 hops 座。走进这几座城，不打目标城。"""
+    from . import citydb
+
+    label = str(name or "马奇诺").strip() or "马奇诺"
+    try:
+        hops = int(hops or 0)
+    except (TypeError, ValueError):
+        hops = 3
+    if hops <= 0:
+        hops = 3
+    out = {"说明": "", "走到": 0, "步数": 0}
+    target = citydb.city_id_named(label)
+    if not target:
+        out["说明"] = f"城市目录里没有{label}"
+        return out
+    moved = walk_to(rec, sock, config, target, beat=beat,
+                    march_only=True, max_steps=hops)
+    landed = int(moved.get("走到") or 0)
+    steps = int(moved.get("步数") or 0)
+    why = str(moved.get("停止原因") or "").strip()
+    out["走到"] = landed
+    out["步数"] = steps
+    if why:
+        out["说明"] = f"朝{label}后退时停下：{why}"
+    elif steps <= 0:
+        out["说明"] = f"人已经在{label}这一侧的{hops}城内，不用再退"
+    else:
+        landed_name = citydb.city_name(landed) or str(landed)
+        out["说明"] = f"朝{label}退了{steps}城，停在 {landed} {landed_name}".strip()
+    return out
+
+
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
              avoid=None, replanned=False, uid="", hold_if_blocked=False,
-             tally=None, avoid_why=None) -> dict:
+             tally=None, avoid_why=None, march_only=False, max_steps=None) -> dict:
     """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
     编号第 2 位是 1 或 2、又不是自己国家的城不能占领，直接暂停。
+    march_only 只走路，不打目标城。max_steps 是最多走进几座城，不含起点。
     """
     from . import citydb
 
     target = int(target or 0)
     conf = config.get("国战") or {}
     my = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
-    out = {"停止原因": "", "走到": 0, "移动": 0, "目标": target, "击退": 0}
+    out = {"停止原因": "", "走到": 0, "移动": 0, "目标": target, "击退": 0, "步数": 0}
     if not my:
         out["停止原因"] = "读不到自己的国家ID"
         return out
@@ -1847,6 +1898,13 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     out["走到"] = int(loc)
     start_here = int(loc)
     citydb.note_attack_here(loc)
+    if max_steps is not None:
+        try:
+            max_steps = int(max_steps)
+        except (TypeError, ValueError):
+            max_steps = None
+    if max_steps is not None and max_steps <= 0:
+        return out
     plan = live_plan(sock, rec, loc, target, my, avoid,
                      stop_on_block=hold_if_blocked, avoid_why=avoid_why)
     avoid = set(plan.get("避开") or avoid or ())
@@ -1862,6 +1920,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         out["停止原因"] = "已暂停"
         return out
     seq = list(plan["路径"])
+    if max_steps is not None:
+        seq = seq[: max_steps + 1]
     owned = citydb.city_map()
     far_i = 0
     for i, c in enumerate(seq):
@@ -1911,6 +1971,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                     out["停止原因"] = f"{city} {name}：{why}"
                     return out
                 out["移动"] += 1
+                out["步数"] = far_i
                 out["走到"] = moved["here"]
                 citydb.note_attack_here(moved["here"])
                 occupy_from = far_i + 1
@@ -1924,7 +1985,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             if citydb.attack_paused():
                 out["停止原因"] = "已暂停"
                 break
-            if city == target:
+            if city == target and not march_only:
                 break
             blocked = _halt_for_home(
                 sock, rec, config, out["走到"], my, uid,
@@ -2125,6 +2186,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 out["停止原因"] = f"{city} {name}：{why or '还没走进去'}"
                 break
             out["移动"] += 1
+            out["步数"] = int(out.get("步数") or 0) + 1
             out["走到"] = moved["here"]
             citydb.note_attack_here(moved["here"])
             log.info("[移动] 进入 %s %s，行动力 %s",
@@ -2149,10 +2211,17 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             why = dict(avoid_why or {})
             if block_who:
                 why[int(blocked_at)] = block_who
+            left = None
+            if max_steps is not None:
+                left = max(0, int(max_steps) - int(out.get("步数") or 0))
+                if left <= 0:
+                    return out
             nxt = walk_to(rec, sock, config, target, sweep=sweep, beat=beat,
                           avoid=set(avoid or ()) | {blocked_at}, replanned=True,
-                          uid=uid, tally=tally, avoid_why=why)
+                          uid=uid, tally=tally, avoid_why=why,
+                          march_only=march_only, max_steps=left)
             out["移动"] += nxt.get("移动") or 0
+            out["步数"] = int(out.get("步数") or 0) + int(nxt.get("步数") or 0)
             if nxt.get("走到"):
                 out["走到"] = nxt["走到"]
                 citydb.note_attack_here(nxt["走到"])
@@ -2161,6 +2230,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             out["停止原因"] = nxt.get("停止原因") or ""
             return out
         if out["停止原因"]:
+            return out
+        if march_only:
             return out
         if not citydb.can_reach(out["走到"], target):
             here = citydb.city_name(out["走到"]) or out["走到"]
