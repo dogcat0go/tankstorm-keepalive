@@ -2270,13 +2270,15 @@ def claim_attack_order():
 
 
 def note_attack_beats(order_id: int, n: int, name: str = "") -> None:
-    """正在打的订单记下已经击退几个人。清城时说明改成最新击退的玩家。写库失败不影响继续打。"""
+    """正在打的订单记下已经击退几个人。清城时说明写成「击退 玩家名」。写库失败不影响继续打。"""
     try:
         conn = connect()
     except sqlite3.Error:
         return
     try:
         who = str(name or "").strip()
+        if who and not who.startswith("击退"):
+            who = f"击退 {who}"
         if who:
             conn.execute(
                 "UPDATE atk_order SET beats=?, reason=? WHERE id=? AND status='running'",
