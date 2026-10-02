@@ -827,6 +827,9 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         war["单次最多用几张恢复卡"] = int(job["cards"])
         fight_config["国战"] = war
         log.info("订单 %s 最多用 %d 张恢复卡", job["id"], int(job["cards"]))
+    guarding = bool(job.get("auto"))
+    if guarding:
+        citydb.begin_lock_cards()
     try:
         try:
             out = country_war.walk_to(
@@ -906,6 +909,8 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         citydb.finish_attack_order(
             job["id"], status, why, beats=beats, keep_reason=keep)
     finally:
+        if guarding:
+            citydb.end_lock_cards()
         citydb.set_fighting_order(0)
 
 

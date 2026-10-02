@@ -29,6 +29,9 @@ const retreatMode = ref("hops");
 const retreatHops = ref("3");
 const retreatCity = ref("0");
 const retreatNote = ref("");
+const lockCards = ref("3");
+const lockNote = ref("");
+const advanced = ref(false);
 const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
@@ -150,6 +153,7 @@ function takeUser(user) {
   retreatMode.value = picked === "off" || picked === "city" || picked === "hops" ? picked : "hops";
   retreatHops.value = String(user.retreat_hops ?? 3);
   retreatCity.value = String(user.retreat_city || 0);
+  lockCards.value = String(user.lock_cards ?? 3);
 }
 
 function pinRetreatCity() {
@@ -157,6 +161,14 @@ function pinRetreatCity() {
     const hit = cities.value.find((c) => c.name === "马奇诺");
     if (hit) retreatCity.value = String(hit.id);
   }
+}
+
+async function saveLockCards() {
+  err.value = "";
+  lockNote.value = "";
+  const data = await api("/api/lock-cards", { cards: lockCards.value });
+  if (data.user) takeUser(data.user);
+  lockNote.value = "已保存";
 }
 
 async function saveRetreat() {
@@ -363,25 +375,34 @@ onUnmounted(() => {
           <input type="checkbox" :checked="autoLock" @change="saveAutoLock" />
           自动锁敌
         </label>
+        <button type="button" class="ghost" @click="advanced = !advanced">{{ advanced ? "收起" : "高级配置" }}</button>
         <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。</span>
       </p>
-      <form v-if="me.remote_attack" class="lock-row retreat-row" @submit.prevent="saveRetreat().catch((e) => (err = e.message))">
-        <span class="switch">打完后退</span>
-        <label class="choice"><input type="radio" value="off" v-model="retreatMode" />不后退</label>
-        <label class="choice"><input type="radio" value="hops" v-model="retreatMode" />后退几座城</label>
-        <label class="choice"><input type="radio" value="city" v-model="retreatMode" />退到指定城市</label>
-        <label v-if="retreatMode === 'hops'">座数<input v-model="retreatHops" class="mins" inputmode="numeric" required /></label>
-        <label v-if="retreatMode !== 'off'">{{ retreatMode === 'hops' ? '朝向' : '退到' }}
-          <select v-model="retreatCity" :required="retreatMode === 'city'">
-            <option v-if="retreatMode === 'city'" value="0" disabled>选择城市</option>
-            <option v-if="retreatMode === 'hops' && !cities.some((c) => c.name === '马奇诺')" value="0">马奇诺</option>
-            <option v-for="c in cities" :key="'r' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
-          </select>
-        </label>
-        <button type="submit">保存</button>
-        <span class="muted">{{ retreatNote }}</span>
-      </form>
-      <p v-if="me.remote_attack" class="muted">只对自动锁敌打完的订单。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
+      <div v-if="me.remote_attack && advanced" class="advanced">
+        <form class="lock-row" @submit.prevent="saveLockCards().catch((e) => (err = e.message))">
+          <label>1小时内最多恢复卡<input v-model="lockCards" class="mins" inputmode="numeric" required /></label>
+          <button type="submit">保存</button>
+          <span class="muted">{{ lockNote }}</span>
+        </form>
+        <p class="muted">只限制自动锁敌。最近 1 小时里最多开这么多张，用满就不再开，这一单跳过。手动攻打不占这个数。</p>
+        <form class="lock-row retreat-row" @submit.prevent="saveRetreat().catch((e) => (err = e.message))">
+          <span class="switch">打完后退</span>
+          <label class="choice"><input type="radio" value="off" v-model="retreatMode" />不后退</label>
+          <label class="choice"><input type="radio" value="hops" v-model="retreatMode" />后退几座城</label>
+          <label class="choice"><input type="radio" value="city" v-model="retreatMode" />退到指定城市</label>
+          <label v-if="retreatMode === 'hops'">座数<input v-model="retreatHops" class="mins" inputmode="numeric" required /></label>
+          <label v-if="retreatMode !== 'off'">{{ retreatMode === 'hops' ? '朝向' : '退到' }}
+            <select v-model="retreatCity" :required="retreatMode === 'city'">
+              <option v-if="retreatMode === 'city'" value="0" disabled>选择城市</option>
+              <option v-if="retreatMode === 'hops' && !cities.some((c) => c.name === '马奇诺')" value="0">马奇诺</option>
+              <option v-for="c in cities" :key="'r' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+            </select>
+          </label>
+          <button type="submit">保存</button>
+          <span class="muted">{{ retreatNote }}</span>
+        </form>
+        <p class="muted">只对自动锁敌打完的订单。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
+      </div>
       <table>
         <thead>
           <tr><th>城市</th><th>UID</th><th>昵称</th><th>状态</th><th>页</th><th>北京时间</th><th></th></tr>

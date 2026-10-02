@@ -186,7 +186,14 @@ def _use_recovery_card(sock, rec, item_id):
     平时一律钉死为 0；这里 count=1 表示"用一张卡"，消耗的是玩家自己背包里的
     道具、不花勋章，而且必须在 config 里显式打开开关才会走到。
     仍然守着铁律：先从背包读到数量 > 0 才发，读不到就不发。
+    自动锁敌这一单里，最近 1 小时用满上限就不再开。
     """
+    from . import citydb
+
+    if citydb.lock_cards_active():
+        why = citydb.lock_card_block()
+        if why:
+            return False, why
     slot, count = _find_bag_item(rec, item_id)
     if slot is None:
         return False, f"背包里没读到物品 {item_id}（读不到就不用）"
@@ -198,6 +205,8 @@ def _use_recovery_card(sock, rec, item_id):
                            5: ("int32", item_id), 7: ("int32", 0)},
                           omit_zero=False)
     sender.send_frame(sock, BAG_USE_OPCODE, body, rec.rc4_c2s)
+    if citydb.lock_cards_active():
+        citydb.note_lock_card()
     return True, f"已用掉 1 张国战恢复卡（用前背包有 {count} 张）"
 
 

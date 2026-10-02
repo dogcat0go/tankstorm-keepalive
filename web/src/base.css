@@ -7,6 +7,7 @@ details.fold summary { font-size: 16px; font-weight: 700; cursor: pointer; }
 details.fold form { margin-top: 8px; }
 .lock-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 form.retreat-row { margin-top: 8px; }
+.advanced { margin-top: 8px; }
 label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; }
 label.choice { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
 span.switch { font-size: 15px; font-weight: 700; }

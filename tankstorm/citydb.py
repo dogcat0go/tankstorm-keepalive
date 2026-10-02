@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     retreat_mode    TEXT NOT NULL DEFAULT 'hops',
     retreat_hops    INTEGER NOT NULL DEFAULT 3,
     retreat_city    INTEGER NOT NULL DEFAULT 0,
+    lock_cards      INTEGER NOT NULL DEFAULT 3,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -121,6 +122,11 @@ CREATE TABLE IF NOT EXISTS atk_signal (
     name  TEXT PRIMARY KEY,
     value TEXT,
     at    TEXT
+);
+CREATE TABLE IF NOT EXISTS lock_card_use (
+    id       INTEGER PRIMARY KEY,
+    user_id  INTEGER NOT NULL,
+    at       TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS app_session (
     token      TEXT PRIMARY KEY,
@@ -232,6 +238,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "retreat_city" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN retreat_city INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "lock_cards" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN lock_cards INTEGER NOT NULL DEFAULT 3")
                 setup.commit()
             if ucols and "attack_acct" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
@@ -832,7 +842,8 @@ def user_by_token(token: str):
             "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,''), "
             "IFNULL(u.tier,'初级'), IFNULL(u.admin,0), IFNULL(u.auto_lock,0), "
             "IFNULL(u.hold_min,0), IFNULL(u.card_max,100), "
-            "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0) "
+            "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
+            "IFNULL(u.lock_cards,3) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
@@ -843,7 +854,8 @@ def user_by_token(token: str):
                 "card_max": int(row[8] if row[8] is not None else 100),
                 "retreat_mode": row[9] or "hops",
                 "retreat_hops": int(row[10] or 3),
-                "retreat_city": int(row[11] or 0)}
+                "retreat_city": int(row[11] or 0),
+                "lock_cards": int(row[12] if row[12] is not None else 3)}
     finally:
         conn.close()
 
@@ -1355,6 +1367,111 @@ def retreat_settings(user_id: int = 0) -> dict:
     elif city_id > 0:
         name = city_name(city_id) or str(city_id)
     return {"mode": mode, "hops": hops, "city_id": city_id, "name": name}
+
+
+def set_lock_cards(user_id: int, cards) -> str:
+    """自动锁敌每小时最多开几张恢复卡。成功返回空字符串。"""
+    try:
+        n = int(str(cards).strip())
+    except (TypeError, ValueError, AttributeError):
+        return "锁敌恢复卡数量要是数字"
+    if n < 0 or n > 99:
+        return "锁敌恢复卡数量要是 0 到 99"
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE app_user SET lock_cards=? WHERE id=?",
+            (n, int(user_id)))
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
+
+
+def lock_card_limit(user_id: int = 0) -> int:
+    """这个账号自动锁敌每小时的恢复卡上限。没填过是 3。"""
+    if not user_id:
+        user_id = attack_context_user()
+    n = 3
+    if user_id:
+        conn = connect(readonly=True)
+        try:
+            row = conn.execute(
+                "SELECT IFNULL(lock_cards,3) FROM app_user WHERE id=?",
+                (int(user_id),)).fetchone()
+        finally:
+            conn.close()
+        if row and row[0] is not None:
+            n = int(row[0])
+    if n < 0:
+        return 3
+    return n
+
+
+def _lock_card_cutoff() -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def lock_cards_used(user_id: int = 0) -> int:
+    """最近 1 小时里，自动锁敌已经开掉几张恢复卡。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return 0
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM lock_card_use WHERE user_id=? AND at>=?",
+            (user_id, _lock_card_cutoff())).fetchone()
+        return int(row[0] or 0) if row else 0
+    finally:
+        conn.close()
+
+
+def lock_card_block(user_id: int = 0) -> str:
+    """这一小时锁敌还能不能再开一张。能开返回空字符串。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    limit = lock_card_limit(user_id)
+    used = lock_cards_used(user_id)
+    if used >= limit:
+        return f"1小时内锁敌最多开 {limit} 张恢复卡，这一小时已经用满"
+    return ""
+
+
+def note_lock_card(user_id: int = 0) -> None:
+    """记下自动锁敌刚开掉的一张恢复卡。写库失败不影响已经发出的那张。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "INSERT INTO lock_card_use(user_id, at) VALUES (?,?)",
+            (user_id, now_ts()))
+        conn.execute(
+            "DELETE FROM lock_card_use WHERE user_id=? AND at<?",
+            (user_id, _lock_card_cutoff()))
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+
+def begin_lock_cards() -> None:
+    """这一单是自动锁敌。接下来开的恢复卡算进每小时上限。"""
+    _attack_local.lock_cards = True
+
+
+def end_lock_cards() -> None:
+    """这一单结束。之后开的恢复卡不再算进锁敌上限。"""
+    _attack_local.lock_cards = False
+
+
+def lock_cards_active() -> bool:
+    return bool(getattr(_attack_local, "lock_cards", False))
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:
