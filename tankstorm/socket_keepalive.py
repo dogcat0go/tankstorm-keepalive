@@ -694,6 +694,7 @@ def _start_attack_status() -> threading.Event:
     from . import citydb
 
     stop = threading.Event()
+    citydb.set_attack_paused(False)
     citydb.set_attack_status("idle")
     threading.Thread(
         target=_attack_status_beater, args=(stop,),
@@ -707,6 +708,7 @@ def _stop_attack_status(stop: threading.Event) -> None:
     stop.set()
     try:
         citydb.clear_attack_hold()
+        citydb.set_attack_paused(False)
         citydb.set_attack_status("offline")
     except Exception:
         log.debug("攻打进程收尾状态没写上", exc_info=True)
