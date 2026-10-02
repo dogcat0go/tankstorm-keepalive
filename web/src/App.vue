@@ -18,6 +18,7 @@ const attackCity = ref("");
 const attackUid = ref("");
 const orders = ref([]);
 const proc = ref(null);
+const fighters = ref([]);
 const qrSrc = ref("");
 const devLogin = ref(false);
 const registerOpen = ref(false);
@@ -59,11 +60,13 @@ async function refreshAttacks() {
   if (!me.value || !me.value.remote_attack) {
     orders.value = [];
     proc.value = null;
+    fighters.value = [];
     return;
   }
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
   proc.value = atk.process || null;
+  fighters.value = atk.fighters || [];
   const left = proc.value && proc.value.hold_left;
   holdUntil.value = left > 0 ? Date.now() + left * 1000 : 0;
   qrSrc.value = proc.value && proc.value.qr ? "/api/attack-qr?t=" + Date.now() : "";
@@ -439,12 +442,15 @@ onUnmounted(() => {
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
         <p class="proc">
-          <span class="proc-text">攻打进程：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
+          <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
           <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login'" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
-        <p class="muted">每 5 秒刷新一次。每个登录账号各自绑定自己的攻打 QQ。还没绑定的，点推送登录会在下面出二维码。同一个 QQ 不能绑给两个登录账号。</p>
+        <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没绑定的，点推送登录会在下面出二维码。同一个 QQ 不能绑给两个登录账号。</p>
+        <ul v-if="me.admin && fighters.length" class="muted">
+          <li v-for="f in fighters" :key="f.qq">{{ f.username }} 的攻打 QQ {{ f.qq }}：{{ procText(f) }}</li>
+        </ul>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">
         <table>

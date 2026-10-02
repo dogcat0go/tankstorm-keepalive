@@ -938,57 +938,39 @@ def _hold_owner_and_text(raw: str):
 
 
 def note_attack_hold(until_epoch: float) -> None:
-    """记下这次挂机保活到什么时候。重连时接着用，不重新计时。"""
+    """记下这个攻打 QQ 的挂机保活到什么时候。重连时接着用，不重新计时。"""
     user_id = attack_context_user()
     if not user_id:
         return
     text = datetime.fromtimestamp(float(until_epoch), timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ")
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO atk_signal(name, value, at) VALUES ('hold', ?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            (f"{user_id}|{text}", now_ts()))
-        conn.commit()
-    finally:
-        conn.close()
+    _upsert_signal(_mark_name("hold", user_id), text)
 
 
 def clear_attack_hold() -> None:
     user_id = attack_context_user()
-    conn = connect()
-    try:
-        row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='hold'").fetchone()
-        owner, _when = _hold_owner_and_text(row[0] if row else "")
-        if user_id and owner and owner != user_id:
-            return
-        conn.execute("DELETE FROM atk_signal WHERE name='hold'")
-        conn.commit()
-    finally:
-        conn.close()
+    if not user_id:
+        return
+    _delete_signal(_mark_name("hold", user_id))
 
 
 def attack_hold_left(user_id=None):
-    """挂机还剩多少秒。没有这次挂机返回 None，过期返回 0 或负数。"""
+    """这个登录账号的攻打 QQ 挂机还剩多少秒。没有这次挂机返回 None。"""
     if user_id is None:
         uid = attack_context_user()
     else:
         uid = int(user_id or 0)
-    conn = connect(readonly=True)
-    try:
-        row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='hold'").fetchone()
-    finally:
-        conn.close()
-    owner, raw = _hold_owner_and_text(row[0] if row else "")
-    if not raw or not uid:
+    if not uid:
         return None
-    if owner and owner != uid:
-        return None
-    if not owner and proc_user() != uid:
-        return None
+    raw = _signal_value(_mark_name("hold", uid))
+    if not raw:
+        owner, raw = _hold_owner_and_text(_signal_value("hold"))
+        if not raw:
+            return None
+        if owner and owner != uid:
+            return None
+        if not owner:
+            return None
     try:
         dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except ValueError:
@@ -1349,45 +1331,20 @@ def list_attack_orders(user_id: int, limit: int = 20) -> list:
             for r in rows]
 
 
-def set_page_qr(on: bool) -> None:
-    """没配攻打号时，登录二维码显示在网页上。扫完或进程停了就关掉。"""
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO atk_signal(name, value, at) VALUES ('pageqr', ?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            ("1" if on else "0", now_ts()))
-        if not on:
-            conn.execute(
-                "INSERT INTO atk_signal(name, value, at) VALUES ('qrpath', '', ?) "
-                "ON CONFLICT(name) DO UPDATE SET value='', at=excluded.at",
-                (now_ts(),))
-        conn.commit()
-    finally:
-        conn.close()
+def set_page_qr(on: bool, user_id: int = 0) -> None:
+    """这个攻打 QQ 的登录二维码显示在它自己的网页上。扫完或进程停了就关掉。"""
+    _upsert_signal(_mark_name("pageqr", user_id), "1" if on else "0")
+    if not on:
+        _upsert_signal(_mark_name("qrpath", user_id), "")
 
 
-def note_login_qr(path: str) -> None:
-    """这次扫码的图写在哪。别的登录账号点推送时，页面读这一份，而不是自己猜路径。"""
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO atk_signal(name, value, at) VALUES ('qrpath', ?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            (str(path or ""), now_ts()))
-        conn.commit()
-    finally:
-        conn.close()
+def note_login_qr(path: str, user_id: int = 0) -> None:
+    """这次扫码的图写在哪。只给这个攻打 QQ 对应的登录账号看。"""
+    _upsert_signal(_mark_name("qrpath", user_id), str(path or ""))
 
 
-def login_qr_path() -> str:
-    conn = connect(readonly=True)
-    try:
-        row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='qrpath'").fetchone()
-    finally:
-        conn.close()
-    return str(row[0] or "").strip() if row else ""
+def login_qr_path(user_id: int = 0) -> str:
+    return _signal_value(_mark_name("qrpath", user_id)).strip()
 
 
 def _page_login_key(user_id: int) -> str:
@@ -1458,8 +1415,7 @@ def _kept_here(data: dict) -> int:
     return here
 
 
-_PROC_USER = 0
-_PROC_ACCT = ""
+_attack_local = threading.local()
 
 
 def _assign_legacy_fails(conn) -> None:
@@ -1476,11 +1432,10 @@ def _assign_legacy_fails(conn) -> None:
 
 
 def set_attack_context(user_id: int, account: str) -> None:
-    """这个攻打进程只给这个登录账号领订单。别的进程有自己的一份。"""
-    global _PROC_USER, _PROC_ACCT
-    _PROC_USER = int(user_id or 0)
-    _PROC_ACCT = str(account or "")
-    if _PROC_ACCT:
+    """这条线程只给这个登录账号、这个攻打 QQ 领订单。别的线程有自己的一份。"""
+    _attack_local.user = int(user_id or 0)
+    _attack_local.qq = str(account or "").strip()
+    if _attack_local.qq:
         conn = connect()
         try:
             _assign_legacy_fails(conn)
@@ -1490,19 +1445,82 @@ def set_attack_context(user_id: int, account: str) -> None:
 
 
 def attack_context_user() -> int:
-    return int(_PROC_USER or 0)
+    return int(getattr(_attack_local, "user", 0) or 0)
 
 
-def _read_proc() -> tuple:
-    """返回 (内容, 心跳时间, 是否在线)。"""
+def attack_context_qq() -> str:
+    return str(getattr(_attack_local, "qq", "") or "").strip()
+
+
+def _identity(user_id: int = 0) -> tuple:
+    """返回 (登录账号, 攻打 QQ)。查别人时不用这条线程自己的 QQ。"""
+    ctx_user = attack_context_user()
+    user_id = int(user_id or ctx_user or 0)
+    uin = ""
+    if not user_id or user_id == ctx_user:
+        uin = attack_context_qq()
+    if not uin.isdigit() and user_id:
+        uin = attack_qq_of(user_id)
+    return user_id, str(uin or "").strip()
+
+
+def _mark_name(kind: str, user_id: int = 0) -> str:
+    """暂停、挂机、登录、进程状态都以攻打 QQ 为名。还没扫上时才落到登录账号。"""
+    uid, uin = _identity(user_id)
+    if uin.isdigit():
+        return f"{kind}:{uin}"
+    if uid:
+        return f"{kind}:user:{uid}"
+    return kind
+
+
+def _signal_value(name: str) -> str:
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT value, at FROM atk_signal WHERE name='proc'").fetchone()
+            "SELECT value FROM atk_signal WHERE name=?", (name,)).fetchone()
+    finally:
+        conn.close()
+    return str(row[0] or "") if row else ""
+
+
+def _upsert_signal(name: str, value: str, touch: bool = True) -> None:
+    conn = connect()
+    try:
+        if touch:
+            conn.execute(
+                "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+                (name, value, now_ts()))
+        else:
+            conn.execute(
+                "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?) "
+                "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+                (name, value, now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _delete_signal(name: str) -> None:
+    conn = connect()
+    try:
+        conn.execute("DELETE FROM atk_signal WHERE name=?", (name,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _read_named_proc(name: str) -> tuple:
+    """返回 (内容, 心跳时间, 是否在线, 这一行在不在)。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT value, at FROM atk_signal WHERE name=?", (name,)).fetchone()
     finally:
         conn.close()
     if not row:
-        return {}, "", False
+        return {}, "", False, False
     parsed = _proc_payload(row[0])
     phase = parsed.get("phase") or "offline"
     seen = row[1] or ""
@@ -1514,20 +1532,55 @@ def _read_proc() -> tuple:
             online = (datetime.now(timezone.utc) - dt).total_seconds() <= 25
         except ValueError:
             online = False
+    return parsed, seen, online, True
+
+
+def _read_user_proc(user_id: int) -> tuple:
+    """这个登录账号自己的攻打 QQ 的进程。不读别人的。"""
+    user_id = int(user_id or 0)
+    name = _mark_name("proc", user_id) if user_id else "proc"
+    parsed, seen, online, found = _read_named_proc(name)
+    if found:
+        return parsed, seen, online
+    if name == "proc" or not user_id:
+        return {}, "", False
+    parsed, seen, online, found = _read_named_proc("proc")
+    if not found:
+        return {}, "", False
+    try:
+        owner = int(parsed.get("user") or 0)
+    except (TypeError, ValueError):
+        owner = 0
+    acct = str(parsed.get("acct") or "").strip()
+    uin = attack_qq_of(user_id)
+    if owner == user_id or (uin and acct == uin):
+        return parsed, seen, online
+    return {}, "", False
+
+
+def _read_proc() -> tuple:
+    """返回这条线程对应的 (内容, 心跳时间, 是否在线)。"""
+    uid = attack_context_user()
+    if uid:
+        return _read_user_proc(uid)
+    parsed, seen, online, _found = _read_named_proc("proc")
     return parsed, seen, online
 
 
-def proc_online() -> bool:
-    return _read_proc()[2]
+def proc_online(user_id: int = 0) -> bool:
+    uid = int(user_id or attack_context_user() or 0)
+    if not uid:
+        return False
+    return _read_user_proc(uid)[2]
 
 
 def proc_user() -> int:
-    """正在跑的攻打进程属于哪个登录账号。旧进程没写过就是 0。"""
+    """这条线程的攻打进程属于哪个登录账号。没在跑就是 0。"""
     parsed, _seen, online = _read_proc()
     if not online:
         return 0
     try:
-        return int(parsed.get("user") or 0)
+        return int(parsed.get("user") or attack_context_user() or 0)
     except (TypeError, ValueError):
         return 0
 
@@ -1536,7 +1589,7 @@ def proc_acct() -> str:
     parsed, _seen, online = _read_proc()
     if not online:
         return ""
-    return str(parsed.get("acct") or "")
+    return str(parsed.get("acct") or attack_context_qq() or "")
 
 
 def proc_phase() -> str:
@@ -1602,79 +1655,60 @@ def clear_login_for() -> None:
 
 
 def set_attack_status(phase: str) -> None:
-    """攻打进程把自己的阶段写进库。网页只读，不靠推送。所在城市留着。"""
-    conn = connect()
-    try:
-        row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='proc'").fetchone()
-        prev = _proc_payload(row[0] if row else "")
-        data = {"phase": phase}
-        here = _kept_here(prev)
-        if here:
-            data["here"] = here
-        if _PROC_USER:
-            data["user"] = _PROC_USER
-        if _PROC_ACCT:
-            data["acct"] = _PROC_ACCT
-        if phase != "offline":
-            link = prev.get("link")
-            gap = prev.get("gap")
-            if isinstance(link, int) and not isinstance(link, bool) and link > 0:
-                data["link"] = link
-            if isinstance(gap, int) and not isinstance(gap, bool) and gap > 0:
-                data["gap"] = gap
-        conn.execute(
-            "INSERT INTO atk_signal(name, value, at) VALUES ('proc', ?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            (json.dumps(data, ensure_ascii=False), now_ts()))
-        conn.commit()
-    finally:
-        conn.close()
+    """这条攻打线程把自己的阶段写进库，键是攻打 QQ。网页只读。所在城市留着。"""
+    name = _mark_name("proc")
+    prev = _proc_payload(_signal_value(name))
+    data = {"phase": phase}
+    here = _kept_here(prev)
+    if here:
+        data["here"] = here
+    user_id = attack_context_user()
+    qq = attack_context_qq()
+    if user_id:
+        data["user"] = user_id
+    if qq:
+        data["acct"] = qq
+    if phase != "offline":
+        link = prev.get("link")
+        gap = prev.get("gap")
+        if isinstance(link, int) and not isinstance(link, bool) and link > 0:
+            data["link"] = link
+        if isinstance(gap, int) and not isinstance(gap, bool) and gap > 0:
+            data["gap"] = gap
+    _upsert_signal(name, json.dumps(data, ensure_ascii=False))
 
 
 def note_attack_here(city_id) -> None:
-    """记下攻打号当前所在城市。库写失败不影响正在打的那一单。进程已停则不改。"""
+    """记下这个攻打 QQ 当前所在城市。库写失败不影响正在打的那一单。进程已停则不改。"""
     try:
         cid = int(city_id or 0)
     except (TypeError, ValueError):
         return
     if isinstance(city_id, bool) or cid <= 0:
         return
-    try:
-        conn = connect()
-    except sqlite3.Error:
+    if not attack_context_user() and not attack_context_qq():
         return
+    name = _mark_name("proc")
     try:
-        row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='proc'").fetchone()
-        if not row:
-            return
-        data = _proc_payload(row[0])
+        data = _proc_payload(_signal_value(name))
         if not data or data.get("phase") == "offline":
             return
         data["here"] = cid
-        conn.execute(
-            "UPDATE atk_signal SET value=?, at=? WHERE name='proc'",
-            (json.dumps(data, ensure_ascii=False), now_ts()))
-        conn.commit()
+        _upsert_signal(name, json.dumps(data, ensure_ascii=False))
     except sqlite3.Error:
         return
-    finally:
-        conn.close()
 
 
 def note_attack_link(interval: float) -> None:
-    """游戏心跳刚发出去。挂机时用这个判断连接是不是真的还在。"""
-    try:
-        conn = connect()
-    except sqlite3.Error:
+    """这个攻打 QQ 的游戏心跳刚发出去。挂机时用这个判断连接是不是真的还在。"""
+    if not attack_context_user() and not attack_context_qq():
         return
+    name = _mark_name("proc")
     try:
-        row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='proc'").fetchone()
-        if not row:
+        raw = _signal_value(name)
+        if not raw:
             return
-        data = _proc_payload(row[0])
+        data = _proc_payload(raw)
         if not data or data.get("phase") == "offline":
             return
         data["link"] = int(time.time())
@@ -1684,14 +1718,9 @@ def note_attack_link(interval: float) -> None:
             gap = 0
         if gap > 0:
             data["gap"] = gap
-        conn.execute(
-            "UPDATE atk_signal SET value=? WHERE name='proc'",
-            (json.dumps(data, ensure_ascii=False),))
-        conn.commit()
+        _upsert_signal(name, json.dumps(data, ensure_ascii=False), touch=False)
     except sqlite3.Error:
         return
-    finally:
-        conn.close()
 
 
 def _hold_link_ok(data: dict) -> bool:
@@ -1707,11 +1736,14 @@ def _hold_link_ok(data: dict) -> bool:
 
 
 def touch_attack_status() -> None:
-    """进程还活着就刷新时间。停掉之后不再把「没在跑」刷成在线。"""
+    """这条攻打线程还活着就刷新时间。停掉之后不再把「没在跑」刷成在线。"""
+    if not attack_context_user() and not attack_context_qq():
+        return
+    name = _mark_name("proc")
     conn = connect()
     try:
         row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='proc'").fetchone()
+            "SELECT value FROM atk_signal WHERE name=?", (name,)).fetchone()
         if not row:
             return
         try:
@@ -1721,86 +1753,57 @@ def touch_attack_status() -> None:
         if phase == "offline":
             return
         conn.execute(
-            "UPDATE atk_signal SET at=? WHERE name='proc'", (now_ts(),))
+            "UPDATE atk_signal SET at=? WHERE name=?", (now_ts(), name))
         conn.commit()
     finally:
         conn.close()
 
 
 def attack_status(user_id: int) -> dict:
-    """给页面看的攻打进程。超过 25 秒没心跳就当没在跑。别人的城市和 UID 不带出来。"""
+    """给页面看这个登录账号自己的攻打 QQ。超过 25 秒没心跳就当没在跑。"""
+    user_id = int(user_id)
+    uin = attack_qq_of(user_id)
+    parsed, seen, online = _read_user_proc(user_id)
+    phase = parsed.get("phase") or "offline"
+    here_id = _kept_here(parsed)
     conn = connect(readonly=True)
     try:
-        row = conn.execute(
-            "SELECT value, at FROM atk_signal WHERE name='proc'").fetchone()
-        page_qr = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='pageqr'").fetchone()
         own = conn.execute(
             "SELECT city_id, IFNULL(uid,'') FROM atk_order "
             "WHERE user_id=? AND status='running' ORDER BY id DESC LIMIT 1",
-            (int(user_id),)).fetchone()
+            (user_id,)).fetchone()
         waiting = conn.execute(
             "SELECT 1 FROM atk_order WHERE user_id=? AND status='blocked' LIMIT 1",
-            (int(user_id),)).fetchone()
+            (user_id,)).fetchone()
         latest = conn.execute(
             "SELECT status, IFNULL(reason,'') FROM atk_order "
             "WHERE user_id=? ORDER BY id DESC LIMIT 1",
-            (int(user_id),)).fetchone()
-        paused_row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='pause'").fetchone()
+            (user_id,)).fetchone()
     finally:
         conn.close()
-    pause_val = str(paused_row[0] or "") if paused_row else ""
-    phase = "offline"
-    seen = ""
-    online = False
-    here_id = 0
-    proc_owner = 0
-    parsed = {}
-    if row:
-        parsed = _proc_payload(row[0])
-        phase = parsed.get("phase") or "offline"
-        here_id = _kept_here(parsed)
-        seen = row[1] or ""
-        try:
-            proc_owner = int(parsed.get("user") or 0)
-        except (TypeError, ValueError):
-            proc_owner = 0
-        if seen and phase != "offline":
-            try:
-                dt = datetime.strptime(seen, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=timezone.utc)
-                online = (datetime.now(timezone.utc) - dt).total_seconds() <= 25
-            except ValueError:
-                online = False
-    gone = {"online": False, "phase": "offline", "detail": "没在跑",
-            "seen_at": "", "qr": False, "here": "",
-            "paused": False, "hold_left": None}
-    blocked = attack_qq_blocked(int(user_id))
-    mismatch = {"online": False, "phase": "offline", "detail": QQ_MISMATCH,
-                "seen_at": beijing_ts(seen), "qr": False, "here": "",
-                "paused": True, "hold_left": None}
-    # 攻打号和登录账号一对一。别人的进程、以及还没写上主人的旧进程，这里都不当自己的。
-    if proc_owner and proc_owner != int(user_id):
-        return _with_page_qr(mismatch if blocked else gone, user_id)
-    if online and not proc_owner:
-        return _with_page_qr(mismatch if blocked else gone, user_id)
-    paused = blocked or pause_val == str(int(user_id)) or (
-        pause_val == "1" and proc_owner == int(user_id))
-    hold_left = attack_hold_left(int(user_id))
-    show_qr = bool(page_login_path(int(user_id)) or (
-        page_qr and page_qr[0] == "1" and online and phase == "login"))
+    blocked = attack_qq_blocked(user_id)
+    paused = blocked or attack_paused(user_id)
+    hold_left = attack_hold_left(user_id)
+    page_on = _signal_value(_mark_name("pageqr", user_id)) == "1"
+    show_qr = bool(page_login_path(user_id) or (page_on and online and phase == "login"))
+
+    def pack(row: dict) -> dict:
+        row = dict(row)
+        row["qq"] = uin
+        return _with_page_qr(row, user_id)
+
+    mismatch = pack({"online": False, "phase": "offline", "detail": QQ_MISMATCH,
+                     "seen_at": beijing_ts(seen), "qr": False, "here": "",
+                     "paused": True, "hold_left": None})
     if not online:
-        # 进程已经停了。暂停只对还在跑的进程有意义，留下的标记会让下次打开页面一直显示已暂停。
-        # QQ 对不上的暂停留着，下次拉起也不能接着打。
-        if not blocked and pause_val in ("1", str(int(user_id))) and proc_owner in (0, int(user_id)):
-            set_attack_paused(False, int(user_id))
+        # 进程已经停了。暂停只对还在跑的进程有意义。QQ 对不上的暂停留着。
+        if not blocked and attack_paused(user_id):
+            set_attack_paused(False, user_id)
         if blocked:
-            return _with_page_qr(mismatch, user_id)
-        return _with_page_qr({"online": False, "phase": "offline",
-                "detail": "没在跑",
-                "seen_at": beijing_ts(seen), "qr": False, "here": "",
-                "paused": False, "hold_left": None}, user_id)
+            return mismatch
+        return pack({"online": False, "phase": "offline", "detail": "没在跑",
+                     "seen_at": beijing_ts(seen), "qr": False, "here": "",
+                     "paused": False, "hold_left": None})
     if paused and phase != "login":
         detail = QQ_MISMATCH if blocked else "已暂停"
     elif phase == "login":
@@ -1829,10 +1832,29 @@ def attack_status(user_id: int) -> dict:
         here = f"{here_id} {name}".strip() if name else str(here_id)
     show_hold = (not paused and phase == "hold"
                  and hold_left is not None and hold_left > 0)
-    return {"online": True, "phase": phase, "detail": detail,
-            "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
-            "paused": paused,
-            "hold_left": int(hold_left) if show_hold else None}
+    return pack({"online": True, "phase": phase, "detail": detail,
+                 "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
+                 "paused": paused,
+                 "hold_left": int(hold_left) if show_hold else None})
+
+
+def list_attack_fighters() -> list:
+    """每个已绑定的攻打 QQ 现在在干什么。主进程用这个看全部线程。"""
+    rows = []
+    for user_id in mapped_attack_user_ids():
+        status = attack_status(user_id)
+        rows.append({
+            "user_id": user_id,
+            "username": username_of(user_id),
+            "qq": status.get("qq") or attack_qq_of(user_id),
+            "cookie": f"accounts/qq-{status.get('qq') or attack_qq_of(user_id)}.json",
+            "online": status.get("online"),
+            "phase": status.get("phase"),
+            "detail": status.get("detail"),
+            "here": status.get("here") or "",
+            "paused": status.get("paused"),
+        })
+    return rows
 
 
 def _clock(text) -> str:
@@ -1956,97 +1978,57 @@ def save_scan_plan(gap_sec, quiet_start, quiet_end, ranges) -> str:
     return ""
 
 
-def ask_attack_login() -> None:
-    """网页发起登录，但攻打进程正占着这个号。让那个进程去推二维码。"""
-    conn = connect()
-    try:
-        now = now_ts()
-        conn.execute(
-            "INSERT INTO atk_signal(name, value, at) VALUES ('login','1',?) "
-            "ON CONFLICT(name) DO UPDATE SET value='1', at=excluded.at",
-            (now,))
-        conn.commit()
-    finally:
-        conn.close()
+def ask_attack_login(user_id: int = 0) -> None:
+    """让这个攻打 QQ 自己的线程去推二维码。不碰别的 QQ。"""
+    _upsert_signal(_mark_name("login", user_id), "1")
 
 
 def take_attack_login() -> bool:
-    conn = connect()
-    try:
-        row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='login'").fetchone()
-        if not row or row[0] != "1":
-            return False
-        conn.execute(
-            "UPDATE atk_signal SET value='0', at=? WHERE name='login'",
-            (now_ts(),))
-        conn.commit()
-        return True
-    finally:
-        conn.close()
-
-
-def _pause_value() -> str:
-    conn = connect(readonly=True)
-    try:
-        row = conn.execute(
-            "SELECT value FROM atk_signal WHERE name='pause'").fetchone()
-        return str(row[0] or "") if row else ""
-    finally:
-        conn.close()
+    name = _mark_name("login")
+    if _signal_value(name) != "1":
+        return False
+    _upsert_signal(name, "0")
+    return True
 
 
 def attack_paused(user_id: int = 0) -> bool:
-    """当前这个攻打进程是不是被它的登录账号暂停了。
-    传入 user_id 时按这个登录账号查，不改进程自己记下的主人。"""
-    value = _pause_value()
-    if value in ("", "0"):
-        return False
+    """这个登录账号自己的攻打 QQ 是不是被暂停了。"""
     user_id = int(user_id or attack_context_user() or 0)
-    if value == "1":
-        return bool(user_id)
-    return bool(user_id) and value == str(user_id)
+    if not user_id:
+        return False
+    value = _signal_value(_mark_name("pause", user_id))
+    if value in ("1", "true"):
+        return True
+    legacy = _signal_value("pause")
+    return bool(user_id) and legacy == str(user_id)
 
 
 def set_attack_paused(on: bool, user_id: int = 0) -> bool:
-    """暂停或继续。不是这个登录账号的暂停标记不动。返回是否写成了目标状态。"""
+    """暂停或继续这个登录账号的攻打 QQ。别的 QQ 的标记不动。"""
     user_id = int(user_id or attack_context_user() or 0)
-    current = _pause_value()
+    if not user_id:
+        return False
+    name = _mark_name("pause", user_id)
     if on:
-        if not user_id:
-            return False
-        value = str(user_id)
-    else:
-        if current in ("", "0"):
-            return True
-        if current == str(user_id):
-            value = "0"
-        elif current == "1" and user_id and proc_user() in (0, user_id):
-            value = "0"
-        else:
-            return False
-    conn = connect()
-    try:
-        conn.execute(
-            "INSERT INTO atk_signal(name, value, at) VALUES ('pause', ?, ?) "
-            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            (value, now_ts()))
-        conn.commit()
-    finally:
-        conn.close()
+        _upsert_signal(name, "1")
+        return True
+    if _signal_value(name) in ("", "0") and _signal_value("pause") != str(user_id):
+        return True
+    _upsert_signal(name, "0")
+    if _signal_value("pause") == str(user_id):
+        _upsert_signal("pause", "0")
     return True
 
 
 def pause_attack_for(user_id: int, on: bool) -> str:
-    """网页上的暂停和继续。别人的攻打进程不能动。"""
+    """网页上的暂停和继续。只动这个登录账号自己的攻打 QQ。"""
     user_id = int(user_id)
-    owner = proc_user()
-    if proc_online() and owner not in (0, user_id):
-        return "攻打进程正在给别的登录账号用"
     if not on and attack_qq_blocked(user_id):
         return QQ_MISMATCH
+    if not attack_qq_of(user_id):
+        return "这个登录账号还没有攻打 QQ"
     if not set_attack_paused(on, user_id):
-        return "这个攻打号已经绑定别的登录账号"
+        return "这个登录账号还没有攻打 QQ"
     return ""
 
 
@@ -2059,6 +2041,16 @@ def users_with_open_orders() -> list:
     finally:
         conn.close()
     return [int(r[0]) for r in rows]
+
+
+def users_needing_attack() -> list:
+    """主进程要照看的登录账号：还有订单，或者攻打 QQ 的挂机还没结束。"""
+    ids = set(users_with_open_orders())
+    for user_id in mapped_attack_user_ids():
+        left = attack_hold_left(user_id)
+        if left is not None and left > 0:
+            ids.add(user_id)
+    return sorted(ids)
 
 
 def attack_order_open() -> bool:
@@ -2457,8 +2449,8 @@ def list_city_targets(city_id: int, skip_failed=True, exclude_uid=""):
 
 
 def _fail_acct() -> str:
-    """当前攻打进程用的攻打号。失败库按这个名字分开。"""
-    return str(_PROC_ACCT or "")
+    """当前这条攻打线程的 QQ。失败库按这个号分开。"""
+    return attack_context_qq()
 
 
 def _fail_op_mine(op) -> bool:
