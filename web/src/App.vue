@@ -1,5 +1,6 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from "vue";
+import "./base.css";
 
 const me = ref(null);
 const mode = ref("login");
@@ -18,16 +19,9 @@ const attackCity = ref("");
 const attackUid = ref("");
 const orders = ref([]);
 const proc = ref(null);
-const fighters = ref([]);
 const qrSrc = ref("");
 const devLogin = ref(false);
 const registerOpen = ref(false);
-const scanGap = ref("300");
-const quietStart = ref("");
-const quietEnd = ref("");
-const scanRanges = ref([]);
-const scanNote = ref("");
-const scanQuiet = ref(false);
 const autoLock = ref(false);
 const holdMin = ref("0");
 const cardMax = ref("100");
@@ -60,13 +54,11 @@ async function refreshAttacks() {
   if (!me.value || !me.value.remote_attack) {
     orders.value = [];
     proc.value = null;
-    fighters.value = [];
     return;
   }
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
   proc.value = atk.process || null;
-  fighters.value = atk.fighters || [];
   const left = proc.value && proc.value.hold_left;
   holdUntil.value = left > 0 ? Date.now() + left * 1000 : 0;
   qrSrc.value = proc.value && proc.value.qr ? "/api/attack-qr?t=" + Date.now() : "";
@@ -113,7 +105,6 @@ async function enter() {
   await loadCities();
   await refresh();
   await refreshAttacks();
-  await loadScan();
 }
 
 async function loadCities() {
@@ -128,51 +119,6 @@ async function loadCities() {
 function cityLabel(c) {
   const same = cities.value.filter((x) => x.name === c.name).length;
   return same > 1 ? c.name + " " + c.id : c.name;
-}
-
-async function loadScan() {
-  if (!me.value || !me.value.admin) return;
-  const data = await api("/api/scan-plan");
-  scanGap.value = String(data.gap_sec ?? 300);
-  quietStart.value = data.quiet_start || "";
-  quietEnd.value = data.quiet_end || "";
-  scanQuiet.value = !!data.quiet_now;
-  scanRanges.value = (data.ranges || []).map((row) => ({
-    city_id: String(row.city_id),
-    city_name: row.city_name || "",
-    start_page: String(row.start_page),
-    end_page: String(row.end_page),
-  }));
-}
-
-async function saveScan() {
-  err.value = "";
-  scanNote.value = "";
-  const data = await api("/api/scan-plan", {
-    gap_sec: scanGap.value,
-    quiet_start: quietStart.value,
-    quiet_end: quietEnd.value,
-    ranges: scanRanges.value.map((row) => ({
-      city_id: row.city_id,
-      start_page: row.start_page,
-      end_page: row.end_page,
-    })),
-  });
-  scanGap.value = String(data.gap_sec ?? 300);
-  quietStart.value = data.quiet_start || "";
-  quietEnd.value = data.quiet_end || "";
-  scanQuiet.value = !!data.quiet_now;
-  scanRanges.value = (data.ranges || []).map((row) => ({
-    city_id: String(row.city_id),
-    city_name: row.city_name || "",
-    start_page: String(row.start_page),
-    end_page: String(row.end_page),
-  }));
-  scanNote.value = "已保存。正在跑的扫描进程下一轮按这个间隔和名单翻页";
-}
-
-function addScanCity() {
-  scanRanges.value.push({ city_id: "", city_name: "", start_page: "0", end_page: "0" });
 }
 
 async function devEnter() {
@@ -193,7 +139,6 @@ async function loadMe() {
   await loadCities();
   await refresh();
   await refreshAttacks();
-  await loadScan();
 }
 
 async function saveAutoLock(ev) {
@@ -350,43 +295,9 @@ onUnmounted(() => {
       <p class="lead">
         {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
         · 库 <code>{{ db }}</code>
+        <a v-if="me.admin" class="ghost" href="/admin">管理</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
-      <details v-if="me.admin" class="fold">
-        <summary>扫描安排</summary>
-        <form class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
-          <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>
-          <label>停扫开始<input v-model="quietStart" type="time" /></label>
-          <label>停扫结束<input v-model="quietEnd" type="time" /></label>
-          <p class="muted">北京时间。例如 01:00 到 05:00 这段不翻页，游戏连接保持。23:00 到 05:00 这样跨过零点也可以。两个都空着就是全天扫。页码从 0 起，含结束页；订阅页面上的页数要减 1。一座城只填一段。</p>
-          <p v-if="scanQuiet">现在处于停扫时段，扫描会跳过。</p>
-          <table class="scan">
-            <thead>
-              <tr><th>城市</th><th>起始页</th><th>结束页</th><th></th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="(row, i) in scanRanges" :key="i">
-                <td>
-                  <select v-model="row.city_id" required>
-                    <option value="" disabled>选择城市</option>
-                    <option v-if="row.city_id && !cities.some((c) => String(c.id) === String(row.city_id))" :value="String(row.city_id)">{{ row.city_name || row.city_id }}</option>
-                    <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
-                  </select>
-                </td>
-                <td><input v-model="row.start_page" inputmode="numeric" required /></td>
-                <td><input v-model="row.end_page" inputmode="numeric" required /></td>
-                <td><button type="button" class="ghost" @click="scanRanges.splice(i, 1)">去掉</button></td>
-              </tr>
-            </tbody>
-          </table>
-          <p v-if="!scanRanges.length" class="muted">还没有城市。加上之后，扫描进程按这里的页范围翻。</p>
-          <p>
-            <button type="button" class="ghost" @click="addScanCity">加一座城</button>
-            <button type="submit">保存扫描安排</button>
-            <span class="muted">{{ scanNote }}</span>
-          </p>
-        </form>
-      </details>
       <form @submit.prevent="addSub().catch((e) => (err = e.message))">
         <label>城市
           <select v-model="cityId" required>
@@ -448,9 +359,6 @@ onUnmounted(() => {
         </p>
         <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
         <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没绑定的，点推送登录会在下面出二维码。同一个 QQ 不能绑给两个登录账号。</p>
-        <ul v-if="me.admin && fighters.length" class="muted">
-          <li v-for="f in fighters" :key="f.qq">{{ f.username }} 的攻打 QQ {{ f.qq }}：{{ procText(f) }}</li>
-        </ul>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">
         <table>
@@ -496,54 +404,3 @@ onUnmounted(() => {
   </main>
 </template>
 
-<style>
-body { margin: 0; font: 15px/1.5 sans-serif; color: #1a1a1a; background: #f6f6f4; }
-main { max-width: 880px; margin: 0 auto; padding: 24px 16px 48px; }
-h1 { font-size: 22px; margin: 0 0 8px; }
-h2 { font-size: 16px; margin: 28px 0 8px; }
-details.fold { margin: 28px 0 8px; }
-details.fold summary { font-size: 16px; font-weight: 700; cursor: pointer; }
-details.fold form { margin-top: 8px; }
-.lock-row { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
-label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; }
-.lead { margin: 0 0 16px; color: #444; }
-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
-form.stack { display: grid; max-width: 520px; }
-form.scan-form { max-width: none; }
-.wide { overflow-x: auto; }
-.proc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.orders { overflow-x: auto; }
-.orders table { min-width: 760px; }
-.orders th, .orders td { white-space: nowrap; }
-.orders td.reason { white-space: normal; min-width: 16em; max-width: 28em; }
-.order-cards { display: none; }
-label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
-input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
-input.mins { width: 6em; }
-button { font: inherit; padding: 8px 14px; border: 0; border-radius: 6px; background: #1a1a1a; color: #fff; cursor: pointer; }
-button.ghost { background: transparent; color: #333; border: 1px solid #bbb; }
-p button.ghost { margin-left: 8px; }
-.err { color: #9b1c1c; min-height: 1.5em; }
-.muted { color: #777; font-size: 13px; }
-table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 12px; }
-table.scan td input { width: 7em; box-sizing: border-box; }
-table.scan td select { min-width: 9em; }
-th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
-th { font-size: 13px; color: #555; }
-.on { color: #0b6b2f; font-weight: 700; }
-.off { color: #666; }
-code { font-size: 13px; }
-img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px solid #ddd; }
-@media (max-width: 720px) {
-  main { padding: 16px 12px 40px; }
-  form.attack-row { display: grid; grid-template-columns: 1fr 1fr; }
-  form.attack-row > button { grid-column: 1 / -1; }
-  .proc-text { flex: 1 1 100%; }
-  .orders table { display: none; }
-  .order-cards { display: grid; gap: 10px; margin-top: 12px; }
-  .order-card { background: #fff; border-radius: 8px; padding: 12px; }
-  .order-card p { margin: 0 0 6px; }
-  .order-card .k { display: block; color: #777; font-size: 12px; }
-  .order-card .reason { white-space: normal; word-break: break-word; }
-}
-</style>
