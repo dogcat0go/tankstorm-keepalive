@@ -1044,6 +1044,47 @@ def _watch_blocked_path(rec, sock, config, beater, path_at: float) -> float:
     return time.time()
 
 
+def _run_requested_move(rec, sock, config, beater) -> bool:
+    """页面点了移动到指定城。走进那座城，不打它。没有请求返回 False。"""
+    from . import citydb, country_war
+
+    city = citydb.take_attack_move()
+    if not city:
+        return False
+    label = f"{city} {citydb.city_name(city) or ''}".strip()
+    citydb.note_attack_move_text(f"正在移动到 {label}")
+    try:
+        out = country_war.walk_to(
+            rec, sock, config, city, beat=beater,
+            march_only=True, enter_target=True)
+    except OSError:
+        citydb.note_attack_move_text(f"移动到 {label} 时连接中断")
+        raise
+    except Exception as exc:
+        log.info("移动到 %s 失败", label, exc_info=True)
+        detail = _interrupt_reason(exc)
+        if detail.startswith("攻打中断："):
+            detail = detail[len("攻打中断："):]
+        citydb.note_attack_move_text(f"移动到 {label} 时：{detail}")
+        return True
+    why = str((out or {}).get("停止原因") or "").strip()
+    landed = int((out or {}).get("走到") or 0)
+    if why:
+        citydb.note_attack_move_text(f"移动到 {label} 时停下：{why}")
+    elif landed == city:
+        steps = int((out or {}).get("步数") or 0)
+        if steps <= 0:
+            citydb.note_attack_move_text(f"人已经在 {label}")
+        else:
+            citydb.note_attack_move_text(f"已移动到 {label}")
+    else:
+        landed_name = citydb.city_name(landed) or str(landed or "")
+        citydb.note_attack_move_text(
+            f"朝 {label} 走了，停在 {landed} {landed_name}".strip())
+    log.info("移动到 %s 结束，停在 %s", label, landed or "未知")
+    return True
+
+
 def _begin_attack_hold(fresh=False) -> bool:
     """队列空了就按配置开始或继续挂机。该结束时返回 False。"""
     from . import citydb
@@ -1085,6 +1126,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             citydb.set_attack_status("paused")
             if not _wait_socket(sock, spec, ctx):
                 raise OSError("服务器关闭连接")
+            continue
+        if _run_requested_move(rec, sock, config, beater):
             continue
         citydb.skip_unfinished_auto(citydb.attack_context_user())
         job = citydb.claim_attack_order()
@@ -1180,14 +1223,16 @@ def run_remote_orders(qq, config: dict) -> int:
             asked = citydb.take_attack_login()
             pending = citydb.attack_order_open()
             left = citydb.attack_hold_left()
-            if (asked or pending or (left or 0) > 0) and not qq.is_valid():
+            moving = citydb.attack_move_pending() > 0
+            if (asked or pending or moving or (left or 0) > 0) and not qq.is_valid():
                 citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
                 if not ((citydb.attack_hold_left() or 0) > 0):
                     citydb.set_attack_status("idle")
                 pending = citydb.attack_order_open()
                 left = citydb.attack_hold_left()
-            if not pending and not ((left or 0) > 0):
+                moving = citydb.attack_move_pending() > 0
+            if not pending and not moving and not ((left or 0) > 0):
                 citydb.fail_blocked_orders()
                 if left is not None:
                     citydb.clear_attack_hold()

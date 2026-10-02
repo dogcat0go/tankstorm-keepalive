@@ -16,6 +16,8 @@ form.stack { display: grid; max-width: 520px; }
 form.scan-form { max-width: none; }
 .wide { overflow-x: auto; }
 .proc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.here-row { margin-top: 8px; }
+.here-row select { min-width: 8em; }
 .orders { overflow-x: auto; }
 .orders table { min-width: 760px; }
 .orders th, .orders td { white-space: nowrap; }

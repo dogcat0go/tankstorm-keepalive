@@ -29,6 +29,7 @@ const retreatMode = ref("hops");
 const retreatHops = ref("3");
 const retreatCity = ref("0");
 const retreatNote = ref("");
+const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
 let timer = 0;
@@ -196,6 +197,14 @@ async function addSub() {
 async function removeSub(it) {
   await api("/api/subs/delete", { city_id: it.city_id, uid: it.uid });
   await refresh();
+}
+
+async function moveToCity() {
+  err.value = "";
+  if (!moveCity.value) throw new Error("要选移动到哪座城");
+  const data = await api("/api/attack-move", { city_id: moveCity.value });
+  if (proc.value) proc.value.move_note = data.move_note || "";
+  await refreshAttacks();
 }
 
 async function addOrder() {
@@ -414,7 +423,17 @@ onUnmounted(() => {
           <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login'" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
-        <p v-if="proc && proc.online && proc.here">人在 {{ proc.here }}</p>
+        <p v-if="proc && proc.online" class="proc here-row">
+          <span v-if="proc.here">人在 {{ proc.here }}</span>
+          <label class="choice">移动到
+            <select v-model="moveCity">
+              <option value="" disabled>选择城市</option>
+              <option v-for="c in cities" :key="'mv' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+            </select>
+          </label>
+          <button type="button" @click="moveToCity().catch((e) => (err = e.message))">移动</button>
+          <span v-if="proc.move_note" class="muted">{{ proc.move_note }}</span>
+        </p>
         <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，点推送登录会在下面出二维码。同一个 QQ 不能绑给两个登录账号。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">

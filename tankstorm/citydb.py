@@ -1854,6 +1854,9 @@ def set_attack_status(phase: str) -> None:
             data["link"] = link
         if isinstance(gap, int) and not isinstance(gap, bool) and gap > 0:
             data["gap"] = gap
+        note = str(prev.get("move_note") or "").strip()
+        if note:
+            data["move_note"] = note
     _upsert_signal(name, json.dumps(data, ensure_ascii=False))
 
 
@@ -1876,6 +1879,74 @@ def note_attack_here(city_id) -> None:
         _upsert_signal(name, json.dumps(data, ensure_ascii=False))
     except sqlite3.Error:
         return
+
+
+def note_attack_move_text(text: str, user_id: int = 0) -> None:
+    """页面上的「人在」旁边显示这次移动的结果。进程已停则不改。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id and not attack_context_qq():
+        return
+    name = _mark_name("proc", user_id) if user_id else _mark_name("proc")
+    try:
+        data = _proc_payload(_signal_value(name))
+        if not data or data.get("phase") == "offline":
+            return
+        data["move_note"] = " ".join(str(text or "").split())[:160]
+        _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+    except sqlite3.Error:
+        return
+
+
+def request_attack_move(user_id: int, city_id) -> str:
+    """让这条攻打线程移动到指定城。只走路，不打那座城。成功返回空字符串。"""
+    user_id = int(user_id)
+    try:
+        cid = int(str(city_id).strip())
+    except (TypeError, ValueError, AttributeError):
+        return "城市不对"
+    if cid <= 0:
+        return "要选移动到哪座城"
+    label = city_name(cid)
+    if not label:
+        return "这座城不在目录里"
+    if not attack_qq_of(user_id):
+        return "还没绑定攻打 QQ"
+    status = attack_status(user_id)
+    if not status.get("online"):
+        return "攻打没在跑，不能移动"
+    if status.get("paused"):
+        return "攻打暂停着，先点继续再移动"
+    where = f"{cid} {label}"
+    if status.get("phase") == "running":
+        note = f"打完这一单就移动到 {where}"
+    else:
+        note = f"开始移动到 {where}"
+    _upsert_signal(_mark_name("move", user_id), str(cid))
+    note_attack_move_text(note, user_id)
+    return ""
+
+
+def attack_move_pending(user_id: int = 0) -> int:
+    """这条攻打线程还没开始的移动目标。没有返回 0。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return 0
+    raw = _signal_value(_mark_name("move", user_id)).strip()
+    try:
+        cid = int(raw or 0)
+    except ValueError:
+        return 0
+    return cid if cid > 0 else 0
+
+
+def take_attack_move() -> int:
+    """领走这次移动。领过就不再走第二次。"""
+    user_id = attack_context_user()
+    cid = attack_move_pending(user_id)
+    if not cid:
+        return 0
+    _delete_signal(_mark_name("move", user_id))
+    return cid
 
 
 def note_attack_link(interval: float) -> None:
@@ -2014,7 +2085,8 @@ def attack_status(user_id: int) -> dict:
     return pack({"online": True, "phase": phase, "detail": detail,
                  "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
                  "paused": paused,
-                 "hold_left": int(hold_left) if show_hold else None})
+                 "hold_left": int(hold_left) if show_hold else None,
+                 "move_note": str(parsed.get("move_note") or "")})
 
 
 def list_attack_fighters() -> list:
@@ -2597,7 +2669,11 @@ def list_watches(user_id: int) -> list:
     try:
         rows = conn.execute(
             "SELECT s.city_id, s.uid, s.created_at, s.last_present, IFNULL(c.name, ''), "
-            "p.name, p.lvl, p.fetched_at, p.page, "
+            "COALESCE(NULLIF(TRIM(IFNULL(p.name,'')), ''), "
+            "(SELECT p2.name FROM player p2 WHERE p2.uid=s.uid "
+            "AND TRIM(IFNULL(p2.name,''))!='' "
+            "ORDER BY p2.fetched_at DESC LIMIT 1), ''), "
+            "p.lvl, p.fetched_at, p.page, "
             "(SELECT MAX(fetched_at) FROM player WHERE city_id=s.city_id), "
             "o.fetched_at "
             "FROM watch_sub s "
