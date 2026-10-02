@@ -756,6 +756,41 @@ def _person_blocking(reason: str) -> bool:
     return "这条路就不通" in text
 
 
+def _defeated(reason: str) -> bool:
+    """自己被别人打败。一般是人回到了首都。"""
+    text = str(reason or "")
+    return "被别人打败" in text or "回到首都" in text or "出不了首都" in text
+
+
+def _order_result(job, out) -> tuple:
+    """这一单打完怎么收。返回 (动作, 状态, 原因)。
+
+    动作是 defer、finish、park。自动锁敌没打完就结束，等下一次触发。
+    清整座城时被打回首都，记为已结束。
+    """
+    uid = str((job or {}).get("uid") or "").strip()
+    reason = str((out or {}).get("停止原因") or "")
+    auto = bool((job or {}).get("auto"))
+    attacked = bool((out or {}).get("攻击")) if uid else (out or {}).get("攻击") is not None
+    if reason == "已暂停":
+        return "defer", "", ""
+    if auto:
+        if bool((out or {}).get("击退")) or (not reason and attacked):
+            return "finish", "done", reason
+        return "finish", "failed", reason or "没打完，等下一次索敌"
+    if not uid and _defeated(reason):
+        return "finish", "ended", reason or "被别人打败，已回到首都"
+    if reason and not _cards_used_up(reason) and _person_blocking(reason):
+        return "park", "", reason
+    if reason and _cards_used_up(reason):
+        return "finish", "done", reason
+    if reason:
+        return "finish", "failed", reason
+    if attacked:
+        return "finish", "done", ""
+    return "finish", "failed", "未打成"
+
+
 def _fight_claimed(rec, sock, config, beater, job) -> None:
     from . import citydb, country_war
 
@@ -788,30 +823,29 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
                  uid, job["city_id"], out.get("移动") or 0, out.get("走到"),
                  out.get("攻击") if out.get("攻击") is not None else "未打")
-        ok = bool(out.get("攻击"))
     else:
         log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
                  job["city_id"], out.get("移动") or 0, out.get("走到"),
                  out.get("攻击") if out.get("攻击") is not None else "未打")
-        ok = out.get("攻击") is not None
-    reason = out.get("停止原因") or ""
-    if reason == "已暂停":
+    action, status, why = _order_result(job, out)
+    beats = int(tally.get("n") or 0)
+    if why:
+        log.info("   结束原因：%s", why)
+    if action == "defer":
         citydb.defer_attack_order(job["id"])
         log.info("订单 %s 已暂停，放回排队", job["id"])
         return
-    if reason:
-        log.info("   结束原因：%s", reason)
-        ok = _cards_used_up(reason)
-    beats = int(tally.get("n") or 0)
-    if (reason and not ok and _person_blocking(reason)
-            and citydb.attack_hold_minutes() > 0):
-        citydb.park_attack_order(job["id"], reason, beats=beats)
+    if action == "park" and citydb.attack_hold_minutes() > 0:
+        citydb.park_attack_order(job["id"], why, beats=beats)
         log.info("订单 %s 有人挡路，挂机期间继续看路径", job["id"])
         return
-    citydb.finish_attack_order(
-        job["id"], "done" if ok else "failed",
-        reason or ("" if ok else "未打成"),
-        beats=beats)
+    if action == "park":
+        status = "failed"
+    if job.get("auto") and status == "failed":
+        log.info("订单 %s 是自动锁敌，没打完，跳过，等下一次触发", job["id"])
+    elif status == "ended":
+        log.info("订单 %s 清城时被打回首都，订单结束", job["id"])
+    citydb.finish_attack_order(job["id"], status, why, beats=beats)
 
 
 def _wait_socket(sock, spec, ctx) -> bool:
@@ -991,6 +1025,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             if not _wait_socket(sock, spec, ctx):
                 raise OSError("服务器关闭连接")
             continue
+        citydb.skip_unfinished_auto(citydb.attack_context_user())
         job = citydb.claim_attack_order()
         if job:
             stated = False

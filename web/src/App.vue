@@ -226,7 +226,7 @@ function attackLoginError(login) {
 }
 
 function orderStatus(status) {
-  return { pending: "排队", running: "正在打", blocked: "等通路", done: "已打完", failed: "没打成" }[status] || status;
+  return { pending: "排队", running: "正在打", blocked: "等通路", done: "已打完", failed: "没打成", ended: "已结束" }[status] || status;
 }
 
 async function savePush() {
@@ -314,7 +314,7 @@ onUnmounted(() => {
           <input type="checkbox" :checked="autoLock" @change="saveAutoLock" />
           自动锁敌
         </label>
-        <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}路径上有打不过的人就停在原地。同一个人一直在城里，不会重复排。</span>
+        <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。</span>
       </p>
       <table>
         <thead>
