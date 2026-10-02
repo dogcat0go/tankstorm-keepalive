@@ -140,6 +140,7 @@ def _user_out(user: dict) -> dict:
         "clear_mode": plan["mode"],
         "clear_from": plan["page_from"],
         "clear_to": plan["page_to"],
+        "clear_wait": plan["wait_min"],
         "clear_priority": plan["priority"],
     }
 
@@ -421,7 +422,7 @@ def _handler(config: dict):
                         return
                     why = citydb.set_clear_plan(
                         user["id"], data.get("mode"), data.get("page_from"),
-                        data.get("page_to"), data.get("priority"))
+                        data.get("page_to"), data.get("priority"), data.get("wait_min"))
                     if why:
                         raise ValueError(why)
                     saved = citydb.user_by_token(_cookie_token(self)) or user

@@ -38,6 +38,7 @@ const attackAdvanced = ref(false);
 const clearMode = ref("head");
 const clearFrom = ref("1");
 const clearTo = ref("5");
+const clearWait = ref("0");
 const clearRows = ref([]);
 const clearNote = ref("");
 const prioUid = ref("");
@@ -169,6 +170,7 @@ function takeUser(user) {
   clearMode.value = user.clear_mode === "range" ? "range" : "head";
   clearFrom.value = String(user.clear_from || 1);
   clearTo.value = String(user.clear_to || 5);
+  clearWait.value = String(user.clear_wait ?? 0);
   clearRows.value = (user.clear_priority || []).map((row) => ({
     uid: String(row.uid),
     rank: String(row.rank),
@@ -201,6 +203,7 @@ async function saveClearPlan() {
     mode: clearMode.value,
     page_from: clearFrom.value,
     page_to: clearTo.value,
+    wait_min: clearWait.value,
     priority: clearRows.value.map((row) => ({ uid: row.uid, rank: row.rank })),
   });
   if (data.user) takeUser(data.user);
@@ -301,8 +304,8 @@ function holdClock() {
 
 function holdCell(it) {
   const text = holdClock();
-  if (!text || it.status === "pending" || it.status === "running") return "—";
-  const finished = orders.value.find((row) => row.status !== "pending" && row.status !== "running");
+  if (!text || it.status === "pending" || it.status === "running" || it.status === "wait") return "—";
+  const finished = orders.value.find((row) => row.status !== "pending" && row.status !== "running" && row.status !== "wait");
   return finished && finished.id === it.id ? text : "—";
 }
 
@@ -321,11 +324,11 @@ function attackLoginError(login) {
 }
 
 function orderStatus(status) {
-  return { pending: "排队", running: "正在打", blocked: "等通路", done: "已打完", failed: "没打成", ended: "已结束" }[status] || status;
+  return { pending: "排队", running: "正在打", blocked: "等通路", wait: "等空城", done: "已打完", failed: "没打成", ended: "已结束" }[status] || status;
 }
 
 function orderOpen(it) {
-  return !!it && (it.status === "pending" || it.status === "running" || it.status === "blocked");
+  return !!it && (it.status === "pending" || it.status === "running" || it.status === "blocked" || it.status === "wait");
 }
 
 async function cancelOrder(it) {
@@ -537,6 +540,10 @@ onUnmounted(() => {
               <label>到<input v-model="clearTo" class="mins" inputmode="numeric" required /></label>
             </template>
           </form>
+          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
+            <span class="switch">空城再打</span>
+            <label class="choice">分钟<input v-model="clearWait" class="mins" inputmode="numeric" required /></label>
+          </form>
           <form class="lock-row" @submit.prevent="addPriority().catch((e) => (err = e.message))">
             <span class="switch">优先 UID</span>
             <label>UID<input v-model="prioUid" inputmode="numeric" /></label>
@@ -553,7 +560,7 @@ onUnmounted(() => {
             <button type="submit">保存</button>
             <span class="muted">{{ clearNote }}</span>
           </form>
-          <p class="muted">只对留空 UID 的清城。先扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。最多 50 个 UID。</p>
+          <p class="muted">只对留空 UID 的清城。先扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。最多 50 个 UID。这几页没人时，过上面的分钟再启动同一条订单。0 表示空了就结束。</p>
         </div>
         <p>
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>

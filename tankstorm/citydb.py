@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_mode      TEXT NOT NULL DEFAULT 'head',
     clear_from      INTEGER NOT NULL DEFAULT 1,
     clear_to        INTEGER NOT NULL DEFAULT 5,
+    clear_wait      INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS atk_order (
     auto        INTEGER NOT NULL DEFAULT 0,
     beats       INTEGER,
     card_max    INTEGER,
+    run_at      TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -271,6 +273,10 @@ def connect(readonly=False, timeout=15):
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN clear_to INTEGER NOT NULL DEFAULT 5")
                 setup.commit()
+            if ucols and "clear_wait" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_wait INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
             if ucols and "attack_acct" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
                 setup.commit()
@@ -297,6 +303,9 @@ def connect(readonly=False, timeout=15):
                 setup.commit()
             if ocols and "card_max" not in ocols:
                 setup.execute("ALTER TABLE atk_order ADD COLUMN card_max INTEGER")
+                setup.commit()
+            if ocols and "run_at" not in ocols:
+                setup.execute("ALTER TABLE atk_order ADD COLUMN run_at TEXT")
                 setup.commit()
             fcols = {r[1] for r in setup.execute("PRAGMA table_info(atk_fail)")}
             if fcols and "acct" not in fcols:
@@ -939,7 +948,7 @@ def save_push(user_id: int, qq_target: str) -> None:
 def _open_attack_count(conn, user_id: int) -> int:
     row = conn.execute(
         "SELECT COUNT(*) FROM atk_order WHERE user_id=? "
-        "AND status IN ('pending','running','blocked')",
+        "AND status IN ('pending','running','blocked','wait')",
         (int(user_id),)).fetchone()
     return int(row[0] or 0) if row else 0
 
@@ -971,7 +980,7 @@ def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
                          username_of(user_id), cur.rowcount)
         dup = conn.execute(
             "SELECT 1 FROM atk_order WHERE user_id=? AND city_id=? AND IFNULL(uid,'')=? "
-            "AND status IN ('pending','running','blocked')",
+            "AND status IN ('pending','running','blocked','wait')",
             (user_id, city_id, uid)).fetchone()
         if dup:
             conn.commit()
@@ -1548,8 +1557,11 @@ def list_storm_rejects(user_id: int) -> list:
     return [{"name": str(name or ""), "at": beijing_ts(at)} for name, at in rows]
 
 
-def set_clear_plan(user_id: int, mode, page_from, page_to, priority) -> str:
-    """清城高级配置。前 5 页，或一个页码范围。优先 UID 最多 50 个。成功返回空字符串。"""
+def set_clear_plan(user_id: int, mode, page_from, page_to, priority, wait_min=0) -> str:
+    """清城高级配置。前 5 页，或一个页码范围。优先 UID 最多 50 个。
+
+    wait_min 是空城后再打的分钟。0 表示空了就结束。成功返回空字符串。
+    """
     mode = str(mode or "head").strip()
     if mode not in ("head", "range"):
         return "清城扫页要选前5页或指定范围"
@@ -1583,11 +1595,20 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority) -> str:
         if rank < 1 or rank > 99:
             return "优先级要是 1 到 99"
         rows.append((uid, rank, seq))
+    if wait_min is None or str(wait_min).strip() == "":
+        wait = 0
+    else:
+        try:
+            wait = int(str(wait_min).strip())
+        except (TypeError, ValueError, AttributeError):
+            return "空城周期要是分钟数"
+    if wait < 0 or wait > 1440:
+        return "空城周期要是 0 到 1440 分钟"
     conn = connect()
     try:
         conn.execute(
-            "UPDATE app_user SET clear_mode=?, clear_from=?, clear_to=? WHERE id=?",
-            (mode, start, end, int(user_id)))
+            "UPDATE app_user SET clear_mode=?, clear_from=?, clear_to=?, clear_wait=? WHERE id=?",
+            (mode, start, end, wait, int(user_id)))
         conn.execute("DELETE FROM clear_prio WHERE user_id=?", (int(user_id),))
         conn.executemany(
             "INSERT INTO clear_prio(user_id, uid, rank, seq) VALUES (?,?,?,?)",
@@ -1600,20 +1621,21 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority) -> str:
 
 def clear_settings(user_id: int = 0) -> dict:
     """这个登录账号的清城扫页和优先 UID。名单按优先级、再按添加顺序。"""
-    mode, start, end = "head", 1, 5
+    mode, start, end, wait = "head", 1, 5, 0
     rows = []
     user_id = int(user_id or 0)
     if user_id:
         conn = connect(readonly=True)
         try:
             saved = conn.execute(
-                "SELECT IFNULL(clear_mode,'head'), IFNULL(clear_from,1), IFNULL(clear_to,5) "
-                "FROM app_user WHERE id=?",
+                "SELECT IFNULL(clear_mode,'head'), IFNULL(clear_from,1), IFNULL(clear_to,5), "
+                "IFNULL(clear_wait,0) FROM app_user WHERE id=?",
                 (user_id,)).fetchone()
             if saved:
                 mode = str(saved[0] or "head")
                 start = int(saved[1] or 1)
                 end = int(saved[2] or 5)
+                wait = int(saved[3] or 0)
             rows = conn.execute(
                 "SELECT uid, rank FROM clear_prio WHERE user_id=? ORDER BY rank, seq, uid",
                 (user_id,)).fetchall()
@@ -1625,12 +1647,69 @@ def clear_settings(user_id: int = 0) -> dict:
         start = 1
     if end < start:
         end = start
+    if wait < 0 or wait > 1440:
+        wait = 0
     return {
         "mode": mode,
         "page_from": start,
         "page_to": end,
+        "wait_min": wait,
         "priority": [{"uid": str(uid), "rank": int(rank)} for uid, rank in rows],
     }
+
+
+def clear_wait_minutes(user_id: int = 0) -> int:
+    """空城后再打要等几分钟。0 表示空了就结束。"""
+    if not user_id:
+        user_id = attack_context_user()
+    return int(clear_settings(user_id).get("wait_min") or 0)
+
+
+def schedule_empty_order(order_id: int, minutes: int, beats=None) -> bool:
+    """这几页没人。同一条订单过这么多分钟再排队。已经不在打的返回 False。"""
+    minutes = int(minutes or 0)
+    if minutes <= 0:
+        return False
+    due = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    run_at = due.strftime("%Y-%m-%dT%H:%M:%SZ")
+    reason = f"这座城是空的，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
+    conn = connect()
+    try:
+        if beats is None:
+            cur = conn.execute(
+                "UPDATE atk_order SET status='wait', reason=?, run_at=?, updated_at=? "
+                "WHERE id=? AND status='running'",
+                (reason, run_at, now_ts(), int(order_id)))
+        else:
+            cur = conn.execute(
+                "UPDATE atk_order SET status='wait', reason=?, run_at=?, beats=?, updated_at=? "
+                "WHERE id=? AND status='running'",
+                (reason, run_at, int(beats), now_ts(), int(order_id)))
+        conn.commit()
+        return cur.rowcount == 1
+    finally:
+        conn.close()
+
+
+def release_due_waits() -> int:
+    """到点的空城订单改回排队。还没到的不动。只看这条线程的登录账号。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return 0
+    now = now_ts()
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE atk_order SET status='pending', reason='', updated_at=? "
+            "WHERE user_id=? AND status='wait' AND IFNULL(run_at,'')!='' AND run_at<=?",
+            (now, user_id, now))
+        conn.commit()
+        n = int(cur.rowcount or 0)
+        if n:
+            log.info("登录账号 %s 有 %d 条空城订单到点，改回排队", username_of(user_id), n)
+        return n
+    finally:
+        conn.close()
 
 
 def clear_fight_plan(user_id: int = 0) -> dict:
@@ -1754,7 +1833,7 @@ def list_attack_orders(user_id: int, limit: int = 3) -> list:
     try:
         valid = conn.execute(
             f"SELECT {cols} FROM atk_order WHERE user_id=? "
-            "AND status IN ('pending','running','blocked') ORDER BY id DESC LIMIT 2",
+            "AND status IN ('pending','running','blocked','wait') ORDER BY id DESC LIMIT 2",
             (user_id,)).fetchall()
         room = limit - len(valid)
         done = []
@@ -1768,7 +1847,7 @@ def list_attack_orders(user_id: int, limit: int = 3) -> list:
             args.append(room)
             done = conn.execute(
                 f"SELECT {cols} FROM atk_order WHERE user_id=? "
-                "AND status NOT IN ('pending','running','blocked')"
+                "AND status NOT IN ('pending','running','blocked','wait')"
                 f"{extra} ORDER BY id DESC LIMIT ?",
                 args).fetchall()
     finally:
@@ -2577,7 +2656,7 @@ def users_with_open_orders() -> list:
     try:
         rows = conn.execute(
             "SELECT DISTINCT user_id FROM atk_order "
-            "WHERE status IN ('pending','running','blocked')").fetchall()
+            "WHERE status IN ('pending','running','blocked','wait')").fetchall()
     finally:
         conn.close()
     return [int(r[0]) for r in rows]
@@ -2900,11 +2979,11 @@ def cancel_attack_order(user_id: int, order_id: int) -> str:
             (order_id, user_id)).fetchone()
         if not row:
             return "没有这条订单"
-        if str(row[0] or "") not in ("pending", "running", "blocked"):
+        if str(row[0] or "") not in ("pending", "running", "blocked", "wait"):
             return "这条订单已经结束"
         conn.execute(
             "UPDATE atk_order SET status='ended', reason=?, updated_at=? "
-            "WHERE id=? AND user_id=? AND status IN ('pending','running','blocked')",
+            "WHERE id=? AND user_id=? AND status IN ('pending','running','blocked','wait')",
             ("已手动关停", now_ts(), order_id, user_id))
         conn.commit()
         log.info("登录账号 %s 关停订单 %s", username_of(user_id), order_id)
