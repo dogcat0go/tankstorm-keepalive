@@ -1253,7 +1253,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
         log.info("[打人] 自己在 %s %s，目标 %s %s（%s）；行动力=%s",
                  loc, here_name, city_id, cname, link, power)
 
-        fail = citydb.failed_uids()
+        fail = citydb.failed_names()
         me = str(getattr(rec, "uid", "") or "")
         seen = set()
         last_act = 0.0
@@ -1327,8 +1327,8 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     p for p in batch
                     if str(p.get("uid") or "").strip()
                     and str(p.get("uid") or "").strip() != me
-                    and (str(p.get("uid") or "").strip() in fail
-                         or citydb.in_atk_fail(str(p.get("uid") or "").strip()))
+                    and citydb.same_failed(
+                        str(p.get("uid") or "").strip(), p.get("name"), fail)
                 ), None)
                 if stuck:
                     who = stuck.get("name") or stuck.get("uid")
@@ -1345,7 +1345,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 if not uid or uid == me or uid in seen:
                     continue
                 seen.add(uid)
-                if uid in fail or citydb.in_atk_fail(uid):
+                if citydb.same_failed(uid, p.get("name"), fail):
                     log.info("[打人] %s 已在失败库，跳过", p.get("name") or uid)
                     out["跳过"] += 1
                     if pass_block:
@@ -1457,7 +1457,7 @@ def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False,
         text = str(name or "").strip()
         if cid > 0 and text:
             why[cid] = text
-    fail = citydb.failed_uids()
+    fail = citydb.failed_names()
     me = str(getattr(rec, "uid", "") or "")
     plan = citydb.plan_route(here, target, my, blocked, why)
     for _ in range(1 if stop_on_block else 6):
@@ -1488,8 +1488,14 @@ def live_plan(sock, rec, here, target, my, avoid=None, stop_on_block=False,
             bad = []
             for p in _wait_city_users(sock, rec, since, city):
                 uid = str(p.get("uid") or "").strip()
-                if uid and uid != me and uid in fail:
-                    bad.append(p.get("name") or uid)
+                if not uid or uid == me or uid not in fail:
+                    continue
+                live = str(p.get("name") or "").strip()
+                if not citydb.same_failed(uid, live, fail):
+                    log.info("[路线] %s %s 的 %s 不在战败表（这个 uid 记的是 %s），直接打",
+                             city, name, live or uid, fail.get(uid) or "空名字")
+                    continue
+                bad.append(live or uid)
             if bad:
                 blocked.add(int(city))
                 who = "、".join(bad)

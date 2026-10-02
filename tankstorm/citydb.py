@@ -1689,16 +1689,49 @@ def list_city_targets(city_id: int, skip_failed=True, exclude_uid=""):
 
 
 def failed_uids() -> set:
+    return set(failed_names())
+
+
+def failed_names() -> dict:
+    """战败表里的 uid → 当时记下的名字。ret=21 不算打不过。含还没落盘的队列。"""
     def _read():
         conn = connect(timeout=DB_OP_TIMEOUT)
         try:
-            return {r[0] for r in conn.execute(
-                "SELECT uid FROM atk_fail WHERE IFNULL(ret,0) NOT IN (21)")
-                if r[0]}
+            rows = conn.execute(
+                "SELECT uid, IFNULL(name,'') FROM atk_fail "
+                "WHERE IFNULL(ret,0) NOT IN (21)").fetchall()
+            return {str(u).strip(): str(n or "").strip() for u, n in rows if u}
         finally:
             conn.close()
-    got = _run_timeout(_read, default=set())
-    return got if isinstance(got, set) else set()
+    got = _run_timeout(_read, default={})
+    names = dict(got) if isinstance(got, dict) else {}
+    for op in _atk_q:
+        if op[0] == "wipe":
+            names.clear()
+        elif op[0] == "clear":
+            names.pop(str(op[1]).strip(), None)
+        elif op[0] == "record":
+            names[str(op[1]).strip()] = str(op[2] or "").strip()
+    return names
+
+
+def same_failed(uid, live_name, names=None) -> bool:
+    """这个现场的人是不是战败表里的那一个。
+
+    uid 对上但名字对不上，多半是编号截断撞了别人，不能当成挡路。
+    """
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    if names is None:
+        names = failed_names()
+    if uid not in names:
+        return False
+    recorded = str(names.get(uid) or "").strip()
+    live = str(live_name or "").strip()
+    if live and recorded != live:
+        return False
+    return True
 
 
 def in_atk_fail(uid) -> bool:
