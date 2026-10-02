@@ -1292,8 +1292,27 @@ def _manual_stop() -> str:
     return ""
 
 
+def order_clear_targets(found, priority=None) -> list:
+    """清城时的出手顺序。优先名单里数字小的先打，同级按第一次扫到的先后。其余人保持扫到的顺序，排在后面。"""
+    priority = priority or {}
+    ranked, rest = [], []
+    for i, item in enumerate(found or []):
+        page, player = item
+        uid = str((player or {}).get("uid") or "").strip()
+        rank = priority.get(uid)
+        if rank is None:
+            rest.append((i, page, player))
+        else:
+            ranked.append((int(rank), i, page, player))
+    ranked.sort()
+    ordered = [(page, player) for _, _, page, player in ranked]
+    ordered.extend((page, player) for _, page, player in rest)
+    return ordered
+
+
 def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
-              country=0, beat=None, pass_block=False, tally=None) -> dict:
+              country=0, beat=None, pass_block=False, tally=None,
+              pages=None, priority=None) -> dict:
     """现场翻页打这座城。打中后看士气损失，低于 150 才写入 atk_fail；
     打不到不入库。不读玩家库。跳过失败库，行动力低于 15 自动开卡，不迁城。"""
     from . import citydb
@@ -1341,8 +1360,105 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
         total = None
         used_country = country
         page_size, max_pages = 15, 2000
+        limited = pages is not None
+        if limited:
+            start_page = max(0, int(pages[0]))
+            end_page = max(start_page, int(pages[1]))
+        else:
+            start_page, end_page = 0, max_pages - 1
+        scanned = []
 
-        for page in range(0, max_pages):
+        def _strike(page, p):
+            nonlocal last_act, cd_until, cd_sec
+            stopped = _manual_stop()
+            if stopped:
+                out["停止原因"] = stopped
+                return "break"
+            if citydb.attack_paused():
+                out["停止原因"] = "已暂停"
+                return "break"
+            uid = str(p.get("uid") or "").strip()
+            if not uid or uid == me or uid in seen:
+                return "continue"
+            seen.add(uid)
+            if citydb.same_failed(uid, p.get("name"), fail):
+                log.info("[打人] %s 已在失败库，跳过", p.get("name") or uid)
+                out["跳过"] += 1
+                if pass_block:
+                    who = (str(p.get("name") or "").strip()
+                           or str(fail.get(uid) or "").strip() or uid)
+                    out["挡路"] = who
+                    out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
+                    return "break"
+                return "continue"
+            one = attack_player(
+                rec, sock, config, uid, times=0, sweep=sweep,
+                city_id=city_id,
+                country=int(owner or used_country or 0),
+                beat=beat, card_used=out["用卡"], until_down=True,
+                disp_name=p.get("name") or "", last_act=last_act,
+                page=page, cd_until=cd_until, cd_sec=cd_sec)
+            if one.get("last_act"):
+                last_act = one["last_act"]
+            if one.get("cd_until"):
+                cd_until = one["cd_until"]
+            if one.get("cd_sec"):
+                cd_sec = one["cd_sec"]
+            if p.get("name") and not one.get("名字"):
+                one["名字"] = p["name"]
+            reason = one.get("停止原因") or ""
+            if reason == "已在失败库，跳过":
+                out["跳过"] += 1
+                if pass_block:
+                    who = (one.get("名字") or p.get("name") or uid)
+                    out["挡路"] = who
+                    out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
+                    return "break"
+                return "continue"
+            out["用卡"] += one.get("用卡") or 0
+            out["打过"] += 1
+            if one.get("成功"):
+                out["成功"] += one["成功"]
+            if one.get("击退"):
+                _note_repel(out, tally, one.get("名字") or p.get("name") or "")
+                return "continue"
+            if one.get("记失败") or ("没打过" in reason and not one.get("击退")):
+                if one.get("记失败"):
+                    fail.add(uid)
+                    out["失败"] += 1
+                    who = one.get("名字") or p.get("name") or uid
+                    names = out.setdefault("挡路人", [])
+                    if who not in names:
+                        names.append(who)
+                if "没打过" in reason:
+                    who = one.get("名字") or p.get("name") or uid
+                    out["挡路"] = who
+                    out["停止原因"] = reason
+                    return "break"
+                if pass_block:
+                    who = one.get("名字") or p.get("name") or uid
+                    who = "、".join(out.get("挡路人") or []) or who
+                    out["挡路"] = who
+                    out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
+                    return "break"
+                return "continue"
+            if "ret=21" in reason or "被拒" in reason:
+                return "continue"
+            if one.get("遣返") or "位置变了" in reason or "不相邻" in reason:
+                out["停止原因"] = reason
+                return "break"
+            if reason and ("行动力只剩" in reason or "恢复卡" in reason):
+                out["停止原因"] = reason
+                return "break"
+            if reason and ("读不到" in reason or "没有回包" in reason
+                           or "超时" in reason):
+                return "continue"
+            if reason and not one.get("成功"):
+                out["停止原因"] = reason
+                return "break"
+            return "continue"
+
+        for page in range(start_page, (end_page + 1) if limited else max_pages):
             if out["停止原因"]:
                 break
             stopped = _manual_stop()
@@ -1375,7 +1491,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 cnt = _read_path(cd, "cityData.field5")
             if isinstance(cnt, int) and not isinstance(cnt, bool):
                 total = cnt
-            if page == 0 and got_city not in (None, city_id):
+            if page == start_page and got_city not in (None, city_id):
                 if isinstance(owner, int) and owner and owner != used_country:
                     used_country = owner
                     since = _send(sock, rec, 3, country=used_country,
@@ -1422,93 +1538,20 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     out["挡路"] = who
                     out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
                     break
-            for p in batch:
-                stopped = _manual_stop()
-                if stopped:
-                    out["停止原因"] = stopped
+            if limited:
+                known = {str(p.get("uid") or "").strip() for _, p in scanned}
+                for p in batch:
+                    uid = str(p.get("uid") or "").strip()
+                    if not uid or uid == me or uid in known:
+                        continue
+                    known.add(uid)
+                    scanned.append((page, p))
+                if total is not None and len(scanned) >= int(total):
                     break
-                if citydb.attack_paused():
-                    out["停止原因"] = "已暂停"
-                    break
-                uid = str(p.get("uid") or "").strip()
-                if not uid or uid == me or uid in seen:
-                    continue
-                seen.add(uid)
-                if citydb.same_failed(uid, p.get("name"), fail):
-                    log.info("[打人] %s 已在失败库，跳过", p.get("name") or uid)
-                    out["跳过"] += 1
-                    if pass_block:
-                        who = (str(p.get("name") or "").strip()
-                               or str(fail.get(uid) or "").strip() or uid)
-                        out["挡路"] = who
-                        out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
+            else:
+                for p in batch:
+                    if _strike(page, p) == "break":
                         break
-                    continue
-                one = attack_player(
-                    rec, sock, config, uid, times=0, sweep=sweep,
-                    city_id=city_id,
-                    country=int(owner or used_country or 0),
-                    beat=beat, card_used=out["用卡"], until_down=True,
-                    disp_name=p.get("name") or "", last_act=last_act,
-                    page=page, cd_until=cd_until, cd_sec=cd_sec)
-                if one.get("last_act"):
-                    last_act = one["last_act"]
-                if one.get("cd_until"):
-                    cd_until = one["cd_until"]
-                if one.get("cd_sec"):
-                    cd_sec = one["cd_sec"]
-                if p.get("name") and not one.get("名字"):
-                    one["名字"] = p["name"]
-                reason = one.get("停止原因") or ""
-                if reason == "已在失败库，跳过":
-                    out["跳过"] += 1
-                    if pass_block:
-                        who = (one.get("名字") or p.get("name") or uid)
-                        out["挡路"] = who
-                        out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
-                        break
-                    continue
-                out["用卡"] += one.get("用卡") or 0
-                out["打过"] += 1
-                if one.get("成功"):
-                    out["成功"] += one["成功"]
-                if one.get("击退"):
-                    _note_repel(out, tally, one.get("名字") or p.get("name") or "")
-                    continue
-                if one.get("记失败") or ("没打过" in reason and not one.get("击退")):
-                    if one.get("记失败"):
-                        fail.add(uid)
-                        out["失败"] += 1
-                        who = one.get("名字") or p.get("name") or uid
-                        names = out.setdefault("挡路人", [])
-                        if who not in names:
-                            names.append(who)
-                    if "没打过" in reason:
-                        who = one.get("名字") or p.get("name") or uid
-                        out["挡路"] = who
-                        out["停止原因"] = reason
-                        break
-                    if pass_block:
-                        who = one.get("名字") or p.get("name") or uid
-                        who = "、".join(out.get("挡路人") or []) or who
-                        out["挡路"] = who
-                        out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
-                        break
-                    continue
-                if "ret=21" in reason or "被拒" in reason:
-                    continue
-                if one.get("遣返") or "位置变了" in reason or "不相邻" in reason:
-                    out["停止原因"] = reason
-                    break
-                if reason and ("行动力只剩" in reason or "恢复卡" in reason):
-                    out["停止原因"] = reason
-                    break
-                if reason and ("读不到" in reason or "没有回包" in reason
-                               or "超时" in reason):
-                    continue
-                if reason and not one.get("成功"):
-                    out["停止原因"] = reason
-                    break
             if out["停止原因"]:
                 break
             if total is not None:
@@ -1520,8 +1563,15 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 if page == 0 and len(seen) + out["跳过"] >= int(total):
                     break
             _nap(0.4)
+        if limited and not out["停止原因"]:
+            for page, p in order_clear_targets(scanned, priority or {}):
+                if _strike(page, p) == "break":
+                    break
         if not out["停止原因"]:
-            out["停止原因"] = "这座城打完了" if out["打过"] else "这一页没有可打的人"
+            if limited and not out["打过"]:
+                out["停止原因"] = "这几页没有可打的人"
+            else:
+                out["停止原因"] = "这座城打完了" if out["打过"] else "这一页没有可打的人"
         if not out.get("挡路") and out.get("挡路人"):
             out["挡路"] = "、".join(out["挡路人"])
         return out
@@ -1914,7 +1964,7 @@ def retreat_toward(rec, sock, config, name="马奇诺", hops=3, beat=None,
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
              avoid=None, replanned=False, uid="", hold_if_blocked=False,
              tally=None, avoid_why=None, march_only=False, max_steps=None,
-             enter_target=False) -> dict:
+             enter_target=False, clear_plan=None) -> dict:
     """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
@@ -2262,7 +2312,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                           avoid=set(avoid or ()) | {blocked_at}, replanned=True,
                           uid=uid, tally=tally, avoid_why=why,
                           march_only=march_only, max_steps=left,
-                          enter_target=enter_target)
+                          enter_target=enter_target, clear_plan=clear_plan)
             out["移动"] += nxt.get("移动") or 0
             out["步数"] = int(out.get("步数") or 0) + int(nxt.get("步数") or 0)
             if nxt.get("走到"):
@@ -2299,6 +2349,27 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 out["停止原因"] = "" if hitp.get("击退") else (hitp.get("停止原因") or "")
             else:
                 out["停止原因"] = hitp.get("停止原因") or f"没打到 UID {uid}"
+            return out
+        plan = clear_plan if isinstance(clear_plan, dict) and clear_plan.get("pages") else None
+        if plan:
+            start, end = plan["pages"]
+            log.info("[移动] 人在 %s，按清城配置打 %s %s 第 %d–%d 页",
+                     out["走到"], target, tname, int(start) + 1, int(end) + 1)
+            fought = farm_city(rec, sock, config, target, sweep=True,
+                               country=my, beat=beat, tally=tally,
+                               pages=(int(start), int(end)),
+                               priority=plan.get("priority") or {})
+            hit = fought.get("成功") or 0
+            reason = fought.get("停止原因") or ""
+            if reason in ("这座城打完了", "这一页没有可打的人", "这几页没有可打的人"):
+                out["停止原因"] = "" if (fought.get("打过") or hit) else "这几页没有可打的人"
+            elif any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停", "被别人打败", "已手动关停", "没打过")):
+                out["停止原因"] = reason
+            elif fought.get("失败") and not fought.get("成功"):
+                out["停止原因"] = f"{target} {tname} 剩下的人都打不过，这座城清不完，已停止"
+            else:
+                out["停止原因"] = reason
+            out["攻击"] = hit
             return out
         log.info("[移动] 人在 %s，开始清目标 %s %s 里的人",
                  out["走到"], target, tname)

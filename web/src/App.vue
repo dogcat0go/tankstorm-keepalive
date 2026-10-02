@@ -34,6 +34,14 @@ const retreatNote = ref("");
 const lockCards = ref("3");
 const lockNote = ref("");
 const advanced = ref(false);
+const attackAdvanced = ref(false);
+const clearMode = ref("head");
+const clearFrom = ref("1");
+const clearTo = ref("5");
+const clearRows = ref([]);
+const clearNote = ref("");
+const prioUid = ref("");
+const prioRank = ref("1");
 const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
@@ -158,6 +166,13 @@ function takeUser(user) {
   retreatHops.value = String(user.retreat_hops ?? 3);
   retreatCity.value = String(user.retreat_city || 0);
   lockCards.value = String(user.lock_cards ?? 3);
+  clearMode.value = user.clear_mode === "range" ? "range" : "head";
+  clearFrom.value = String(user.clear_from || 1);
+  clearTo.value = String(user.clear_to || 5);
+  clearRows.value = (user.clear_priority || []).map((row) => ({
+    uid: String(row.uid),
+    rank: String(row.rank),
+  }));
 }
 
 function pinRetreatCity() {
@@ -165,6 +180,31 @@ function pinRetreatCity() {
     const hit = cities.value.find((c) => c.name === "马奇诺");
     if (hit) retreatCity.value = String(hit.id);
   }
+}
+
+function addPriority() {
+  err.value = "";
+  const uid = prioUid.value.trim();
+  if (!/^\d{1,32}$/.test(uid)) throw new Error("优先 UID 要是数字");
+  if (clearRows.value.some((row) => row.uid === uid)) throw new Error("这个 UID 已经在名单里");
+  if (clearRows.value.length >= 50) throw new Error("优先 UID 最多 50 个");
+  const rank = Number(prioRank.value || "1");
+  if (!Number.isInteger(rank) || rank < 1 || rank > 99) throw new Error("优先级要是 1 到 99");
+  clearRows.value = clearRows.value.concat([{ uid, rank: String(rank) }]);
+  prioUid.value = "";
+}
+
+async function saveClearPlan() {
+  err.value = "";
+  clearNote.value = "";
+  const data = await api("/api/clear-plan", {
+    mode: clearMode.value,
+    page_from: clearFrom.value,
+    page_to: clearTo.value,
+    priority: clearRows.value.map((row) => ({ uid: row.uid, rank: row.rank })),
+  });
+  if (data.user) takeUser(data.user);
+  clearNote.value = "已保存";
 }
 
 async function saveLockCards() {
@@ -327,6 +367,13 @@ function cityText(it) {
   return it.city_name ? it.city_name + " " + it.city_id : String(it.city_id);
 }
 
+const prioShown = computed(() =>
+  clearRows.value
+    .map((row, i) => ({ row, i }))
+    .sort((a, b) => (Number(a.row.rank) || 99) - (Number(b.row.rank) || 99) || a.i - b.i)
+    .map((item) => item.row)
+);
+
 const players = computed(() => {
   const order = [];
   const map = {};
@@ -477,6 +524,37 @@ onUnmounted(() => {
           <button type="submit">提交攻打</button>
         </form>
         <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。有打不过的人挡路时，这段时间会继续看路径，通了立刻接着打原来的订单。0 表示打完就下线。</p>
+        <p>
+          <button type="button" class="ghost" @click="attackAdvanced = !attackAdvanced">{{ attackAdvanced ? "收起" : "高级配置" }}</button>
+        </p>
+        <div v-if="attackAdvanced" class="advanced">
+          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
+            <span class="switch">清城扫页</span>
+            <label class="choice"><input type="radio" value="head" v-model="clearMode" />前5页</label>
+            <label class="choice"><input type="radio" value="range" v-model="clearMode" />指定范围</label>
+            <template v-if="clearMode === 'range'">
+              <label>从<input v-model="clearFrom" class="mins" inputmode="numeric" required /></label>
+              <label>到<input v-model="clearTo" class="mins" inputmode="numeric" required /></label>
+            </template>
+          </form>
+          <form class="lock-row" @submit.prevent="addPriority().catch((e) => (err = e.message))">
+            <span class="switch">优先 UID</span>
+            <label>UID<input v-model="prioUid" inputmode="numeric" /></label>
+            <label>优先级<input v-model="prioRank" class="mins" inputmode="numeric" /></label>
+            <button type="submit">添加</button>
+          </form>
+          <div v-for="(row, i) in prioShown" :key="row.uid" class="prio-row">
+            <span class="muted">{{ i + 1 }}</span>
+            <span>{{ row.uid }}</span>
+            <label>优先级<input v-model="row.rank" class="mins" inputmode="numeric" /></label>
+            <button type="button" class="ghost" @click="clearRows = clearRows.filter((item) => item.uid !== row.uid)">删除</button>
+          </div>
+          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
+            <button type="submit">保存</button>
+            <span class="muted">{{ clearNote }}</span>
+          </form>
+          <p class="muted">只对留空 UID 的清城。先扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。最多 50 个 UID。</p>
+        </div>
         <p>
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>

@@ -95,6 +95,9 @@ CREATE TABLE IF NOT EXISTS app_user (
     retreat_hops    INTEGER NOT NULL DEFAULT 3,
     retreat_city    INTEGER NOT NULL DEFAULT 0,
     lock_cards      INTEGER NOT NULL DEFAULT 3,
+    clear_mode      TEXT NOT NULL DEFAULT 'head',
+    clear_from      INTEGER NOT NULL DEFAULT 1,
+    clear_to        INTEGER NOT NULL DEFAULT 5,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -133,6 +136,13 @@ CREATE TABLE IF NOT EXISTS storm_reject (
     user_id  INTEGER NOT NULL,
     name     TEXT NOT NULL,
     at       TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS clear_prio (
+    user_id  INTEGER NOT NULL,
+    uid      TEXT NOT NULL,
+    rank     INTEGER NOT NULL,
+    seq      INTEGER NOT NULL,
+    PRIMARY KEY (user_id, uid)
 );
 CREATE TABLE IF NOT EXISTS app_session (
     token      TEXT PRIMARY KEY,
@@ -248,6 +258,18 @@ def connect(readonly=False, timeout=15):
             if ucols and "lock_cards" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN lock_cards INTEGER NOT NULL DEFAULT 3")
+                setup.commit()
+            if ucols and "clear_mode" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_mode TEXT NOT NULL DEFAULT 'head'")
+                setup.commit()
+            if ucols and "clear_from" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_from INTEGER NOT NULL DEFAULT 1")
+                setup.commit()
+            if ucols and "clear_to" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_to INTEGER NOT NULL DEFAULT 5")
                 setup.commit()
             if ucols and "attack_acct" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
@@ -1524,6 +1546,104 @@ def list_storm_rejects(user_id: int) -> list:
     finally:
         conn.close()
     return [{"name": str(name or ""), "at": beijing_ts(at)} for name, at in rows]
+
+
+def set_clear_plan(user_id: int, mode, page_from, page_to, priority) -> str:
+    """清城高级配置。前 5 页，或一个页码范围。优先 UID 最多 50 个。成功返回空字符串。"""
+    mode = str(mode or "head").strip()
+    if mode not in ("head", "range"):
+        return "清城扫页要选前5页或指定范围"
+    try:
+        start = int(str(page_from if page_from is not None else "1").strip() or "1")
+        end = int(str(page_to if page_to is not None else "5").strip() or "5")
+    except (TypeError, ValueError, AttributeError):
+        return "页码要是数字"
+    if mode == "range" and (start < 1 or end < start or end > 200):
+        return "页码范围要是 1 到 200，结束不能小于开始"
+    if start < 1 or end < start or end > 200:
+        start, end = 1, 5
+    items = priority if isinstance(priority, list) else []
+    if len(items) > 50:
+        return "优先 UID 最多 50 个"
+    rows = []
+    seen = set()
+    for seq, item in enumerate(items):
+        if not isinstance(item, dict):
+            return "优先 UID 格式不对"
+        uid = str(item.get("uid") or "").strip()
+        if not uid.isdigit() or len(uid) > 32:
+            return "优先 UID 要是数字"
+        if uid in seen:
+            return "同一个 UID 只留一条"
+        seen.add(uid)
+        try:
+            rank = int(str(item.get("rank") if item.get("rank") is not None else "1").strip() or "1")
+        except (TypeError, ValueError, AttributeError):
+            return "优先级要是数字"
+        if rank < 1 or rank > 99:
+            return "优先级要是 1 到 99"
+        rows.append((uid, rank, seq))
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE app_user SET clear_mode=?, clear_from=?, clear_to=? WHERE id=?",
+            (mode, start, end, int(user_id)))
+        conn.execute("DELETE FROM clear_prio WHERE user_id=?", (int(user_id),))
+        conn.executemany(
+            "INSERT INTO clear_prio(user_id, uid, rank, seq) VALUES (?,?,?,?)",
+            [(int(user_id), uid, rank, seq) for uid, rank, seq in rows])
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
+
+
+def clear_settings(user_id: int = 0) -> dict:
+    """这个登录账号的清城扫页和优先 UID。名单按优先级、再按添加顺序。"""
+    mode, start, end = "head", 1, 5
+    rows = []
+    user_id = int(user_id or 0)
+    if user_id:
+        conn = connect(readonly=True)
+        try:
+            saved = conn.execute(
+                "SELECT IFNULL(clear_mode,'head'), IFNULL(clear_from,1), IFNULL(clear_to,5) "
+                "FROM app_user WHERE id=?",
+                (user_id,)).fetchone()
+            if saved:
+                mode = str(saved[0] or "head")
+                start = int(saved[1] or 1)
+                end = int(saved[2] or 5)
+            rows = conn.execute(
+                "SELECT uid, rank FROM clear_prio WHERE user_id=? ORDER BY rank, seq, uid",
+                (user_id,)).fetchall()
+        finally:
+            conn.close()
+    if mode not in ("head", "range"):
+        mode = "head"
+    if start < 1:
+        start = 1
+    if end < start:
+        end = start
+    return {
+        "mode": mode,
+        "page_from": start,
+        "page_to": end,
+        "priority": [{"uid": str(uid), "rank": int(rank)} for uid, rank in rows],
+    }
+
+
+def clear_fight_plan(user_id: int = 0) -> dict:
+    """留给空 UID 的清城。pages 是从 0 开始的页，含首尾。priority 是 UID 到优先级。"""
+    if not user_id:
+        user_id = attack_context_user()
+    saved = clear_settings(user_id)
+    if saved["mode"] == "range":
+        pages = (saved["page_from"] - 1, saved["page_to"] - 1)
+    else:
+        pages = (0, 4)
+    priority = {row["uid"]: int(row["rank"]) for row in saved["priority"]}
+    return {"pages": pages, "priority": priority}
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:
