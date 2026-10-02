@@ -871,28 +871,37 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         elif status == "ended":
             log.info("订单 %s 已手动关停", job["id"])
         if job.get("auto") and status == "done":
-            try:
-                back = country_war.retreat_toward(
-                    rec, sock, fight_config, beat=beater)
-            except OSError:
-                why = why or "朝马奇诺后退时连接中断"
-                log.info("订单 %s %s", job["id"], why)
-                citydb.finish_attack_order(
-                    job["id"], "done", why, beats=beats)
-                raise
-            except Exception as exc:
-                log.info("订单 %s 朝马奇诺后退失败", job["id"], exc_info=True)
-                if not why:
-                    detail = _interrupt_reason(exc)
-                    if detail.startswith("攻打中断："):
-                        detail = detail[len("攻打中断："):]
-                    why = f"朝马奇诺后退时：{detail}"
-            else:
-                note = str((back or {}).get("说明") or "").strip()
-                if note and not why:
-                    why = note
-                if note:
-                    log.info("订单 %s %s", job["id"], note)
+            plan = citydb.retreat_settings()
+            retreat_mode = str(plan.get("mode") or "off")
+            if retreat_mode in ("hops", "city"):
+                label = str(plan.get("name") or "").strip()
+                if not label:
+                    label = "马奇诺" if retreat_mode == "hops" else "目标城"
+                prefix = f"朝{label}后退" if retreat_mode == "hops" else f"退到{label}"
+                try:
+                    back = country_war.retreat_toward(
+                        rec, sock, fight_config, beat=beater, name=label,
+                        city_id=int(plan.get("city_id") or 0),
+                        hops=int(plan.get("hops") or 3), mode=retreat_mode)
+                except OSError:
+                    why = why or f"{prefix}时连接中断"
+                    log.info("订单 %s %s", job["id"], why)
+                    citydb.finish_attack_order(
+                        job["id"], "done", why, beats=beats)
+                    raise
+                except Exception as exc:
+                    log.info("订单 %s %s失败", job["id"], prefix, exc_info=True)
+                    if not why:
+                        detail = _interrupt_reason(exc)
+                        if detail.startswith("攻打中断："):
+                            detail = detail[len("攻打中断："):]
+                        why = f"{prefix}时：{detail}"
+                else:
+                    note = str((back or {}).get("说明") or "").strip()
+                    if note and not why:
+                        why = note
+                    if note:
+                        log.info("订单 %s %s", job["id"], note)
         keep = status == "done" and not why and not uid
         citydb.finish_attack_order(
             job["id"], status, why, beats=beats, keep_reason=keep)
