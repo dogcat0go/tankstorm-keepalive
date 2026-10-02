@@ -43,6 +43,7 @@ const clearRows = ref([]);
 const clearNote = ref("");
 const prioUid = ref("");
 const prioRank = ref("1");
+const modoCards = ref("0");
 const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
@@ -70,7 +71,7 @@ async function refresh() {
 }
 
 async function refreshAttacks() {
-  if (!me.value || !me.value.remote_attack) {
+  if (!me.value) {
     orders.value = [];
     storms.value = [];
     proc.value = null;
@@ -175,6 +176,7 @@ function takeUser(user) {
     uid: String(row.uid),
     rank: String(row.rank),
   }));
+  modoCards.value = String(user.modo_cards ?? 0);
 }
 
 function pinRetreatCity() {
@@ -266,6 +268,14 @@ async function moveToCity() {
   await refreshAttacks();
 }
 
+async function addModo() {
+  err.value = "";
+  const data = await api("/api/modo", { cards: modoCards.value });
+  if (data.modo_cards != null) modoCards.value = String(data.modo_cards);
+  err.value = attackLoginError(data.login);
+  await refreshAttacks();
+}
+
 async function addOrder() {
   err.value = "";
   const data = await api("/api/attacks", {
@@ -289,7 +299,13 @@ function beatText(it) {
 
 function orderCity(it) {
   if (!it) return "";
+  if (it.kind === "modo") return "摩多军团";
   return it.city_name ? it.city_id + " " + it.city_name : String(it.city_id ?? "");
+}
+
+function orderUid(it) {
+  if (it && it.kind === "modo") return "首都周边";
+  return (it && it.uid) || "整座城";
 }
 
 function holdClock() {
@@ -512,8 +528,8 @@ onUnmounted(() => {
         </details>
       </div>
       <h2>远程扫码攻打</h2>
-      <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。中级和高级可以提交，由服务器上的攻打号领取并扫码进游戏。</p>
-      <template v-else>
+      <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。可以刷本国首都旁边的两座摩多军团。打人和清城要中级或高级。</p>
+      <template v-if="me.remote_attack">
         <form class="attack-row" @submit.prevent="addOrder().catch((e) => (err = e.message))">
           <label>城市
             <select v-model="attackCity" required>
@@ -562,6 +578,13 @@ onUnmounted(() => {
           </form>
           <p class="muted">只对留空 UID 的清城。先扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。最多 50 个 UID。这几页没人时，过上面的分钟再启动同一条订单。0 表示空了就结束。</p>
         </div>
+      </template>
+        <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">
+          <span class="switch">刷摩多军团</span>
+          <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
+          <button type="submit">提交</button>
+        </form>
+        <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。</p>
         <p>
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
@@ -572,6 +595,7 @@ onUnmounted(() => {
         </p>
         <p v-if="proc && proc.online" class="proc here-row">
           <span v-if="proc.here">人在 {{ proc.here }}</span>
+          <template v-if="me.remote_attack">
           <label class="choice">移动到
             <select v-model="moveCity">
               <option value="" disabled>选择城市</option>
@@ -580,6 +604,7 @@ onUnmounted(() => {
           </label>
           <button type="button" @click="moveToCity().catch((e) => (err = e.message))">移动</button>
           <span v-if="proc.move_note" class="muted">{{ proc.move_note }}</span>
+          </template>
         </p>
         <div v-if="storms.length" class="storms">
           <p class="muted">最近 1 小时拒绝的超级强攻</p>
@@ -595,7 +620,7 @@ onUnmounted(() => {
           <tbody>
             <tr v-for="it in orders" :key="it.id">
               <td>{{ orderCity(it) }}</td>
-              <td>{{ it.uid || "整座城" }}</td>
+              <td>{{ orderUid(it) }}</td>
               <td>{{ beatText(it) }}</td>
               <td>{{ orderStatus(it.status) }}<button v-if="orderOpen(it)" type="button" class="ghost" @click="cancelOrder(it).catch((e) => (err = e.message))">关停</button></td>
               <td class="reason">{{ it.reason || "—" }}</td>
@@ -607,7 +632,7 @@ onUnmounted(() => {
         <div class="order-cards">
           <article class="order-card" v-for="it in orders" :key="'c' + it.id">
             <p><span class="k">城市</span>{{ orderCity(it) }}</p>
-            <p><span class="k">UID</span>{{ it.uid || "整座城" }}</p>
+            <p><span class="k">UID</span>{{ orderUid(it) }}</p>
             <p><span class="k">击退敌方数量</span>{{ beatText(it) }}</p>
             <p><span class="k">状态</span>{{ orderStatus(it.status) }}</p>
             <p class="reason"><span class="k">说明</span>{{ it.reason || "—" }}</p>
@@ -617,7 +642,6 @@ onUnmounted(() => {
           </article>
         </div>
         </div>
-      </template>
       <h2>推送</h2>
       <form class="stack" @submit.prevent="savePush().catch((e) => (err = e.message))">
         <label>接收 QQ

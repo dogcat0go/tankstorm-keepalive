@@ -387,7 +387,7 @@ def daily_attack(rec, sock, config):
 
 
 def run(rec, sock, config: dict, rounds: int = 0, beat=None,
-        attack_only: bool = False) -> dict:
+        attack_only: bool = False, tally=None) -> dict:
     """自动扫荡摩多军团。rounds 是最多打多少次，返回成果字典。
 
     有意**不做自动移动**：抓包里玩家全程待在同一座城，"当前城市"那个字段
@@ -432,14 +432,14 @@ def run(rec, sock, config: dict, rounds: int = 0, beat=None,
     try:
         return _loop(rec, sock, rounds, country, npc_country, npc_city,
                      cooldown, out, attack_only, use_card, card_limit,
-                     card_item)
+                     card_item, tally)
     finally:
         _daily._BEAT = prev
 
 
 def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
           attack_only=False, use_card=False, card_limit=1,
-          card_item=CARD_ITEM_ID):
+          card_item=CARD_ITEM_ID, tally=None):
     merit0 = None
     last_act = 0.0
     located = False
@@ -449,7 +449,16 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
     npc_morale = None        # 它剩多少士气
     cards_used = 0           # 本次用掉几张恢复卡
 
+    from . import citydb
+
     for i in range(1, rounds + 1):
+        stopped = _manual_stop()
+        if stopped:
+            out["停止原因"] = stopped
+            break
+        if citydb.attack_paused():
+            out["停止原因"] = "已暂停"
+            break
         power, city, atk_times, panel = _panel(sock, rec, country)
         if power is None:
             out["停止原因"] = "读不到国战面板（行动力未知），停手"
@@ -579,6 +588,14 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
         _apply_cd(out, sent_at, r, cooldown)
 
         out["扫荡" if act == 19 else "攻击"] += 1
+        if tally is not None:
+            tally["n"] = int(tally.get("n") or 0) + 1
+            note = tally.get("note")
+            if note:
+                try:
+                    note(tally["n"])
+                except Exception:
+                    pass
         log.info("[国战] 第 %d/%d 轮：%s 成功，行动力 %d→约 %d，今日攻击次数 %s",
                  i, rounds, name, power, power - cost, atk_times)
         _nap(1.0)
@@ -599,6 +616,92 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
     out["今日攻击次数"] = atk_times
     if not out["停止原因"]:
         out["停止原因"] = "已打满设定次数"
+    return out
+
+
+def _modo_stop(reason: str) -> bool:
+    """这一座打不下去了，另一座也不要再去。"""
+    text = str(reason or "")
+    if text in ("已暂停", "已手动关停"):
+        return True
+    return any(k in text for k in ("被别人打败", "连接", "读不到自己的国家", "读不到当前", "出不了首都"))
+
+
+def farm_modo_order(rec, sock, config, card_limit, beat=None, tally=None) -> dict:
+    """按攻打号的国家，走进首都旁边两座魔多军团，召唤支援兵再打。
+
+    恢复卡两座共用。第一座最多用一半，剩下的留给第二座。0 表示不用卡。
+    """
+    from . import citydb
+
+    conf = config.get("国战") or {}
+    country = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
+    out = {"攻击": 0, "召唤": 0, "扫荡": 0, "用卡": 0, "停止原因": "", "说明": ""}
+    if not country:
+        out["停止原因"] = "读不到攻打号的国家，停手"
+        return out
+    stands = citydb.modo_stands(country)
+    if len(stands) < 2:
+        cname = citydb.country_name(country) or str(country)
+        out["停止原因"] = f"{cname} 首都旁边没有两座魔多军团"
+        return out
+    budget = int(card_limit or 0)
+    if budget < 0:
+        budget = 0
+    notes = []
+    used = 0
+    for index, (stand, npc, name) in enumerate(stands[:2]):
+        label = f"{stand} {name}".strip()
+        log.info("[魔多] 走向 %s，驻地 %s", label, npc)
+        walked = walk_to(
+            rec, sock, config, stand, beat=beat,
+            march_only=True, enter_target=True)
+        why = str((walked or {}).get("停止原因") or "")
+        if why:
+            out["停止原因"] = why
+            break
+        cap = citydb.modo_first_cards(budget) if index == 0 else budget - used
+        if cap < 0:
+            cap = 0
+        fight_config = dict(config)
+        war = dict(config.get("国战") or {})
+        war["摩多驻地城市ID"] = int(npc)
+        war["自己国家ID"] = int(country)
+        war["自动使用国战恢复卡"] = cap > 0
+        war["单次最多用几张恢复卡"] = cap
+        fight_config["国战"] = war
+        fought = run(rec, sock, fight_config, rounds=100000, beat=beat, tally=tally)
+        hits = (fought.get("扫荡") or 0) + (fought.get("攻击") or 0)
+        out["攻击"] += hits
+        out["扫荡"] += fought.get("扫荡") or 0
+        out["召唤"] += fought.get("召唤") or 0
+        out["用卡"] += fought.get("用卡") or 0
+        used = out["用卡"]
+        reason = str(fought.get("停止原因") or "")
+        if "未开启自动使用国战恢复卡" in reason:
+            reason = reason.replace("；未开启自动使用国战恢复卡", "")
+        line = f"{name} 召唤 {fought.get('召唤') or 0} 次，打 {hits} 次"
+        if reason and "已打满" not in reason:
+            short = reason if len(reason) <= 48 else reason[:48].rstrip() + "…"
+            line += f"（{short}）"
+        notes.append(line)
+        if _modo_stop(reason):
+            out["停止原因"] = reason
+            break
+        if ("行动力" in reason or "恢复卡" in reason) and (budget <= 0 or used >= budget):
+            out["停止原因"] = reason
+            break
+        if reason and "已打满" not in reason and "行动力" not in reason and "恢复卡" not in reason:
+            out["停止原因"] = "" if index == 0 else reason
+            if index == 0:
+                continue
+            break
+    summary = "；".join(notes)
+    if out["用卡"]:
+        summary = (summary + "。" if summary else "") + f"用了 {out['用卡']} 张恢复卡"
+    if out["停止原因"] and out["停止原因"] not in summary:
+        summary = (summary + "。" if summary else "") + out["停止原因"]
+    out["说明"] = summary
     return out
 
 

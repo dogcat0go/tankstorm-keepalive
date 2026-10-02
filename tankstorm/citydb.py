@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_from      INTEGER NOT NULL DEFAULT 1,
     clear_to        INTEGER NOT NULL DEFAULT 5,
     clear_wait      INTEGER NOT NULL DEFAULT 0,
+    modo_cards      INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -120,6 +121,7 @@ CREATE TABLE IF NOT EXISTS atk_order (
     beats       INTEGER,
     card_max    INTEGER,
     run_at      TEXT,
+    kind        TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -277,6 +279,10 @@ def connect(readonly=False, timeout=15):
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN clear_wait INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
+            if ucols and "modo_cards" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN modo_cards INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
             if ucols and "attack_acct" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
                 setup.commit()
@@ -306,6 +312,10 @@ def connect(readonly=False, timeout=15):
                 setup.commit()
             if ocols and "run_at" not in ocols:
                 setup.execute("ALTER TABLE atk_order ADD COLUMN run_at TEXT")
+                setup.commit()
+            if ocols and "kind" not in ocols:
+                setup.execute(
+                    "ALTER TABLE atk_order ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             fcols = {r[1] for r in setup.execute("PRAGMA table_info(atk_fail)")}
             if fcols and "acct" not in fcols:
@@ -880,7 +890,7 @@ def user_by_token(token: str):
             "IFNULL(u.tier,'初级'), IFNULL(u.admin,0), IFNULL(u.auto_lock,0), "
             "IFNULL(u.hold_min,0), IFNULL(u.card_max,100), "
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
-            "IFNULL(u.lock_cards,3) "
+            "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
@@ -892,7 +902,8 @@ def user_by_token(token: str):
                 "retreat_mode": row[9] or "hops",
                 "retreat_hops": int(row[10] or 3),
                 "retreat_city": int(row[11] or 0),
-                "lock_cards": int(row[12] if row[12] is not None else 3)}
+                "lock_cards": int(row[12] if row[12] is not None else 3),
+                "modo_cards": int(row[13] if row[13] is not None else 0)}
     finally:
         conn.close()
 
@@ -992,6 +1003,100 @@ def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
             "INSERT INTO atk_order(user_id, city_id, uid, status, reason, card_max, created_at, updated_at) "
             "VALUES (?,?,?,?,?,?,?,?)",
             (user_id, city_id, uid, "pending", "", int(cards), now, now))
+        conn.commit()
+        return ""
+    finally:
+        conn.close()
+
+
+def modo_stands(country_id: int) -> list:
+    """这个国家首都旁边挂着魔多军团的城。返回 [(落点, 驻地, 落点名)]，按驻地 id 排。"""
+    country_id = int(country_id or 0)
+    if not country_id:
+        return []
+    ensure_catalog()
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id, near_city FROM city WHERE name LIKE '%魔多军团%'"
+        ).fetchall()
+        stands = []
+        for npc, near in rows:
+            nids = _parse_near(near)
+            if len(nids) != 1:
+                continue
+            home = conn.execute(
+                "SELECT IFNULL(country_id,0), IFNULL(name,'') FROM city WHERE id=?",
+                (nids[0],)).fetchone()
+            if not home or int(home[0] or 0) != country_id:
+                continue
+            stands.append((int(nids[0]), int(npc), str(home[1] or "")))
+    finally:
+        conn.close()
+    stands.sort(key=lambda item: item[1])
+    return stands
+
+
+def modo_first_cards(budget) -> int:
+    """两座城共用这些恢复卡。第一座最多用一半，余数留给第二座。0 表示不用卡。"""
+    try:
+        n = int(budget or 0)
+    except (TypeError, ValueError):
+        return 0
+    if n <= 0:
+        return 0
+    return (n + 1) // 2
+
+
+def add_modo_order(user_id: int, cards) -> str:
+    """提交一条刷摩多军团。按攻打号的国家打首都旁边两座。成功返回空字符串。"""
+    try:
+        n = int(str(cards).strip())
+    except (TypeError, ValueError, AttributeError):
+        return "恢复卡数量要是数字"
+    if n < 0 or n > 999:
+        return "恢复卡数量要是 0 到 999"
+    user_id = int(user_id)
+    online = proc_online(user_id)
+    if not online:
+        skip_unfinished_auto(user_id)
+    conn = connect()
+    try:
+        now = now_ts()
+        conn.execute("BEGIN IMMEDIATE")
+        who = conn.execute(
+            "SELECT IFNULL(expires_at,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not who:
+            conn.commit()
+            return "没有这个登录账号"
+        if account_expired(who[0]):
+            conn.commit()
+            return "账号已过期"
+        dup = conn.execute(
+            "SELECT 1 FROM atk_order WHERE user_id=? AND IFNULL(kind,'')='modo' "
+            "AND status IN ('pending','running','blocked','wait')",
+            (user_id,)).fetchone()
+        if dup:
+            conn.execute(
+                "UPDATE atk_order SET card_max=?, updated_at=? "
+                "WHERE user_id=? AND IFNULL(kind,'')='modo' AND status='pending'",
+                (n, now, user_id))
+            conn.execute(
+                "UPDATE app_user SET modo_cards=? WHERE id=?",
+                (n, user_id))
+            conn.commit()
+            return ""
+        if _open_attack_count(conn, user_id) >= 2:
+            conn.commit()
+            return "最多同时两条攻打订单"
+        conn.execute(
+            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, card_max, kind, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (user_id, 0, "", "pending", "", n, "modo", now, now))
+        conn.execute(
+            "UPDATE app_user SET modo_cards=? WHERE id=?",
+            (n, user_id))
         conn.commit()
         return ""
     finally:
@@ -1819,16 +1924,18 @@ def queue_present_locks(user_id: int) -> int:
 
 
 def _order_row(r) -> dict:
+    kind = str(r[7] or "") if len(r) > 7 else ""
     return {"id": r[0], "city_id": r[1], "uid": r[2], "status": r[3],
             "reason": r[4], "created_at": beijing_ts(r[5]), "beats": r[6],
-            "city_name": city_name(r[1])}
+            "city_name": "" if kind == "modo" else city_name(r[1]),
+            "kind": kind}
 
 
 def list_attack_orders(user_id: int, limit: int = 3) -> list:
     """页面上的订单。还没打完的最多带上两条，总共最多三条，新的在前。"""
     limit = max(1, min(int(limit or 3), 3))
     user_id = int(user_id)
-    cols = ("id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at, beats")
+    cols = ("id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at, beats, IFNULL(kind,'')")
     conn = connect(readonly=True)
     try:
         valid = conn.execute(
@@ -2781,14 +2888,14 @@ def claim_attack_order():
         while True:
             row = conn.execute(
                 "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
-                "IFNULL(u.expires_at,''), IFNULL(o.auto,0), o.card_max "
+                "IFNULL(u.expires_at,''), IFNULL(o.auto,0), o.card_max, IFNULL(o.kind,'') "
                 "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
                 "WHERE o.status='pending' AND o.user_id=? ORDER BY o.id DESC LIMIT 1",
                 (user_id,)).fetchone()
             if not row:
                 conn.commit()
                 return None
-            if not attack_tier(row[3]) or account_expired(row[4]):
+            if account_expired(row[4]) or (str(row[7] or "") != "modo" and not attack_tier(row[3])):
                 conn.execute(
                     "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
                     ("订阅档不够或账号已过期", now, row[0]))
@@ -2801,7 +2908,8 @@ def claim_attack_order():
             if cur.rowcount != 1:
                 return None
             return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5]),
-                    "cards": None if row[6] is None else int(row[6])}
+                    "cards": None if row[6] is None else int(row[6]),
+                    "kind": str(row[7] or "")}
     finally:
         conn.close()
 
@@ -2881,7 +2989,7 @@ def next_blocked_order():
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats "
+            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats, IFNULL(kind,'') "
             "FROM atk_order WHERE user_id=? AND status='blocked' AND IFNULL(auto,0)=0 "
             "ORDER BY id DESC LIMIT 1",
             (user_id,)
@@ -2892,7 +3000,8 @@ def next_blocked_order():
         return None
     return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[3]),
             "cards": None if row[4] is None else int(row[4]),
-            "beats": 0 if row[5] is None else int(row[5])}
+            "beats": 0 if row[5] is None else int(row[5]),
+            "kind": str(row[6] or "")}
 
 
 def take_blocked_order(order_id: int):
@@ -2901,7 +3010,7 @@ def take_blocked_order(order_id: int):
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats "
+            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats, IFNULL(kind,'') "
             "FROM atk_order WHERE id=? AND status='blocked'",
             (int(order_id),)).fetchone()
         if not row:
@@ -2916,7 +3025,8 @@ def take_blocked_order(order_id: int):
             return None
         return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[3]),
                 "cards": None if row[4] is None else int(row[4]),
-                "beats": 0 if row[5] is None else int(row[5])}
+                "beats": 0 if row[5] is None else int(row[5]),
+                "kind": str(row[6] or "")}
     finally:
         conn.close()
 

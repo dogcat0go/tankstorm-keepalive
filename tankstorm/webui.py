@@ -142,6 +142,7 @@ def _user_out(user: dict) -> dict:
         "clear_to": plan["page_to"],
         "clear_wait": plan["wait_min"],
         "clear_priority": plan["priority"],
+        "modo_cards": int(user.get("modo_cards") or 0),
     }
 
 
@@ -266,9 +267,6 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
-                if not citydb.attack_tier(user.get("tier") or ""):
-                    _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})
-                    return
                 from .socket_keepalive import page_attack_qr_path
                 fp = page_attack_qr_path(config, user["id"])
                 if not os.path.isfile(fp):
@@ -359,10 +357,20 @@ def _handler(config: dict):
                         hold_min = int(str(minutes).strip())
                     _json(self, 200, {"ok": True, "login": login,
                                       "hold_min": hold_min, "card_max": card_max})
+                elif path == "/api/modo":
+                    if citydb.account_expired(user.get("expires_at") or ""):
+                        raise ValueError("账号已过期")
+                    why = citydb.add_modo_order(user["id"], data.get("cards"))
+                    if why:
+                        raise ValueError(why)
+                    from .socket_keepalive import kick_attack_login
+                    login = kick_attack_login(config, user["id"])
+                    saved = citydb.user_by_token(_cookie_token(self)) or user
+                    _json(self, 200, {
+                        "ok": True, "login": login,
+                        "modo_cards": int(saved.get("modo_cards") or 0),
+                    })
                 elif path == "/api/attacks/cancel":
-                    if not citydb.attack_tier(user.get("tier") or ""):
-                        _json(self, 403, {"error": "关停订单需要中级或高级订阅"})
-                        return
                     try:
                         order_id = int(str(data.get("id", "")).strip())
                     except (TypeError, ValueError):
@@ -372,9 +380,6 @@ def _handler(config: dict):
                         raise ValueError(why)
                     _json(self, 200, {"ok": True})
                 elif path == "/api/attack-login":
-                    if not citydb.attack_tier(user.get("tier") or ""):
-                        _json(self, 403, {"error": "远程扫码攻打需要中级或高级订阅"})
-                        return
                     from .socket_keepalive import kick_attack_login
                     _json(self, 200, {"ok": True, "login": kick_attack_login(
                         config, user["id"], claim=True)})
@@ -388,9 +393,6 @@ def _handler(config: dict):
                     status = citydb.attack_status(user["id"])
                     _json(self, 200, {"ok": True, "move_note": status.get("move_note") or ""})
                 elif path == "/api/attack-pause":
-                    if not citydb.attack_tier(user.get("tier") or ""):
-                        _json(self, 403, {"error": "暂停攻打需要中级或高级订阅"})
-                        return
                     why = citydb.pause_attack_for(user["id"], bool(data.get("on")))
                     if why:
                         _json(self, 403, {"error": why})
