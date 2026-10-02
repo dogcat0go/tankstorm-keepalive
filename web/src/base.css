@@ -19,6 +19,8 @@ form.scan-form { max-width: none; }
 .proc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .here-row { margin-top: 8px; }
 .here-row select { min-width: 8em; }
+.storms { margin-top: 8px; }
+.storms p { margin: 2px 0; }
 .orders { overflow-x: auto; }
 .orders table { min-width: 760px; }
 .orders th, .orders td { white-space: nowrap; }

@@ -18,6 +18,7 @@ const note = ref("");
 const attackCity = ref("");
 const attackUid = ref("");
 const orders = ref([]);
+const storms = ref([]);
 const proc = ref(null);
 const qrSrc = ref("");
 const devLogin = ref(false);
@@ -61,11 +62,13 @@ async function refresh() {
 async function refreshAttacks() {
   if (!me.value || !me.value.remote_attack) {
     orders.value = [];
+    storms.value = [];
     proc.value = null;
     return;
   }
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
+  storms.value = atk.storms || [];
   proc.value = atk.process || null;
   const left = proc.value && proc.value.hold_left;
   holdUntil.value = left > 0 ? Date.now() + left * 1000 : 0;
@@ -302,6 +305,7 @@ async function logout() {
   me.value = null;
   items.value = [];
   orders.value = [];
+  storms.value = [];
   proc.value = null;
   qrSrc.value = "";
 }
@@ -455,6 +459,10 @@ onUnmounted(() => {
           <button type="button" @click="moveToCity().catch((e) => (err = e.message))">移动</button>
           <span v-if="proc.move_note" class="muted">{{ proc.move_note }}</span>
         </p>
+        <div v-if="storms.length" class="storms">
+          <p class="muted">最近 1 小时拒绝的超级强攻</p>
+          <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
+        </div>
         <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，点推送登录会在下面出二维码。同一个 QQ 不能绑给两个登录账号。</p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
         <div class="orders" v-if="orders.length">
