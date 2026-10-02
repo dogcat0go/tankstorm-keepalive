@@ -490,20 +490,23 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
         who = ch["name"] or ch["uid"]
         where = f"{cname} {city_id}".strip()
         page = f"第 {ch['page']} 页" if ch.get("page") else "页数未知"
-        text = f"{who}\n城市 {where}\n{page}\nUID {ch['uid']}"
-        log.info("[订阅] %s 出现在 %s %s", who, where, page)
-        notify.push_watch(config, ch, text)
-        if token:
-            notify.send(config, f"坦克风暴：{who} 出现在 {where} {page}", text)
-        if not (citydb.attack_tier(ch.get("tier") or "") and ch.get("auto_lock")):
+        if ch.get("push", True):
+            text = f"{who}\n城市 {where}\n{page}\nUID {ch['uid']}"
+            log.info("[订阅] %s 出现在 %s %s", who, where, page)
+            notify.push_watch(config, ch, text)
+            if token:
+                notify.send(config, f"坦克风暴：{who} 出现在 {where} {page}", text)
+        if not ch.get("arm"):
             continue
         try:
             queued = citydb.enqueue_online_attack(ch["user_id"], city_id, ch["uid"])
+            if queued or citydb.online_attack_busy(ch["user_id"], city_id, ch["uid"]):
+                citydb.mark_lock_sent(ch["user_id"], city_id, ch["uid"])
         except Exception:
             log.info("[订阅] %s 上线攻打没排上", who, exc_info=True)
             queued = False
         if queued:
-            log.info("[订阅] %s 上线，已交给攻打号排队", who)
+            log.info("[订阅] %s 在 %s，已交给攻打号排队", who, where)
     oname = citydb.country_name(owner) if owner else ""
     log.info("―― 城市 %s %s ―― 归属国家 %s%s，面板人数 %s，本轮写入 %d 人，最后一页 %s",
              out.get("city"), cname, owner,

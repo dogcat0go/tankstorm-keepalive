@@ -198,6 +198,7 @@ async function saveAutoLock(ev) {
   try {
     const data = await api("/api/auto-lock", { on });
     autoLock.value = !!data.auto_lock;
+    await refreshAttacks();
   } catch (e) {
     ev.target.checked = autoLock.value;
     err.value = e.message;
@@ -390,7 +391,7 @@ onUnmounted(() => {
           <input type="checkbox" :checked="autoLock" @change="saveAutoLock" />
           自动锁敌
         </label>
-        <span class="muted">{{ autoLock ? "已打开。订阅的人刚上线会排队攻打。" : "已关闭。" }}路径上有打不过的人就停在原地。同一个人一直在城里，下一轮不会再排。</span>
+        <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}路径上有打不过的人就停在原地。同一个人一直在城里，不会重复排。</span>
       </p>
       <table>
         <thead>
