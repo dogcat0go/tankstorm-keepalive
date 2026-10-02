@@ -128,6 +128,12 @@ CREATE TABLE IF NOT EXISTS lock_card_use (
     user_id  INTEGER NOT NULL,
     at       TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS storm_reject (
+    id       INTEGER PRIMARY KEY,
+    user_id  INTEGER NOT NULL,
+    name     TEXT NOT NULL,
+    at       TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS app_session (
     token      TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL,
@@ -1472,6 +1478,52 @@ def end_lock_cards() -> None:
 
 def lock_cards_active() -> bool:
     return bool(getattr(_attack_local, "lock_cards", False))
+
+
+def note_storm_reject(name: str, user_id: int = 0, qq: str = "") -> None:
+    """记下一次已经发出去的超级强攻拒绝。没绑到登录账号的不进页面。"""
+    name = " ".join(str(name or "").split()).strip() or "未知玩家"
+    if len(name) > 32:
+        name = name[:32]
+    user_id = int(user_id or attack_context_user() or 0)
+    qq = str(qq or attack_context_qq() or "").strip()
+    if not user_id and qq:
+        user_id, _ = attack_qq_owner(qq)
+    if not user_id:
+        log.info("超级强攻已拒绝（%s），这个号没绑登录账号，页面上看不到", name)
+        return
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "INSERT INTO storm_reject(user_id, name, at) VALUES (?,?,?)",
+            (user_id, name, now_ts()))
+        conn.execute(
+            "DELETE FROM storm_reject WHERE user_id=? AND at<?",
+            (user_id, _lock_card_cutoff()))
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+
+def list_storm_rejects(user_id: int) -> list:
+    """这个登录账号最近 1 小时拒绝的超级强攻。新的在前。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return []
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT name, at FROM storm_reject WHERE user_id=? AND at>=? "
+            "ORDER BY at DESC, id DESC LIMIT 20",
+            (user_id, _lock_card_cutoff())).fetchall()
+    finally:
+        conn.close()
+    return [{"name": str(name or ""), "at": beijing_ts(at)} for name, at in rows]
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:

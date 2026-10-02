@@ -242,6 +242,7 @@ def _handler(config: dict):
                 _json(self, 200, {
                     "items": citydb.list_attack_orders(user["id"]),
                     "process": citydb.attack_status(user["id"]),
+                    "storms": citydb.list_storm_rejects(user["id"]),
                 })
                 return
             if path == "/api/admin/fighters":
