@@ -1342,6 +1342,49 @@ def login_qr_path() -> str:
     return str(row[0] or "").strip() if row else ""
 
 
+def _page_login_key(user_id: int) -> str:
+    return f"pagelogin-{int(user_id)}"
+
+
+def set_page_login(user_id: int, path: str) -> None:
+    """这个登录账号还没绑定攻打 QQ，网页上单独显示一张二维码。不改攻打进程。"""
+    conn = connect()
+    try:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES (?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
+            (_page_login_key(user_id), str(path or ""), now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def page_login_path(user_id: int) -> str:
+    if not user_id:
+        return ""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT value FROM atk_signal WHERE name=?",
+            (_page_login_key(user_id),)).fetchone()
+    finally:
+        conn.close()
+    return str(row[0] or "").strip() if row else ""
+
+
+def clear_page_login(user_id: int) -> None:
+    set_page_login(user_id, "")
+
+
+def _with_page_qr(status: dict, user_id: int) -> dict:
+    """网页二维码只属于还没绑定的这个登录账号，不跟攻打进程走。"""
+    if not page_login_path(int(user_id)):
+        return status
+    status = dict(status)
+    status["qr"] = True
+    return status
+
+
 def unbound_login_waiting() -> bool:
     """有人正在等扫码，服务器上还没有攻打 QQ。自动拉起不要把这张二维码抢走。"""
     if not proc_online() or proc_phase() != "login":
@@ -1688,24 +1731,25 @@ def attack_status(user_id: int) -> dict:
                 "paused": True, "hold_left": None}
     # 攻打号和登录账号一对一。别人的进程、以及还没写上主人的旧进程，这里都不当自己的。
     if proc_owner and proc_owner != int(user_id):
-        return mismatch if blocked else gone
+        return _with_page_qr(mismatch if blocked else gone, user_id)
     if online and not proc_owner:
-        return mismatch if blocked else gone
+        return _with_page_qr(mismatch if blocked else gone, user_id)
     paused = blocked or pause_val == str(int(user_id)) or (
         pause_val == "1" and proc_owner == int(user_id))
     hold_left = attack_hold_left(int(user_id))
-    show_qr = bool(page_qr and page_qr[0] == "1" and online and phase == "login")
+    show_qr = bool(page_login_path(int(user_id)) or (
+        page_qr and page_qr[0] == "1" and online and phase == "login"))
     if not online:
         # 进程已经停了。暂停只对还在跑的进程有意义，留下的标记会让下次打开页面一直显示已暂停。
         # QQ 对不上的暂停留着，下次拉起也不能接着打。
         if not blocked and pause_val in ("1", str(int(user_id))) and proc_owner in (0, int(user_id)):
             set_attack_paused(False, int(user_id))
         if blocked:
-            return mismatch
-        return {"online": False, "phase": "offline",
+            return _with_page_qr(mismatch, user_id)
+        return _with_page_qr({"online": False, "phase": "offline",
                 "detail": "没在跑",
                 "seen_at": beijing_ts(seen), "qr": False, "here": "",
-                "paused": False, "hold_left": None}
+                "paused": False, "hold_left": None}, user_id)
     if paused and phase != "login":
         detail = QQ_MISMATCH if blocked else "已暂停"
     elif phase == "login":
