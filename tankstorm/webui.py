@@ -235,13 +235,20 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
-                body = {
+                _json(self, 200, {
                     "items": citydb.list_attack_orders(user["id"], limit=2),
                     "process": citydb.attack_status(user["id"]),
-                }
-                if user.get("admin"):
-                    body["fighters"] = citydb.list_attack_fighters()
-                _json(self, 200, body)
+                })
+                return
+            if path == "/api/admin/fighters":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看全部攻打 QQ"})
+                    return
+                _json(self, 200, {"fighters": citydb.list_attack_fighters()})
                 return
             if path == "/api/attack-qr":
                 user = self._user()
@@ -443,12 +450,17 @@ def _handler(config: dict):
         def _file(self, path):
             if path == "/":
                 path = "/index.html"
+            elif path in ("/admin", "/admin/"):
+                path = "/admin.html"
             rel = os.path.normpath(path.lstrip("/"))
             if rel.startswith(".."):
                 self.send_error(404)
                 return
             full = os.path.join(_DIST, rel)
             if not os.path.isfile(full):
+                if path.startswith("/admin"):
+                    self.send_error(404)
+                    return
                 full = os.path.join(_DIST, "index.html")
                 if not os.path.isfile(full):
                     body = ("前端还没构建。在 web 目录执行 npm install && npm run build"
@@ -482,7 +494,7 @@ def _announce(host, port, config):
     if not _register_open(config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
         log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级。中级和高级可提交远程扫码攻打")
-        log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后可改间隔、停扫时段和城市页范围")
+        log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin")
     if _dev_login(config):
         log.warning("测试免注册已打开：POST /api/dev-login 会直接以 test 登录。正式对外前关掉「订阅.测试免注册」")
 
