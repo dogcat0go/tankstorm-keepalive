@@ -1584,17 +1584,17 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     names = out.setdefault("挡路人", [])
                     if who not in names:
                         names.append(who)
-                if "没打过" in reason:
-                    who = one.get("名字") or p.get("name") or uid
-                    out["挡路"] = who
-                    out["停止原因"] = reason
-                    return "break"
                 if pass_block:
                     who = one.get("名字") or p.get("name") or uid
                     who = "、".join(out.get("挡路人") or []) or who
                     out["挡路"] = who
-                    out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
+                    if "没打过" in reason:
+                        out["停止原因"] = reason
+                    else:
+                        out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
                     return "break"
+                who = one.get("名字") or p.get("name") or uid
+                log.info("[打人] %s 打不过，已记入战败库，继续清这座城", who)
                 return "continue"
             if "ret=21" in reason or "被拒" in reason:
                 return "continue"
@@ -2591,9 +2591,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             reason = fought.get("停止原因") or ""
             if reason in ("这座城打完了", "这一页没有可打的人", "这几页没有可打的人"):
                 out["停止原因"] = "" if (fought.get("打过") or hit) else "这几页没有可打的人"
-            elif any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停", "被别人打败", "已手动关停", "没打过")):
+            elif any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停", "被别人打败", "已手动关停")):
                 out["停止原因"] = reason
-            elif fought.get("失败") and not fought.get("成功"):
+            elif fought.get("失败") and not fought.get("成功") and not hit:
                 out["停止原因"] = f"{target} {tname} 剩下的人都打不过，这座城清不完，已停止"
             else:
                 out["停止原因"] = reason
@@ -2623,7 +2623,12 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 out["停止原因"] = ""
                 break
             if last_cnt is not None and left >= last_cnt:
-                out["停止原因"] = f"{target} {tname} 还有 {left} 人，再打人数没减少"
+                if hit:
+                    log.info("[移动] 目标 %s %s 还剩 %d 人，打得动的已经打完，打不过的在战败库",
+                             target, tname, left)
+                    out["停止原因"] = ""
+                else:
+                    out["停止原因"] = f"{target} {tname} 还有 {left} 人，再打人数没减少"
                 break
             last_cnt = left
             log.info("[移动] 目标 %s %s 还有 %d 人", target, tname, left)
@@ -2631,8 +2636,16 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                                country=my, beat=beat, tally=tally)
             hit += fought.get("成功") or 0
             reason = fought.get("停止原因") or ""
-            if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停", "被别人打败", "已手动关停", "没打过")):
+            if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停", "被别人打败", "已手动关停")):
                 out["停止原因"] = reason
+                break
+            if fought.get("成功"):
+                continue
+            if hit and (fought.get("失败") or fought.get("跳过") or reason in (
+                    "这座城打完了", "这一页没有可打的人", "这几页没有可打的人")):
+                log.info("[移动] 目标 %s %s 打得动的已经打完，打不过的记在战败库",
+                         target, tname)
+                out["停止原因"] = ""
                 break
             if fought.get("失败") and not fought.get("成功"):
                 out["停止原因"] = f"{target} {tname} 剩下的人都打不过，这座城清不完，已停止"
