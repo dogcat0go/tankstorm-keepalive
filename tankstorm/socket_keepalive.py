@@ -1275,6 +1275,10 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             cfg = copy.deepcopy(config)
             block = cfg.setdefault("每日任务", {})
             block["启用"] = True
+            user_id = citydb.attack_context_user()
+            if user_id:
+                block["任务"] = citydb.daily_switches(
+                    user_id, (config.get("每日任务") or {}).get("任务") or {})
             path = daily.state_path_for_qq(citydb.attack_context_qq())
             with daily.using_state(path):
                 results, _details = daily.run(rec, sock, cfg, beat=beater)

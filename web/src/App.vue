@@ -98,6 +98,18 @@ async function refreshDaily() {
   dailyJobs.value = data.jobs || [];
 }
 
+async function saveDailySwitch(it, ev) {
+  const on = ev.target.checked;
+  err.value = "";
+  try {
+    const data = await api("/api/daily/switch", { key: it.key, on });
+    dailyTasks.value = data.tasks || [];
+  } catch (e) {
+    ev.target.checked = !!it.on;
+    err.value = e.message;
+  }
+}
+
 async function runDaily(kind, extra) {
   err.value = "";
   dailyNote.value = "";
@@ -588,7 +600,7 @@ onUnmounted(() => {
         <span class="switch">每日任务</span>
         <button type="submit" :disabled="!dailyQq">跑一轮</button>
       </form>
-      <p class="muted">按服务器里已经打开的那些项做。今日次数记在这个攻打号上，换一个号单独算。</p>
+      <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。</p>
       <form class="lock-row" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
         <span class="switch">征战世界</span>
         <label>关卡<input v-model="pveStages" placeholder="1-10，留空用服务器配置" /></label>
@@ -604,6 +616,7 @@ onUnmounted(() => {
       <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 30。</p>
       <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
       <h2>今日进度</h2>
+      <p class="muted">点开关就保存。跑一轮时按这里的开和关做。</p>
       <p v-if="!dailyTasks.length" class="muted">还没有任务表。</p>
       <div v-else class="wide">
         <table>
@@ -613,7 +626,12 @@ onUnmounted(() => {
           <tbody>
             <tr v-for="it in dailyTasks" :key="it.key">
               <td>{{ it.name }}</td>
-              <td :class="it.on ? 'on' : 'muted'">{{ it.on ? "开" : "关" }}</td>
+              <td>
+                <label class="choice">
+                  <input type="checkbox" :checked="it.on" @change="saveDailySwitch(it, $event)" />
+                  <span :class="it.on ? 'on' : 'muted'">{{ it.on ? "开" : "关" }}</span>
+                </label>
+              </td>
               <td>{{ it.done }}/{{ it.max }}</td>
             </tr>
           </tbody>

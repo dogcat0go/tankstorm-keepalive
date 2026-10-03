@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_wait      INTEGER NOT NULL DEFAULT 0,
     clear_scan      INTEGER NOT NULL DEFAULT 0,
     modo_cards      INTEGER NOT NULL DEFAULT 0,
+    daily_switch    TEXT,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -307,6 +308,9 @@ def connect(readonly=False, timeout=15):
             if ucols and "attack_qq_block" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN attack_qq_block INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "daily_switch" not in ucols:
+                setup.execute("ALTER TABLE app_user ADD COLUMN daily_switch TEXT")
                 setup.commit()
             _forget_page_names(setup)
             _ensure_attack_qq_map(setup)
@@ -2915,6 +2919,77 @@ def daily_job_open() -> bool:
     finally:
         conn.close()
     return bool(row)
+
+
+def _saved_daily_switches(conn, user_id: int):
+    """这个账号自己存过的开关。没存过返回 None。"""
+    row = conn.execute(
+        "SELECT daily_switch FROM app_user WHERE id=?",
+        (int(user_id),)).fetchone()
+    if not row or not str(row[0] or "").strip():
+        return None
+    try:
+        data = json.loads(row[0])
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def daily_switches(user_id: int, defaults: dict) -> dict:
+    """这个登录账号的每日任务开关。没改过的项用服务器配置。"""
+    defaults = defaults if isinstance(defaults, dict) else {}
+    base = {}
+    for key, val in defaults.items():
+        name = str(key or "")
+        if not name or name.startswith("_"):
+            continue
+        base[name] = bool(val)
+    conn = connect(readonly=True)
+    try:
+        saved = _saved_daily_switches(conn, user_id)
+    finally:
+        conn.close()
+    if not saved:
+        return base
+    for key, val in saved.items():
+        name = str(key or "")
+        if not name or name.startswith("_"):
+            continue
+        base[name] = bool(val)
+    return base
+
+
+def set_daily_switch(user_id: int, key: str, on, known, defaults: dict) -> str:
+    """记下一项开关。第一次保存时把当前看到的开关整份记下。"""
+    key = str(key or "").strip()
+    allowed = []
+    for item in known or []:
+        name = str(item or "").strip()
+        if name and not name.startswith("_") and name not in allowed:
+            allowed.append(name)
+    if key not in allowed:
+        return "没有这项任务"
+    current = daily_switches(user_id, defaults)
+    stored = {}
+    for name in allowed:
+        if name in current:
+            stored[name] = bool(current[name])
+        else:
+            stored[name] = bool((defaults or {}).get(name))
+    stored[key] = bool(on)
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET daily_switch=? WHERE id=?",
+            (json.dumps(stored, ensure_ascii=False), int(user_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "账号不存在"
+        return ""
+    finally:
+        conn.close()
 
 
 def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
