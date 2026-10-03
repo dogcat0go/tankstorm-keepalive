@@ -1,5 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import { ElMenu, ElMenuItem } from "element-plus";
+import "element-plus/es/components/menu/style/css";
 import "./base.css";
 
 const me = ref(null);
@@ -48,6 +50,7 @@ const prioUid = ref("");
 const prioRank = ref("1");
 const modoCards = ref("0");
 const modoOpen = ref(false);
+const tab = ref("attack");
 const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
@@ -411,6 +414,7 @@ async function logout() {
   qrSrc.value = "";
   notice.value = null;
   modoOpen.value = false;
+  tab.value = "attack";
 }
 
 function statusOf(it) {
@@ -509,6 +513,24 @@ onUnmounted(() => {
         <a v-if="me.admin" class="ghost" href="/admin">管理</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
+      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="(key) => (tab = key)">
+        <el-menu-item index="qq">订阅QQ</el-menu-item>
+        <el-menu-item index="attack">远程攻打</el-menu-item>
+        <el-menu-item index="watch">监控敌人</el-menu-item>
+      </el-menu>
+      <section v-show="tab === 'qq'">
+      <h2>订阅 QQ</h2>
+      <form class="stack" @submit.prevent="savePush().catch((e) => (err = e.message))">
+        <label>接收 QQ
+          <input v-model="qqTarget" inputmode="numeric" autocomplete="off" placeholder="你的 QQ 号" />
+        </label>
+        <button type="submit">保存</button>
+        <span class="muted">{{ note }}</span>
+      </form>
+      <p class="muted">私聊发到这个 QQ。机器人地址和 Token 在服务器配置里，页面上不填写。</p>
+      </section>
+      <section v-show="tab === 'watch'">
+      <h2>监控敌人</h2>
       <form @submit.prevent="addSub().catch((e) => (err = e.message))">
         <label>城市
           <select v-model="cityId" required>
@@ -570,23 +592,8 @@ onUnmounted(() => {
           </div>
         </details>
       </div>
-      <h2>城市人数</h2>
-      <p class="muted">订阅过的城。人数是最近一次扫描打开面板时的玩家数量，同一座城只列一行。</p>
-      <p v-if="!cityCounts.length" class="muted">还没有订阅的城市。</p>
-      <div v-else class="wide">
-        <table>
-          <thead>
-            <tr><th>城市</th><th>人数</th><th>扫描时间</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="it in cityCounts" :key="it.city_id">
-              <td>{{ cityText(it) }}</td>
-              <td>{{ it.user_cnt == null ? "—" : it.user_cnt }}</td>
-              <td>{{ it.scanned_at || "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      </section>
+      <section v-show="tab === 'attack'">
       <h2>远程扫码攻打</h2>
       <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。可以刷本国首都旁边的两座摩多军团。打人和清城要中级或高级。</p>
       <template v-if="me.remote_attack">
@@ -711,15 +718,24 @@ onUnmounted(() => {
           </article>
         </div>
         </div>
-      <h2>推送</h2>
-      <form class="stack" @submit.prevent="savePush().catch((e) => (err = e.message))">
-        <label>接收 QQ
-          <input v-model="qqTarget" inputmode="numeric" autocomplete="off" placeholder="你的 QQ 号" />
-        </label>
-        <button type="submit">保存</button>
-        <span class="muted">{{ note }}</span>
-      </form>
-      <p class="muted">私聊发到这个 QQ。机器人地址和 Token 在服务器配置里，页面上不填写。</p>
+      <h2>城市人数</h2>
+      <p class="muted">订阅过的城。人数是最近一次扫描打开面板时的玩家数量，同一座城只列一行。</p>
+      <p v-if="!cityCounts.length" class="muted">还没有订阅的城市。</p>
+      <div v-else class="wide">
+        <table>
+          <thead>
+            <tr><th>城市</th><th>人数</th><th>扫描时间</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in cityCounts" :key="it.city_id">
+              <td>{{ cityText(it) }}</td>
+              <td>{{ it.user_cnt == null ? "—" : it.user_cnt }}</td>
+              <td>{{ it.scanned_at || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      </section>
     </template>
     <p class="err">{{ err }}</p>
     <div v-if="notice" class="modal" @click.self="notice = null">
