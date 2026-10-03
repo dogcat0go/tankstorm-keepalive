@@ -645,6 +645,23 @@ onUnmounted(() => {
       </form>
       <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 30。</p>
       <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
+      <h2>最近执行</h2>
+      <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
+      <div v-else class="wide">
+        <table class="daily-jobs">
+          <thead>
+            <tr><th>项目</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in dailyJobs" :key="it.id">
+              <td>{{ it.label }}</td>
+              <td>{{ it.status }}</td>
+              <td class="reason">{{ it.detail || "—" }}</td>
+              <td>{{ it.created_at || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <h2>今日进度</h2>
       <p class="muted">点开关就保存。跑一轮时按这里的开和关做。</p>
       <p v-if="!dailyTasks.length" class="muted">还没有任务表。</p>
@@ -669,23 +686,6 @@ onUnmounted(() => {
                 />
               </td>
               <td>{{ it.done }}/{{ it.max }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <h2>最近执行</h2>
-      <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
-      <div v-else class="wide">
-        <table>
-          <thead>
-            <tr><th>项目</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="it in dailyJobs" :key="it.id">
-              <td>{{ it.label }}</td>
-              <td>{{ it.status }}</td>
-              <td class="reason">{{ it.detail || "—" }}</td>
-              <td>{{ it.created_at || "—" }}</td>
             </tr>
           </tbody>
         </table>

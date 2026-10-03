@@ -327,7 +327,7 @@ def _handler(config: dict):
                 _json(self, 200, {
                     "qq": uin,
                     "tasks": daily.task_board(uin, switches),
-                    "jobs": citydb.list_daily_jobs(user["id"]),
+                    "jobs": citydb.list_daily_jobs(user["id"], 2),
                     "process": citydb.attack_status(user["id"]),
                 })
                 return

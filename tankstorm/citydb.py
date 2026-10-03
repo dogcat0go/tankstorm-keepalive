@@ -3132,7 +3132,8 @@ def resume_daily_jobs() -> None:
         conn.close()
 
 
-def list_daily_jobs(user_id: int, limit: int = 8) -> list:
+def list_daily_jobs(user_id: int, limit: int = 2) -> list:
+    """页面上的最近执行。只留最新的两条。"""
     conn = connect(readonly=True)
     try:
         rows = conn.execute(
