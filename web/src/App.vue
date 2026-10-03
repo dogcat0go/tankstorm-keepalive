@@ -595,6 +595,17 @@ onUnmounted(() => {
         <a v-if="me.admin" class="ghost" href="/admin">管理</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
+      <section class="attack-bar" aria-label="攻打号状态">
+        <p v-if="pushLoginVisible(proc)">
+          <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
+        </p>
+        <p class="proc">
+          <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
+          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login'" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
+          <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
+        </p>
+        <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
+      </section>
       <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">远程攻打</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
@@ -604,7 +615,7 @@ onUnmounted(() => {
       <section v-show="tab === 'daily'">
       <h2>日常任务</h2>
       <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
-      <p v-else class="muted">还没绑定攻打 QQ。先在远程攻打里扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
+      <p v-else class="muted">还没绑定攻打 QQ。先在导航栏上方扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
       <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。后面的攻打单排在它后面。</p>
       <form class="lock-row" @submit.prevent="runDaily('daily').catch((e) => (err = e.message))">
         <span class="switch">每日任务</span>
@@ -835,14 +846,6 @@ onUnmounted(() => {
         </form>
         <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。</p>
         </div>
-        <p v-if="pushLoginVisible(proc)">
-          <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
-        </p>
-        <p class="proc">
-          <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
-          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login'" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
-          <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
-        </p>
         <p v-if="proc && proc.online" class="proc here-row">
           <span v-if="proc.here">目前在 {{ proc.here }}</span>
           <template v-if="me.remote_attack">
@@ -860,8 +863,7 @@ onUnmounted(() => {
           <p class="muted">最近 1 小时拒绝的超级强攻</p>
           <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
         </div>
-        <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，点推送登录会在下面出二维码。同一个 QQ 不能绑给两个登录账号。</p>
-        <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
+        <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，在导航栏上方点推送登录，二维码就出在那里。同一个 QQ 不能绑给两个登录账号。</p>
         <div class="orders" v-if="orders.length">
         <table>
           <thead>
