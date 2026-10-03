@@ -1,16 +1,17 @@
 <script setup>
-import { onMounted, onUnmounted, ref } from "vue";
+import { onMounted, ref } from "vue";
 import "./base.css";
 
 const me = ref(null);
 const username = ref("");
 const password = ref("");
+const qqUin = ref("");
+const qqPwd = ref("");
+const lowLogin = ref(false);
+const busy = ref(false);
 const err = ref("");
 const lab = ref(null);
 const accounts = ref([]);
-const qrSrc = ref("");
-let timer = 0;
-let seq = 0;
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -48,18 +49,11 @@ function expText(row) {
 
 function phaseText(p) {
   return {
-    idle: "还没取码",
-    qr: "等待扫码",
-    scanned: "已扫，待确认",
+    idle: "还没登录",
     ok: "登录完成",
     fail: "失败",
-    expired: "二维码失效",
+    captcha: "要滑块",
   }[p] || p || "—";
-}
-
-function takeLab(data) {
-  lab.value = data;
-  qrSrc.value = data && data.qr ? "/api/qr-lab/qr?t=" + Date.now() : "";
 }
 
 async function enter() {
@@ -79,35 +73,37 @@ async function loadMe() {
 
 async function refresh() {
   if (!me.value || !me.value.admin) return;
-  const mine = seq;
-  const [now, list] = await Promise.all([api("/api/qr-lab"), api("/api/qr-lab/accounts")]);
-  if (mine !== seq) return;
-  takeLab(now);
+  const [now, list] = await Promise.all([api("/api/pwd-lab"), api("/api/pwd-lab/accounts")]);
+  lab.value = now;
   accounts.value = list.items || [];
 }
 
-async function startQr() {
+async function pwdLogin() {
   err.value = "";
-  seq += 1;
-  const data = await api("/api/qr-lab/start", {});
-  seq += 1;
-  takeLab(data);
+  busy.value = true;
+  try {
+    const data = await api("/api/pwd-lab/login", {
+      qq: qqUin.value,
+      password: qqPwd.value,
+      low_login: lowLogin.value,
+    });
+    lab.value = data;
+    if (data.phase === "fail" || data.phase === "captcha") {
+      err.value = data.msg || "登录失败";
+    }
+  } finally {
+    busy.value = false;
+  }
 }
 
 async function checkGame() {
   err.value = "";
-  seq += 1;
-  const data = await api("/api/qr-lab/check", {});
-  seq += 1;
-  takeLab(data);
+  lab.value = await api("/api/pwd-lab/check", {});
 }
 
 async function clearLab() {
   err.value = "";
-  seq += 1;
-  const data = await api("/api/qr-lab/clear", {});
-  seq += 1;
-  takeLab(data);
+  lab.value = await api("/api/pwd-lab/clear", {});
 }
 
 async function logout() {
@@ -115,25 +111,16 @@ async function logout() {
   me.value = null;
   lab.value = null;
   accounts.value = [];
-  qrSrc.value = "";
 }
 
-onMounted(async () => {
-  await loadMe();
-  timer = setInterval(() => {
-    if (me.value && me.value.admin) refresh().catch(() => {});
-  }, 3000);
-});
-onUnmounted(() => {
-  clearInterval(timer);
-});
+onMounted(loadMe);
 </script>
 
 <template>
   <main>
-    <h1>扫码登录测试</h1>
+    <h1>密码登录测试</h1>
     <p class="lead" v-if="!me">
-      管理员登录后，在这里测现有的 QQ 扫码，并看票据还能用多久。
+      管理员登录后，在这里测 QQ 账号密码登录，并看票据还能用多久。
       <a class="ghost" href="/admin">管理</a>
       <a class="ghost" href="/">回到订阅</a>
     </p>
@@ -157,23 +144,31 @@ onUnmounted(() => {
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
       <p class="muted">
-        走现有 ptlogin2 扫码（low_login=0），票据写在独立文件里，不绑攻打号、不拉攻打线程。
-        密码登录常常下发无过期的会话 cookie 或更长的 superkey，扫码的 skey 大约一天半。扫完看表里的剩余时间就能对上。
+        走 ptlogin2 账号密码（pt_tea=2）。默认与现有扫码同一套 xlogin（low_login=0），方便对照时效。
+        勾选「下次自动登录」才会带 low_login_enable=1、720 小时。票据写在独立文件里，不绑攻打号、不拉攻打线程。
+        扫码登录不用在这里测。无过期表示腾讯没给 Expires。
       </p>
-      <h2>这次扫码</h2>
-      <p class="proc">
-        <span class="proc-text">{{ lab ? phaseText(lab.phase) : "—" }}<template v-if="lab && lab.msg"> · {{ lab.msg }}</template></span>
-        <button type="button" @click="startQr().catch((e) => (err = e.message))">取二维码</button>
-        <button type="button" class="ghost" @click="checkGame().catch((e) => (err = e.message))">访问游戏页校验</button>
-        <button type="button" class="ghost" @click="clearLab().catch((e) => (err = e.message))">清掉测试票据</button>
-      </p>
-      <p v-if="lab && lab.wait_left" class="muted">还剩 {{ lab.wait_left }} 秒，过期会自动停。请用另一台设备扫。</p>
-      <img v-if="qrSrc" class="qr" :src="qrSrc" alt="扫码登录测试二维码" />
+      <h2>这次密码登录</h2>
+      <form class="stack" @submit.prevent="pwdLogin().catch((e) => (err = e.message))">
+        <label>QQ 号<input v-model="qqUin" inputmode="numeric" autocomplete="off" required /></label>
+        <label>QQ 密码<input v-model="qqPwd" type="password" autocomplete="off" required /></label>
+        <label class="choice">
+          <input v-model="lowLogin" type="checkbox" />
+          下次自动登录（low_login=1，720 小时）
+        </label>
+        <p class="proc">
+          <span class="proc-text">{{ lab ? phaseText(lab.phase) : "—" }}<template v-if="lab && lab.msg"> · {{ lab.msg }}</template></span>
+          <button type="submit" :disabled="busy">{{ busy ? "登录中…" : "密码登录" }}</button>
+          <button type="button" class="ghost" @click="checkGame().catch((e) => (err = e.message))">访问游戏页校验</button>
+          <button type="button" class="ghost" @click="clearLab().catch((e) => (err = e.message))">清掉测试票据</button>
+        </p>
+      </form>
       <p v-if="lab" class="muted">
         QQ {{ lab.uin || "还没有" }}
         · skey {{ namedLeft(lab, "skey", lab.skey_left) }}
         · p_skey {{ namedLeft(lab, "p_skey", lab.p_skey_left) }}
         · {{ lab.long_term ? "有长效凭据" : "没有 superkey / RK / ptcz" }}
+        · {{ lab.low_login ? "这次带了 low_login" : "这次没带 low_login" }}
         · 游戏页 {{ lab.game_ok == null ? "还没校验" : lab.game_ok ? "认" : "不认" }}
         · <code>{{ lab.cookie }}</code>
       </p>

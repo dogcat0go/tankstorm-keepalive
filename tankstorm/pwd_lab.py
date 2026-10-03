@@ -5,12 +5,11 @@
 # （第 3 版，或你选择的任何更新版本）之条款，再分发和/或修改它。
 # 本程序希望能有用，但不提供任何担保；甚至不含适销性或特定用途适用性的默示担保。
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
-"""扫码登录测试。走现有 QQSession.start_qr / poll_qr，票据单独放，不绑攻打号。"""
+"""密码登录测试。走 QQSession.password_login，票据单独放，不绑攻打号。"""
 
 import glob
 import os
 import threading
-import time
 
 from . import citydb
 from .log import get_logger
@@ -19,31 +18,24 @@ from .qq_login import QQSession, ticket_report_file
 
 log = get_logger()
 
-_QR_WAIT = 180
 _guard = threading.Lock()
 _boxes = {}
 
 
-def _files(user_id: int):
+def _cookie_path(user_id: int) -> str:
     folder = user_path("accounts")
     os.makedirs(folder, exist_ok=True)
-    cookie = os.path.join(folder, f"qr-lab-{int(user_id)}.json")
-    return cookie, cookie[:-5] + ".qrcode.png"
-
-
-def qr_path(user_id: int) -> str:
-    return _files(user_id)[1]
+    return os.path.join(folder, f"pwd-lab-{int(user_id)}.json")
 
 
 class _Box:
     def __init__(self, user_id: int):
-        cookie, qr = _files(user_id)
         self.user_id = int(user_id)
-        self.qq = QQSession(cookie, qrcode_file=qr)
+        self.qq = QQSession(_cookie_path(user_id))
         self.phase = "idle"
         self.msg = ""
         self.game_ok = None
-        self.started = 0.0
+        self.low_login = False
         self.lock = threading.Lock()
 
 
@@ -59,74 +51,46 @@ def _box(user_id: int) -> _Box:
 
 def _view(box: _Box) -> dict:
     report = box.qq.ticket_report()
-    waiting = box.phase in ("qr", "scanned")
-    left = 0
-    if box.started and waiting:
-        left = max(0, int(_QR_WAIT - (time.time() - box.started)))
     return {
         "phase": box.phase,
         "msg": box.msg,
         "game_ok": box.game_ok,
-        "qr": waiting and os.path.isfile(box.qq.qrcode_file),
-        "wait_left": left,
+        "low_login": bool(box.low_login),
         "uin": report.get("uin") or "",
         "long_term": bool(report.get("long_term")),
         "skey_left": report.get("skey_left"),
         "p_skey_left": report.get("p_skey_left"),
         "tickets": report.get("tickets") or [],
-        "cookie": f"accounts/qr-lab-{box.user_id}.json",
+        "cookie": f"accounts/pwd-lab-{box.user_id}.json",
     }
-
-
-def _apply_poll(box: _Box, result: dict) -> None:
-    code = result.get("code") or ""
-    if result.get("ok"):
-        box.phase = "ok"
-        box.msg = "扫码登录完成"
-        box.game_ok = True
-        return
-    if result.get("done"):
-        if code == "65":
-            box.phase = "expired"
-            box.msg = "二维码已失效"
-        else:
-            box.phase = "fail"
-            box.msg = result.get("msg") or "扫码失败"
-        return
-    if code == "67":
-        box.phase = "scanned"
-        box.msg = "已扫码，请在手机上确认"
-        return
-    box.phase = "qr"
-    if result.get("msg") and result.get("code"):
-        box.msg = result["msg"]
 
 
 def snapshot(user_id: int) -> dict:
     box = _box(user_id)
     with box.lock:
-        if box.phase in ("qr", "scanned"):
-            if box.started and time.time() - box.started > _QR_WAIT:
-                box.phase = "expired"
-                box.msg = "扫码超时（180 秒）"
-            else:
-                _apply_poll(box, box.qq.poll_qr())
         return _view(box)
 
 
-def start(user_id: int) -> dict:
+def login(user_id: int, data: dict) -> dict:
+    uin = str((data or {}).get("qq") or "").strip()
+    password = str((data or {}).get("password") or "")
+    low_login = bool((data or {}).get("low_login"))
     box = _box(user_id)
     with box.lock:
-        started = box.qq.start_qr(push_uin=False)
+        result = box.qq.password_login(uin, password, low_login=low_login)
+        box.low_login = low_login
         box.game_ok = None
-        box.started = time.time()
-        if not started.get("ok"):
-            box.phase = "fail"
-            box.msg = started.get("why") or "二维码请求失败"
+        if result.get("ok"):
+            box.phase = "ok"
+            box.msg = result.get("msg") or "密码登录完成"
+            box.game_ok = True
+        elif result.get("captcha"):
+            box.phase = "captcha"
+            box.msg = result.get("msg") or "这个号要滑块验证码"
         else:
-            box.phase = "qr"
-            box.msg = "请用另一台设备上的手机 QQ 扫码。不要把图存进同一台手机相册再扫。"
-        log.info("扫码测试：%s %s", citydb.username_of(user_id), box.msg)
+            box.phase = "fail"
+            box.msg = result.get("msg") or "密码登录失败"
+        log.info("密码登录测试：%s %s", citydb.username_of(user_id), box.msg)
         return _view(box)
 
 
@@ -145,17 +109,16 @@ def check(user_id: int) -> dict:
 def clear(user_id: int) -> dict:
     box = _box(user_id)
     with box.lock:
-        cookie, qr = _files(user_id)
-        for path in (cookie, qr):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-        box.qq = QQSession(cookie, qrcode_file=qr)
+        path = _cookie_path(user_id)
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        box.qq = QQSession(path)
         box.phase = "idle"
         box.msg = "已清掉测试票据"
         box.game_ok = None
-        box.started = 0.0
+        box.low_login = False
         return _view(box)
 
 

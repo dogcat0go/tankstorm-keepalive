@@ -156,7 +156,7 @@ onUnmounted(() => {
     <template v-else>
       <p class="lead">
         {{ me.username }}
-        <a class="ghost" href="/qr-lab">扫码测试</a>
+        <a class="ghost" href="/pwd-lab">密码登录测试</a>
         <a class="ghost" href="/">回到订阅</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>

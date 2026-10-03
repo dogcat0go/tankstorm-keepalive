@@ -13,7 +13,7 @@
   3. 扫码确认后返回 check_sig 跳转地址，GET 一次即种下全套登录 cookie；
   4. cookie 序列化到 cookies.json，下次运行直接复用；失效后需要重新扫码。
 
-不涉及账号密码 —— 只用扫码，服务器上把 qrcode.png 取下来扫或直接看终端字符画。
+保活默认走扫码。管理员测试页另有账号密码登录（pt_tea=2），用来对照票据寿命。
 
 推送登录（页面上点头像 → 手机收到确认）—— 2026-08-13 抓浏览器逆出来的
 --------------------------------------------------------------------
@@ -60,10 +60,13 @@ pt_guid_sig 与它配对，由 xlogin 或登录成功时的 ptqrlogin 下发。�
   推送照常工作。
 """
 
+import base64
+import hashlib
 import json
 import os
 import random
 import re
+import secrets
 import shutil
 import struct
 import time
@@ -127,6 +130,142 @@ def calc_g_tk(p_skey: str) -> int:
     for c in p_skey:
         h += (h << 5) + ord(c)
     return h & 0x7FFFFFFF
+
+
+# ptlogin2 密码加密（c_login_2.js getEncryption / TEA / RSA），与扫码无关。
+_PT_RSA_N = int(
+    "e9a815ab9d6e86abbf33a4ac64e9196d5be44a09bd0ed6ae052914e1a865ac8331fed863de8ea697"
+    "e9a7f63329e5e23cda09c72570f46775b7e39ea9670086f847d3c9c51963b131409b1e04265d97"
+    "47419c635404ca651bbcbc87f99b8008f7f5824653e3658be4ba73e4480156b390bb73bc1f8b33"
+    "578e7a4e12440e9396f2552c1aff1c92e797ebacdc37c109ab7bce2367a19c56a033ee04534723"
+    "cc2558cb27368f5b9d32c04d12dbd86bbd68b1d99b7c349a8453ea75d1b2e94491ab30acf6c46a"
+    "36a75b721b312bedf4e7aad21e54e9bcbcf8144c79b6e3c05eb4a1547750d224c0085d80e6da39"
+    "07c3d945051c13c7c1dcefd6520ee8379c4f5231ed",
+    16,
+)
+_PT_RSA_E = 0x10001
+_PT_MASK32 = 0xFFFFFFFF
+
+
+def _js_bytes(text: str) -> bytes:
+    return bytes(ord(ch) & 0xFF for ch in text)
+
+
+def _md5_hex(data: bytes) -> str:
+    return hashlib.md5(data).hexdigest().upper()
+
+
+def _tea_block(block: bytes, key: bytes) -> bytes:
+    y = int.from_bytes(block[0:4], "big")
+    z = int.from_bytes(block[4:8], "big")
+    k0 = int.from_bytes(key[0:4], "big")
+    k1 = int.from_bytes(key[4:8], "big")
+    k2 = int.from_bytes(key[8:12], "big")
+    k3 = int.from_bytes(key[12:16], "big")
+    s = 0
+    m = _PT_MASK32
+    for _ in range(16):
+        s = (s + 0x9E3779B9) & m
+        y = (y + (((z << 4) + k0) & m ^ (z + s) & m ^ ((z >> 5) + k1) & m)) & m
+        z = (z + (((y << 4) + k2) & m ^ (y + s) & m ^ ((y >> 5) + k3) & m)) & m
+    return y.to_bytes(4, "big") + z.to_bytes(4, "big")
+
+
+def _qq_tea_encrypt(plain: bytes, key: bytes, rand32=None) -> bytes:
+    n = len(plain)
+    pad = (n + 10) % 8
+    if pad:
+        pad = 8 - pad
+    out = bytearray(n + pad + 10)
+    buf = bytearray(8)
+    prev = bytearray(8)
+    fill = 0
+    written = 0
+    prev_off = 0
+    first = True
+    if rand32 is None:
+        def rand32():
+            return secrets.randbits(32)
+
+    def flush():
+        nonlocal fill, written, prev_off, first
+        for i in range(8):
+            buf[i] ^= prev[i] if first else out[prev_off + i]
+        enc = _tea_block(bytes(buf), key)
+        for i in range(8):
+            out[written + i] = enc[i] ^ prev[i]
+            prev[i] = buf[i]
+        prev_off = written
+        written += 8
+        fill = 0
+        first = False
+
+    buf[0] = (rand32() & 248) | pad
+    for i in range(1, pad + 1):
+        buf[i] = rand32() & 255
+    fill = pad + 1
+    extra = 1
+    src = 0
+    left = n
+    while extra <= 2:
+        if fill < 8:
+            buf[fill] = rand32() & 255
+            fill += 1
+            extra += 1
+        if fill == 8:
+            flush()
+    while left:
+        if fill < 8:
+            buf[fill] = plain[src]
+            fill += 1
+            src += 1
+            left -= 1
+        if fill == 8:
+            flush()
+    extra = 1
+    while extra <= 7:
+        if fill < 8:
+            buf[fill] = 0
+            fill += 1
+            extra += 1
+        if fill == 8:
+            flush()
+    return bytes(out)
+
+
+def _rsa_encrypt(plain: bytes) -> bytes:
+    k = (_PT_RSA_N.bit_length() + 7) // 8
+    if k < len(plain) + 11:
+        raise ValueError("RSA 明文太长")
+    ps = bytearray()
+    while len(ps) < k - len(plain) - 3:
+        b = secrets.randbelow(256)
+        if b:
+            ps.append(b)
+    em = bytes([0, 2]) + bytes(ps) + bytes([0]) + plain
+    c = pow(int.from_bytes(em, "big"), _PT_RSA_E, _PT_RSA_N)
+    return c.to_bytes(k, "big")
+
+
+def encrypt_pt_password(password: str, salt: bytes, vcode: str) -> str:
+    """pt_tea=2 的 p 参数。算法照 c_login_2.js getEncryption。"""
+    pwd_md5 = _md5_hex(_js_bytes(password))
+    tea_key = bytes.fromhex(_md5_hex(bytes.fromhex(pwd_md5) + salt))
+    vcode_hex = vcode.upper().encode("utf-8").hex()
+    vlen = format(len(vcode_hex) // 2, "x").zfill(4)
+    plain = bytes.fromhex(pwd_md5 + salt.hex() + vlen + vcode_hex)
+    cipher = _qq_tea_encrypt(plain, tea_key)
+    blob = len(cipher).to_bytes(2, "big") + cipher
+    raw = _rsa_encrypt(blob)
+    return base64.b64encode(raw).decode("ascii").translate(
+        str.maketrans({"/": "-", "+": "*", "=": "_"}))
+
+
+def _js_string_bytes(raw: str) -> bytes:
+    try:
+        return raw.encode("latin1").decode("unicode_escape").encode("latin1")
+    except UnicodeError:
+        return _js_bytes(raw)
 
 
 def describe_tickets(cookies) -> list:
@@ -926,6 +1065,124 @@ class QQSession:
             log.info("已扫码，请在手机上确认…")
             return {"code": "67", "msg": "已扫码，请在手机上确认", "done": False, "ok": False}
         return {"code": code, "msg": msg, "done": False, "ok": False}
+
+    def password_login(self, uin: str, password: str, low_login: bool = False) -> dict:
+        """ptlogin2 账号密码登录。要滑块时不代过验证码，返回 captcha=True。
+
+        low_login 为真时带 low_login_enable=1、low_login_hour=720（下次自动登录）。
+        默认 false，与现有扫码 xlogin 的 low_login=0 同一套入口，方便对照票据寿命。
+        """
+        uin = str(uin or "").strip()
+        if not uin.isdigit() or not 5 <= len(uin) <= 12:
+            return {"ok": False, "captcha": False, "code": "", "msg": "QQ 号要是 5 到 12 位数字"}
+        if not password:
+            return {"ok": False, "captcha": False, "code": "", "msg": "密码是空的"}
+
+        self._clear_session_cookies(keep=DEVICE_COOKIES)
+        guid_before = self._cookie("pt_guid_sig")
+        low = "1" if low_login else "0"
+        try:
+            self.session.get(
+                "https://xui.ptlogin2.qq.com/cgi-bin/xlogin",
+                params={"daid": DAID, "appid": PTLOGIN_APPID,
+                        "hide_title_bar": "1", "low_login": low,
+                        "qlogin_auto_login": "1", "no_verifyimg": "1",
+                        "link_target": "blank", "style": "22",
+                        "target": "self", "s_url": GAME_URL},
+                timeout=15)
+        except requests.RequestException as exc:
+            return {"ok": False, "captcha": False, "code": "", "msg": f"xlogin 失败: {exc}"}
+        if guid_before and self._cookie("pt_guid_sig") != guid_before:
+            self._set_cookie("pt_guid_sig", guid_before)
+
+        login_sig = self._cookie("pt_login_sig") or ""
+        referer = {"Referer": "https://xui.ptlogin2.qq.com/"}
+        try:
+            r = self.session.get(
+                "https://ssl.ptlogin2.qq.com/check",
+                params={"regmaster": "", "pt_tea": "2", "pt_vcode": "1",
+                        "uin": uin, "appid": PTLOGIN_APPID,
+                        "js_ver": "26071711", "js_type": "1",
+                        "login_sig": login_sig, "u1": GAME_URL,
+                        "r": str(random.random()), "pt_uistyle": "22",
+                        "daid": DAID, "pt_3rd_aid": "0"},
+                headers=referer, timeout=15)
+        except requests.RequestException as exc:
+            return {"ok": False, "captcha": False, "code": "", "msg": f"check 失败: {exc}"}
+
+        quoted = re.findall(r"'((?:\\.|[^'\\])*)'", r.text or "")
+        if len(quoted) < 7:
+            head = (r.text or "")[:120].replace("\n", " ")
+            return {"ok": False, "captcha": False, "code": "",
+                    "msg": f"check 响应无法解析：{head}"}
+        check_ret, vcode, salt_js, verifysession, randsalt, ptdrvs, sid = quoted[:7]
+        if check_ret == "1":
+            return {"ok": False, "captcha": True, "code": "1",
+                    "msg": "这个号要滑块验证码，测试页不代过验证码"}
+        if check_ret == "2":
+            return {"ok": False, "captcha": False, "code": "2",
+                    "msg": "QQ 号不对"}
+        if check_ret not in ("0", "3"):
+            return {"ok": False, "captcha": False, "code": check_ret,
+                    "msg": f"check 被拒（code={check_ret}）"}
+        salt = _js_string_bytes(salt_js)
+        if len(salt) < 8:
+            salt = salt.ljust(8, b"\x00")
+        vcode = vcode or "!AAA"
+        session = verifysession or self._cookie("verifysession") or ""
+        try:
+            enc = encrypt_pt_password(password, salt, vcode)
+        except Exception as exc:
+            return {"ok": False, "captcha": False, "code": "",
+                    "msg": f"密码加密失败: {exc}"}
+
+        params = {
+            "u": uin, "verifycode": vcode, "pt_vcode_v1": "0",
+            "pt_verifysession_v1": session, "p": enc,
+            "pt_randsalt": randsalt or "2",
+            "u1": GAME_URL, "ptredirect": "0", "h": "1", "t": "1", "g": "1",
+            "from_ui": "1", "ptlang": "2052",
+            "action": f"2-0-{int(time.time() * 1000)}",
+            "js_ver": "26071711", "js_type": "1",
+            "login_sig": login_sig, "pt_uistyle": "22",
+            "aid": PTLOGIN_APPID, "daid": DAID,
+        }
+        if ptdrvs:
+            params["ptdrvs"] = ptdrvs
+        if sid:
+            params["sid"] = sid
+        if low_login:
+            params["low_login_enable"] = "1"
+            params["low_login_hour"] = "720"
+        try:
+            r = self.session.get(
+                "https://ssl.ptlogin2.qq.com/login",
+                params=params, headers=referer, timeout=20)
+        except requests.RequestException as exc:
+            return {"ok": False, "captcha": False, "code": "", "msg": f"login 失败: {exc}"}
+
+        m = re.search(r"ptuiCB\('(\d+)','\d+','([^']*)','\d+','([^']*)'", r.text or "")
+        if not m:
+            head = (r.text or "")[:120].replace("\n", " ")
+            return {"ok": False, "captcha": False, "code": "",
+                    "msg": f"login 响应无法解析：{head}"}
+        code, url, msg = m.group(1), m.group(2), m.group(3)
+        if code != "0":
+            log.info("密码登录被拒 uin=%s code=%s %s", uin, code, (msg or "")[:60])
+            return {"ok": False, "captcha": False, "code": code, "msg": msg or f"登录失败 code={code}"}
+        try:
+            self.session.get(url, allow_redirects=True, timeout=20)
+        except requests.RequestException as exc:
+            return {"ok": False, "captcha": False, "code": "0",
+                    "msg": f"check_sig 失败: {exc}"}
+        self._save_cookies()
+        if self.is_valid():
+            log.info("密码登录完成，uin=%s low_login=%s", self.uin, low_login)
+            self._save_cookies()
+            return {"ok": True, "captcha": False, "code": "0", "msg": msg or "登录成功"}
+        log.error("密码登录 check_sig 后游戏页仍不认 uin=%s", uin)
+        return {"ok": False, "captcha": False, "code": "0",
+                "msg": "check_sig 后游戏页仍不认这张票"}
 
     def qr_login(self, timeout_sec: int = 180, on_qr=None, push_uin=None) -> bool:
         """扫码登录。on_qr(qrcode_path) 在二维码生成后回调（用于推送到手机等）。
