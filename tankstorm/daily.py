@@ -181,6 +181,14 @@ def failure_brief(results) -> str:
     return "；".join(parts)
 
 
+def finish_text(results) -> str:
+    """整轮跑完后的说明。某一项失败写在说明里，整轮照样做完。"""
+    failed = failure_brief(results)
+    if not failed:
+        return ""
+    return failed + "。这一轮没有停，后面的任务已继续做"
+
+
 def _publish_failure(results, on_fail) -> None:
     if not on_fail:
         return
@@ -1550,6 +1558,8 @@ def _run(rec, sock, config, schema, on_fail=None):
 
     log.info("=== 每日任务开始（实发）===")
 
+    # 某一项失败、抛异常，都只记下这一项，接着做下一项。
+    # 连接断了才停，后面的任务没有连接可发。
     for task in ordered_tasks():
         try:
             if not switches.get(task.key, False):
@@ -1629,7 +1639,14 @@ def _run(rec, sock, config, schema, on_fail=None):
                 log.info("[%s] 本轮共成功 %d 次（今日 %d/%d）", task.key, ran,
                          st["done"].get(task.key, 0), task.max_per_day)
             continue
+        except OSError:
+            raise
+        except Exception as exc:
+            results[task.key] = f"执行异常：{exc}"
+            log.exception("[%s] 这一项没做成，继续下一项", task.key)
         finally:
+            if _is_failure(results.get(task.key)):
+                log.info("[%s] 这一项没做成，继续下一项", task.key)
             _publish_failure(results, on_fail)
 
 
