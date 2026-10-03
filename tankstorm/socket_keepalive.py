@@ -1277,7 +1277,17 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     params = job.get("params") or {}
     citydb.set_attack_status("daily", task=label)
     log.info("开始做日常：%s", label)
+
+    def _show_fail(text):
+        citydb.touch_daily_job(job["id"], text)
+        citydb.set_attack_status("daily", task=label, note=text)
+
+    prev_sock = daily.bind_sock(sock)
     try:
+        if rec and getattr(rec, "auto_reject", False):
+            class _QQ:
+                uin = citydb.attack_context_qq()
+            _arm_super_storm(rec, sock, config, _QQ())
         if kind == "daily":
             cfg = copy.deepcopy(config)
             block = cfg.setdefault("每日任务", {})
@@ -1288,29 +1298,43 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     user_id, (config.get("每日任务") or {}).get("任务") or {})
             path = daily.state_path_for_qq(citydb.attack_context_qq())
             with daily.using_state(path):
-                results, _details = daily.run(rec, sock, cfg, beat=beater)
-            citydb.finish_daily_job(job["id"], "done", _daily_brief(results))
+                results, _details = daily.run(
+                    rec, sock, cfg, beat=beater, on_fail=_show_fail)
+            failed = daily.failure_brief(results)
+            if failed:
+                citydb.set_attack_status("daily", task=label, note=failed)
+                citydb.finish_daily_job(job["id"], "failed", failed)
+            else:
+                citydb.finish_daily_job(job["id"], "done", _daily_brief(results))
         elif kind == "pve":
             stages = params.get("stages")
             if not stages:
                 stages = (config.get("征战") or {}).get("关卡")
             interval = float((config.get("征战") or {}).get("间隔秒") or 1)
             ok, why = pve.fight(rec, sock, stages, interval)
+            if not ok:
+                citydb.set_attack_status("daily", task=label, note=why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         elif kind == "fund":
             ok, why = fund.fund(
                 rec, sock, params.get("building_id"), params.get("times") or 1)
+            if not ok:
+                citydb.set_attack_status("daily", task=label, note=why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         else:
             citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
     except OSError:
+        citydb.set_attack_status("daily", task=label, note="连接中断")
         citydb.finish_daily_job(job["id"], "failed", "连接中断")
         raise
     except Exception as exc:
         log.info("日常没做成", exc_info=True)
+        citydb.set_attack_status("daily", task=label, note=str(exc))
         citydb.finish_daily_job(job["id"], "failed", str(exc))
     else:
         log.info("日常做完：%s", label)
+    finally:
+        daily.bind_sock(prev_sock)
 
 
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
