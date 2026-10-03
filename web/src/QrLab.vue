@@ -89,19 +89,25 @@ async function refresh() {
 async function startQr() {
   err.value = "";
   seq += 1;
-  takeLab(await api("/api/qr-lab/start", {}));
+  const data = await api("/api/qr-lab/start", {});
+  seq += 1;
+  takeLab(data);
 }
 
 async function checkGame() {
   err.value = "";
   seq += 1;
-  takeLab(await api("/api/qr-lab/check", {}));
+  const data = await api("/api/qr-lab/check", {});
+  seq += 1;
+  takeLab(data);
 }
 
 async function clearLab() {
   err.value = "";
   seq += 1;
-  takeLab(await api("/api/qr-lab/clear", {}));
+  const data = await api("/api/qr-lab/clear", {});
+  seq += 1;
+  takeLab(data);
 }
 
 async function logout() {
