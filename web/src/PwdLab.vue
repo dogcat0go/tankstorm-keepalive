@@ -156,8 +156,8 @@ onMounted(loadMe);
           <input v-model="lowLogin" type="checkbox" />
           下次自动登录（low_login=1，720 小时）
         </label>
+        <p class="muted">{{ lab ? phaseText(lab.phase) : "—" }}<template v-if="lab && lab.msg"> · {{ lab.msg }}</template></p>
         <p class="proc">
-          <span class="proc-text">{{ lab ? phaseText(lab.phase) : "—" }}<template v-if="lab && lab.msg"> · {{ lab.msg }}</template></span>
           <button type="submit" :disabled="busy">{{ busy ? "登录中…" : "密码登录" }}</button>
           <button type="button" class="ghost" @click="checkGame().catch((e) => (err = e.message))">访问游戏页校验</button>
           <button type="button" class="ghost" @click="clearLab().catch((e) => (err = e.message))">清掉测试票据</button>
