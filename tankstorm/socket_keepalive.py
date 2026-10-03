@@ -135,7 +135,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
     _arm_super_storm(rec, sock, config, qq)
 
     heart = None
-    prev_beat = daily._BEAT
+    restore_beat = None
     try:
         steps = protocol.build_login_sequence(spec, ctx)
         for i, (data, delay) in enumerate(steps, 1):
@@ -157,7 +157,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         # 心跳包提前构造好：任务执行期间也要发，不能等进了心跳循环才开始
         hb = protocol.build_heartbeat(spec, ctx)
         heart = _Beater(sock, hb, interval)
-        daily._BEAT = heart
+        restore_beat = daily.bind_beat(heart)
 
         if with_daily:
             try:
@@ -267,7 +267,8 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
     except OSError as exc:
         return f"连接中断: {exc}"
     finally:
-        daily._BEAT = prev_beat
+        if restore_beat is not None:
+            restore_beat()
         if heart is not None:
             heart.stop()
         try:
@@ -1215,6 +1216,61 @@ def _begin_attack_hold(fresh=False) -> bool:
     return True
 
 
+def _daily_brief(results) -> str:
+    if not isinstance(results, dict) or not results:
+        return "这一轮没有要做的"
+    parts = []
+    for key, value in results.items():
+        text = str(value or "").strip()
+        if not text or text == "未开启":
+            continue
+        parts.append(f"{key}：{text}")
+    return "；".join(parts) or "这一轮没有要做的"
+
+
+def _run_one_daily(rec, sock, config, beater, job) -> None:
+    """在这条攻打连接上做一项日常。做完写回队列，不另开连接。"""
+    import copy
+
+    from . import citydb, daily, fund, pve
+
+    kind = str(job.get("kind") or "")
+    label = citydb.DAILY_KIND_LABEL.get(kind, kind)
+    params = job.get("params") or {}
+    citydb.set_attack_status("daily", task=label)
+    log.info("开始做日常：%s", label)
+    try:
+        if kind == "daily":
+            cfg = copy.deepcopy(config)
+            block = cfg.setdefault("每日任务", {})
+            block["启用"] = True
+            path = daily.state_path_for_qq(citydb.attack_context_qq())
+            with daily.using_state(path):
+                results, _details = daily.run(rec, sock, cfg, beat=beater)
+            citydb.finish_daily_job(job["id"], "done", _daily_brief(results))
+        elif kind == "pve":
+            stages = params.get("stages")
+            if not stages:
+                stages = (config.get("征战") or {}).get("关卡")
+            interval = float((config.get("征战") or {}).get("间隔秒") or 1)
+            ok, why = pve.fight(rec, sock, stages, interval)
+            citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+        elif kind == "fund":
+            ok, why = fund.fund(
+                rec, sock, params.get("building_id"), params.get("times") or 1)
+            citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+        else:
+            citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
+    except OSError:
+        citydb.finish_daily_job(job["id"], "failed", "连接中断")
+        raise
+    except Exception as exc:
+        log.info("日常没做成", exc_info=True)
+        citydb.finish_daily_job(job["id"], "failed", str(exc))
+    else:
+        log.info("日常做完：%s", label)
+
+
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     """同一条游戏连接上把排队的单打完。打完或打不过之后，按挂机时长继续心跳。"""
     from . import citydb
@@ -1230,6 +1286,11 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 raise OSError("服务器关闭连接")
             continue
         if _run_requested_move(rec, sock, config, beater):
+            continue
+        daily_job = citydb.claim_daily_job()
+        if daily_job:
+            stated = False
+            _run_one_daily(rec, sock, config, beater, daily_job)
             continue
         citydb.skip_unfinished_auto(citydb.attack_context_user())
         citydb.release_due_waits()
@@ -1337,6 +1398,7 @@ def run_remote_orders(qq, config: dict) -> int:
 
     try:
         citydb.resume_stranded_orders()
+        citydb.resume_daily_jobs()
         while True:
             current = citydb.attack_context_user()
             if current:
@@ -1350,12 +1412,14 @@ def run_remote_orders(qq, config: dict) -> int:
                 time.sleep(5)
                 continue
             citydb.resume_stranded_orders()
+            citydb.resume_daily_jobs()
             citydb.release_due_waits()
             asked = citydb.take_attack_login()
             pending = citydb.attack_order_open()
             left = citydb.attack_hold_left()
             moving = citydb.attack_move_pending() > 0
-            if (asked or pending or moving or (left or 0) > 0) and not qq.is_valid():
+            daily_wait = citydb.daily_job_open()
+            if (asked or pending or moving or daily_wait or (left or 0) > 0) and not qq.is_valid():
                 citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
                 if not ((citydb.attack_hold_left() or 0) > 0):
@@ -1363,7 +1427,8 @@ def run_remote_orders(qq, config: dict) -> int:
                 pending = citydb.attack_order_open()
                 left = citydb.attack_hold_left()
                 moving = citydb.attack_move_pending() > 0
-            if not pending and not moving and not ((left or 0) > 0):
+                daily_wait = citydb.daily_job_open()
+            if not pending and not moving and not daily_wait and not ((left or 0) > 0):
                 citydb.fail_blocked_orders()
                 if left is not None:
                     citydb.clear_attack_hold()
@@ -1645,6 +1710,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
     try:
         stop = _start_attack_status()
         citydb.resume_stranded_orders()
+        citydb.resume_daily_jobs()
         if qq.is_valid():
             note_attack_qq(qq)
         if citydb.attack_qq_blocked(_owner()) or not qq.is_valid():
@@ -1669,7 +1735,9 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 time.sleep(5)
                 continue
             citydb.resume_stranded_orders()
+            citydb.resume_daily_jobs()
             if not (citydb.attack_order_open()
+                    or citydb.daily_job_open()
                     or (citydb.attack_hold_left() or 0) > 0):
                 break
             _connect_attack_orders(qq, config)

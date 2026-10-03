@@ -126,6 +126,16 @@ CREATE TABLE IF NOT EXISTS atk_order (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS daily_job (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    params      TEXT NOT NULL DEFAULT '{}',
+    status      TEXT NOT NULL,
+    detail      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS atk_signal (
     name  TEXT PRIMARY KEY,
     value TEXT,
@@ -2330,11 +2340,15 @@ def clear_login_for() -> None:
         conn.close()
 
 
-def set_attack_status(phase: str) -> None:
+def set_attack_status(phase: str, task: str = "") -> None:
     """这条攻打线程把自己的阶段写进库，键是攻打 QQ。网页只读。所在城市留着。"""
     name = _mark_name("proc")
     prev = _proc_payload(_signal_value(name))
     data = {"phase": phase}
+    if phase == "daily":
+        label = " ".join(str(task or "").split())[:40]
+        if label:
+            data["task"] = label
     here = _kept_here(prev)
     if here:
         data["here"] = here
@@ -2584,6 +2598,9 @@ def attack_status(user_id: int) -> dict:
         detail = QQ_MISMATCH if blocked else "已暂停"
     elif phase == "login":
         detail = "正在等扫码"
+    elif phase == "daily":
+        label = str(parsed.get("task") or "").strip()
+        detail = f"正在做{label}" if label else "正在做日常任务"
     elif phase == "hold":
         head = "挂机保活成功" if _hold_link_ok(parsed) else "挂机保活没连上"
         if hold_left is not None and hold_left > 0:
@@ -2616,7 +2633,7 @@ def attack_status(user_id: int) -> dict:
                  "hold_left": int(hold_left) if show_hold else None,
                  "move_note": str(parsed.get("move_note") or ""),
                  "need_login": bool(
-                     uin and phase not in ("login", "running", "hold")
+                     uin and phase not in ("login", "running", "hold", "daily")
                      and not paused and not attack_cookie_logged_in(user_id))})
 
 
@@ -2825,14 +2842,195 @@ def users_with_open_orders() -> list:
     return [int(r[0]) for r in rows]
 
 
+DAILY_KIND_LABEL = {
+    "daily": "日常任务",
+    "pve": "征战世界",
+    "fund": "成就拨款",
+}
+_DAILY_STATUS = {
+    "pending": "排队",
+    "running": "正在做",
+    "done": "做完",
+    "failed": "没做成",
+}
+
+
+def users_with_daily_jobs() -> list:
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM daily_job "
+            "WHERE status IN ('pending','running')").fetchall()
+    finally:
+        conn.close()
+    return [int(r[0]) for r in rows]
+
+
 def users_needing_attack() -> list:
-    """主进程要照看的登录账号：还有订单（含等通路），或者攻打 QQ 的挂机还没结束。"""
+    """主进程要照看的登录账号：还有订单、日常，或者攻打 QQ 的挂机还没结束。"""
     ids = set(users_with_open_orders())
+    ids.update(users_with_daily_jobs())
     for user_id in mapped_attack_user_ids():
         left = attack_hold_left(user_id)
         if left is not None and left > 0:
             ids.add(user_id)
     return sorted(ids)
+
+
+def daily_job_open() -> bool:
+    """这个攻打号还有没做完的日常。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return False
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM daily_job WHERE user_id=? AND status IN ('pending','running') LIMIT 1",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    return bool(row)
+
+
+def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
+    """排一项日常。成功返回空字符串。只排给这个登录账号绑定的攻打号。"""
+    user_id = int(user_id)
+    kind = str(kind or "").strip()
+    if kind not in DAILY_KIND_LABEL:
+        return "没有这项日常"
+    if not attack_qq_of(user_id):
+        return "还没绑定攻打 QQ"
+    params = params if isinstance(params, dict) else {}
+    clean = {}
+    if kind == "pve":
+        stages = str(params.get("stages") or "").strip()
+        if len(stages) > 80:
+            return "关卡名单太长"
+        if stages:
+            from . import pve
+            try:
+                parsed = pve.parse_stages(stages)
+            except ValueError as exc:
+                return str(exc)
+            if not parsed:
+                return "关卡名单是空的"
+            if len(parsed) > pve.HARD_MAX:
+                return f"关卡超过 {pve.HARD_MAX} 个"
+            clean["stages"] = stages
+    elif kind == "fund":
+        try:
+            building = int(str(params.get("building_id") or "").strip())
+            times = int(str(params.get("times") or "1").strip())
+        except (TypeError, ValueError):
+            return "建筑和次数要是数字"
+        if building <= 0:
+            return "要填建筑 ID"
+        if not (1 <= times <= 30):
+            return "拨款次数要在 1 到 30"
+        clean["building_id"] = building
+        clean["times"] = times
+    conn = connect()
+    try:
+        waiting = conn.execute(
+            "SELECT COUNT(*) FROM daily_job WHERE user_id=? AND status IN ('pending','running')",
+            (user_id,)).fetchone()[0]
+        if int(waiting or 0) >= 3:
+            return "还有日常没做完，先等这几项"
+        now = now_ts()
+        conn.execute(
+            "INSERT INTO daily_job(user_id, kind, params, status, detail, created_at, updated_at) "
+            "VALUES (?,?,?,'pending','',?,?)",
+            (user_id, kind, json.dumps(clean, ensure_ascii=False), now, now))
+        conn.commit()
+        return ""
+    finally:
+        conn.close()
+
+
+def claim_daily_job():
+    """领这个登录账号最早的一条日常。没有就返回 None。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return None
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT id, kind, params FROM daily_job "
+            "WHERE user_id=? AND status='pending' ORDER BY id LIMIT 1",
+            (user_id,)).fetchone()
+        if not row:
+            conn.rollback()
+            return None
+        conn.execute(
+            "UPDATE daily_job SET status='running', updated_at=? WHERE id=?",
+            (now_ts(), row[0]))
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        params = json.loads(row[2] or "{}")
+    except ValueError:
+        params = {}
+    if not isinstance(params, dict):
+        params = {}
+    return {"id": int(row[0]), "kind": str(row[1] or ""), "params": params}
+
+
+def finish_daily_job(job_id: int, status: str, detail: str) -> None:
+    status = "done" if status == "done" else "failed"
+    text = " ".join(str(detail or "").split())[:500]
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE daily_job SET status=?, detail=?, updated_at=? WHERE id=?",
+            (status, text, now_ts(), int(job_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def resume_daily_jobs() -> None:
+    """线程重新拉起。每日任务可以再做，次数闸门会挡住已经领过的。拨款和征战不自动重做。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return
+    now = now_ts()
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE daily_job SET status='pending', updated_at=? "
+            "WHERE user_id=? AND kind='daily' AND status='running'",
+            (now, user_id))
+        conn.execute(
+            "UPDATE daily_job SET status='failed', detail=?, updated_at=? "
+            "WHERE user_id=? AND kind!='daily' AND status='running'",
+            ("进程中断，请再点一次", now, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_daily_jobs(user_id: int, limit: int = 8) -> list:
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id, kind, status, detail, created_at FROM daily_job "
+            "WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (int(user_id), int(limit))).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for row in rows:
+        out.append({
+            "id": int(row[0]),
+            "kind": row[1],
+            "label": DAILY_KIND_LABEL.get(row[1], row[1]),
+            "status": _DAILY_STATUS.get(row[2], row[2]),
+            "detail": row[3] or "",
+            "created_at": beijing_ts(row[4]) if row[4] else "",
+        })
+    return out
 
 
 def attack_order_open() -> bool:

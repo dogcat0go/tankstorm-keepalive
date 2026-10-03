@@ -51,6 +51,13 @@ const prioRank = ref("1");
 const modoCards = ref("0");
 const modoOpen = ref(false);
 const tab = ref("attack");
+const dailyQq = ref("");
+const dailyTasks = ref([]);
+const dailyJobs = ref([]);
+const pveStages = ref("");
+const fundBuilding = ref("");
+const fundTimes = ref("1");
+const dailyNote = ref("");
 const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
@@ -76,6 +83,32 @@ async function refresh() {
   items.value = data.items || [];
   cityCounts.value = data.counts || [];
   db.value = data.db || "";
+}
+
+async function refreshDaily() {
+  if (!me.value) {
+    dailyQq.value = "";
+    dailyTasks.value = [];
+    dailyJobs.value = [];
+    return;
+  }
+  const data = await api("/api/daily");
+  dailyQq.value = data.qq || "";
+  dailyTasks.value = data.tasks || [];
+  dailyJobs.value = data.jobs || [];
+}
+
+async function runDaily(kind, extra) {
+  err.value = "";
+  dailyNote.value = "";
+  await api("/api/daily", Object.assign({ kind }, extra || {}));
+  dailyNote.value = "已交给绑定的攻打号";
+  await refreshDaily();
+}
+
+function pickTab(key) {
+  tab.value = key;
+  if (key === "daily") refreshDaily().catch((e) => (err.value = e.message));
 }
 
 async function refreshAttacks() {
@@ -416,6 +449,10 @@ async function logout() {
   notice.value = null;
   modoOpen.value = false;
   tab.value = "attack";
+  dailyQq.value = "";
+  dailyTasks.value = [];
+  dailyJobs.value = [];
+  dailyNote.value = "";
 }
 
 function statusOf(it) {
@@ -476,7 +513,9 @@ onMounted(async () => {
     if (me.value) refresh().catch(() => {});
   }, 4000);
   atkTimer = setInterval(() => {
-    if (me.value) refreshAttacks().catch(() => {});
+    if (!me.value) return;
+    refreshAttacks().catch(() => {});
+    if (tab.value === "daily") refreshDaily().catch(() => {});
   }, 5000);
   clockTimer = setInterval(() => {
     clock.value = Date.now();
@@ -514,11 +553,70 @@ onUnmounted(() => {
         <a v-if="me.admin" class="ghost" href="/admin">管理</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
-      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="(key) => (tab = key)">
+      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">远程攻打</el-menu-item>
+        <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
         <el-menu-item index="qq">订阅QQ</el-menu-item>
       </el-menu>
+      <section v-show="tab === 'daily'">
+      <h2>日常任务</h2>
+      <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
+      <p v-else class="muted">还没绑定攻打 QQ。先在远程攻打里扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
+      <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。后面的攻打单排在它后面。</p>
+      <form class="lock-row" @submit.prevent="runDaily('daily').catch((e) => (err = e.message))">
+        <span class="switch">每日任务</span>
+        <button type="submit" :disabled="!dailyQq">跑一轮</button>
+      </form>
+      <p class="muted">按服务器里已经打开的那些项做。今日次数记在这个攻打号上，换一个号单独算。</p>
+      <form class="lock-row" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
+        <span class="switch">征战世界</span>
+        <label>关卡<input v-model="pveStages" placeholder="1-10，留空用服务器配置" /></label>
+        <button type="submit" :disabled="!dailyQq">打这些关</button>
+      </form>
+      <p class="muted">只打当前关，当前关不在名单里就停。对应命令行的征战。</p>
+      <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => (err = e.message))">
+        <span class="switch">成就拨款</span>
+        <label>建筑 ID<input v-model="fundBuilding" class="mins" inputmode="numeric" placeholder="10138" required /></label>
+        <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
+        <button type="submit" :disabled="!dailyQq">拨款</button>
+      </form>
+      <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 30。</p>
+      <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
+      <h2>今日进度</h2>
+      <p v-if="!dailyTasks.length" class="muted">还没有任务表。</p>
+      <div v-else class="wide">
+        <table>
+          <thead>
+            <tr><th>任务</th><th>开关</th><th>今日</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in dailyTasks" :key="it.key">
+              <td>{{ it.name }}</td>
+              <td :class="it.on ? 'on' : 'muted'">{{ it.on ? "开" : "关" }}</td>
+              <td>{{ it.done }}/{{ it.max }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <h2>最近执行</h2>
+      <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
+      <div v-else class="wide">
+        <table>
+          <thead>
+            <tr><th>项目</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in dailyJobs" :key="it.id">
+              <td>{{ it.label }}</td>
+              <td>{{ it.status }}</td>
+              <td class="reason">{{ it.detail || "—" }}</td>
+              <td>{{ it.created_at || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      </section>
       <section v-show="tab === 'qq'">
       <h2>订阅 QQ</h2>
       <form class="stack" @submit.prevent="savePush().catch((e) => (err = e.message))">
