@@ -329,9 +329,13 @@ def _fight_until(rec, sock, end, interval):
             break
         got = fight_once(rec, sock)
         if not isinstance(got, dict):
-            return False, f"第 {cur} 关没有结算回包，已过 {_brief(done)}"
+            log.info("[征战] 第 %s 关没有开战回包", cur)
+            return False, "这个号打不了征战，跳过"
         nxt = _stage(got)
         result = got.get("result")
+        if result not in (1, 2):
+            log.info("[征战] 第 %s 关没有结算 result=%s", cur, result)
+            return False, "这个号打不了征战，跳过"
         if result != 1 or nxt is None or nxt == cur:
             return False, f"第 {cur} 关没过去 result={result}，已过 {_brief(done)}"
         done.append(cur)
@@ -392,6 +396,8 @@ def campaign(rec, sock, stages, already=0, interval=1.0):
     if end is not None and cur < end:
         ok, why = fight(rec, sock, text, interval)
         if not ok:
+            if "打不了征战" in str(why):
+                return True, why, total, True
             if not str(why).startswith("失败"):
                 why = f"失败：{why}"
             return False, why, total, True
@@ -403,6 +409,8 @@ def campaign(rec, sock, stages, already=0, interval=1.0):
         ok, why = fight(rec, sock, text, interval)
         notes.append(why)
         if not ok and not _stuck(why):
+            if "打不了征战" in str(why):
+                return True, why, total, True
             if not str(why).startswith("失败"):
                 why = f"失败：{why}"
             return False, why, total, True
@@ -414,18 +422,25 @@ def campaign(rec, sock, stages, already=0, interval=1.0):
         if did is None:
             break
         if not did:
+            if "打不了征战" in str(why):
+                return True, why, total, True
             return False, f"失败：{'。'.join(notes)}", total, True
     return True, "。".join(notes), total, False
 
 
 def fight_once(rec, sock):
-    """打当前关。返回结算回包（result 为 1 或 2），没有就 None。"""
+    """打当前关。优先等结算（result 为 1 或 2）。
+
+    只有受理（result=0）或别的结果时，超时后把那条回包交回来。
+    一条都没有就 None。
+    """
     before = _send(sock, rec, OP, {
         1: ("bool", True), 2: ("int32", TYPE_FIGHT),
     })
     return _await_response(
         sock, rec, RSE, before, 8.0,
-        want=lambda d: d.get("type") == TYPE_FIGHT and d.get("result") in (1, 2))
+        want=lambda d: d.get("type") == TYPE_FIGHT and d.get("result") in (1, 2),
+        relaxed=lambda d: d.get("type") == TYPE_FIGHT)
 
 
 def fight(rec, sock, stages, interval=1.0):
@@ -464,9 +479,13 @@ def fight(rec, sock, stages, interval=1.0):
             break
         got = fight_once(rec, sock)
         if not isinstance(got, dict):
-            return False, f"第 {cur} 关没有结算回包，已过 {_brief(done)}"
+            log.info("[征战] 第 %s 关没有开战回包", cur)
+            return False, "这个号打不了征战，跳过"
         nxt = _stage(got)
         result = got.get("result")
+        if result not in (1, 2):
+            log.info("[征战] 第 %s 关没有结算 result=%s", cur, result)
+            return False, "这个号打不了征战，跳过"
         if result != 1 or nxt is None or nxt == cur:
             return False, f"第 {cur} 关没过去 result={result}，已过 {_brief(done)}"
         done.append(cur)

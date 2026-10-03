@@ -1555,6 +1555,11 @@ def campaign_pushing() -> bool:
     return bool(getattr(_state_local, "campaign_pushing", False))
 
 
+def campaign_blocked() -> bool:
+    """这个号打不了征战。第三次、第4次不要发。"""
+    return bool(getattr(_state_local, "campaign_blocked", False))
+
+
 def campaign_round(rec, sock, stages, interval=1.0):
     """按 --pve 打征战。到了或超过终点时，先做今天剩下的免费重开再打。"""
     from . import pve
@@ -1568,11 +1573,13 @@ def campaign_round(rec, sock, stages, interval=1.0):
         ok, why, total, pushing = pve.campaign(rec, sock, stages, already, interval)
     except Exception:
         _state_local.campaign_pushing = True
+        _state_local.campaign_blocked = True
         raise
     st = _load_state()
     st.setdefault("done", {})["征战世界"] = int(total)
     _save_state(st)
     _state_local.campaign_pushing = bool(pushing)
+    _state_local.campaign_blocked = "打不了征战" in str(why)
     return ok, why
 
 
@@ -1586,6 +1593,7 @@ def _run_campaign_task(rec, sock, config):
 
 def _run(rec, sock, config, schema, on_fail=None):
     _state_local.campaign_pushing = False
+    _state_local.campaign_blocked = False
     conf = (config.get("每日任务", {}) or {})
     if not conf.get("启用", False):
         log.info("每日任务未启用（config.json 每日任务.启用=false）")
@@ -1726,10 +1734,11 @@ def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1
         ("征战第4次", pve.vip_restart),
     )
     if campaign_pushing():
+        note = "这个号打不了征战，跳过" if campaign_blocked() else "这一轮先打关卡，免费重开之后再做"
         for key, _fn in actions:
             if not (switches or {}).get(key):
                 continue
-            results[key] = "这一轮先打关卡，免费重开之后再做"
+            results[key] = note
             log.info("[%s] %s", key, results[key])
         return
     goal = "" if stages is None else str(stages).strip()
