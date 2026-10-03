@@ -8,6 +8,7 @@ const username = ref("");
 const password = ref("");
 const invite = ref("");
 const err = ref("");
+const notice = ref(null);
 const items = ref([]);
 const cityCounts = ref([]);
 const subOpen = ref({});
@@ -283,18 +284,37 @@ async function addModo() {
 
 async function addOrder() {
   err.value = "";
-  const data = await api("/api/attacks", {
-    city_id: attackCity.value,
-    uid: attackUid.value,
-    minutes: holdMin.value,
-    cards: cardMax.value,
-  });
-  attackCity.value = "";
-  attackUid.value = "";
-  if (data.hold_min != null) holdMin.value = String(data.hold_min);
-  if (data.card_max != null) cardMax.value = String(data.card_max);
-  err.value = attackLoginError(data.login);
-  await refreshAttacks();
+  const city = cities.value.find((c) => String(c.id) === String(attackCity.value));
+  const where = city ? cityLabel(city) : String(attackCity.value || "");
+  const who = String(attackUid.value || "").trim() || "整座城";
+  try {
+    const data = await api("/api/attacks", {
+      city_id: attackCity.value,
+      uid: attackUid.value,
+      minutes: holdMin.value,
+      cards: cardMax.value,
+    });
+    attackCity.value = "";
+    attackUid.value = "";
+    if (data.hold_min != null) holdMin.value = String(data.hold_min);
+    if (data.card_max != null) cardMax.value = String(data.card_max);
+    const extra = attackLoginError(data.login);
+    err.value = extra;
+    notice.value = {
+      ok: true,
+      title: "提交成功",
+      text: "已提交 " + where + "，" + who + "。" + (extra || ""),
+    };
+  } catch (e) {
+    err.value = e.message;
+    notice.value = { ok: false, title: "提交没成功", text: e.message || "请求失败" };
+    return;
+  }
+  try {
+    await refreshAttacks();
+  } catch (e) {
+    err.value = e.message || err.value;
+  }
 }
 
 function beatText(it) {
@@ -374,6 +394,7 @@ async function logout() {
   storms.value = [];
   proc.value = null;
   qrSrc.value = "";
+  notice.value = null;
 }
 
 function statusOf(it) {
@@ -553,7 +574,7 @@ onUnmounted(() => {
       <h2>远程扫码攻打</h2>
       <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。可以刷本国首都旁边的两座摩多军团。打人和清城要中级或高级。</p>
       <template v-if="me.remote_attack">
-        <form class="attack-row" @submit.prevent="addOrder().catch((e) => (err = e.message))">
+        <form class="attack-row" @submit.prevent="addOrder()">
           <label>城市
             <select v-model="attackCity" required>
               <option value="" disabled>选择城市</option>
@@ -680,6 +701,13 @@ onUnmounted(() => {
       <p class="muted">私聊发到这个 QQ。机器人地址和 Token 在服务器配置里，页面上不填写。</p>
     </template>
     <p class="err">{{ err }}</p>
+    <div v-if="notice" class="modal" @click.self="notice = null">
+      <div class="modal-card" :class="{ bad: !notice.ok }" role="dialog" aria-modal="true" aria-labelledby="notice-title">
+        <h2 id="notice-title">{{ notice.title }}</h2>
+        <p>{{ notice.text }}</p>
+        <button type="button" @click="notice = null">知道了</button>
+      </div>
+    </div>
   </main>
 </template>
 
