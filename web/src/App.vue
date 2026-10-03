@@ -449,7 +449,7 @@ onUnmounted(() => {
 
 <template>
   <main>
-    <h1>城市订阅</h1>
+    <h1>坦克风暴AI助手</h1>
     <p class="lead" v-if="!me">
       {{ registerOpen ? "注册一个账号，" : "使用管理员开通的账号登录，" }}订阅某座城里有没有某个用户 UID。
     </p>
