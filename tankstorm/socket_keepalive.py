@@ -1300,12 +1300,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             with daily.using_state(path):
                 results, _details = daily.run(
                     rec, sock, cfg, beat=beater, on_fail=_show_fail)
-            failed = daily.failure_brief(results)
+            failed = daily.finish_text(results)
             if failed:
                 citydb.set_attack_status("daily", task=label, note=failed)
-                citydb.finish_daily_job(job["id"], "failed", failed)
-            else:
-                citydb.finish_daily_job(job["id"], "done", _daily_brief(results))
+            citydb.finish_daily_job(
+                job["id"], "done", failed or _daily_brief(results))
         elif kind == "pve":
             stages = params.get("stages")
             if not stages:
