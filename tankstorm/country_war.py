@@ -1426,6 +1426,18 @@ def order_clear_targets(found, priority=None) -> list:
     return ordered
 
 
+def scan_due(last, gap, now=None) -> bool:
+    """距上次扫页是否已经过了配置的秒数。0 表示每次出手冷却都可以扫。"""
+    try:
+        gap = int(gap or 0)
+    except (TypeError, ValueError):
+        gap = 0
+    if gap <= 0:
+        return True
+    now = time.time() if now is None else float(now)
+    return now - float(last or 0) >= gap
+
+
 def next_clear_target(found, priority, seen, me=""):
     """下一场打谁。跳过自己和这场已经处理过的人，其余仍按优先级。"""
     me = str(me or "")
@@ -1440,12 +1452,13 @@ def next_clear_target(found, priority, seen, me=""):
 
 def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
               country=0, beat=None, pass_block=False, tally=None,
-              pages=None, priority=None) -> dict:
+              pages=None, priority=None, scan_sec=0) -> dict:
     """现场翻页打这座城。打中后看士气损失，低于 150 才写入 atk_fail；
     打不到不入库。不读玩家库。跳过失败库，行动力低于 15 自动开卡，不迁城。
 
     给定 pages 时只扫这一段。出手后的冷却由攻打号自己再扫同一段页，
-    扫完还没到点就把剩余时间睡完。新出现的人按优先级接着打。"""
+    扫完还没到点就把剩余时间睡完。scan_sec 大于 0 时，两次扫页至少隔这么多秒。
+    新出现的人按优先级接着打。"""
     from . import citydb
 
     conf = (config.get("国战", {}) or {})
@@ -1492,6 +1505,13 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
         used_country = country
         page_size, max_pages = 15, 2000
         limited = pages is not None
+        try:
+            scan_gap = int(scan_sec or 0)
+        except (TypeError, ValueError):
+            scan_gap = 0
+        if scan_gap < 0:
+            scan_gap = 0
+        last_scan = 0.0
         if limited:
             start_page = max(0, int(pages[0]))
             end_page = max(start_page, int(pages[1]))
@@ -1715,17 +1735,30 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             return max(0.0, until - now)
 
         def _during_wait(wait):
+            nonlocal last_scan
             deadline = time.time() + max(0.0, float(wait or 0))
-            log.info("[打人] 冷却 %.0f 秒，扫指定页", wait)
-            if not _refresh(False):
-                return False
+            if scan_due(last_scan, scan_gap):
+                if scan_gap > 0:
+                    log.info("[打人] 冷却 %.0f 秒，扫指定页（扫页冷却 %d 秒）",
+                             wait, scan_gap)
+                else:
+                    log.info("[打人] 冷却 %.0f 秒，扫指定页", wait)
+                if not _refresh(False):
+                    return False
+                last_scan = time.time()
+            else:
+                left_gap = max(0.0, scan_gap - (time.time() - last_scan))
+                log.info("[打人] 冷却 %.0f 秒，扫页冷却还剩 %.0f 秒", wait, left_gap)
             left = deadline - time.time()
             if left > 0.05 and not out["停止原因"]:
                 _nap(left)
             return not out["停止原因"]
 
         if limited:
+            if scan_gap > 0:
+                log.info("[打人] 扫页冷却 %d 秒", scan_gap)
             if _refresh(True) and not out["停止原因"]:
+                last_scan = time.time()
                 looked = False
                 while not out["停止原因"]:
                     nxt = next_clear_target(scanned, priority, seen, me)
@@ -2545,12 +2578,15 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         plan = clear_plan if isinstance(clear_plan, dict) and clear_plan.get("pages") else None
         if plan:
             start, end = plan["pages"]
-            log.info("[移动] 人在 %s，按清城配置打 %s %s 第 %d–%d 页",
-                     out["走到"], target, tname, int(start) + 1, int(end) + 1)
+            gap = int(plan.get("scan_sec") or 0)
+            extra = f"，扫页冷却 {gap} 秒" if gap > 0 else ""
+            log.info("[移动] 人在 %s，按清城配置打 %s %s 第 %d–%d 页%s",
+                     out["走到"], target, tname, int(start) + 1, int(end) + 1, extra)
             fought = farm_city(rec, sock, config, target, sweep=True,
                                country=my, beat=beat, tally=tally,
                                pages=(int(start), int(end)),
-                               priority=plan.get("priority") or {})
+                               priority=plan.get("priority") or {},
+                               scan_sec=gap)
             hit = fought.get("成功") or 0
             reason = fought.get("停止原因") or ""
             if reason in ("这座城打完了", "这一页没有可打的人", "这几页没有可打的人"):
