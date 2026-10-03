@@ -2580,6 +2580,37 @@ def attack_cookie_logged_in(user_id: int) -> bool:
     return False
 
 
+def _queued_attack_text(row) -> str:
+    """进程还写着空闲时，队列里已经有单。页面按这张单说，不再说空闲。"""
+    if not row:
+        return ""
+    city_id = int(row[0] or 0)
+    uid = str(row[1] or "").strip()
+    status = str(row[2] or "")
+    kind = str(row[3] or "")
+    reason = " ".join(str(row[4] or "").split())
+    if kind == "modo":
+        where = "摩多军团"
+    else:
+        name = city_name(city_id)
+        where = f"{city_id} {name}".strip() if name else str(city_id)
+    if status == "running":
+        if uid:
+            return f"正在打城市 {city_id} 的 {uid}"
+        if kind == "modo":
+            return "正在打摩多军团"
+        return f"正在清城市 {city_id}"
+    if status == "blocked":
+        head = f"有订单在等通路：{where}"
+        return f"{head}，{reason}" if reason else head
+    if status == "wait":
+        return f"有订单等再打：{where}"
+    head = f"有订单在排队：{where}"
+    if uid:
+        return f"{head} 的 {uid}"
+    return head
+
+
 def attack_status(user_id: int) -> dict:
     """给页面看这个登录账号自己的攻打 QQ。超过 25 秒没心跳就当没在跑。"""
     user_id = int(user_id)
@@ -2599,6 +2630,12 @@ def attack_status(user_id: int) -> dict:
         latest = conn.execute(
             "SELECT status, IFNULL(reason,'') FROM atk_order "
             "WHERE user_id=? ORDER BY id DESC LIMIT 1",
+            (user_id,)).fetchone()
+        queued = conn.execute(
+            "SELECT city_id, IFNULL(uid,''), status, IFNULL(kind,''), IFNULL(reason,'') "
+            "FROM atk_order WHERE user_id=? "
+            "AND status IN ('pending','running','blocked','wait') "
+            "ORDER BY id DESC LIMIT 1",
             (user_id,)).fetchone()
     finally:
         conn.close()
@@ -2651,9 +2688,11 @@ def attack_status(user_id: int) -> dict:
     elif phase == "running":
         detail = "正在执行订单"
     else:
-        detail = "空闲，等订单"
-        if latest and latest[0] == "failed" and latest[1]:
-            detail = f"空闲。上一单没打成：{latest[1]}"
+        detail = _queued_attack_text(queued)
+        if not detail:
+            detail = "空闲，等订单"
+            if latest and latest[0] == "failed" and latest[1]:
+                detail = f"空闲。上一单没打成：{latest[1]}"
         if uin and not attack_cookie_logged_in(user_id):
             detail = "登录已失效，请重新扫码"
     here = ""
