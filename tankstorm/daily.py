@@ -1727,6 +1727,8 @@ def _run_campaign_extras(rec, sock, switches, st, results):
             results[key] = "这一轮先打关卡，免费重开之后再做"
             log.info("[%s] %s", key, results[key])
         return
+    third_open = bool((switches or {}).get("征战第三次"))
+    third_ready = not third_open
     for key, fn in actions:
         if not (switches or {}).get(key):
             continue
@@ -1737,6 +1739,12 @@ def _run_campaign_extras(rec, sock, switches, st, results):
         if done >= 1:
             results[key] = "今日已做过，跳过"
             log.info("[%s] %s", key, results[key])
+            if key == "征战第三次":
+                third_ready = True
+            continue
+        if key == "征战第4次" and not third_ready:
+            results[key] = "第三次还没做成，第4次这一轮不发"
+            log.info("[%s] %s", key, results[key])
             continue
         try:
             ok, why = fn(rec, sock)
@@ -1745,6 +1753,9 @@ def _run_campaign_extras(rec, sock, switches, st, results):
             log.exception("[%s] 抛异常", key)
         results[key] = why if ok else f"失败：{why}"
         log.info("[%s] %s %s", key, "✅" if ok else "❌", results[key])
+        if key == "征战第三次" and ok and (
+                "已重开" in str(why) or "不用再做" in str(why)):
+            third_ready = True
         if ok and "已重开" in str(why):
             st.setdefault("done", {})[key] = 1
             _save_state(st)

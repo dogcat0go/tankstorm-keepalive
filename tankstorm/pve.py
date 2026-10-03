@@ -127,8 +127,11 @@ def vip_restart(rec, sock):
         return False, "没读到征战面板，不重开"
     refresh = _num(panel, "field2")
     vip = _num(panel, "field10")
-    if vip is None or refresh is None:
-        return False, "没读到重开次数或 VIP 加次，不发"
+    bought = _num(panel, "field3")
+    if vip is None or refresh is None or bought is None:
+        return False, "没读到重开次数、付费重征或 VIP 加次，第4次不发"
+    if bought >= 1:
+        return True, f"付费重征还剩 {bought} 次，先做第三次，第4次不发"
     if vip < 1:
         return True, f"VIP 加次是 {vip}，第4次不用再做"
     if refresh > 0:

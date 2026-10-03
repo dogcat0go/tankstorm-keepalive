@@ -654,7 +654,7 @@ onUnmounted(() => {
             <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
           </span>
         </div>
-        <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，先做每天 2 次免费重开，再从第 1 关打到终点。留空只打当前这一关。第三次、第4次排在后面；还在往终点打的这一轮先不做。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
+        <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，先做每天 2 次免费重开，再从第 1 关打到终点。留空只打当前这一关。第三次、第4次排在后面；还在往终点打的这一轮先不做。第三次没做成时，不发第4次。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
       </div>
       <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => (err = e.message))">
         <span class="switch">成就拨款</span>
