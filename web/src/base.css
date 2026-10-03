@@ -46,6 +46,11 @@ button, a.ghost { font: inherit; padding: 8px 14px; border: 0; border-radius: 6p
 button.ghost, a.ghost { background: transparent; color: #333; border: 1px solid #bbb; text-decoration: none; }
 p button.ghost, p a.ghost { margin-left: 8px; }
 .err { color: #9b1c1c; min-height: 1.5em; }
+.modal { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.modal-card { background: #fff; border-radius: 10px; padding: 20px 18px 16px; width: min(420px, 100%); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18); }
+.modal-card h2 { margin: 0 0 8px; font-size: 18px; color: #0b6b2f; }
+.modal-card.bad h2 { color: #9b1c1c; }
+.modal-card p { margin: 0 0 16px; }
 .muted { color: #777; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 12px; }
 table.scan td input { width: 7em; box-sizing: border-box; }
