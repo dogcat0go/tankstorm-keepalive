@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import citydb
@@ -186,6 +187,66 @@ def _scan_view(config: dict) -> dict:
     }
 
 
+def _attack_cookie_logged_in(config, user_id: int) -> bool:
+    """本地 cookie 里还有没过期的 skey，就当攻打号已经登录。不访问游戏。"""
+    from .paths import user_path
+    from .socket_keepalive import attack_account_for_user
+
+    name, why = attack_account_for_user(config, user_id)
+    if why or not name:
+        return False
+    spec = ((config.get("登录") or {}).get("账号") or {}).get(name) or {}
+    cookie = str((spec or {}).get("cookie") or "").strip()
+    if not cookie:
+        return False
+    path = user_path(cookie)
+    try:
+        with open(path, encoding="utf-8") as f:
+            jar = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(jar, list):
+        return False
+    now = time.time()
+    for item in jar:
+        if not isinstance(item, dict) or item.get("name") != "skey" or not item.get("value"):
+            continue
+        exp = item.get("expires")
+        if exp in (None, "", 0):
+            return True
+        try:
+            if float(exp) > now:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def _after_attack_submit(config, user_id: int) -> dict:
+    """订单已经记下。在跑并且暂停的攻打解开。还没登录就准备扫码。"""
+    blocked = citydb.attack_qq_blocked(user_id)
+    resumed = False
+    if citydb.attack_paused(user_id) and not blocked:
+        status = citydb.attack_status(user_id)
+        if status.get("online"):
+            citydb.set_attack_paused(False, user_id)
+            resumed = True
+    from .socket_keepalive import kick_attack_login
+    login = kick_attack_login(config, user_id, claim=blocked)
+    if login == "unbound":
+        login = kick_attack_login(config, user_id, claim=True)
+    status = citydb.attack_status(user_id)
+    scan = ""
+    if login not in ("taken", "no_account"):
+        waiting = status.get("phase") == "login" or bool(status.get("qr"))
+        if blocked:
+            scan = "mismatch"
+        elif waiting or not _attack_cookie_logged_in(config, user_id):
+            on_page = bool(status.get("qr")) or login == "qr"
+            scan = "page" if on_page else "away"
+    return {"login": login, "resumed": resumed, "scan": scan}
+
+
 def _handler(config: dict):
     invite = _invite(config)
     dev_login = _dev_login(config)
@@ -350,14 +411,14 @@ def _handler(config: dict):
                             raise ValueError(why)
                         card_max = int(str(cards).strip())
                     why = citydb.add_attack_order(user["id"], city_id, uid, cards=card_max)
-                    from .socket_keepalive import kick_attack_login
-                    login = kick_attack_login(config, user["id"])
                     if why:
                         raise ValueError(why)
+                    followed = _after_attack_submit(config, user["id"])
                     hold_min = int(user.get("hold_min") or 0)
                     if minutes is not None and str(minutes).strip() != "":
                         hold_min = int(str(minutes).strip())
-                    _json(self, 200, {"ok": True, "login": login,
+                    _json(self, 200, {"ok": True, "login": followed["login"],
+                                      "resumed": followed["resumed"], "scan": followed["scan"],
                                       "hold_min": hold_min, "card_max": card_max})
                 elif path == "/api/modo":
                     if citydb.account_expired(user.get("expires_at") or ""):
