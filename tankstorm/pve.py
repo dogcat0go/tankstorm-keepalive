@@ -14,7 +14,11 @@
     先回 result=0（受理，关卡不变），再回 result=1（过关，关卡 +1）。
     result=2 且关卡不动，是没打过去，停手。
 
-所以只能打「当前这一关」。配置里列出要打的关，当前关在名单里才发 type=7。
+请求里没有关卡号，不能跳关。
+
+留空：读面板，只打当前这一关。
+只填一个终点关：从当前关一路打到这一关（含）。已经过了终点就停。
+写成 1-10 或 3,5,8：当前关必须在名单里才打，中间缺的关不会跳。
 """
 
 import re
@@ -209,11 +213,82 @@ def fight_once(rec, sock):
         want=lambda d: d.get("type") == TYPE_FIGHT and d.get("result") in (1, 2))
 
 
-def fight(rec, sock, stages, interval=1.0):
-    """按名单打。当前关不在名单里就停，不跳关。
+def _blank_stages(raw):
+    if raw is None or raw == []:
+        return True
+    return isinstance(raw, str) and not raw.strip()
 
-    返回 (是否把名单里、且从当前关能连续打到的都打完, 说明)。
+
+def _single_end(raw):
+    """单独一个正整数才是终点关。区间、逗号名单、空都不是。"""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, list):
+        if len(raw) != 1:
+            return None
+        return _single_end(raw[0])
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    text = str(raw).strip()
+    if re.fullmatch(r"\d+", text):
+        n = int(text)
+        return n if n > 0 else None
+    return None
+
+
+def _fight_until(rec, sock, end, interval):
+    """end 为空只打当前关。否则从当前关打到终点关（含）。"""
+    cur, _panel = query(rec, sock)
+    if cur is None:
+        return False, "没读到当前关，不打"
+    if end is None:
+        end = cur
+        log.info("[征战] 留空，只打当前第 %s 关", cur)
+    else:
+        if cur > end:
+            return False, f"当前第 {cur} 关，已经过了终点第 {end} 关"
+        span = end - cur + 1
+        if span > HARD_MAX:
+            return False, f"从第 {cur} 关打到第 {end} 关，超过 {HARD_MAX} 关，不打"
+        log.info("[征战] 当前第 %s 关，打到终点第 %s 关", cur, end)
+    interval = float(interval if interval is not None else 1)
+    done = []
+    for _ in range(HARD_MAX):
+        if cur > end:
+            break
+        got = fight_once(rec, sock)
+        if not isinstance(got, dict):
+            return False, f"第 {cur} 关没有结算回包，已过 {_brief(done)}"
+        nxt = _stage(got)
+        result = got.get("result")
+        if result != 1 or nxt is None or nxt == cur:
+            return False, f"第 {cur} 关没过去 result={result}，已过 {_brief(done)}"
+        done.append(cur)
+        log.info("[征战] 第 %s 关过了，下一关 %s", cur, nxt)
+        cur = nxt
+        if cur > end:
+            break
+        if interval > 0:
+            _nap(interval)
+    return True, f"打完 {_brief(done)}，当前第 {cur} 关"
+
+
+def fight(rec, sock, stages, interval=1.0):
+    """打征战。
+
+    留空：读面板，只打当前这一关。
+    一个正整数：终点关。从当前关打到这一关（含）。已经过了终点就不打。
+    区间或逗号名单：当前关必须在名单里，不能跳关。
+
+    返回 (是否打完, 说明)。
     """
+    if _blank_stages(stages):
+        return _fight_until(rec, sock, None, interval)
+    end = _single_end(stages)
+    if end is not None:
+        if end > HARD_MAX:
+            return False, f"终点关超过 {HARD_MAX}，不打"
+        return _fight_until(rec, sock, end, interval)
     stages = parse_stages(stages)
     if not stages:
         return False, "没有配置关卡"

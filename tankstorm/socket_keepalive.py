@@ -1308,8 +1308,6 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 citydb.finish_daily_job(job["id"], "done", _daily_brief(results))
         elif kind == "pve":
             stages = params.get("stages")
-            if not stages:
-                stages = (config.get("征战") or {}).get("关卡")
             interval = float((config.get("征战") or {}).get("间隔秒") or 1)
             ok, why = pve.fight(rec, sock, stages, interval)
             if not ok:
@@ -2006,7 +2004,12 @@ def run_fund_once(qq, config: dict, building_id: int, times: int) -> int:
 
 
 def run_pve_once(qq, config: dict, stages=None) -> int:
-    """连一次、按名单打征战世界、退出。stages 为空则用 config「征战.关卡」。"""
+    """连一次、打征战世界、退出。
+
+    stages 留空只打当前关。一个数字是终点关，从当前关打到这一关。
+    写成 1-10 或 3,5,8 时，当前关必须在名单里。
+    config「征战.第4次」仍会先做 VIP 重开。
+    """
     from . import pve
 
     def _work(rec, sock, spec, ctx, beater):
@@ -2016,13 +2019,7 @@ def run_pve_once(qq, config: dict, stages=None) -> int:
             log.info("[征战] %s", why)
             if not ok:
                 return 1
-        raw = stages if stages else cfg.get("关卡")
-        if not raw:
-            if not cfg.get("第4次"):
-                log.error("[征战] 没有配置关卡")
-                return 1
-            log.info("任务执行期间共发心跳 %d 次", beater.count)
-            return 0
+        raw = stages if stages else None
         try:
             ok, why = pve.fight(rec, sock, raw, cfg.get("间隔秒", 1))
         except ValueError as exc:

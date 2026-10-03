@@ -95,7 +95,7 @@ class App(tk.Tk):
         ttk.Label(war, text="关卡").pack(side="left", padx=(8, 4))
         self.pve_stages = tk.StringVar()
         ttk.Entry(war, textvariable=self.pve_stages, width=24).pack(side="left")
-        ttk.Label(war, text="留空用 config「征战.关卡」").pack(side="left", padx=(8, 0))
+        ttk.Label(war, text="留空打当前关，一个数字是终点关").pack(side="left", padx=(8, 0))
 
         bar = ttk.Frame(top)
         bar.grid(row=5, column=1, sticky="w", pady=(10, 0))

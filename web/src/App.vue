@@ -628,10 +628,10 @@ onUnmounted(() => {
       <p v-if="campaignTasks.length" class="muted">这两项默认关。打开后，跑一轮会在免费的征战世界做完后接着做对应的那一次。第4次是 VIP 加次，会扣 100 勋章。第三次是付费重征，购买包还没抓到，跑一轮时只打开面板看次数。</p>
       <form class="lock-row" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
         <span class="switch">征战世界</span>
-        <label>关卡<input v-model="pveStages" placeholder="1-10，留空用服务器配置" /></label>
-        <button type="submit" :disabled="!dailyQq">打这些关</button>
+        <label>终点关<input v-model="pveStages" placeholder="留空打当前关" /></label>
+        <button type="submit" :disabled="!dailyQq">开打</button>
       </form>
-      <p class="muted">只打当前关，当前关不在名单里就停。对应命令行的征战。</p>
+      <p class="muted">填一个终点关，就从当前关一路打到这一关。留空只打当前这一关。写成 1-10 这种区间时，只打名单里的关，当前关不在里面就停。请求里没有关卡号，不能跳关。</p>
       <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => (err = e.message))">
         <span class="switch">成就拨款</span>
         <label>建筑 ID<input v-model="fundBuilding" class="mins" inputmode="numeric" placeholder="10138" required /></label>
