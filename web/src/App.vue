@@ -47,6 +47,7 @@ const clearNote = ref("");
 const prioUid = ref("");
 const prioRank = ref("1");
 const modoCards = ref("0");
+const modoOpen = ref(false);
 const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
@@ -98,6 +99,10 @@ function reloadQr() {
   setTimeout(() => {
     if (qrSrc.value) qrSrc.value = "/api/attack-qr?t=" + Date.now();
   }, 1000);
+}
+
+function pushLoginVisible(p) {
+  return !(p && p.online && p.phase !== "login");
 }
 
 function procText(p) {
@@ -405,6 +410,7 @@ async function logout() {
   proc.value = null;
   qrSrc.value = "";
   notice.value = null;
+  modoOpen.value = false;
 }
 
 function statusOf(it) {
@@ -637,13 +643,18 @@ onUnmounted(() => {
           <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人时，过上面的分钟再启动同一条订单。0 表示空了就结束。</p>
         </div>
       </template>
+        <p>
+          <button type="button" class="ghost" @click="modoOpen = !modoOpen">{{ modoOpen ? "收起" : "刷摩多军团" }}</button>
+        </p>
+        <div v-if="modoOpen">
         <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">
           <span class="switch">刷摩多军团</span>
           <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
           <button type="submit">提交</button>
         </form>
         <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。</p>
-        <p>
+        </div>
+        <p v-if="pushLoginVisible(proc)">
           <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
         </p>
         <p class="proc">
