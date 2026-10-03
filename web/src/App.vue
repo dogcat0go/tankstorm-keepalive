@@ -9,6 +9,7 @@ const password = ref("");
 const invite = ref("");
 const err = ref("");
 const items = ref([]);
+const cityCounts = ref([]);
 const subOpen = ref({});
 const db = ref("");
 const cityId = ref("");
@@ -68,6 +69,7 @@ async function api(path, body) {
 async function refresh() {
   const data = await api("/api/subs");
   items.value = data.items || [];
+  cityCounts.value = data.counts || [];
   db.value = data.db || "";
 }
 
@@ -367,6 +369,7 @@ async function logout() {
   await api("/api/logout", {});
   me.value = null;
   items.value = [];
+  cityCounts.value = [];
   orders.value = [];
   storms.value = [];
   proc.value = null;
@@ -529,6 +532,23 @@ onUnmounted(() => {
             <button type="button" class="ghost" @click="removeSub(it)">取消</button>
           </div>
         </details>
+      </div>
+      <h2>城市人数</h2>
+      <p class="muted">订阅过的城。人数是最近一次扫描打开面板时的玩家数量，同一座城只列一行。</p>
+      <p v-if="!cityCounts.length" class="muted">还没有订阅的城市。</p>
+      <div v-else class="wide">
+        <table>
+          <thead>
+            <tr><th>城市</th><th>人数</th><th>扫描时间</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in cityCounts" :key="it.city_id">
+              <td>{{ cityText(it) }}</td>
+              <td>{{ it.user_cnt == null ? "—" : it.user_cnt }}</td>
+              <td>{{ it.scanned_at || "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
       <h2>远程扫码攻打</h2>
       <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。可以刷本国首都旁边的两座摩多军团。打人和清城要中级或高级。</p>

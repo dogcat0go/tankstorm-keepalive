@@ -3205,6 +3205,32 @@ def list_watches(user_id: int) -> list:
     return out
 
 
+def list_watch_counts(user_id: int) -> list:
+    """这个账号订阅过的城，每座城最近一次扫描的玩家数量。"""
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT s.city_id, IFNULL(c.name,''), o.user_cnt, o.fetched_at "
+            "FROM watch_sub s "
+            "LEFT JOIN city c ON c.id=s.city_id "
+            "LEFT JOIN city_occupy o ON o.city_id=s.city_id "
+            "WHERE s.user_id=? "
+            "ORDER BY CASE WHEN IFNULL(o.fetched_at,'')='' THEN 1 ELSE 0 END, "
+            "o.fetched_at DESC, IFNULL(c.name,''), s.city_id",
+            (int(user_id),)).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for city_id, name, cnt, at in rows:
+        out.append({
+            "city_id": int(city_id),
+            "city_name": name or "",
+            "user_cnt": None if cnt is None else int(cnt),
+            "scanned_at": beijing_ts(at or ""),
+        })
+    return out
+
+
 def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
     """用这一轮拉到的人更新订阅状态。
 
