@@ -2379,7 +2379,7 @@ def note_attack_here(city_id) -> None:
 
 
 def note_attack_move_text(text: str, user_id: int = 0) -> None:
-    """页面上的「人在」旁边显示这次移动的结果。进程已停则不改。"""
+    """页面上的「目前在」旁边显示这次移动的结果。进程已停则不改。"""
     user_id = int(user_id or attack_context_user() or 0)
     if not user_id and not attack_context_qq():
         return

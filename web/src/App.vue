@@ -621,7 +621,7 @@ onUnmounted(() => {
           <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <p v-if="proc && proc.online" class="proc here-row">
-          <span v-if="proc.here">人在 {{ proc.here }}</span>
+          <span v-if="proc.here">目前在 {{ proc.here }}</span>
           <template v-if="me.remote_attack">
           <label class="choice">移动到
             <select v-model="moveCity">
