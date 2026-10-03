@@ -576,7 +576,7 @@ onUnmounted(() => {
             <button type="submit">保存</button>
             <span class="muted">{{ clearNote }}</span>
           </form>
-          <p class="muted">只对留空 UID 的清城。先扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。最多 50 个 UID。这几页没人时，过上面的分钟再启动同一条订单。0 表示空了就结束。</p>
+          <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。每打完一次，冷却的那几秒会再扫一遍这些页，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人时，过上面的分钟再启动同一条订单。0 表示空了就结束。</p>
         </div>
       </template>
         <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">
