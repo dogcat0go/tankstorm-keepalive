@@ -57,6 +57,7 @@ const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
 const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
 const dailyJobs = ref([]);
 const pveStages = ref("");
+let pveStagesReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
 const dailyNote = ref("");
@@ -93,12 +94,18 @@ async function refreshDaily() {
     dailyQq.value = "";
     dailyTasks.value = [];
     dailyJobs.value = [];
+    pveStages.value = "";
+    pveStagesReady = false;
     return;
   }
   const data = await api("/api/daily");
   dailyQq.value = data.qq || "";
   dailyTasks.value = data.tasks || [];
   dailyJobs.value = data.jobs || [];
+  if (!pveStagesReady) {
+    pveStages.value = data.stages || "";
+    pveStagesReady = true;
+  }
 }
 
 async function saveDailySwitch(it, on) {
@@ -226,6 +233,7 @@ async function loadMe() {
 
 function takeUser(user) {
   me.value = user;
+  pveStagesReady = false;
   qqTarget.value = user.qq_target || "";
   autoLock.value = !!user.auto_lock;
   holdMin.value = String(user.hold_min ?? 0);
@@ -492,6 +500,8 @@ async function logout() {
   dailyQq.value = "";
   dailyTasks.value = [];
   dailyJobs.value = [];
+  pveStages.value = "";
+  pveStagesReady = false;
   dailyNote.value = "";
 }
 
@@ -615,7 +625,7 @@ onUnmounted(() => {
       <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
       <p v-else class="muted">还没绑定攻打 QQ。先在导航栏上方扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
       <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。后面的攻打单排在它后面。</p>
-      <form class="lock-row" @submit.prevent="runDaily('daily').catch((e) => (err = e.message))">
+      <form class="lock-row" @submit.prevent="runDaily('daily', { stages: pveStages }).catch((e) => (err = e.message))">
         <span class="switch">每日任务</span>
         <button type="submit" :disabled="!dailyQq">跑一轮</button>
       </form>
@@ -624,7 +634,7 @@ onUnmounted(() => {
         <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
           <span class="switch">征战世界</span>
           <span class="campaign-ops">
-            <input v-model="pveStages" aria-label="关卡" placeholder="1-10，留空用服务器配置" />
+            <input v-model="pveStages" aria-label="关卡" placeholder="终点，例如 150" />
             <button type="submit" :disabled="!dailyQq">打这些关</button>
           </span>
         </form>
@@ -644,7 +654,7 @@ onUnmounted(() => {
             <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
           </span>
         </div>
-        <p class="muted">打这些关是单独去打关卡，当前关不在名单里就停，不占每天 2 次。今日进度里的征战世界是免费重开，一天 2 次，点跑一轮才做，不打关。第三次、第4次也在这一轮里，排在免费 2 次后面。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
+        <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，先做每天 2 次免费重开，再从第 1 关打到终点。留空只打当前这一关。第三次、第4次排在后面；还在往终点打的这一轮先不做。第三次没做成时，不发第4次。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
       </div>
       <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => (err = e.message))">
         <span class="switch">成就拨款</span>

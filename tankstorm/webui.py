@@ -329,6 +329,7 @@ def _handler(config: dict):
                     "tasks": daily.task_board(uin, switches),
                     "jobs": citydb.list_daily_jobs(user["id"]),
                     "process": citydb.attack_status(user["id"]),
+                    "stages": citydb.campaign_stages(user["id"]),
                 })
                 return
             if path == "/api/admin/fighters":
