@@ -14,6 +14,7 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         admin: fileURLToPath(new URL("./admin.html", import.meta.url)),
+        "qr-lab": fileURLToPath(new URL("./qr-lab.html", import.meta.url)),
       },
     },
   },

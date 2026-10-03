@@ -129,6 +129,93 @@ def calc_g_tk(p_skey: str) -> int:
     return h & 0x7FFFFFFF
 
 
+def describe_tickets(cookies) -> list:
+    """把 cookie 过期时间列出来，不含值。密码登录常出现 expires 为空的会话 cookie。"""
+    now = time.time()
+    rows = []
+    for c in cookies:
+        if isinstance(c, dict):
+            name = str(c.get("name") or "")
+            domain = str(c.get("domain") or "")
+            path = str(c.get("path") or "/")
+            exp = c.get("expires")
+        else:
+            name = str(getattr(c, "name", "") or "")
+            domain = str(getattr(c, "domain", "") or "")
+            path = str(getattr(c, "path", "/") or "/")
+            exp = getattr(c, "expires", None)
+        if not name:
+            continue
+        left = None
+        if exp not in (None, "", 0):
+            try:
+                exp = int(float(exp))
+                left = round(exp - now)
+            except (TypeError, ValueError):
+                exp = None
+        else:
+            exp = None
+        rows.append({
+            "name": name,
+            "domain": domain,
+            "path": path or "/",
+            "expires": exp,
+            "left": left,
+            "session": exp is None,
+        })
+    order = ("skey", "p_skey", "superkey", "supertoken", "superuin",
+             "RK", "ptcz", "uin", "p_uin", "pt4_token")
+    rank = {name: i for i, name in enumerate(order)}
+    rows.sort(key=lambda row: (rank.get(row["name"], 100), row["name"], row["domain"]))
+    return rows
+
+
+def cookie_ticket_report(cookies, uin: str = "") -> dict:
+    rows = describe_tickets(cookies)
+
+    def left_of(*names):
+        vals = [row["left"] for row in rows
+                if row["name"] in names and row["left"] is not None]
+        return min(vals) if vals else None
+
+    if not uin:
+        for item in cookies:
+            if isinstance(item, dict):
+                if item.get("name") == "uin" and item.get("value"):
+                    uin = str(item["value"]).lstrip("o0")
+                    break
+            elif getattr(item, "name", "") == "uin" and getattr(item, "value", ""):
+                uin = str(item.value).lstrip("o0")
+                break
+    names = {row["name"] for row in rows}
+    return {
+        "uin": uin,
+        "long_term": bool(names & {"superkey", "RK", "ptcz"}),
+        "skey_left": left_of("skey"),
+        "p_skey_left": left_of("p_skey"),
+        "tickets": rows,
+        "missing": False,
+    }
+
+
+def ticket_report_file(path: str) -> dict:
+    """读已保存的 cookie 文件，只返回过期时间。文件不在或坏了时 missing=True。"""
+    empty = {"uin": "", "long_term": False, "skey_left": None,
+             "p_skey_left": None, "tickets": [], "missing": True}
+    if not path or not os.path.isfile(path):
+        return empty
+    try:
+        with open(path, encoding="utf-8") as f:
+            jar = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return empty
+    if not isinstance(jar, list):
+        return empty
+    report = cookie_ticket_report(jar)
+    report["missing"] = False
+    return report
+
+
 def _paeth(a: int, b: int, c: int) -> int:
     p = a + b - c
     pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
@@ -297,6 +384,7 @@ class QQSession:
         self.blocked_uins = set()
         self.session = requests.Session()
         self.session.headers["User-Agent"] = UA
+        self._qr_poll = None
         self._load_cookies()
 
     # ---------- cookie 持久化 ----------
@@ -338,6 +426,10 @@ class QQSession:
         for c in self.session.cookies:
             out[c.name] = None if not c.expires else round(c.expires - now)
         return out
+
+    def ticket_report(self) -> dict:
+        """给测试页看的票据摘要。不含 cookie 值。"""
+        return cookie_ticket_report(self.session.cookies, self.uin)
 
     def expires_within(self, seconds: float) -> bool:
         """核心票据(skey/p_skey)是否将在 seconds 内过期。取不到过期时间时返回 False。"""
@@ -705,21 +797,14 @@ class QQSession:
         return None, (f"HTTP {r.status_code}，{len(body)} 字节，"
                       f"content-type={r.headers.get('Content-Type', '?')}")
 
-    def qr_login(self, timeout_sec: int = 180, on_qr=None, push_uin=None) -> bool:
-        """扫码登录。on_qr(qrcode_path) 在二维码生成后回调（用于推送到手机等）。
+    def start_qr(self, push_uin=None, on_qr=None) -> dict:
+        """取出二维码，供网页轮询或 qr_login 接着等。不自己循环。
 
-        push_uin 非空时启用**推送登录**：不用扫码，腾讯直接往该 QQ 号的手机客户端
-        推一条登录确认，用户点"确认登录"即可。这解决了"把二维码图片存到本地、
-        用同一台手机的相册扫码"被拒（提示"限制本地扫码登录"）的问题 ——
-        腾讯的防钓鱼策略要求二维码显示在**另一块屏幕**上，而推送登录没有这个限制。
-
-        参数取自真实客户端抓包：ptqrshow?qr_push=1&qr_push_uin=<uin>&type=1
+        返回 {ok, pushed, why}。push_uin 为真才试推送；测试页传 False，避免
+        上次扫上的 uin 被当成推送目标。
         """
         s = self.session
-        # uin 要在清 cookie 之前取，否则就拿不到了
-        if push_uin is None:
-            push_uin = self.uin or None
-
+        self._qr_poll = None
         # 清会话票据但**保住设备凭据** —— 推送靠 dev_mid_sig 之类识别"推给哪台设备"，
         # 全清了就只能回 ec=313。
         self._clear_session_cookies(keep=DEVICE_COOKIES)
@@ -746,7 +831,7 @@ class QQSession:
         r, why = self._ptqrshow()
         if r is None:
             log.error("二维码请求失败，无法登录：%s", why)
-            return False
+            return {"ok": False, "pushed": False, "why": why}
 
         pushed = False
         if push_uin:
@@ -754,6 +839,9 @@ class QQSession:
             if not pushed:
                 log.info("推送登录没成（%s），本次用扫码", why)
 
+        folder = os.path.dirname(self.qrcode_file)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
         with open(self.qrcode_file, "wb") as f:
             f.write(r.content)
         qrsig = self._cookie("qrsig")
@@ -780,43 +868,86 @@ class QQSession:
             except Exception as exc:
                 log.warning("二维码推送回调失败: %s", exc)
 
-        ptqrtoken = hash33(qrsig)
         # 轮询参数照浏览器来：带上 xlogin 拿到的 login_sig，以及 has_onekey=1
         # （"一键/推送登录"标记，推送确认要靠它认）。早先 login_sig 传空串、
         # 也没有 has_onekey，扫码能过但推送这条路认不出来。
-        login_sig = self._cookie("pt_login_sig") or ""
-        deadline = time.time() + timeout_sec
-        while time.time() < deadline:
-            r = s.get("https://xui.ptlogin2.qq.com/ssl/ptqrlogin", params={
-                "u1": GAME_URL, "ptqrtoken": ptqrtoken, "ptredirect": "0",
+        self._qr_poll = {
+            "ptqrtoken": hash33(qrsig),
+            "login_sig": self._cookie("pt_login_sig") or "",
+        }
+        return {"ok": True, "pushed": pushed, "why": ""}
+
+    def poll_qr(self) -> dict:
+        """轮询一次 ptqrlogin。返回 {code, msg, done, ok}。
+
+        done 表示这次扫码结束（成功、失效或 check_sig 失败），ok 表示登录完成。
+        """
+        state = getattr(self, "_qr_poll", None)
+        if not state:
+            return {"code": "", "msg": "还没取二维码", "done": True, "ok": False}
+        try:
+            r = self.session.get("https://xui.ptlogin2.qq.com/ssl/ptqrlogin", params={
+                "u1": GAME_URL, "ptqrtoken": state["ptqrtoken"], "ptredirect": "0",
                 "h": "1", "t": "1", "g": "1", "from_ui": "1", "ptlang": "2052",
                 "action": f"0-0-{int(time.time() * 1000)}",
-                "js_ver": "26071711", "js_type": "1", "login_sig": login_sig,
+                "js_ver": "26071711", "js_type": "1",
+                "login_sig": state["login_sig"],
                 "pt_uistyle": "40", "aid": PTLOGIN_APPID, "daid": DAID,
                 "has_onekey": "1",
             }, headers={"Referer": "https://xui.ptlogin2.qq.com/"},
                 timeout=15)
-            m = re.search(r"ptuiCB\('(\d+)','\d+','([^']*)','\d+','([^']*)'", r.text)
-            if not m:
-                log.warning("轮询响应无法解析: %s", r.text[:200])
-                time.sleep(3)
-                continue
-            code, url, msg = m.group(1), m.group(2), m.group(3)
-            if code == "0":
-                log.info("扫码确认成功: %s", msg)
-                s.get(url, allow_redirects=True, timeout=20)  # check_sig，种登录 cookie
+        except requests.RequestException as exc:
+            return {"code": "", "msg": f"请求异常 {exc}", "done": False, "ok": False}
+        m = re.search(r"ptuiCB\('(\d+)','\d+','([^']*)','\d+','([^']*)'", r.text)
+        if not m:
+            log.warning("轮询响应无法解析: %s", r.text[:200])
+            return {"code": "", "msg": "轮询响应无法解析", "done": False, "ok": False}
+        code, url, msg = m.group(1), m.group(2), m.group(3)
+        if code == "0":
+            log.info("扫码确认成功: %s", msg)
+            try:
+                self.session.get(url, allow_redirects=True, timeout=20)
+            except requests.RequestException as exc:
+                self._qr_poll = None
+                return {"code": "0", "msg": f"check_sig 失败: {exc}", "done": True, "ok": False}
+            self._save_cookies()
+            self._qr_poll = None
+            if self.is_valid():
+                log.info("登录完成，uin=%s", self.uin)
                 self._save_cookies()
-                if self.is_valid():
-                    log.info("登录完成，uin=%s", self.uin)
-                    self._save_cookies()  # 校验过程可能刷新 cookie，再存一次
-                    return True
-                log.error("check_sig 后登录态仍无效")
-                return False
-            if code == "65":
-                log.error("二维码已失效，请重新运行")
-                return False
-            if code == "67":
-                log.info("已扫码，请在手机上确认…")
+                return {"code": "0", "msg": msg, "done": True, "ok": True}
+            log.error("check_sig 后登录态仍无效")
+            return {"code": "0", "msg": "check_sig 后登录态仍无效", "done": True, "ok": False}
+        if code == "65":
+            log.error("二维码已失效，请重新运行")
+            self._qr_poll = None
+            return {"code": "65", "msg": "二维码已失效", "done": True, "ok": False}
+        if code == "67":
+            log.info("已扫码，请在手机上确认…")
+            return {"code": "67", "msg": "已扫码，请在手机上确认", "done": False, "ok": False}
+        return {"code": code, "msg": msg, "done": False, "ok": False}
+
+    def qr_login(self, timeout_sec: int = 180, on_qr=None, push_uin=None) -> bool:
+        """扫码登录。on_qr(qrcode_path) 在二维码生成后回调（用于推送到手机等）。
+
+        push_uin 非空时启用**推送登录**：不用扫码，腾讯直接往该 QQ 号的手机客户端
+        推一条登录确认，用户点"确认登录"即可。这解决了"把二维码图片存到本地、
+        用同一台手机的相册扫码"被拒（提示"限制本地扫码登录"）的问题 ——
+        腾讯的防钓鱼策略要求二维码显示在**另一块屏幕**上，而推送登录没有这个限制。
+
+        参数取自真实客户端抓包：ptqrshow?qr_push=1&qr_push_uin=<uin>&type=1
+        """
+        # uin 要在清 cookie 之前取，否则就拿不到了
+        if push_uin is None:
+            push_uin = self.uin or None
+        started = self.start_qr(push_uin=push_uin, on_qr=on_qr)
+        if not started.get("ok"):
+            return False
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            result = self.poll_qr()
+            if result.get("done"):
+                return bool(result.get("ok"))
             time.sleep(3)
         log.error("扫码超时（%d 秒）", timeout_sec)
         return False
