@@ -3161,7 +3161,7 @@ def claim_daily_job():
 
 
 def touch_daily_job(job_id: int, detail: str) -> None:
-    """日常还在做。把已经没做成的项写进说明，状态仍是正在做。"""
+    """日常还在做。把当前结果写进说明，状态仍是正在做。"""
     text = " ".join(str(detail or "").split())[:500]
     if not text:
         return
@@ -3209,7 +3209,7 @@ def resume_daily_jobs() -> None:
         conn.close()
 
 
-def list_daily_jobs(user_id: int, limit: int = 8) -> list:
+def list_daily_jobs(user_id: int, limit: int = 2) -> list:
     conn = connect(readonly=True)
     try:
         rows = conn.execute(

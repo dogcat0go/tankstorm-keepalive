@@ -1254,18 +1254,6 @@ def _begin_attack_hold(fresh=False) -> bool:
     return True
 
 
-def _daily_brief(results) -> str:
-    if not isinstance(results, dict) or not results:
-        return "这一轮没有要做的"
-    parts = []
-    for key, value in results.items():
-        text = str(value or "").strip()
-        if not text or text == "未开启":
-            continue
-        parts.append(f"{key}：{text}")
-    return "；".join(parts) or "这一轮没有要做的"
-
-
 def _campaign_end(params, user_id) -> str:
     """这一轮用的征战终点。任务里带了关卡就用那一份，否则用账号上记下的。"""
     from . import citydb
@@ -1289,11 +1277,15 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     citydb.set_attack_status("daily", task=label)
     log.info("开始做日常：%s", label)
 
-    def _show_fail(text):
+    def _show(text):
         citydb.touch_daily_job(job["id"], text)
         citydb.set_attack_status("daily", task=label, note=text)
 
+    def _show_stage(stage):
+        _show(f"当前第 {int(stage)} 关")
+
     prev_sock = daily.bind_sock(sock)
+    daily.set_campaign_progress(_show_stage)
     try:
         if rec and getattr(rec, "auto_reject", False):
             class _QQ:
@@ -1311,12 +1303,10 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             path = daily.state_path_for_qq(citydb.attack_context_qq())
             with daily.using_state(path):
                 results, _details = daily.run(
-                    rec, sock, cfg, beat=beater, on_fail=_show_fail)
-            failed = daily.finish_text(results)
-            if failed:
-                citydb.set_attack_status("daily", task=label, note=failed)
-            citydb.finish_daily_job(
-                job["id"], "done", failed or _daily_brief(results))
+                    rec, sock, cfg, beat=beater, on_fail=_show)
+            text = daily.page_brief(results) or "这一轮没有要做的"
+            citydb.set_attack_status("daily", task=label, note=text)
+            citydb.finish_daily_job(job["id"], "done", text)
         elif kind == "pve":
             user_id = citydb.attack_context_user()
             raw = _campaign_end(params, user_id)
@@ -1337,9 +1327,10 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     extra = {}
                     daily._run_campaign_extras(
                         rec, sock, switches, daily._load_state(), extra)
-                    tail = daily.failure_brief(extra) or _daily_brief(extra)
+                    tail = daily.page_brief(extra)
                     if tail:
                         why = f"{why}。{tail}" if why else tail
+            why = daily.page_result(why)
             if not ok:
                 citydb.set_attack_status("daily", task=label, note=why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
@@ -1362,6 +1353,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     else:
         log.info("日常做完：%s", label)
     finally:
+        daily.set_campaign_progress(None)
         daily.bind_sock(prev_sock)
 
 
