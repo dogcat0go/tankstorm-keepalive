@@ -134,7 +134,16 @@ async function openSlider() {
     throw new Error("还没有验证码会话，请先点密码登录");
   }
   await loadTCaptcha();
-  dropCaptcha();
+  if (capInst && typeof capInst.show === "function") {
+    try {
+      capInst.show();
+      return;
+    } catch (_) {
+      dropCaptcha();
+    }
+  } else {
+    dropCaptcha();
+  }
   try {
     capInst = new window.TencentCaptcha(String(data.aid || "549000912"), onCaptcha, {
       sid: data.sid,

@@ -119,9 +119,8 @@ def check(user_id: int) -> dict:
         box.game_ok = box.qq.is_valid()
         if box.game_ok:
             box.qq._save_cookies()
-            box.msg = "游戏页认这张票"
-        else:
-            box.msg = "游戏页不认这张票"
+        if box.phase != "captcha":
+            box.msg = "游戏页认这张票" if box.game_ok else "游戏页不认这张票"
         return _view(box)
 
 
