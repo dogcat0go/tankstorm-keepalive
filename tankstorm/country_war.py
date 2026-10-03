@@ -94,15 +94,18 @@ def _cd_until_from(data):
     return None
 
 
-def _sleep_cd(last_act, cd_until, cd_sec, tag):
+def _sleep_cd(last_act, cd_until, cd_sec, tag, *, on_wait=None):
     now = time.time()
     until = float(cd_until or 0)
     if until <= 0 and last_act:
         until = last_act + float(cd_sec or 0)
     wait = until - now
     if wait > 0.05:
+        if on_wait is not None:
+            return on_wait(wait)
         log.info("[%s] 冷却，等 %.0f 秒", tag, wait)
         _nap(wait)
+    return True
 
 
 def _apply_cd(out, sent_at, data, fallback):
@@ -128,7 +131,7 @@ def _apply_cd(out, sent_at, data, fallback):
     out["last_act"] = sent_at
 
 
-def _retry_cd21(out, last_ok, fallback, tag, who="", code=21):
+def _retry_cd21(out, last_ok, fallback, tag, who="", code=21, *, on_wait=None):
     """冷却回包不带剩余秒。升到下一档（5→10→15），只补等这一档剩下的时间。"""
     now = time.time()
     sec = float(out.get("cd_sec") or fallback or _CD_GEARS[0])
@@ -148,7 +151,11 @@ def _retry_cd21(out, last_ok, fallback, tag, who="", code=21):
     log.info("[%s] %sret=%s 冷却未到，间隔升到 %.0f 秒，再等 %.0f 秒（第 %d 次）",
              tag, who, code, out.get("cd_sec") or nxt, wait, n)
     if wait > 0.05:
-        _nap(wait)
+        if on_wait is not None:
+            if on_wait(wait) is False:
+                return -1
+        else:
+            _nap(wait)
     return n
 
 
@@ -1060,7 +1067,7 @@ def attack_player(rec, sock, config: dict, uid, times: int = 1,
                   sweep: bool = False, city_id: int = 0, country: int = 0,
                   beat=None, card_used: int = 0, until_down: bool = False,
                   disp_name="", last_act: float = 0.0, page: int = 0,
-                  cd_until: float = 0.0, cd_sec=None) -> dict:
+                  cd_until: float = 0.0, cd_sec=None, on_wait=None) -> dict:
     """离线打指定玩家。照 2026-09-24 抓包：开城面板 type:3，再 type:14/19。
 
     不发 type:4（迁城）。人不在邻城时服务端会拒，把 ret 记下来就停。
@@ -1113,7 +1120,7 @@ def attack_player(rec, sock, config: dict, uid, times: int = 1,
     try:
         return _attack_player(rec, sock, my, uid, times, act, name, cost,
                               cooldown, out, conf, card_used, until_down,
-                              last_act, page, cd_until)
+                              last_act, page, cd_until, on_wait)
     finally:
         _daily._BEAT = prev
 
@@ -1132,7 +1139,7 @@ def _lost_city_reason(loc, city, start=None) -> str:
 
 def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
                    conf=None, card_used=0, until_down=False, last_act=0.0,
-                   page=0, cd_until=0.0):
+                   page=0, cd_until=0.0, on_wait=None):
     from . import citydb
 
     city, owner = out["城市"], out["国家"]
@@ -1241,8 +1248,10 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         got_cd = _cd_until_from(cd) or _cd_until_from(panel)
         if got_cd:
             out["cd_until"] = got_cd
-        _sleep_cd(last_act, out.get("cd_until"),
-                  out.get("cd_sec") or cooldown, "打人")
+        if _sleep_cd(last_act, out.get("cd_until"),
+                     out.get("cd_sec") or cooldown, "打人",
+                     on_wait=on_wait) is False:
+            break
         prev_act = last_act
         since = _send(sock, rec, act, country=owner, city=city, atk=uid)
         sent_at = time.time()
@@ -1257,7 +1266,11 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         if ret == 21:
             last_act = prev_act
             out["last_act"] = last_act
-            if _retry_cd21(out, last_act, cooldown, "打人", who) > 20:
+            n21 = _retry_cd21(out, last_act, cooldown, "打人", who,
+                              on_wait=on_wait)
+            if n21 < 0:
+                break
+            if n21 > 20:
                 log.info("[打人] %s 冷却一直没好，换下一个（不记失败）", who)
                 out["停止原因"] = f"{name}被拒 ret=21（跳过，不记失败）"
                 break
@@ -1413,11 +1426,26 @@ def order_clear_targets(found, priority=None) -> list:
     return ordered
 
 
+def next_clear_target(found, priority, seen, me=""):
+    """下一场打谁。跳过自己和这场已经处理过的人，其余仍按优先级。"""
+    me = str(me or "")
+    seen = seen or set()
+    for page, player in order_clear_targets(found, priority):
+        uid = str((player or {}).get("uid") or "").strip()
+        if not uid or uid == me or uid in seen:
+            continue
+        return page, player
+    return None
+
+
 def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
               country=0, beat=None, pass_block=False, tally=None,
               pages=None, priority=None) -> dict:
     """现场翻页打这座城。打中后看士气损失，低于 150 才写入 atk_fail；
-    打不到不入库。不读玩家库。跳过失败库，行动力低于 15 自动开卡，不迁城。"""
+    打不到不入库。不读玩家库。跳过失败库，行动力低于 15 自动开卡，不迁城。
+
+    给定 pages 时只扫这一段。出手后的冷却由攻打号自己再扫同一段页，
+    扫完还没到点就把剩余时间睡完。新出现的人按优先级接着打。"""
     from . import citydb
 
     conf = (config.get("国战", {}) or {})
@@ -1500,13 +1528,16 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 country=int(owner or used_country or 0),
                 beat=beat, card_used=out["用卡"], until_down=True,
                 disp_name=p.get("name") or "", last_act=last_act,
-                page=page, cd_until=cd_until, cd_sec=cd_sec)
+                page=page, cd_until=cd_until, cd_sec=cd_sec,
+                on_wait=_during_wait if limited else None)
             if one.get("last_act"):
                 last_act = one["last_act"]
             if one.get("cd_until"):
                 cd_until = one["cd_until"]
             if one.get("cd_sec"):
                 cd_sec = one["cd_sec"]
+            if out["停止原因"]:
+                return "break"
             if p.get("name") and not one.get("名字"):
                 one["名字"] = p["name"]
             reason = one.get("停止原因") or ""
@@ -1561,32 +1592,35 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 return "break"
             return "continue"
 
-        for page in range(start_page, (end_page + 1) if limited else max_pages):
-            if out["停止原因"]:
-                break
+        def _pull(page, strict):
+            nonlocal owner, total, used_country
             stopped = _manual_stop()
             if stopped:
                 out["停止原因"] = stopped
-                break
+                return "stop", None
             if citydb.attack_paused():
                 out["停止原因"] = "已暂停"
-                break
+                return "stop", None
             power, loc, _, panel = _panel(sock, rec, country)
             if loc is not None and start_loc is not None and loc != start_loc:
                 citydb.note_attack_here(loc)
                 out["停止原因"] = _lost_city_reason(loc, city_id, start_loc)
                 log.info("[打人] %s", out["停止原因"])
-                break
+                return "stop", None
             since = _send(sock, rec, 3, country=used_country, city=city_id,
                           page=page)
             cd = _wait(sock, rec, since, 3)
             if not isinstance(cd, dict):
-                out["停止原因"] = f"翻到第 {page} 页时没有回包"
-                break
+                if strict:
+                    out["停止原因"] = f"翻到第 {page} 页时没有回包"
+                    return "stop", None
+                return "soft", None
             ret = cd.get("ret")
             if ret not in (0, None):
-                out["停止原因"] = f"打开城市面板被拒 ret={ret}（第 {page} 页）"
-                break
+                if strict:
+                    out["停止原因"] = f"打开城市面板被拒 ret={ret}（第 {page} 页）"
+                    return "stop", None
+                return "soft", None
             got_city = _read_path(cd, "cityData.field3")
             owner = _read_path(cd, "cityData.field2")
             cnt = cd.get("userCnt")
@@ -1601,8 +1635,10 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                                   city=city_id, page=page)
                     cd = _wait(sock, rec, since, 3)
                     if not isinstance(cd, dict):
-                        out["停止原因"] = "用归属国重开城市面板没有回包"
-                        break
+                        if strict:
+                            out["停止原因"] = "用归属国重开城市面板没有回包"
+                            return "stop", None
+                        return "soft", None
                     got_city = _read_path(cd, "cityData.field3")
                     owner = _read_path(cd, "cityData.field2")
                     cnt = cd.get("userCnt")
@@ -1613,16 +1649,16 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 if got_city not in (None, city_id):
                     out["停止原因"] = (f"面板回的城市ID={got_city}，"
                                       f"与请求的 {city_id} 不一致")
-                    break
+                    return "stop", None
             if total == 0:
                 log.info("[打人] 第 %d 页：现场 0 人，没有可打的目标", page)
-                break
+                return "end", None
             batch = _wait_city_users(sock, rec, since, city_id)
             log.info("[打人] 第 %d 页：现场 %d 人%s",
                      page, len(batch),
                      f" / {total}" if total is not None else "")
             if not batch:
-                break
+                return "end", None
             if pass_block:
                 stuck = next((
                     p for p in batch
@@ -1640,36 +1676,89 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     out["跳过"] += 1
                     out["挡路"] = who
                     out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
+                    return "stop", None
+            return "ok", batch
+
+        def _refresh(strict):
+            nonlocal scanned
+            found = []
+            known = set()
+            for page in range(start_page, end_page + 1):
+                if out["停止原因"]:
+                    return False
+                kind, batch = _pull(page, strict)
+                if kind == "stop":
+                    return False
+                if kind == "soft":
+                    log.info("[打人] 冷却里第 %d 页没扫成，沿用上一份名单", page)
+                    return True
+                if kind == "end":
                     break
-            if limited:
-                known = {str(p.get("uid") or "").strip() for _, p in scanned}
                 for p in batch:
                     uid = str(p.get("uid") or "").strip()
                     if not uid or uid == me or uid in known:
                         continue
                     known.add(uid)
-                    scanned.append((page, p))
-                if total is not None and len(scanned) >= int(total):
+                    found.append((page, p))
+                if total is not None and len(found) >= int(total):
                     break
-            else:
+                if page < end_page:
+                    _nap(0.4)
+            scanned = found
+            return True
+
+        def _cd_wait():
+            now = time.time()
+            until = float(cd_until or 0)
+            if until <= 0 and last_act:
+                until = last_act + float(cd_sec or 0)
+            return max(0.0, until - now)
+
+        def _during_wait(wait):
+            deadline = time.time() + max(0.0, float(wait or 0))
+            log.info("[打人] 冷却 %.0f 秒，扫指定页", wait)
+            if not _refresh(False):
+                return False
+            left = deadline - time.time()
+            if left > 0.05 and not out["停止原因"]:
+                _nap(left)
+            return not out["停止原因"]
+
+        if limited:
+            if _refresh(True) and not out["停止原因"]:
+                looked = False
+                while not out["停止原因"]:
+                    nxt = next_clear_target(scanned, priority, seen, me)
+                    if nxt is None:
+                        wait = _cd_wait()
+                        if wait > 0.05 and not looked:
+                            looked = True
+                            if _during_wait(wait) is False:
+                                break
+                            continue
+                        break
+                    looked = False
+                    if _strike(nxt[0], nxt[1]) == "break":
+                        break
+        else:
+            for page in range(start_page, max_pages):
+                kind, batch = _pull(page, True)
+                if kind != "ok":
+                    break
                 for p in batch:
                     if _strike(page, p) == "break":
                         break
-            if out["停止原因"]:
-                break
-            if total is not None:
-                max_pages = min(2000, max(page + 2,
-                                          (int(total) + page_size - 1)
-                                          // page_size + 2))
-                if (page + 1) * page_size >= int(total) and page > 0:
+                if out["停止原因"]:
                     break
-                if page == 0 and len(seen) + out["跳过"] >= int(total):
-                    break
-            _nap(0.4)
-        if limited and not out["停止原因"]:
-            for page, p in order_clear_targets(scanned, priority or {}):
-                if _strike(page, p) == "break":
-                    break
+                if total is not None:
+                    max_pages = min(2000, max(page + 2,
+                                              (int(total) + page_size - 1)
+                                              // page_size + 2))
+                    if (page + 1) * page_size >= int(total) and page > 0:
+                        break
+                    if page == 0 and len(seen) + out["跳过"] >= int(total):
+                        break
+                _nap(0.4)
         if not out["停止原因"]:
             if limited and not out["打过"]:
                 out["停止原因"] = "这几页没有可打的人"
