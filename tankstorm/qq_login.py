@@ -1219,8 +1219,13 @@ class QQSession:
         if code != "0":
             self._pwd_pending = None
             log.info("密码登录被拒 uin=%s code=%s %s", uin, code, (msg or "")[:60])
-            return {"ok": False, "captcha": False, "code": code,
-                    "msg": msg or f"登录失败 code={code}"}
+            text = msg or f"登录失败 code={code}"
+            if any(k in text for k in ("安全风险", "常用设备", "更换网络")):
+                text += (
+                    " 密码是从这台服务器提交的，机房 IP 常被腾讯判成异常环境；"
+                    "验证码在浏览器里过完也会这样。扫码登录不受这条限制。"
+                )
+            return {"ok": False, "captcha": False, "code": code, "msg": text}
         self._pwd_pending = None
         try:
             self.session.get(url, allow_redirects=True, timeout=20)
