@@ -1121,13 +1121,13 @@ TASKS = [
        followup=Followup("049a", _next_mine_to_occupy, max_rounds=1,
                          desc="占下探到的无主矿")),
 
-    # 先看当前关。没到页面上填的终点就发 type=7 接着打，到了或超过才发 type=2。
-    # type=2 会回到第 1 关，只推进活跃度，不拿战斗奖励。一天最多 2 次。
+    # 开打和命令行 --pve 同一套：type=7 打当前关，一个数字就打到这一关。
+    # 已经到了或超过终点时，先 type=2 免费重开，再接着打。一天最多重开 2 次。
     _t("征战世界", "征战世界·重开征战（推进活跃度）", "045b", "RcePVEFightOpt",
        {},
-       "实测", "先查当前关。没到终点就 type=7 接着打，不重开。"
-               "到了或超过终点，或没填终点，才 type=2 免费重开，一天 2 次。"
-               "8/10 抓包：type=2 响应 result=0，关卡回到第 1 关",
+       "实测", "和 --pve 一样发 type=7 打关。没到终点就从当前关打到终点，不重开。"
+               "到了或超过终点，先 type=2 免费重开，再从第 1 关打到终点。"
+               "留空只打当前关。8/10 抓包：type=2 响应 result=0，关卡回到第 1 关",
        max_per_day=2,
        runner=lambda rec, sock, config: _run_campaign_task(rec, sock, config),
        counts_itself=True),
@@ -1555,8 +1555,8 @@ def campaign_pushing() -> bool:
     return bool(getattr(_state_local, "campaign_pushing", False))
 
 
-def campaign_round(rec, sock, end, interval=1.0):
-    """先看当前关。没到终点就接着打，到了或过了才做今天剩下的免费重开。"""
+def campaign_round(rec, sock, stages, interval=1.0):
+    """按 --pve 打征战。到了或超过终点时，先做今天剩下的免费重开再打。"""
     from . import pve
 
     st = _load_state()
@@ -1565,7 +1565,7 @@ def campaign_round(rec, sock, end, interval=1.0):
     except (TypeError, ValueError):
         already = 0
     try:
-        ok, why, total, pushing = pve.campaign(rec, sock, end, already, interval)
+        ok, why, total, pushing = pve.campaign(rec, sock, stages, already, interval)
     except Exception:
         _state_local.campaign_pushing = True
         raise
@@ -1577,18 +1577,11 @@ def campaign_round(rec, sock, end, interval=1.0):
 
 
 def _run_campaign_task(rec, sock, config):
-    from . import pve
-
-    raw = _campaign_goal(config)
-    try:
-        end = pve.end_stage(raw) if raw else None
-    except ValueError as exc:
-        _state_local.campaign_pushing = True
-        return False, f"失败：{exc}"
+    raw = _campaign_goal(config) or ""
     raw_gap = (config.get("征战") or {}).get("间隔秒", 1)
     if raw_gap is None or raw_gap == "":
         raw_gap = 1
-    return campaign_round(rec, sock, end, float(raw_gap))
+    return campaign_round(rec, sock, raw, float(raw_gap))
 
 
 def _run(rec, sock, config, schema, on_fail=None):

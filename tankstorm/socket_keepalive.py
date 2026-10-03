@@ -1326,25 +1326,20 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             interval = float(raw_gap)
             path = daily.state_path_for_qq(citydb.attack_context_qq())
             with daily.using_state(path):
-                try:
-                    end = pve.end_stage(raw) if raw else None
-                except ValueError as exc:
-                    ok, why = False, f"失败：{exc}"
+                ok, why = daily.campaign_round(rec, sock, raw, interval)
+                switches = citydb.daily_switches(
+                    user_id, (config.get("每日任务") or {}).get("任务") or {}
+                ) if user_id else {}
+                if daily.campaign_pushing():
+                    if switches.get("征战第三次") or switches.get("征战第4次"):
+                        why = f"{why}。第三次、第4次这一轮先不做"
                 else:
-                    ok, why = daily.campaign_round(rec, sock, end, interval)
-                    switches = citydb.daily_switches(
-                        user_id, (config.get("每日任务") or {}).get("任务") or {}
-                    ) if user_id else {}
-                    if daily.campaign_pushing():
-                        if switches.get("征战第三次") or switches.get("征战第4次"):
-                            why = f"{why}。第三次、第4次这一轮先不做"
-                    else:
-                        extra = {}
-                        daily._run_campaign_extras(
-                            rec, sock, switches, daily._load_state(), extra)
-                        tail = daily.failure_brief(extra) or _daily_brief(extra)
-                        if tail:
-                            why = f"{why}。{tail}" if why else tail
+                    extra = {}
+                    daily._run_campaign_extras(
+                        rec, sock, switches, daily._load_state(), extra)
+                    tail = daily.failure_brief(extra) or _daily_brief(extra)
+                    if tail:
+                        why = f"{why}。{tail}" if why else tail
             if not ok:
                 citydb.set_attack_status("daily", task=label, note=why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
@@ -2050,7 +2045,12 @@ def run_fund_once(qq, config: dict, building_id: int, times: int) -> int:
 
 
 def run_pve_once(qq, config: dict, stages=None) -> int:
-    """连一次、按名单打征战世界、退出。stages 为空则用 config「征战.关卡」。"""
+    """连一次、打征战世界、退出。
+
+    stages 留空只打当前关。一个数字是终点关，从当前关打到这一关。
+    写成 1-10 或 3,5,8 时，当前关必须在名单里。
+    config「征战.第4次」仍会先做 VIP 重开。
+    """
     from . import pve
 
     def _work(rec, sock, spec, ctx, beater):
@@ -2060,13 +2060,7 @@ def run_pve_once(qq, config: dict, stages=None) -> int:
             log.info("[征战] %s", why)
             if not ok:
                 return 1
-        raw = stages if stages else cfg.get("关卡")
-        if not raw:
-            if not cfg.get("第4次"):
-                log.error("[征战] 没有配置关卡")
-                return 1
-            log.info("任务执行期间共发心跳 %d 次", beater.count)
-            return 0
+        raw = stages if stages else None
         try:
             ok, why = pve.fight(rec, sock, raw, cfg.get("间隔秒", 1))
         except ValueError as exc:

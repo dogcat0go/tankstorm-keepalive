@@ -16,8 +16,8 @@
 
 所以只能打「当前这一关」。请求里不能指定关卡号。
 
-网页上填的数字是终点：先看当前关，没到就发 type=7 接着打；
-到了或超过，才发 type=2 做每天 2 次免费重开。重开会回到第 1 关。
+网页和命令行 --pve 同一套：留空只打当前关，只填一个数字就从当前关打到这一关。
+每日任务里，当前关到了或超过终点时，先做每天 2 次免费重开，再按这套接着打。
 """
 
 import re
@@ -280,36 +280,72 @@ def _free_restarts(rec, sock, already, interval, panel=None):
     return True, f"免费重开 {done} 次", already + done
 
 
-def _fight_toward(rec, sock, cur, end, interval):
-    """从当前关打到终点。打到终点就停，不打终点本身之后的关。"""
-    fought = []
-    guard = 0
-    limit = min(HARD_MAX, max(1, int(end) - int(cur)))
-    while cur < end and guard < limit:
+def _blank_stages(raw):
+    if raw is None or raw == []:
+        return True
+    return isinstance(raw, str) and not str(raw).strip()
+
+
+def _single_end(raw):
+    """单独一个正整数才是终点关。区间、逗号名单、空都不是。"""
+    if isinstance(raw, bool) or raw is None:
+        return None
+    if isinstance(raw, list):
+        if len(raw) != 1:
+            return None
+        return _single_end(raw[0])
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    text = str(raw).strip()
+    if re.fullmatch(r"\d+", text):
+        n = int(text)
+        return n if n > 0 else None
+    return None
+
+
+def _fight_until(rec, sock, end, interval):
+    """end 为空只打当前关。否则从当前关打到终点关（含）。和命令行 --pve 同一套。"""
+    cur, _panel = query(rec, sock)
+    if cur is None:
+        return False, "没读到当前关，不打"
+    if end is None:
+        end = cur
+        log.info("[征战] 留空，只打当前第 %s 关", cur)
+    else:
+        if cur > end:
+            return False, f"当前第 {cur} 关，已经过了终点第 {end} 关"
+        span = end - cur + 1
+        if span > HARD_MAX:
+            return False, f"从第 {cur} 关打到第 {end} 关，超过 {HARD_MAX} 关，不打"
+        log.info("[征战] 当前第 %s 关，打到终点第 %s 关", cur, end)
+    interval = float(interval if interval is not None else 1)
+    done = []
+    for _ in range(HARD_MAX):
+        if cur > end:
+            break
         got = fight_once(rec, sock)
-        guard += 1
         if not isinstance(got, dict):
-            return False, (f"失败：第 {cur} 关没有结算回包，已过 {_brief(fought)}。"
-                           "这一轮不重开"), cur
+            return False, f"第 {cur} 关没有结算回包，已过 {_brief(done)}"
         nxt = _stage(got)
         result = got.get("result")
-        if result != 1 or nxt is None or nxt <= cur:
-            return False, (f"失败：第 {cur} 关没过去 result={result}，已过 {_brief(fought)}。"
-                           "这一轮不重开"), cur
-        fought.append(cur)
+        if result != 1 or nxt is None or nxt == cur:
+            return False, f"第 {cur} 关没过去 result={result}，已过 {_brief(done)}"
+        done.append(cur)
         log.info("[征战] 第 %s 关过了，下一关 %s", cur, nxt)
         cur = nxt
-        if cur < end and interval > 0:
+        if cur > end:
+            break
+        if interval > 0:
             _nap(interval)
-    if cur < end:
-        return False, f"失败：打到第 {cur} 关，还没到第 {end} 关。这一轮不重开", cur
-    return True, f"从第 {fought[0]} 关打到第 {cur} 关", cur
+    return True, f"打完 {_brief(done)}，当前第 {cur} 关"
 
 
-def campaign(rec, sock, end, already=0, interval=1.0):
-    """先看当前关。没到终点就接着打；到了或超过，才做每天的免费重开。
+def campaign(rec, sock, stages, already=0, interval=1.0):
+    """每日任务里的征战。开打走 fight()，和命令行 --pve 同一套。
 
-    没填终点时只做免费重开。返回 (是否成功, 说明, 今日免费重开次数, 这一轮是否还在打关)。
+    还没到终点就直接打，不重开。到了或超过终点，先做今天剩下的免费重开，
+    回到第 1 关后再按 --pve 打到终点。没填终点就只打当前关。
+    返回 (是否成功, 说明, 今日免费重开次数, 这一轮是否还在往终点打)。
     最后一项为真时，调用方不要接着做第三次、第4次。
     """
     interval = float(interval if interval is not None else 1)
@@ -317,25 +353,37 @@ def campaign(rec, sock, end, already=0, interval=1.0):
         already = int(already or 0)
     except (TypeError, ValueError):
         already = 0
-    if end is not None:
-        end = int(end)
-        if end <= 0 or end > HARD_MAX:
-            return False, f"失败：关卡超过 {HARD_MAX}", already, True
+    if already < 0:
+        already = 0
+    text = "" if _blank_stages(stages) else str(stages).strip()
+    try:
+        end = end_stage(text) if text else None
+    except ValueError as exc:
+        return False, f"失败：{exc}", already, True
     cur, panel = query(rec, sock)
     if cur is None:
         return False, "失败：没读到当前关，不打也不重开", already, True
     log.info("[征战] 当前第 %s 关，终点 %s", cur, end if end is not None else "未填")
-    if end is not None and cur < end:
-        ok, why, _cur = _fight_toward(rec, sock, cur, end, interval)
-        return ok, why, already, True
-    ok, why, total = _free_restarts(rec, sock, already, interval, panel=panel)
-    if end is None:
-        return ok, why if ok else f"失败：{why}", total, False
-    where = "已到" if cur == end else "已过"
-    head = f"当前第 {cur} 关，{where}指定的第 {end} 关"
+    total = already
+    if end is not None and cur >= end:
+        ok, why, total = _free_restarts(rec, sock, already, interval, panel=panel)
+        where = "已到" if cur == end else "已过"
+        head = f"当前第 {cur} 关，{where}指定的第 {end} 关，{why}"
+        if not ok:
+            return False, f"失败：{head}", total, True
+        if total <= already:
+            return True, head, total, False
+        ok2, why2 = fight(rec, sock, text, interval)
+        if not ok2:
+            return False, f"失败：{head}。然后{why2}", total, True
+        return True, f"{head}。然后{why2}", total, False
+    ok, why = fight(rec, sock, text, interval)
+    pushing = end is not None
     if not ok:
-        return False, f"失败：{head}，{why}", total, False
-    return True, f"{head}，{why}", total, False
+        if not str(why).startswith("失败"):
+            why = f"失败：{why}"
+        return False, why, total, True
+    return True, why, total, pushing
 
 
 def fight_once(rec, sock):
@@ -349,10 +397,21 @@ def fight_once(rec, sock):
 
 
 def fight(rec, sock, stages, interval=1.0):
-    """按名单打。当前关不在名单里就停，不跳关。
+    """打征战。和命令行 --pve 同一套。
 
-    返回 (是否把名单里、且从当前关能连续打到的都打完, 说明)。
+    留空：读面板，只打当前这一关。
+    一个正整数：终点关。从当前关打到这一关（含）。已经过了终点就不打。
+    区间或逗号名单：当前关必须在名单里，不能跳关。
+
+    返回 (是否打完, 说明)。
     """
+    if _blank_stages(stages):
+        return _fight_until(rec, sock, None, interval)
+    end = _single_end(stages)
+    if end is not None:
+        if end > HARD_MAX:
+            return False, f"终点关超过 {HARD_MAX}，不打"
+        return _fight_until(rec, sock, end, interval)
     stages = parse_stages(stages)
     if not stages:
         return False, "没有配置关卡"

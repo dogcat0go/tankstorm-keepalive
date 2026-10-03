@@ -38,8 +38,9 @@
   python main.py --atk-city 2302 --sweep          现场翻页打城：先打再看士气，击退/打不过换人
   python main.py --list-cities        列出全部城市 ID 与中文名
   python main.py --capture            扫码后打开钩子版游戏窗口，实时抓包
-  python main.py --pve                 征战世界，关卡见 config「征战.关卡」
-  python main.py --pve 1-10,15         只打这些关（当前关必须在名单里）
+  python main.py --pve                 征战世界，留空只打当前关
+  python main.py --pve 20              从当前关打到第 20 关
+  python main.py --pve 1-10,15         只打名单里的关（当前关必须在里面）
 """
 
 import argparse
@@ -355,8 +356,9 @@ def main() -> int:
 
     g7 = parser.add_argument_group("征战世界")
     g7.add_argument("--pve", nargs="?", const="", default=None, metavar="关卡",
-                    help="打征战世界后退出。不带参数用 config「征战.关卡」。"
-                         "也可写 1-10 或 3,5,8。当前关不在名单里会停，不会跳关")
+                    help="打征战世界后退出。不带参数只打当前关。"
+                         "只写一个数字就是终点关，从当前关打到这一关。"
+                         "写成 1-10 或 3,5,8 时，当前关不在名单里会停，不会跳关")
 
     g4 = parser.add_argument_group("其它")
     g4.add_argument("--capture", action="store_true",
