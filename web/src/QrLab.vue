@@ -10,6 +10,7 @@ const lab = ref(null);
 const accounts = ref([]);
 const qrSrc = ref("");
 let timer = 0;
+let seq = 0;
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -78,23 +79,28 @@ async function loadMe() {
 
 async function refresh() {
   if (!me.value || !me.value.admin) return;
+  const mine = seq;
   const [now, list] = await Promise.all([api("/api/qr-lab"), api("/api/qr-lab/accounts")]);
+  if (mine !== seq) return;
   takeLab(now);
   accounts.value = list.items || [];
 }
 
 async function startQr() {
   err.value = "";
+  seq += 1;
   takeLab(await api("/api/qr-lab/start", {}));
 }
 
 async function checkGame() {
   err.value = "";
+  seq += 1;
   takeLab(await api("/api/qr-lab/check", {}));
 }
 
 async function clearLab() {
   err.value = "";
+  seq += 1;
   takeLab(await api("/api/qr-lab/clear", {}));
 }
 
