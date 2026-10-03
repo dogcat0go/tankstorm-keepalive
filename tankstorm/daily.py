@@ -189,16 +189,69 @@ def finish_text(results) -> str:
     return failed + "。这一轮没有停，后面的任务已继续做"
 
 
+def page_result(text) -> str:
+    """最近执行里的一项结果。去掉失败字样和字段、错误码解释。"""
+    raw = str(text or "").strip()
+    if not raw or raw == "未开启":
+        return ""
+    parts = []
+    for piece in re.split(r"[；;]", raw):
+        piece = _page_piece(piece)
+        if piece:
+            parts.append(piece)
+    return "；".join(parts)
+
+
+def _page_piece(text) -> str:
+    text = str(text or "").strip()
+    for noise in (
+            "（该消息自己的错误码，含义未知）",
+            "（再发就会扣券/勋章）",
+            "（1 才是成功）",
+            "（见 tools/capture_daily.py）",
+            "。这一轮没有停，后面的任务已继续做",
+            "这一轮没有停，后面的任务已继续做",
+    ):
+        text = text.replace(noise, "")
+    text = re.sub(r"（错误码[^）]*）", "", text)
+    text = re.sub(
+        r"[（(][^）)]*(?:field\d|FreeCnt|VisitData|ret=|result=)[^）)]*[）)]",
+        "", text)
+    text = re.sub(
+        r"\s*field\d+(?:\[[^\]]*\])?(?:\.field\d+(?:\[[^\]]*\])?)*\s*=\s*\S+",
+        "", text)
+    text = re.sub(r"\s+result=None", "", text)
+    text = re.sub(r"成功[：:](?:ret|result|error|nret)=\d+", "成功", text)
+    text = re.sub(r"今日已执行\s*\d+\s*/\s*\d+\s*次，跳过", "已做过", text)
+    text = text.replace("今日已做过，跳过", "已做过")
+    text = text.replace("参数未实测，已跳过", "未实测，已跳过")
+    text = text.replace("占用中，服务器给的结束时刻还有", "占用中，还有")
+    text = text.replace("失败：", "").replace("闸门拦截：", "")
+    text = re.sub(r"\s+", " ", text).strip(" ；，。")
+    return text
+
+
+def page_brief(results) -> str:
+    """最近执行的说明。每一项只留结果，不写失败。"""
+    parts = []
+    for key, value in (results or {}).items():
+        text = page_result(value)
+        if not text:
+            continue
+        parts.append(f"{key}：{text}")
+    return "；".join(parts)
+
+
 def _publish_failure(results, on_fail) -> None:
     if not on_fail:
         return
-    text = failure_brief(results)
+    text = page_brief(results)
     if not text:
         return
     try:
         on_fail(text)
     except Exception:
-        log.info("日常失败没写上页面", exc_info=True)
+        log.info("日常进度没写上页面", exc_info=True)
 
 # 字段名命中这些词 = 可能花钱/耗券，值必须为 0
 #
@@ -1553,6 +1606,28 @@ def _campaign_goal(config):
 def campaign_pushing() -> bool:
     """这一轮还在往终点打。第三次、第4次要等免费重开的那一轮。"""
     return bool(getattr(_state_local, "campaign_pushing", False))
+
+
+def set_campaign_progress(fn) -> None:
+    """征战打关时回调当前关。网页用它改最近执行的说明。"""
+    if fn is None:
+        if hasattr(_state_local, "campaign_progress"):
+            del _state_local.campaign_progress
+        return
+    _state_local.campaign_progress = fn
+
+
+def note_campaign_stage(stage) -> None:
+    """打到这一关。没有回调就不管。"""
+    fn = getattr(_state_local, "campaign_progress", None)
+    if fn is None or stage is None:
+        return
+    try:
+        fn(int(stage))
+    except (TypeError, ValueError):
+        return
+    except Exception:
+        log.info("征战进度没写上页面", exc_info=True)
 
 
 def campaign_round(rec, sock, stages, interval=1.0):

@@ -238,6 +238,8 @@ def _restart_once(rec, sock):
     stage = _stage(got)
     if stage != 1:
         return False, f"重开后关卡是 {stage}，不是第 1 关"
+    from . import daily
+    daily.note_campaign_stage(1)
     return True, "已重开"
 
 
@@ -315,6 +317,8 @@ def _fight_until(rec, sock, end, interval):
         if span > HARD_MAX:
             return False, f"从第 {cur} 关打到第 {end} 关，超过 {HARD_MAX} 关，不打"
         log.info("[征战] 当前第 %s 关，打到终点第 %s 关", cur, end)
+    from . import daily
+    daily.note_campaign_stage(cur)
     interval = float(interval if interval is not None else 1)
     done = []
     for _ in range(HARD_MAX):
@@ -330,6 +334,7 @@ def _fight_until(rec, sock, end, interval):
         done.append(cur)
         log.info("[征战] 第 %s 关过了，下一关 %s", cur, nxt)
         cur = nxt
+        daily.note_campaign_stage(cur)
         if cur > end:
             break
         if interval > 0:
@@ -419,6 +424,8 @@ def fight(rec, sock, stages, interval=1.0):
     if cur is None:
         return False, "没读到当前关，不打"
     log.info("[征战] 当前第 %s 关，名单 %s", cur, _brief(stages))
+    from . import daily
+    daily.note_campaign_stage(cur)
     if cur not in want:
         return False, f"当前第 {cur} 关不在名单里，请求不能跳关，停手"
     start = cur
@@ -437,6 +444,7 @@ def fight(rec, sock, stages, interval=1.0):
         done.append(cur)
         log.info("[征战] 第 %s 关过了，下一关 %s", cur, nxt)
         cur = nxt
+        daily.note_campaign_stage(cur)
         if cur not in want:
             break
         if interval > 0:
