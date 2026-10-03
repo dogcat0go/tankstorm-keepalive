@@ -43,30 +43,37 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
         return
     uin = str(getattr(qq, "uin", "") or "")
 
-    def _on_super_storm(data):
+    def _reject_later(data):
+        """收到强攻时人还在 recv 里，连接锁没放开。就地发送会和这把锁死等。"""
         from . import citydb
 
+        snapshot = dict(data or {})
         rc4 = rec.rc4_c2s
         if rc4 is None:
             log.warning("自动拒绝超级强攻失败：RC4 C→S 实例不可用"
                         "（实时解密未启用或密钥自检失败）")
             return
-        ok = sender.send_reject_super_storm(sock, rc4, data)
+        ok = sender.send_reject_super_storm(sock, rc4, snapshot)
         if not ok:
             return
-        who = str((data or {}).get("atkName") or "").strip()
+        who = str(snapshot.get("atkName") or "").strip()
         if not who:
-            who = str((data or {}).get("atkUid") or "").strip()
+            who = str(snapshot.get("atkUid") or "").strip()
         try:
             citydb.note_storm_reject(who, qq=uin)
         except Exception:
             log.info("超级强攻拒绝没记上页面", exc_info=True)
         notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
-                    f"进攻方：{(data or {}).get('atkName', '?')}（{(data or {}).get('atkUid', '?')}）\n"
-                    f"防守方：{(data or {}).get('deftName', '?')}（{(data or {}).get('deftUid', '?')}）\n\n"
+                    f"进攻方：{snapshot.get('atkName', '?')}（{snapshot.get('atkUid', '?')}）\n"
+                    f"防守方：{snapshot.get('deftName', '?')}（{snapshot.get('deftUid', '?')}）\n\n"
                     f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
                     f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
                     f"请立刻打开游戏确认。")
+
+    def _on_super_storm(data):
+        threading.Thread(
+            target=_reject_later, args=(data,), name="storm-reject",
+            daemon=True).start()
 
     rec.on_super_storm = _on_super_storm
     log.info("超级强攻自动拒绝已就绪")
