@@ -446,7 +446,7 @@ def _handler(config: dict):
                     defaults = (config.get("每日任务") or {}).get("任务") or {}
                     why = citydb.set_daily_switch(
                         user["id"], data.get("key"), on,
-                        [task.key for task in daily.ordered_tasks()], defaults)
+                        daily.switch_keys(), defaults)
                     if why:
                         raise ValueError(why)
                     uin = citydb.attack_qq_of(user["id"])
