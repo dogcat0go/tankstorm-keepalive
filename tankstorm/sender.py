@@ -23,6 +23,7 @@
 """
 
 import struct
+import threading
 import time
 import random
 from . import crypto
@@ -30,6 +31,9 @@ from .log import get_logger
 from .proto_encode import build_rce_super_storm_opt
 
 log = get_logger()
+
+# 加密和发出必须连在一起。两条线程各走一步的话，密钥流顺序会和服务器对不上。
+_SEND_LOCK = threading.Lock()
 
 # RceSuperStormOpt 的 opcode（C→S）
 OPCODE_RCE_SUPER_STORM_OPT = "04ab"
@@ -70,10 +74,16 @@ def send_frame(sock, opcode_hex: str, body: bytes, rc4_c2s=None) -> None:
     """加密 body → 组帧 → sendall。
 
     对豁免 opcode（040e/041c/041d/0455）不加密；其余必须提供 rc4_c2s。
+    非豁免包从加密到 sendall 占同一把锁，拒绝强攻的线程和打城线程不会把密钥流写乱。
     """
-    enc_body = encrypt_body(opcode_hex, body, rc4_c2s)
-    frame = build_frame(opcode_hex, enc_body)
-    sock.sendall(frame)
+    if opcode_hex in crypto.EXEMPT["c2s"]:
+        frame = build_frame(opcode_hex, body)
+        sock.sendall(frame)
+    else:
+        with _SEND_LOCK:
+            enc_body = encrypt_body(opcode_hex, body, rc4_c2s)
+            frame = build_frame(opcode_hex, enc_body)
+            sock.sendall(frame)
     log.debug("已发送帧 %s（body %d 字节，帧 %d 字节）",
               opcode_hex, len(body), len(frame))
 

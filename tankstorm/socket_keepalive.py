@@ -43,30 +43,37 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
         return
     uin = str(getattr(qq, "uin", "") or "")
 
-    def _on_super_storm(data):
+    def _reject_later(data):
+        """收到强攻时人还在 recv 里，连接锁没放开。就地发送会和这把锁死等。"""
         from . import citydb
 
+        snapshot = dict(data or {})
         rc4 = rec.rc4_c2s
         if rc4 is None:
             log.warning("自动拒绝超级强攻失败：RC4 C→S 实例不可用"
                         "（实时解密未启用或密钥自检失败）")
             return
-        ok = sender.send_reject_super_storm(sock, rc4, data)
+        ok = sender.send_reject_super_storm(sock, rc4, snapshot)
         if not ok:
             return
-        who = str((data or {}).get("atkName") or "").strip()
+        who = str(snapshot.get("atkName") or "").strip()
         if not who:
-            who = str((data or {}).get("atkUid") or "").strip()
+            who = str(snapshot.get("atkUid") or "").strip()
         try:
             citydb.note_storm_reject(who, qq=uin)
         except Exception:
             log.info("超级强攻拒绝没记上页面", exc_info=True)
         notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
-                    f"进攻方：{(data or {}).get('atkName', '?')}（{(data or {}).get('atkUid', '?')}）\n"
-                    f"防守方：{(data or {}).get('deftName', '?')}（{(data or {}).get('deftUid', '?')}）\n\n"
+                    f"进攻方：{snapshot.get('atkName', '?')}（{snapshot.get('atkUid', '?')}）\n"
+                    f"防守方：{snapshot.get('deftName', '?')}（{snapshot.get('deftUid', '?')}）\n\n"
                     f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
                     f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
                     f"请立刻打开游戏确认。")
+
+    def _on_super_storm(data):
+        threading.Thread(
+            target=_reject_later, args=(data,), name="storm-reject",
+            daemon=True).start()
 
     rec.on_super_storm = _on_super_storm
     log.info("超级强攻自动拒绝已就绪")
@@ -785,6 +792,32 @@ def _empty_city(reason: str) -> bool:
     return str(reason or "") in ("这几页没有可打的人", "这一页没有可打的人")
 
 
+def _clear_hard_stop(reason: str) -> bool:
+    """这种停手不能过一会儿再清。"""
+    text = str(reason or "")
+    return any(k in text for k in (
+        "行动力", "已暂停", "已手动关停", "被别人打败", "回到首都", "出不了首都",
+        "遣返", "不相邻", "恢复卡", "位置变了", "连接中断", "攻打中断"))
+
+
+def _clear_stuck(reason: str, out) -> bool:
+    """城里还留着打不过的人。空城不算。"""
+    text = str(reason or "")
+    if "清不完" in text or "打不过" in text or "没打过" in text or "人数没减少" in text:
+        return True
+    try:
+        return int((out or {}).get("没打过") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _clear_cycle(reason: str, out) -> bool:
+    """空城，或还剩打不过的人，可以按空城再打的分钟再来一轮。"""
+    if _clear_hard_stop(reason):
+        return False
+    return _empty_city(reason) or _clear_stuck(reason, out)
+
+
 def _order_result(job, out) -> tuple:
     """这一单打完怎么收。返回 (动作, 状态, 原因)。
 
@@ -949,11 +982,16 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         beats = int(tally.get("n") or 0)
         if why:
             log.info("   结束原因：%s", why)
-        if (not uid and not job.get("auto") and action == "finish" and status == "failed"
-                and _empty_city(why)):
+        if (not uid and not job.get("auto") and action == "finish"
+                and _clear_cycle(why, out)):
             minutes = citydb.clear_wait_minutes()
-            if minutes > 0 and citydb.schedule_empty_order(job["id"], minutes, beats=beats):
-                log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], minutes)
+            stuck = _clear_stuck(why, out)
+            if minutes > 0 and citydb.schedule_empty_order(
+                    job["id"], minutes, beats=beats, stuck=stuck):
+                if stuck:
+                    log.info("订单 %s 还有打不过的人，%d 分钟后再打", job["id"], minutes)
+                else:
+                    log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], minutes)
                 return
         if action == "defer":
             citydb.defer_attack_order(job["id"])
@@ -1228,6 +1266,17 @@ def _daily_brief(results) -> str:
     return "；".join(parts) or "这一轮没有要做的"
 
 
+def _campaign_end(params, user_id) -> str:
+    """这一轮用的征战终点。任务里带了关卡就用那一份，否则用账号上记下的。"""
+    from . import citydb
+
+    if isinstance(params, dict) and "stages" in params:
+        return str(params.get("stages") or "").strip()
+    if user_id:
+        return citydb.campaign_stages(user_id)
+    return ""
+
+
 def _run_one_daily(rec, sock, config, beater, job) -> None:
     """在这条攻打连接上做一项日常。做完写回队列，不另开连接。"""
     import copy
@@ -1239,39 +1288,81 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     params = job.get("params") or {}
     citydb.set_attack_status("daily", task=label)
     log.info("开始做日常：%s", label)
+
+    def _show_fail(text):
+        citydb.touch_daily_job(job["id"], text)
+        citydb.set_attack_status("daily", task=label, note=text)
+
+    prev_sock = daily.bind_sock(sock)
     try:
+        if rec and getattr(rec, "auto_reject", False):
+            class _QQ:
+                uin = citydb.attack_context_qq()
+            _arm_super_storm(rec, sock, config, _QQ())
         if kind == "daily":
             cfg = copy.deepcopy(config)
             block = cfg.setdefault("每日任务", {})
             block["启用"] = True
+            user_id = citydb.attack_context_user()
+            if user_id:
+                block["任务"] = citydb.daily_switches(
+                    user_id, (config.get("每日任务") or {}).get("任务") or {})
+            cfg.setdefault("征战", {})["终点"] = _campaign_end(params, user_id)
             path = daily.state_path_for_qq(citydb.attack_context_qq())
             with daily.using_state(path):
-                results, _details = daily.run(rec, sock, cfg, beat=beater)
-            citydb.finish_daily_job(job["id"], "done", _daily_brief(results))
+                results, _details = daily.run(
+                    rec, sock, cfg, beat=beater, on_fail=_show_fail)
+            failed = daily.finish_text(results)
+            if failed:
+                citydb.set_attack_status("daily", task=label, note=failed)
+            citydb.finish_daily_job(
+                job["id"], "done", failed or _daily_brief(results))
         elif kind == "pve":
-            cfg = config.get("征战") or {}
-            end = params.get("stages")
-            if end in (None, ""):
-                end = cfg.get("最终关卡")
-            interval = float(cfg.get("间隔秒") or 1)
-            ok, why = pve.campaign(
-                rec, sock, end, interval,
-                third=bool(cfg.get("第3次")), fourth=bool(cfg.get("第4次")))
+            user_id = citydb.attack_context_user()
+            raw = _campaign_end(params, user_id)
+            raw_gap = (config.get("征战") or {}).get("间隔秒", 1)
+            if raw_gap is None or raw_gap == "":
+                raw_gap = 1
+            interval = float(raw_gap)
+            path = daily.state_path_for_qq(citydb.attack_context_qq())
+            with daily.using_state(path):
+                ok, why = daily.campaign_round(rec, sock, raw, interval)
+                switches = citydb.daily_switches(
+                    user_id, (config.get("每日任务") or {}).get("任务") or {}
+                ) if user_id else {}
+                if daily.campaign_pushing():
+                    if switches.get("征战第三次") or switches.get("征战第4次"):
+                        why = f"{why}。第三次、第4次这一轮先不做"
+                else:
+                    extra = {}
+                    daily._run_campaign_extras(
+                        rec, sock, switches, daily._load_state(), extra)
+                    tail = daily.failure_brief(extra) or _daily_brief(extra)
+                    if tail:
+                        why = f"{why}。{tail}" if why else tail
+            if not ok:
+                citydb.set_attack_status("daily", task=label, note=why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         elif kind == "fund":
             ok, why = fund.fund(
                 rec, sock, params.get("building_id"), params.get("times") or 1)
+            if not ok:
+                citydb.set_attack_status("daily", task=label, note=why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         else:
             citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
     except OSError:
+        citydb.set_attack_status("daily", task=label, note="连接中断")
         citydb.finish_daily_job(job["id"], "failed", "连接中断")
         raise
     except Exception as exc:
         log.info("日常没做成", exc_info=True)
+        citydb.set_attack_status("daily", task=label, note=str(exc))
         citydb.finish_daily_job(job["id"], "failed", str(exc))
     else:
         log.info("日常做完：%s", label)
+    finally:
+        daily.bind_sock(prev_sock)
 
 
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
@@ -1306,6 +1397,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             _fight_claimed(rec, sock, config, beater, job)
             continue
         if citydb.attack_order_open():
+            citydb.set_attack_status("queue")
+            time.sleep(1)
             continue
         if not _begin_attack_hold(fresh=not stated):
             return 0
@@ -1450,10 +1543,15 @@ def run_remote_orders(qq, config: dict) -> int:
                 continue
             if pending:
                 citydb.requeue_running_orders()
+                citydb.set_attack_status("queue")
             _connect_attack_orders(qq, config)
             if not ((citydb.attack_hold_left() or 0) > 0):
                 citydb.fail_blocked_orders()
-                citydb.set_attack_status("idle")
+                if citydb.attack_order_open() or citydb.daily_job_open():
+                    citydb.set_attack_status("queue")
+                    time.sleep(2)
+                else:
+                    citydb.set_attack_status("idle")
             elif citydb.attack_order_open():
                 time.sleep(1)
             else:
@@ -1739,13 +1837,24 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 continue
             citydb.resume_stranded_orders()
             citydb.resume_daily_jobs()
+            citydb.release_due_waits()
+            if not (citydb.attack_order_open()
+                    or citydb.daily_job_open()
+                    or citydb.attack_wait_pending()
+                    or (citydb.attack_hold_left() or 0) > 0):
+                break
             if not (citydb.attack_order_open()
                     or citydb.daily_job_open()
                     or (citydb.attack_hold_left() or 0) > 0):
-                break
+                time.sleep(5)
+                continue
+            if citydb.attack_order_open():
+                citydb.set_attack_status("queue")
             _connect_attack_orders(qq, config)
             if (citydb.attack_hold_left() or 0) > 0:
                 time.sleep(1 if citydb.attack_order_open() else 5)
+            elif citydb.attack_order_open():
+                time.sleep(2)
     finally:
         if on_page:
             citydb.set_page_qr(False, user_id)
@@ -1935,14 +2044,23 @@ def run_fund_once(qq, config: dict, building_id: int, times: int) -> int:
     return _connect_and(qq, config, _work)
 
 
-def run_pve_once(qq, config: dict, end=None) -> int:
-    """连一次、从当前关打征战世界、退出。end 为空则用 config「征战.最终关卡」。"""
+def run_pve_once(qq, config: dict, stages=None) -> int:
+    """连一次、打征战世界、退出。
+
+    stages 留空只打当前关。一个数字是终点关，从当前关打到这一关。
+    写成 1-10 或 3,5,8 时，当前关必须在名单里。
+    config「征战.第4次」仍会先做 VIP 重开。
+    """
     from . import pve
 
     def _work(rec, sock, spec, ctx, beater):
         cfg = config.get("征战") or {}
-        raw = end if end else cfg.get("最终关卡")
-        interval = cfg.get("间隔秒", 1)
+        if cfg.get("第4次"):
+            ok, why = pve.vip_restart(rec, sock)
+            log.info("[征战] %s", why)
+            if not ok:
+                return 1
+        raw = stages if stages else None
         try:
             ok, why = pve.campaign(
                 rec, sock, raw, interval,
