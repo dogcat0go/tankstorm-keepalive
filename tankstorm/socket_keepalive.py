@@ -1249,11 +1249,14 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 results, _details = daily.run(rec, sock, cfg, beat=beater)
             citydb.finish_daily_job(job["id"], "done", _daily_brief(results))
         elif kind == "pve":
-            stages = params.get("stages")
-            if not stages:
-                stages = (config.get("征战") or {}).get("关卡")
-            interval = float((config.get("征战") or {}).get("间隔秒") or 1)
-            ok, why = pve.fight(rec, sock, stages, interval)
+            cfg = config.get("征战") or {}
+            end = params.get("stages")
+            if end in (None, ""):
+                end = cfg.get("最终关卡")
+            interval = float(cfg.get("间隔秒") or 1)
+            ok, why = pve.campaign(
+                rec, sock, end, interval,
+                third=bool(cfg.get("第3次")), fourth=bool(cfg.get("第4次")))
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         elif kind == "fund":
             ok, why = fund.fund(
@@ -1932,26 +1935,18 @@ def run_fund_once(qq, config: dict, building_id: int, times: int) -> int:
     return _connect_and(qq, config, _work)
 
 
-def run_pve_once(qq, config: dict, stages=None) -> int:
-    """连一次、按名单打征战世界、退出。stages 为空则用 config「征战.关卡」。"""
+def run_pve_once(qq, config: dict, end=None) -> int:
+    """连一次、从当前关打征战世界、退出。end 为空则用 config「征战.最终关卡」。"""
     from . import pve
 
     def _work(rec, sock, spec, ctx, beater):
         cfg = config.get("征战") or {}
-        if cfg.get("第4次"):
-            ok, why = pve.vip_restart(rec, sock)
-            log.info("[征战] %s", why)
-            if not ok:
-                return 1
-        raw = stages if stages else cfg.get("关卡")
-        if not raw:
-            if not cfg.get("第4次"):
-                log.error("[征战] 没有配置关卡")
-                return 1
-            log.info("任务执行期间共发心跳 %d 次", beater.count)
-            return 0
+        raw = end if end else cfg.get("最终关卡")
+        interval = cfg.get("间隔秒", 1)
         try:
-            ok, why = pve.fight(rec, sock, raw, cfg.get("间隔秒", 1))
+            ok, why = pve.campaign(
+                rec, sock, raw, interval,
+                third=bool(cfg.get("第3次")), fourth=bool(cfg.get("第4次")))
         except ValueError as exc:
             log.error("[征战] %s", exc)
             return 1

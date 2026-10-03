@@ -1034,18 +1034,15 @@ TASKS = [
        followup=Followup("049a", _next_mine_to_occupy, max_rounds=1,
                          desc="占下探到的无主矿")),
 
-    # 用户说明：type:2 是"重新开始征战"，不会真的打、也拿不到战斗奖励，
-    # 但能推进每日活跃度，是快速完成日常的做法。原先写的 {type:6,bAutoTreat:true}
-    # 在 8/10 抓包里根本没出现过，撤掉。
-    _t("征战世界", "征战世界·重开征战（推进活跃度）", "045b", "RcePVEFightOpt",
-       {2: ("int32", 2)},
-       "实测", "8/10 抓包：045c{type:1} → 045b{type:5,bAutoTreat:false} → "
-               "045b{type:2} ×2，响应 result=0。注意这只推进活跃度，"
-               "不是真的去打、也没有战斗奖励",
-       max_per_day=2,
-       prelude=[("045c", {1: ("int32", 1)}),
-                ("045b", {1: ("bool", False), 2: ("int32", 5)})],
-       gate=Gate("RsePVEFightOpt", "fightdata.field2")),
+    # 2026-09-26：type=2 只是重开，不打关。真正开战是 type=7，从当前关打起。
+    _t("征战世界", "征战世界·从当前关打", "045b", "RcePVEFightOpt",
+       {}, "实测",
+       "2026-09-26 抓包：type=5 读当前关，type=7 开战。"
+       "最终关卡见 config「征战.最终关卡」，不填就打到过不去。一天一轮。",
+       max_per_day=1,
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.pve", fromlist=["daily_fight"]
+       ).daily_fight(rec, sock, config)),
 
     # 客户端把 11 个字段全写了（除 type 外都是 0），照抄。
     # 1=costCredit 虽然命中危险字段名，但值是 0，安全检查照样放行。
@@ -1521,11 +1518,6 @@ def _run(rec, sock, config, schema):
             log.info("[%s] 本轮共成功 %d 次（今日 %d/%d）", task.key, ran,
                      st["done"].get(task.key, 0), task.max_per_day)
         continue
-
-    if (config.get("征战") or {}).get("第4次"):
-        from . import pve
-        ok, why = pve.vip_restart(rec, sock)
-        results["征战第4次"] = why if ok else f"失败：{why}"
 
     log.info("=== 每日任务结束 ===")
     for k, v in results.items():

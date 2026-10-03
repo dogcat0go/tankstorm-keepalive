@@ -2905,17 +2905,15 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
     if kind == "pve":
         stages = str(params.get("stages") or "").strip()
         if len(stages) > 80:
-            return "关卡名单太长"
+            return "最终关卡太长"
         if stages:
             from . import pve
             try:
-                parsed = pve.parse_stages(stages)
+                parsed = pve.parse_end(stages)
             except ValueError as exc:
                 return str(exc)
             if not parsed:
-                return "关卡名单是空的"
-            if len(parsed) > pve.HARD_MAX:
-                return f"关卡超过 {pve.HARD_MAX} 个"
+                return "最终关卡是空的"
             clean["stages"] = stages
     elif kind == "fund":
         try:

@@ -571,10 +571,10 @@ onUnmounted(() => {
       <p class="muted">按服务器里已经打开的那些项做。今日次数记在这个攻打号上，换一个号单独算。</p>
       <form class="lock-row" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
         <span class="switch">征战世界</span>
-        <label>关卡<input v-model="pveStages" placeholder="1-10，留空用服务器配置" /></label>
-        <button type="submit" :disabled="!dailyQq">打这些关</button>
+        <label>最终关卡<input v-model="pveStages" placeholder="150，留空用配置" /></label>
+        <button type="submit" :disabled="!dailyQq">打到这一关</button>
       </form>
-      <p class="muted">只打当前关，当前关不在名单里就停。对应命令行的征战。</p>
+      <p class="muted">从当前关一关一关打到这个数。留空用配置里的最终关卡。过了之后按配置用免费重开和第 3、第 4 次。</p>
       <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => (err = e.message))">
         <span class="switch">成就拨款</span>
         <label>建筑 ID<input v-model="fundBuilding" class="mins" inputmode="numeric" placeholder="10138" required /></label>
