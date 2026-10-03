@@ -14,7 +14,10 @@
     先回 result=0（受理，关卡不变），再回 result=1（过关，关卡 +1）。
     result=2 且关卡不动，是没打过去，停手。
 
-所以只能打「当前这一关」。配置里列出要打的关，当前关在名单里才发 type=7。
+所以只能打「当前这一关」。请求里不能指定关卡号。
+
+网页上填的数字是终点：先看当前关，没到就发 type=7 接着打；
+到了或超过，才发 type=2 做每天 2 次免费重开。重开会回到第 1 关。
 """
 
 import re
@@ -197,6 +200,142 @@ def paid_restart(rec, sock):
     if stage != 1:
         return False, f"重开后关卡是 {stage}，不是第 1 关"
     return True, f"第三次已重开，从第 {cur} 关回到第 1 关"
+
+
+def end_stage(raw):
+    """指定关卡。一个数字就是终点，一段或一串取最大的那个。空的返回 None。"""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    best = None
+    for token in re.split(r"[,，\s]+", text):
+        if not token:
+            continue
+        m = re.fullmatch(r"(\d+)\s*-\s*(\d+)", token)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            if a > b:
+                a, b = b, a
+            n = b
+        elif token.isdigit():
+            n = int(token)
+        else:
+            raise ValueError(f"关卡写不认：{token}")
+        if n <= 0:
+            continue
+        if n > HARD_MAX:
+            raise ValueError(f"关卡超过 {HARD_MAX}")
+        best = n if best is None else max(best, n)
+    return best
+
+
+def _restart_once(rec, sock):
+    """发一次免费 type=2。回到第 1 关才算成功。"""
+    before = _send(sock, rec, OP, {2: ("int32", TYPE_RESTART)})
+    got = _await_response(
+        sock, rec, RSE, before, 6.0,
+        want=lambda d: d.get("type") == TYPE_RESTART)
+    if not isinstance(got, dict) or got.get("result") != 0:
+        result = None if not isinstance(got, dict) else got.get("result")
+        return False, f"type=2 被拒 result={result}"
+    stage = _stage(got)
+    if stage != 1:
+        return False, f"重开后关卡是 {stage}，不是第 1 关"
+    return True, "已重开"
+
+
+def _free_restarts(rec, sock, already, interval, panel=None):
+    """做今天还剩的免费重开。一天最多 2 次，并且不超过面板上的剩余次数。
+
+    返回 (是否按规则做完, 说明, 今日已重开次数)。
+    """
+    try:
+        already = int(already or 0)
+    except (TypeError, ValueError):
+        already = 0
+    if already < 0:
+        already = 0
+    room = 2 - already
+    if room <= 0:
+        return True, "今日免费重开 2 次已用完", already
+    if panel is None:
+        _cur, panel = query(rec, sock)
+    if not isinstance(panel, dict):
+        return False, "没读到征战面板，不重开", already
+    refresh = _num(panel, "field2")
+    if refresh is None:
+        return False, "没读到免费重开次数，不发", already
+    if refresh <= 0:
+        return True, "免费重开次数已用完", already
+    times = min(room, int(refresh))
+    done = 0
+    for i in range(times):
+        ok, why = _restart_once(rec, sock)
+        if not ok:
+            return False, why, already + done
+        done += 1
+        log.info("[征战] 免费重开 %s/%s", done, times)
+        if i + 1 < times and interval > 0:
+            _nap(interval)
+    return True, f"免费重开 {done} 次", already + done
+
+
+def _fight_toward(rec, sock, cur, end, interval):
+    """从当前关打到终点。打到终点就停，不打终点本身之后的关。"""
+    fought = []
+    guard = 0
+    limit = min(HARD_MAX, max(1, int(end) - int(cur)))
+    while cur < end and guard < limit:
+        got = fight_once(rec, sock)
+        guard += 1
+        if not isinstance(got, dict):
+            return False, (f"失败：第 {cur} 关没有结算回包，已过 {_brief(fought)}。"
+                           "这一轮不重开"), cur
+        nxt = _stage(got)
+        result = got.get("result")
+        if result != 1 or nxt is None or nxt <= cur:
+            return False, (f"失败：第 {cur} 关没过去 result={result}，已过 {_brief(fought)}。"
+                           "这一轮不重开"), cur
+        fought.append(cur)
+        log.info("[征战] 第 %s 关过了，下一关 %s", cur, nxt)
+        cur = nxt
+        if cur < end and interval > 0:
+            _nap(interval)
+    if cur < end:
+        return False, f"失败：打到第 {cur} 关，还没到第 {end} 关。这一轮不重开", cur
+    return True, f"从第 {fought[0]} 关打到第 {cur} 关", cur
+
+
+def campaign(rec, sock, end, already=0, interval=1.0):
+    """先看当前关。没到终点就接着打；到了或超过，才做每天的免费重开。
+
+    没填终点时只做免费重开。返回 (是否成功, 说明, 今日免费重开次数, 这一轮是否还在打关)。
+    最后一项为真时，调用方不要接着做第三次、第4次。
+    """
+    interval = float(interval if interval is not None else 1)
+    try:
+        already = int(already or 0)
+    except (TypeError, ValueError):
+        already = 0
+    if end is not None:
+        end = int(end)
+        if end <= 0 or end > HARD_MAX:
+            return False, f"失败：关卡超过 {HARD_MAX}", already, True
+    cur, panel = query(rec, sock)
+    if cur is None:
+        return False, "失败：没读到当前关，不打也不重开", already, True
+    log.info("[征战] 当前第 %s 关，终点 %s", cur, end if end is not None else "未填")
+    if end is not None and cur < end:
+        ok, why, _cur = _fight_toward(rec, sock, cur, end, interval)
+        return ok, why, already, True
+    ok, why, total = _free_restarts(rec, sock, already, interval, panel=panel)
+    if end is None:
+        return ok, why if ok else f"失败：{why}", total, False
+    where = "已到" if cur == end else "已过"
+    head = f"当前第 {cur} 关，{where}指定的第 {end} 关"
+    if not ok:
+        return False, f"失败：{head}，{why}", total, False
+    return True, f"{head}，{why}", total, False
 
 
 def fight_once(rec, sock):

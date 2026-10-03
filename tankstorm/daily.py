@@ -746,7 +746,8 @@ class Task:
     def __init__(self, key, name, opcode, msg, fields, confidence,
                  note="", max_per_day=1, gate=None, cooldown_sec=0,
                  prelude=(), followup=None, tiers=None, cooldown_until=None,
-                 report=(), runner=None, success_flag=None):
+                 report=(), runner=None, success_flag=None,
+                 counts_itself=False):
         # success_flag：动作回包里哪个布尔字段为 true 才算成功。只给那些
         # 既没有 ret 也没有 result 的消息用，别的一律走 judge() 的状态码。
         self.success_flag = success_flag
@@ -756,6 +757,8 @@ class Task:
         # 有 runner 的任务跳过前置/闸门/安全检查那一整套，由执行器自己负责，
         # 所以执行器内部必须自己守住"先查询、读到依据才做"这条铁律。
         self.runner = runner
+        # counts_itself：执行器自己记今日次数。征战打关时不能把免费重开记成 2/2。
+        self.counts_itself = bool(counts_itself)
         # report：前置响应里值得报给用户看的字段（排名、积分、剩余挑战次数…）。
         # 闸门数据本来就读到了，顺手带进结果里，推送时就能看到"现在排第几"。
         self.report = tuple(report)
@@ -1118,18 +1121,16 @@ TASKS = [
        followup=Followup("049a", _next_mine_to_occupy, max_rounds=1,
                          desc="占下探到的无主矿")),
 
-    # 用户说明：type:2 是"重新开始征战"，不会真的打、也拿不到战斗奖励，
-    # 但能推进每日活跃度，是快速完成日常的做法。原先写的 {type:6,bAutoTreat:true}
-    # 在 8/10 抓包里根本没出现过，撤掉。
+    # 先看当前关。没到页面上填的终点就发 type=7 接着打，到了或超过才发 type=2。
+    # type=2 会回到第 1 关，只推进活跃度，不拿战斗奖励。一天最多 2 次。
     _t("征战世界", "征战世界·重开征战（推进活跃度）", "045b", "RcePVEFightOpt",
-       {2: ("int32", 2)},
-       "实测", "8/10 抓包：045c{type:1} → 045b{type:5,bAutoTreat:false} → "
-               "045b{type:2} ×2，响应 result=0。注意这只推进活跃度，"
-               "不是真的去打、也没有战斗奖励",
+       {},
+       "实测", "先查当前关。没到终点就 type=7 接着打，不重开。"
+               "到了或超过终点，或没填终点，才 type=2 免费重开，一天 2 次。"
+               "8/10 抓包：type=2 响应 result=0，关卡回到第 1 关",
        max_per_day=2,
-       prelude=[("045c", {1: ("int32", 1)}),
-                ("045b", {1: ("bool", False), 2: ("int32", 5)})],
-       gate=Gate("RsePVEFightOpt", "fightdata.field2")),
+       runner=lambda rec, sock, config: _run_campaign_task(rec, sock, config),
+       counts_itself=True),
 
     # 客户端把 11 个字段全写了（除 type 外都是 0），照抄。
     # 1=costCredit 虽然命中危险字段名，但值是 0，安全检查照样放行。
@@ -1542,7 +1543,56 @@ def run(rec, sock, config: dict, schema=None, beat=None, on_fail=None) -> dict:
         bind_sock(prev_sock)
 
 
+def _campaign_goal(config):
+    """页面或这一轮参数里填的终点。空的表示这一轮只做免费重开。"""
+    raw = (config.get("征战") or {}).get("终点") if isinstance(config, dict) else None
+    text = str(raw or "").strip()
+    return text or None
+
+
+def campaign_pushing() -> bool:
+    """这一轮还在往终点打。第三次、第4次要等免费重开的那一轮。"""
+    return bool(getattr(_state_local, "campaign_pushing", False))
+
+
+def campaign_round(rec, sock, end, interval=1.0):
+    """先看当前关。没到终点就接着打，到了或过了才做今天剩下的免费重开。"""
+    from . import pve
+
+    st = _load_state()
+    try:
+        already = int((st.get("done") or {}).get("征战世界") or 0)
+    except (TypeError, ValueError):
+        already = 0
+    try:
+        ok, why, total, pushing = pve.campaign(rec, sock, end, already, interval)
+    except Exception:
+        _state_local.campaign_pushing = True
+        raise
+    st = _load_state()
+    st.setdefault("done", {})["征战世界"] = int(total)
+    _save_state(st)
+    _state_local.campaign_pushing = bool(pushing)
+    return ok, why
+
+
+def _run_campaign_task(rec, sock, config):
+    from . import pve
+
+    raw = _campaign_goal(config)
+    try:
+        end = pve.end_stage(raw) if raw else None
+    except ValueError as exc:
+        _state_local.campaign_pushing = True
+        return False, f"失败：{exc}"
+    raw_gap = (config.get("征战") or {}).get("间隔秒", 1)
+    if raw_gap is None or raw_gap == "":
+        raw_gap = 1
+    return campaign_round(rec, sock, end, float(raw_gap))
+
+
 def _run(rec, sock, config, schema, on_fail=None):
+    _state_local.campaign_pushing = False
     conf = (config.get("每日任务", {}) or {})
     if not conf.get("启用", False):
         log.info("每日任务未启用（config.json 每日任务.启用=false）")
@@ -1567,7 +1617,9 @@ def _run(rec, sock, config, schema, on_fail=None):
                 continue
 
             done = st["done"].get(task.key, 0)
-            if done >= task.max_per_day:
+            # 免费重开记满 2 次之后，填了终点仍要接着打，不能把整项跳过。
+            if done >= task.max_per_day and not (
+                    task.key == "征战世界" and _campaign_goal(config)):
                 results[task.key] = f"今日已执行 {done}/{task.max_per_day} 次，跳过"
                 log.info("[%s] %s", task.key, results[task.key])
                 continue
@@ -1610,7 +1662,11 @@ def _run(rec, sock, config, schema, on_fail=None):
                     log.exception("[%s] 自定义执行器抛异常", task.key)
                 results[task.key] = why
                 log.info("[%s] %s %s", task.key, "✅" if ok else "❌", why)
-                if ok:
+                if getattr(task, "counts_itself", False):
+                    fresh = _load_state()
+                    if isinstance(fresh.get("done"), dict):
+                        st["done"] = fresh["done"]
+                elif ok:
                     st["done"][task.key] = task.max_per_day
                     _save_state(st)
                 continue
@@ -1661,13 +1717,23 @@ def _run(rec, sock, config, schema, on_fail=None):
 
 
 def _run_campaign_extras(rec, sock, switches, st, results):
-    """第三次、第4次。开关在登录账号上，默认关。免费两次仍走「征战世界」。"""
+    """第三次、第4次。开关在登录账号上，默认关。免费两次仍走「征战世界」。
+
+    这一轮还在往终点打时先不做。免费重开会把关卡打回第 1 关，要等已经到了终点。
+    """
     from . import pve
 
     actions = (
         ("征战第三次", pve.paid_restart),
         ("征战第4次", pve.vip_restart),
     )
+    if campaign_pushing():
+        for key, _fn in actions:
+            if not (switches or {}).get(key):
+                continue
+            results[key] = "这一轮先打关卡，免费重开之后再做"
+            log.info("[%s] %s", key, results[key])
+        return
     for key, fn in actions:
         if not (switches or {}).get(key):
             continue

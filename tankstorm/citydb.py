@@ -3026,9 +3026,57 @@ def set_daily_switch(user_id: int, key: str, on, known, defaults: dict) -> str:
     stored[key] = bool(on)
     conn = connect()
     try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+        for name, val in saved.items():
+            if str(name).startswith("_") and str(name) not in stored:
+                stored[str(name)] = val
         cur = conn.execute(
             "UPDATE app_user SET daily_switch=? WHERE id=?",
             (json.dumps(stored, ensure_ascii=False), int(user_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "账号不存在"
+        return ""
+    finally:
+        conn.close()
+
+
+_CAMPAIGN_END = "_征战终点"
+
+
+def campaign_stages(user_id: int) -> str:
+    """这个登录账号记下的征战终点。空字符串表示没填。"""
+    conn = connect(readonly=True)
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+    finally:
+        conn.close()
+    return str(saved.get(_CAMPAIGN_END) or "").strip()
+
+
+def set_campaign_stages(user_id: int, raw) -> str:
+    """记下征战终点。空的表示清除。成功返回空字符串。"""
+    text = str(raw or "").strip()
+    if len(text) > 80:
+        return "关卡名单太长"
+    if text:
+        from . import pve
+        try:
+            end = pve.end_stage(text)
+        except ValueError as exc:
+            return str(exc)
+        if not end:
+            return "关卡名单是空的"
+    conn = connect()
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+        if text:
+            saved[_CAMPAIGN_END] = text
+        else:
+            saved.pop(_CAMPAIGN_END, None)
+        cur = conn.execute(
+            "UPDATE app_user SET daily_switch=? WHERE id=?",
+            (json.dumps(saved, ensure_ascii=False), int(user_id)))
         conn.commit()
         if cur.rowcount != 1:
             return "账号不存在"
@@ -3047,21 +3095,11 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         return "还没绑定攻打 QQ"
     params = params if isinstance(params, dict) else {}
     clean = {}
-    if kind == "pve":
-        stages = str(params.get("stages") or "").strip()
-        if len(stages) > 80:
-            return "关卡名单太长"
-        if stages:
-            from . import pve
-            try:
-                parsed = pve.parse_stages(stages)
-            except ValueError as exc:
-                return str(exc)
-            if not parsed:
-                return "关卡名单是空的"
-            if len(parsed) > pve.HARD_MAX:
-                return f"关卡超过 {pve.HARD_MAX} 个"
-            clean["stages"] = stages
+    if kind in ("daily", "pve") and "stages" in params:
+        why = set_campaign_stages(user_id, params.get("stages"))
+        if why:
+            return why
+        clean["stages"] = str(params.get("stages") or "").strip()
     elif kind == "fund":
         try:
             building = int(str(params.get("building_id") or "").strip())

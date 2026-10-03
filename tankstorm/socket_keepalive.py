@@ -1266,6 +1266,17 @@ def _daily_brief(results) -> str:
     return "；".join(parts) or "这一轮没有要做的"
 
 
+def _campaign_end(params, user_id) -> str:
+    """这一轮用的征战终点。任务里带了关卡就用那一份，否则用账号上记下的。"""
+    from . import citydb
+
+    if isinstance(params, dict) and "stages" in params:
+        return str(params.get("stages") or "").strip()
+    if user_id:
+        return citydb.campaign_stages(user_id)
+    return ""
+
+
 def _run_one_daily(rec, sock, config, beater, job) -> None:
     """在这条攻打连接上做一项日常。做完写回队列，不另开连接。"""
     import copy
@@ -1296,6 +1307,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             if user_id:
                 block["任务"] = citydb.daily_switches(
                     user_id, (config.get("每日任务") or {}).get("任务") or {})
+            cfg.setdefault("征战", {})["终点"] = _campaign_end(params, user_id)
             path = daily.state_path_for_qq(citydb.attack_context_qq())
             with daily.using_state(path):
                 results, _details = daily.run(
@@ -1306,11 +1318,33 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             citydb.finish_daily_job(
                 job["id"], "done", failed or _daily_brief(results))
         elif kind == "pve":
-            stages = params.get("stages")
-            if not stages:
-                stages = (config.get("征战") or {}).get("关卡")
-            interval = float((config.get("征战") or {}).get("间隔秒") or 1)
-            ok, why = pve.fight(rec, sock, stages, interval)
+            user_id = citydb.attack_context_user()
+            raw = _campaign_end(params, user_id)
+            raw_gap = (config.get("征战") or {}).get("间隔秒", 1)
+            if raw_gap is None or raw_gap == "":
+                raw_gap = 1
+            interval = float(raw_gap)
+            path = daily.state_path_for_qq(citydb.attack_context_qq())
+            with daily.using_state(path):
+                try:
+                    end = pve.end_stage(raw) if raw else None
+                except ValueError as exc:
+                    ok, why = False, f"失败：{exc}"
+                else:
+                    ok, why = daily.campaign_round(rec, sock, end, interval)
+                    switches = citydb.daily_switches(
+                        user_id, (config.get("每日任务") or {}).get("任务") or {}
+                    ) if user_id else {}
+                    if daily.campaign_pushing():
+                        if switches.get("征战第三次") or switches.get("征战第4次"):
+                            why = f"{why}。第三次、第4次这一轮先不做"
+                    else:
+                        extra = {}
+                        daily._run_campaign_extras(
+                            rec, sock, switches, daily._load_state(), extra)
+                        tail = daily.failure_brief(extra) or _daily_brief(extra)
+                        if tail:
+                            why = f"{why}。{tail}" if why else tail
             if not ok:
                 citydb.set_attack_status("daily", task=label, note=why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
