@@ -54,6 +54,8 @@ const modoOpen = ref(false);
 const tab = ref("attack");
 const dailyQq = ref("");
 const dailyTasks = ref([]);
+const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
+const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
 const dailyJobs = ref([]);
 const pveStages = ref("");
 const fundBuilding = ref("");
@@ -609,6 +611,21 @@ onUnmounted(() => {
         <button type="submit" :disabled="!dailyQq">跑一轮</button>
       </form>
       <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。</p>
+      <div v-for="it in campaignTasks" :key="it.key" class="lock-row">
+        <span class="switch">{{ it.name }}</span>
+        <el-switch
+          class="daily-switch"
+          size="large"
+          inline-prompt
+          active-text="开"
+          inactive-text="关"
+          :model-value="it.on"
+          :loading="dailySwitching === it.key"
+          @change="saveDailySwitch(it, $event)"
+        />
+        <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
+      </div>
+      <p v-if="campaignTasks.length" class="muted">这两项默认关。打开后，跑一轮会在免费的征战世界做完后接着做对应的那一次。第4次是 VIP 加次，会扣 100 勋章。第三次是付费重征，购买包还没抓到，跑一轮时只打开面板看次数。</p>
       <form class="lock-row" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
         <span class="switch">征战世界</span>
         <label>关卡<input v-model="pveStages" placeholder="1-10，留空用服务器配置" /></label>
@@ -632,7 +649,7 @@ onUnmounted(() => {
             <tr><th>任务</th><th>开关</th><th>今日</th></tr>
           </thead>
           <tbody>
-            <tr v-for="it in dailyTasks" :key="it.key">
+            <tr v-for="it in progressTasks" :key="it.key">
               <td>{{ it.name }}</td>
               <td>
                 <el-switch
