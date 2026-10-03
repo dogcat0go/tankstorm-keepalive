@@ -2062,7 +2062,9 @@ def run_pve_once(qq, config: dict, stages=None) -> int:
                 return 1
         raw = stages if stages else None
         try:
-            ok, why = pve.fight(rec, sock, raw, cfg.get("间隔秒", 1))
+            ok, why = pve.campaign(
+                rec, sock, raw, interval,
+                third=bool(cfg.get("第3次")), fourth=bool(cfg.get("第4次")))
         except ValueError as exc:
             log.error("[征战] %s", exc)
             return 1

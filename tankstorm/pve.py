@@ -36,8 +36,9 @@ TYPE_QUERY = 5
 TYPE_FIGHT = 7
 TYPE_RESTART = 2
 TYPE_VIP = 101
-# 付费重征会扣勋章。购买那一条的 type 还没抓到，留空就不发。
-TYPE_BUY = None
+# 2026-09-27 00:40 抓包：type=4 买一次重开，扣 100 勋章。
+# buyrefreshTimes 从 0 变成 1，并且重开后仍是 1，不是剩余次数。
+TYPE_BUY = 4
 HARD_MAX = 400
 
 
@@ -127,11 +128,8 @@ def vip_restart(rec, sock):
         return False, "没读到征战面板，不重开"
     refresh = _num(panel, "field2")
     vip = _num(panel, "field10")
-    bought = _num(panel, "field3")
-    if vip is None or refresh is None or bought is None:
-        return False, "没读到重开次数、付费重征或 VIP 加次，第4次不发"
-    if bought >= 1:
-        return True, f"付费重征还剩 {bought} 次，先做第三次，第4次不发"
+    if vip is None or refresh is None:
+        return False, "没读到重开次数或 VIP 加次，第4次不发"
     if vip < 1:
         return True, f"VIP 加次是 {vip}，第4次不用再做"
     if refresh > 0:
@@ -160,10 +158,11 @@ def vip_restart(rec, sock):
 
 
 def paid_restart(rec, sock):
-    """第三次：付费重征。
+    """第三次：花勋章买一次重开，再把关卡打回第 1 关。
 
-    面板里 buyrefreshTimes（fightdata 字段 3）是剩余付费次数。
-    免费重开次数还在时先不做。购买请求没有抓包，次数还在也不发。
+    2026-09-27 00:40 抓包。buyrefreshTimes 是已经买过的次数，不是剩余次数。
+    只在 buyrefreshTimes=0 且 refreshTimes=0 时发 type=4。
+    type=4 会扣 100 勋章。次数没对上就停，不再发 type=2。
     条件不满足时返回成功，表示这次不用做。
     """
     cur, panel = query(rec, sock)
@@ -173,26 +172,21 @@ def paid_restart(rec, sock):
     bought = _num(panel, "field3")
     if refresh is None or bought is None:
         return False, "没读到免费重开或付费重征次数，不发"
-    if bought < 1:
-        return True, f"付费重征次数是 {bought}，第三次不用再做"
+    if bought > 0:
+        return True, f"付费重开已经用过（buyrefreshTimes={bought}），不用再做"
     if refresh > 0:
         return True, f"还有免费重开次数 {refresh}，第三次先不做"
-    if TYPE_BUY is None:
-        log.info("[征战] 第三次：当前第 %s 关，付费重征还剩 %s，购买请求没抓到，不发",
-                 cur, bought)
-        return False, "付费重征的购买请求还没抓到包，这一轮不发"
-    log.info("[征战] 第三次：当前第 %s 关，付费重征 %s，发 type=%s",
-             cur, bought, TYPE_BUY)
+    log.info("[征战] 第三次：当前第 %s 关，发 type=4", cur)
     before = _send(sock, rec, OP, {2: ("int32", TYPE_BUY)})
     got = _await_response(
         sock, rec, RSE, before, 6.0,
         want=lambda d: d.get("type") == TYPE_BUY)
     if not isinstance(got, dict) or got.get("result") != 0:
-        return False, f"购买付费重征被拒 result={None if not isinstance(got, dict) else got.get('result')}"
+        return False, f"type=4 被拒 result={None if not isinstance(got, dict) else got.get('result')}"
     bought2 = _num(got, "field3")
     refresh2 = _num(got, "field2")
-    if bought2 is None or bought2 >= bought or not refresh2:
-        return False, f"购买之后次数不对（付费 {bought2}，重开 {refresh2}），停手"
+    if not bought2 or not refresh2:
+        return False, f"type=4 之后次数不对（付费 {bought2}，重开 {refresh2}），停手"
     before = _send(sock, rec, OP, {2: ("int32", TYPE_RESTART)})
     got2 = _await_response(
         sock, rec, RSE, before, 6.0,
