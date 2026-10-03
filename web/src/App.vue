@@ -515,9 +515,9 @@ onUnmounted(() => {
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
       <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="(key) => (tab = key)">
-        <el-menu-item index="qq">订阅QQ</el-menu-item>
         <el-menu-item index="attack">远程攻打</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
+        <el-menu-item index="qq">订阅QQ</el-menu-item>
       </el-menu>
       <section v-show="tab === 'qq'">
       <h2>订阅 QQ</h2>
