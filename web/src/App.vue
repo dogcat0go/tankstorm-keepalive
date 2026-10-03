@@ -611,27 +611,32 @@ onUnmounted(() => {
         <button type="submit" :disabled="!dailyQq">跑一轮</button>
       </form>
       <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。</p>
-      <div v-for="it in campaignTasks" :key="it.key" class="lock-row">
-        <span class="switch">{{ it.name }}</span>
-        <el-switch
-          class="daily-switch"
-          size="large"
-          inline-prompt
-          active-text="开"
-          inactive-text="关"
-          :model-value="it.on"
-          :loading="dailySwitching === it.key"
-          @change="saveDailySwitch(it, $event)"
-        />
-        <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
+      <div class="campaign-box">
+        <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
+          <span class="switch">征战世界</span>
+          <span class="campaign-ops">
+            <input v-model="pveStages" aria-label="关卡" placeholder="1-10，留空用服务器配置" />
+            <button type="submit" :disabled="!dailyQq">打这些关</button>
+          </span>
+        </form>
+        <div v-for="it in campaignTasks" :key="it.key" class="campaign-line">
+          <span class="switch">{{ it.name }}</span>
+          <span class="campaign-ops">
+            <el-switch
+              class="daily-switch"
+              size="large"
+              inline-prompt
+              active-text="开"
+              inactive-text="关"
+              :model-value="it.on"
+              :loading="dailySwitching === it.key"
+              @change="saveDailySwitch(it, $event)"
+            />
+            <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
+          </span>
+        </div>
+        <p class="muted">打这些关是单独去打关卡，当前关不在名单里就停，不占每天 2 次。今日进度里的征战世界是免费重开，一天 2 次，点跑一轮才做，不打关。第三次、第4次也在这一轮里，排在免费 2 次后面。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
       </div>
-      <p v-if="campaignTasks.length" class="muted">这两项默认关。打开后，跑一轮会在免费的征战世界做完后接着做对应的那一次。第4次是 VIP 加次，会扣 100 勋章。第三次是付费重征。</p>
-      <form class="lock-row" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
-        <span class="switch">征战世界</span>
-        <label>关卡<input v-model="pveStages" placeholder="1-10，留空用服务器配置" /></label>
-        <button type="submit" :disabled="!dailyQq">打这些关</button>
-      </form>
-      <p class="muted">只打当前关，当前关不在名单里就停。对应命令行的征战。</p>
       <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => (err = e.message))">
         <span class="switch">成就拨款</span>
         <label>建筑 ID<input v-model="fundBuilding" class="mins" inputmode="numeric" placeholder="10138" required /></label>
