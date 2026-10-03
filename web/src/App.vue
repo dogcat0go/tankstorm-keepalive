@@ -375,9 +375,7 @@ function orderUid(it) {
   return (it && it.uid) || "整座城";
 }
 
-function holdClock() {
-  if (!holdUntil.value) return "";
-  const sec = Math.max(0, Math.round((holdUntil.value - clock.value) / 1000));
+function formatClock(sec) {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
@@ -385,9 +383,31 @@ function holdClock() {
   return h ? h + ":" + pad(m) + ":" + pad(s) : m + ":" + pad(s);
 }
 
+function holdClock() {
+  if (!holdUntil.value) return "";
+  const sec = Math.max(0, Math.round((holdUntil.value - clock.value) / 1000));
+  return formatClock(sec);
+}
+
+function waitClock(it) {
+  if (!it || it.status !== "wait" || !it.run_at) return "";
+  const due = Date.parse(it.run_at);
+  if (!Number.isFinite(due)) return "";
+  const sec = Math.max(0, Math.round((due - clock.value) / 1000));
+  return formatClock(sec);
+}
+
+const clearRetryText = computed(() => {
+  const row = orders.value.find((it) => it.status === "wait" && it.run_at);
+  if (!row) return "";
+  const left = waitClock(row);
+  return left ? "下一轮还有 " + left : "";
+});
+
 function holdCell(it) {
+  if (it && it.status === "wait") return waitClock(it) || "—";
   const text = holdClock();
-  if (!text || it.status === "pending" || it.status === "running" || it.status === "wait") return "—";
+  if (!text || it.status === "pending" || it.status === "running") return "—";
   const finished = orders.value.find((row) => row.status !== "pending" && row.status !== "running" && row.status !== "wait");
   return finished && finished.id === it.id ? text : "—";
 }
@@ -417,7 +437,7 @@ function submitNote(data) {
 }
 
 function orderStatus(status) {
-  return { pending: "排队", running: "正在打", blocked: "等通路", wait: "等空城", done: "已打完", failed: "没打成", ended: "已结束" }[status] || status;
+  return { pending: "排队", running: "正在打", blocked: "等通路", wait: "等再打", done: "已打完", failed: "没打成", ended: "已结束" }[status] || status;
 }
 
 function orderOpen(it) {
@@ -725,6 +745,7 @@ onUnmounted(() => {
           <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
             <span class="switch">空城再打</span>
             <label class="choice">分钟<input v-model="clearWait" class="mins" inputmode="numeric" required /></label>
+            <span v-if="clearRetryText" class="muted">{{ clearRetryText }}</span>
           </form>
           <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
             <span class="switch">扫页冷却</span>
@@ -746,7 +767,7 @@ onUnmounted(() => {
             <button type="submit">保存</button>
             <span class="muted">{{ clearNote }}</span>
           </form>
-          <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人时，过上面的分钟再启动同一条订单。0 表示空了就结束。</p>
+          <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。</p>
         </div>
       </template>
         <p>

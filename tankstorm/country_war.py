@@ -2579,6 +2579,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                                scan_sec=gap)
             hit = fought.get("成功") or 0
             reason = fought.get("停止原因") or ""
+            out["没打过"] = int(fought.get("失败") or 0) + int(fought.get("跳过") or 0)
             if reason in ("这座城打完了", "这一页没有可打的人", "这几页没有可打的人"):
                 out["停止原因"] = "" if (fought.get("打过") or hit) else "这几页没有可打的人"
             elif any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停", "被别人打败", "已手动关停")):
@@ -2592,6 +2593,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         log.info("[移动] 人在 %s，开始清目标 %s %s 里的人",
                  out["走到"], target, tname)
         hit = 0
+        left_behind = 0
         last_cnt = None
         while True:
             stopped = _manual_stop()
@@ -2625,6 +2627,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             fought = farm_city(rec, sock, config, target, sweep=True,
                                country=my, beat=beat, tally=tally)
             hit += fought.get("成功") or 0
+            left_behind += int(fought.get("失败") or 0) + int(fought.get("跳过") or 0)
             reason = fought.get("停止原因") or ""
             if any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停", "被别人打败", "已手动关停")):
                 out["停止原因"] = reason
@@ -2644,6 +2647,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 out["停止原因"] = reason or f"{target} {tname} 还有人但没打到"
                 break
         out["攻击"] = hit
+        out["没打过"] = left_behind
         return out
     finally:
         restore_beat()
