@@ -298,12 +298,12 @@ async function addOrder() {
     attackUid.value = "";
     if (data.hold_min != null) holdMin.value = String(data.hold_min);
     if (data.card_max != null) cardMax.value = String(data.card_max);
-    const extra = attackLoginError(data.login);
+    const extra = submitNote(data);
     err.value = extra;
     notice.value = {
       ok: true,
       title: "提交成功",
-      text: "已提交 " + where + "，" + who + "。" + (extra || ""),
+      text: "已提交 " + where + "，" + who + "。" + extra,
     };
   } catch (e) {
     err.value = e.message;
@@ -362,6 +362,16 @@ function attackLoginError(login) {
   if (login === "taken") return "这个攻打 QQ 已经绑定别的登录账号，不能接着用";
   if (login === "unbound") return "这个登录账号还没绑定攻打号";
   return "";
+}
+
+function submitNote(data) {
+  let text = "";
+  if (data && data.resumed) text += "攻打已继续。";
+  if (data && data.scan === "page") text += "请扫页面上的二维码登录。";
+  else if (data && data.scan === "away") text += "请扫码登录。";
+  else if (data && data.scan === "mismatch") text += "请用绑定的 QQ 扫码登录。";
+  else text += attackLoginError(data && data.login);
+  return text;
 }
 
 function orderStatus(status) {
