@@ -2369,7 +2369,7 @@ def clear_login_for() -> None:
         conn.close()
 
 
-def set_attack_status(phase: str, task: str = "") -> None:
+def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
     """这条攻打线程把自己的阶段写进库，键是攻打 QQ。网页只读。所在城市留着。"""
     name = _mark_name("proc")
     prev = _proc_payload(_signal_value(name))
@@ -2378,6 +2378,9 @@ def set_attack_status(phase: str, task: str = "") -> None:
         label = " ".join(str(task or "").split())[:40]
         if label:
             data["task"] = label
+        text = " ".join(str(note or "").split())[:180]
+        if text:
+            data["note"] = text
     here = _kept_here(prev)
     if here:
         data["here"] = here
@@ -2630,6 +2633,9 @@ def attack_status(user_id: int) -> dict:
     elif phase == "daily":
         label = str(parsed.get("task") or "").strip()
         detail = f"正在做{label}" if label else "正在做日常任务"
+        note = " ".join(str(parsed.get("note") or "").split())
+        if note:
+            detail = f"{detail}，{note}"
     elif phase == "hold":
         head = "挂机保活成功" if _hold_link_ok(parsed) else "挂机保活没连上"
         if hold_left is not None and hold_left > 0:
@@ -3075,6 +3081,21 @@ def claim_daily_job():
     if not isinstance(params, dict):
         params = {}
     return {"id": int(row[0]), "kind": str(row[1] or ""), "params": params}
+
+
+def touch_daily_job(job_id: int, detail: str) -> None:
+    """日常还在做。把已经没做成的项写进说明，状态仍是正在做。"""
+    text = " ".join(str(detail or "").split())[:500]
+    if not text:
+        return
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE daily_job SET detail=?, updated_at=? WHERE id=? AND status='running'",
+            (text, now_ts(), int(job_id)))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def finish_daily_job(job_id: int, status: str, detail: str) -> None:

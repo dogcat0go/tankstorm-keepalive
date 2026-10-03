@@ -41,6 +41,7 @@
 import json
 import os
 import re
+import select
 import threading
 import time
 from datetime import date
@@ -67,6 +68,7 @@ STATE_FILE = os.path.join(LOG_DIR, "daily-state.json")
 # 回调按线程分开。网页上每个攻打号一条线程，两个人同时做日常不能共用一个回调。
 _beat_local = threading.local()
 _state_local = threading.local()
+_sock_local = threading.local()
 
 
 def current_beat():
@@ -102,19 +104,93 @@ def _beat() -> None:
         log.debug("心跳发送失败（忽略）: %s", exc)
 
 
-def _nap(seconds: float) -> None:
-    """等到点。心跳已在独立线程发，这里只 sleep，不再 recv。
+def bind_sock(sock):
+    """这一线程等任务的空隙从哪条连接读包。返回换之前的那个。"""
+    prev = getattr(_sock_local, "sock", None)
+    if sock is None:
+        if hasattr(_sock_local, "sock"):
+            del _sock_local.sock
+        return prev
+    _sock_local.sock = sock
+    return prev
 
-    以前冷却时 recv 排空缓冲；和心跳线程同时对同一条 socket send/recv，
-    Windows 上 settimeout 会失效，recv 能一直卡住（日志停在「冷却，等 14 秒」）。
+
+def _drain_incoming() -> None:
+    """把已经到的包读掉。超级强攻靠这次读取才会走拒绝。
+
+    只在做任务的这一条线程上读。心跳线程只发心跳，两边用同一把收发锁，
+    不会同时 recv。
     """
+    sock = getattr(_sock_local, "sock", None)
+    if sock is None:
+        return
+    raw = sock
+    while hasattr(raw, "_sock") and getattr(raw, "_sock", None) is not raw:
+        raw = raw._sock
+    try:
+        readable, _, _ = select.select([raw], [], [], 0)
+    except (OSError, TypeError, ValueError):
+        return
+    if not readable:
+        return
+    try:
+        sock.settimeout(0.2)
+        data = sock.recv(8192)
+    except (TimeoutError, OSError):
+        return
+    if data == b"":
+        raise OSError("服务器关闭连接")
+
+
+def _nap(seconds: float) -> None:
+    """等到点。心跳在独立线程发，这里把已经到达的包读掉。"""
     end = time.time() + max(0.0, float(seconds or 0))
     while True:
         left = end - time.time()
         if left <= 0:
             return
         _beat()
+        _drain_incoming()
         time.sleep(min(left, 0.5))
+
+
+_FAIL_MARKS = ("失败", "拦截", "没收到", "未收到", "没有结算", "超时",
+               "异常", "被拒", "不发", "认不出", "发送失败", "没领到",
+               "需要花钱", "服务器返回", "执行异常")
+
+
+def _is_failure(text) -> bool:
+    """这一行要写到页面上的失败说明。跳过、冷却、没开不算失败。"""
+    text = str(text or "").strip()
+    if not text or text == "未开启":
+        return False
+    if text.startswith("今日已执行") or text.startswith("冷却") or text.startswith("占用"):
+        return False
+    if "跳过" in text and not any(mark in text for mark in _FAIL_MARKS):
+        return False
+    return any(mark in text for mark in _FAIL_MARKS)
+
+
+def failure_brief(results) -> str:
+    """这一轮里没做成的项，按发生顺序拼成一句。"""
+    parts = []
+    for key, value in (results or {}).items():
+        text = str(value or "").strip()
+        if _is_failure(text):
+            parts.append(f"{key}：{text}")
+    return "；".join(parts)
+
+
+def _publish_failure(results, on_fail) -> None:
+    if not on_fail:
+        return
+    text = failure_brief(results)
+    if not text:
+        return
+    try:
+        on_fail(text)
+    except Exception:
+        log.info("日常失败没写上页面", exc_info=True)
 
 # 字段名命中这些词 = 可能花钱/耗券，值必须为 0
 #
@@ -1401,7 +1477,7 @@ def _check_safety(task, field_names, fields=None):
     return True, ""
 
 
-def run(rec, sock, config: dict, schema=None, beat=None) -> dict:
+def run(rec, sock, config: dict, schema=None, beat=None, on_fail=None) -> dict:
     """执行每日任务。rec 是 Recorder（提供 C→S 的 RC4），sock 是已登录的 socket。
 
     返回 {任务名: 结果字符串}。
@@ -1421,13 +1497,15 @@ def run(rec, sock, config: dict, schema=None, beat=None) -> dict:
     # 心跳回调挂在这一线程上，_nap()/_await_response() 沿路都会调它。
     # 跑完就摘掉，免得下一次调用还拿着上一个连接的 socket。
     install_beat(beat)
+    prev_sock = bind_sock(sock)
     try:
-        return _run(rec, sock, config, schema)
+        return _run(rec, sock, config, schema, on_fail)
     finally:
         install_beat(None)
+        bind_sock(prev_sock)
 
 
-def _run(rec, sock, config, schema):
+def _run(rec, sock, config, schema, on_fail=None):
     conf = (config.get("每日任务", {}) or {})
     if not conf.get("启用", False):
         log.info("每日任务未启用（config.json 每日任务.启用=false）")
@@ -1444,88 +1522,93 @@ def _run(rec, sock, config, schema):
     log.info("=== 每日任务开始（实发）===")
 
     for task in ordered_tasks():
-        if not switches.get(task.key, False):
-            results[task.key] = "未开启"
-            continue
+        try:
+            if not switches.get(task.key, False):
+                results[task.key] = "未开启"
+                continue
 
-        done = st["done"].get(task.key, 0)
-        if done >= task.max_per_day:
-            results[task.key] = f"今日已执行 {done}/{task.max_per_day} 次，跳过"
-            log.info("[%s] %s", task.key, results[task.key])
-            continue
-
-        # 冷却之一：服务器明确告诉我们"到这个时刻才能再做"（占领结束时刻等）。
-        # 这个是读来的，优先于任何写死的秒数。
-        until = st.get("until", {}).get(task.key, 0)
-        if until and time.time() < until:
-            wait = until - time.time()
-            results[task.key] = (f"占用中，服务器给的结束时刻还有 "
-                                 f"{wait / 60:.0f} 分钟")
-            log.info("[%s] %s", task.key, results[task.key])
-            continue
-
-        # 冷却之二：写死的秒数，只在服务器没给时刻时才用（如英雄培养的 8 小时）
-        if task.cooldown_sec:
-            last = st.get("last", {}).get(task.key, 0)
-            wait = task.cooldown_sec - (time.time() - last)
-            if wait > 0:
-                results[task.key] = f"冷却中，还需 {wait / 60:.0f} 分钟"
+            done = st["done"].get(task.key, 0)
+            if done >= task.max_per_day:
+                results[task.key] = f"今日已执行 {done}/{task.max_per_day} 次，跳过"
                 log.info("[%s] %s", task.key, results[task.key])
                 continue
 
-        if task.confidence != "实测" and not allow_unverified:
-            results[task.key] = "参数未实测，已跳过（见 tools/capture_daily.py）"
-            log.warning("[%s] %s", task.key, results[task.key])
-            continue
+            # 冷却之一：服务器明确告诉我们"到这个时刻才能再做"（占领结束时刻等）。
+            # 这个是读来的，优先于任何写死的秒数。
+            until = st.get("until", {}).get(task.key, 0)
+            if until and time.time() < until:
+                wait = until - time.time()
+                results[task.key] = (f"占用中，服务器给的结束时刻还有 "
+                                     f"{wait / 60:.0f} 分钟")
+                log.info("[%s] %s", task.key, results[task.key])
+                continue
 
-        field_names = _field_names(schema, task.opcode)
-
-        # 一个任务在**一轮里就要把当天的次数做完**，而不是做一次就走。
-        # freeVisitCnt=[3,1,1] 是三个档位各自的免费次数（低级 3 次、中级 1 次、
-        # 高级 1 次），三档都要领；战略训练更是一天 7 次同样的包。
-        # 早先每轮只发一次，等于绝大多数次数根本没用上。
-        if task.runner is not None:
-            try:
-                ok, why = task.runner(rec, sock, config)
-            except Exception as exc:
-                ok, why = False, f"执行异常：{exc}"
-                log.exception("[%s] 自定义执行器抛异常", task.key)
-            results[task.key] = why
-            log.info("[%s] %s %s", task.key, "✅" if ok else "❌", why)
-            if ok:
-                st["done"][task.key] = task.max_per_day
-                _save_state(st)
-            continue
-
-        ran = 0
-        while st["done"].get(task.key, 0) < task.max_per_day:
-            done = st["done"].get(task.key, 0)
-            more = _do_once(task, sock, rec, st, results, details,
-                            field_names, resp_timeout, gap, done, schema)
-            if not more:
-                break
-            ran += 1
-            # 服务器说这东西被占用到某时刻（占了演习场/占了矿），就别接着刷了
-            if st.get("until", {}).get(task.key, 0) > time.time():
-                break
-            # 靠**固定冷却**限流的任务，成功一次就到此为止。
-            # 冷却只在进任务前查了一次，循环里不再查，于是英雄培养成功之后
-            # 3 秒又发一次，服务端回 error=81（已在培养中）——
-            # 报出来像是任务失败，其实第一次已经成功了。2026-08-29 实盘复现。
+            # 冷却之二：写死的秒数，只在服务器没给时刻时才用（如英雄培养的 8 小时）
             if task.cooldown_sec:
-                log.info("[%s] 靠 %.0f 小时冷却限流，本轮做完一次即止",
-                         task.key, task.cooldown_sec / 3600)
-                break
-            _nap(gap)
-        if ran > 1:
-            log.info("[%s] 本轮共成功 %d 次（今日 %d/%d）", task.key, ran,
-                     st["done"].get(task.key, 0), task.max_per_day)
-        continue
+                last = st.get("last", {}).get(task.key, 0)
+                wait = task.cooldown_sec - (time.time() - last)
+                if wait > 0:
+                    results[task.key] = f"冷却中，还需 {wait / 60:.0f} 分钟"
+                    log.info("[%s] %s", task.key, results[task.key])
+                    continue
+
+            if task.confidence != "实测" and not allow_unverified:
+                results[task.key] = "参数未实测，已跳过（见 tools/capture_daily.py）"
+                log.warning("[%s] %s", task.key, results[task.key])
+                continue
+
+            field_names = _field_names(schema, task.opcode)
+
+            # 一个任务在**一轮里就要把当天的次数做完**，而不是做一次就走。
+            # freeVisitCnt=[3,1,1] 是三个档位各自的免费次数（低级 3 次、中级 1 次、
+            # 高级 1 次），三档都要领；战略训练更是一天 7 次同样的包。
+            # 早先每轮只发一次，等于绝大多数次数根本没用上。
+            if task.runner is not None:
+                try:
+                    ok, why = task.runner(rec, sock, config)
+                except Exception as exc:
+                    ok, why = False, f"执行异常：{exc}"
+                    log.exception("[%s] 自定义执行器抛异常", task.key)
+                results[task.key] = why
+                log.info("[%s] %s %s", task.key, "✅" if ok else "❌", why)
+                if ok:
+                    st["done"][task.key] = task.max_per_day
+                    _save_state(st)
+                continue
+
+            ran = 0
+            while st["done"].get(task.key, 0) < task.max_per_day:
+                done = st["done"].get(task.key, 0)
+                more = _do_once(task, sock, rec, st, results, details,
+                                field_names, resp_timeout, gap, done, schema)
+                if not more:
+                    break
+                ran += 1
+                # 服务器说这东西被占用到某时刻（占了演习场/占了矿），就别接着刷了
+                if st.get("until", {}).get(task.key, 0) > time.time():
+                    break
+                # 靠**固定冷却**限流的任务，成功一次就到此为止。
+                # 冷却只在进任务前查了一次，循环里不再查，于是英雄培养成功之后
+                # 3 秒又发一次，服务端回 error=81（已在培养中）——
+                # 报出来像是任务失败，其实第一次已经成功了。2026-08-29 实盘复现。
+                if task.cooldown_sec:
+                    log.info("[%s] 靠 %.0f 小时冷却限流，本轮做完一次即止",
+                             task.key, task.cooldown_sec / 3600)
+                    break
+                _nap(gap)
+            if ran > 1:
+                log.info("[%s] 本轮共成功 %d 次（今日 %d/%d）", task.key, ran,
+                         st["done"].get(task.key, 0), task.max_per_day)
+            continue
+        finally:
+            _publish_failure(results, on_fail)
+
 
     if (config.get("征战") or {}).get("第4次"):
         from . import pve
         ok, why = pve.vip_restart(rec, sock)
         results["征战第4次"] = why if ok else f"失败：{why}"
+        _publish_failure(results, on_fail)
 
     log.info("=== 每日任务结束 ===")
     for k, v in results.items():
