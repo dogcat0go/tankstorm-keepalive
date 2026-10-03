@@ -1368,6 +1368,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             _fight_claimed(rec, sock, config, beater, job)
             continue
         if citydb.attack_order_open():
+            citydb.set_attack_status("queue")
+            time.sleep(1)
             continue
         if not _begin_attack_hold(fresh=not stated):
             return 0
@@ -1512,10 +1514,15 @@ def run_remote_orders(qq, config: dict) -> int:
                 continue
             if pending:
                 citydb.requeue_running_orders()
+                citydb.set_attack_status("queue")
             _connect_attack_orders(qq, config)
             if not ((citydb.attack_hold_left() or 0) > 0):
                 citydb.fail_blocked_orders()
-                citydb.set_attack_status("idle")
+                if citydb.attack_order_open() or citydb.daily_job_open():
+                    citydb.set_attack_status("queue")
+                    time.sleep(2)
+                else:
+                    citydb.set_attack_status("idle")
             elif citydb.attack_order_open():
                 time.sleep(1)
             else:
@@ -1812,9 +1819,13 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     or (citydb.attack_hold_left() or 0) > 0):
                 time.sleep(5)
                 continue
+            if citydb.attack_order_open():
+                citydb.set_attack_status("queue")
             _connect_attack_orders(qq, config)
             if (citydb.attack_hold_left() or 0) > 0:
                 time.sleep(1 if citydb.attack_order_open() else 5)
+            elif citydb.attack_order_open():
+                time.sleep(2)
     finally:
         if on_page:
             citydb.set_page_qr(False, user_id)
