@@ -1527,9 +1527,9 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 return "continue"
             if one.get("记失败") or ("没打过" in reason and not one.get("击退")):
                 if one.get("记失败"):
-                    fail.add(uid)
-                    out["失败"] += 1
                     who = one.get("名字") or p.get("name") or uid
+                    fail[uid] = str(one.get("名字") or p.get("name") or "").strip()
+                    out["失败"] += 1
                     names = out.setdefault("挡路人", [])
                     if who not in names:
                         names.append(who)
