@@ -58,7 +58,15 @@ F_MORALE = "countryData.field14"    # 士气（被别人打会掉，掉光遣返
 F_CITY = "countryData.field6"       # 当前所在城市
 F_MERIT = "countryData.field17"     # 累计战功
 F_CD = "countryData.field10"        # proto cdTime；攻击回包里通常缺省（0）
-_CD_GEARS = (5, 10, 15)              # 出手间隔只有这三档
+_CD_GEARS = (6.5, 10, 15)            # 出手间隔只有这三档
+
+
+def _fmt_sec(sec) -> str:
+    """6.5 保留一位，10 和 15 不带小数。"""
+    sec = float(sec or 0)
+    if abs(sec - round(sec)) < 0.05:
+        return str(int(round(sec)))
+    return f"{sec:.1f}"
 
 
 def _gear_up(sec):
@@ -70,7 +78,7 @@ def _gear_up(sec):
 
 
 def _gear_down(sec):
-    """比当前档更短的下一档。已经是 5 就停在 5。"""
+    """比当前档更短的下一档。已经是 6.5 就停在 6.5。"""
     prev = float(_CD_GEARS[0])
     for g in _CD_GEARS:
         if g >= float(sec or 0) - 0.2:
@@ -103,7 +111,7 @@ def _sleep_cd(last_act, cd_until, cd_sec, tag, *, on_wait=None):
     if wait > 0.05:
         if on_wait is not None:
             return on_wait(wait)
-        log.info("[%s] 冷却，等 %.0f 秒", tag, wait)
+        log.info("[%s] 冷却，等 %s 秒", tag, _fmt_sec(wait))
         _nap(wait)
     return True
 
@@ -125,14 +133,14 @@ def _apply_cd(out, sent_at, data, fallback):
             out["_cd_hold"] = hold - 1
         elif sec > _CD_GEARS[0]:
             sec = _gear_down(sec)
-            log.info("[冷却] 间隔试短一档，%.0f 秒", sec)
+            log.info("[冷却] 间隔试短一档，%s 秒", _fmt_sec(sec))
         out["cd_until"] = (sent_at or time.time()) + sec
     out["cd_sec"] = sec
     out["last_act"] = sent_at
 
 
 def _retry_cd21(out, last_ok, fallback, tag, who="", code=21, *, on_wait=None):
-    """冷却回包不带剩余秒。升到下一档（5→10→15），只补等这一档剩下的时间。"""
+    """冷却回包不带剩余秒。升到下一档（6.5→10→15），只补等这一档剩下的时间。"""
     now = time.time()
     sec = float(out.get("cd_sec") or fallback or _CD_GEARS[0])
     nxt = _gear_up(sec)
@@ -148,8 +156,8 @@ def _retry_cd21(out, last_ok, fallback, tag, who="", code=21, *, on_wait=None):
     n = int(out.get("_n21") or 0) + 1
     out["_n21"] = n
     who = f"{who} " if who else ""
-    log.info("[%s] %sret=%s 冷却未到，间隔升到 %.0f 秒，再等 %.0f 秒（第 %d 次）",
-             tag, who, code, out.get("cd_sec") or nxt, wait, n)
+    log.info("[%s] %sret=%s 冷却未到，间隔升到 %s 秒，再等 %s 秒（第 %d 次）",
+             tag, who, code, _fmt_sec(out.get("cd_sec") or nxt), _fmt_sec(wait), n)
     if wait > 0.05:
         if on_wait is not None:
             if on_wait(wait) is False:
@@ -1731,16 +1739,17 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             deadline = time.time() + max(0.0, float(wait or 0))
             if scan_due(last_scan, scan_gap):
                 if scan_gap > 0:
-                    log.info("[打人] 冷却 %.0f 秒，扫指定页（扫页冷却 %d 秒）",
-                             wait, scan_gap)
+                    log.info("[打人] 冷却 %s 秒，扫指定页（扫页冷却 %d 秒）",
+                             _fmt_sec(wait), scan_gap)
                 else:
-                    log.info("[打人] 冷却 %.0f 秒，扫指定页", wait)
+                    log.info("[打人] 冷却 %s 秒，扫指定页", _fmt_sec(wait))
                 if not _refresh(False):
                     return False
                 last_scan = time.time()
             else:
                 left_gap = max(0.0, scan_gap - (time.time() - last_scan))
-                log.info("[打人] 冷却 %.0f 秒，扫页冷却还剩 %.0f 秒", wait, left_gap)
+                log.info("[打人] 冷却 %s 秒，扫页冷却还剩 %.0f 秒",
+                         _fmt_sec(wait), left_gap)
             left = deadline - time.time()
             if left > 0.05 and not out["停止原因"]:
                 _nap(left)
@@ -1983,7 +1992,7 @@ def _commit_move(sock, rec, city, owner, my=0):
     """发占领前再开一次面板：人在哪、城里还有没有别人、城属于谁。
 
     人已经在目标城就不再发。敌城还有人也不发。所属以这次面板为准。
-    移动和占领的间隔也是 5、10、15 秒。ret=30 升一档再试。
+    移动和占领的间隔也是 6.5、10、15 秒。ret=30 升一档再试。
     """
     for _ in range(6):
         info = _open_city(sock, rec, city, owner, retry=False)
