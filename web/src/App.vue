@@ -1,7 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ElMenu, ElMenuItem } from "element-plus";
+import { ElMenu, ElMenuItem, ElSwitch } from "element-plus";
 import "element-plus/es/components/menu/style/css";
+import "element-plus/es/components/switch/style/css";
 import "./base.css";
 
 const me = ref(null);
@@ -58,6 +59,7 @@ const pveStages = ref("");
 const fundBuilding = ref("");
 const fundTimes = ref("1");
 const dailyNote = ref("");
+const dailySwitching = ref("");
 const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
@@ -98,15 +100,21 @@ async function refreshDaily() {
   dailyJobs.value = data.jobs || [];
 }
 
-async function saveDailySwitch(it, ev) {
-  const on = ev.target.checked;
+async function saveDailySwitch(it, on) {
+  const prev = !!it.on;
+  const next = !!on;
+  if (next === prev || dailySwitching.value) return;
+  it.on = next;
+  dailySwitching.value = it.key;
   err.value = "";
   try {
-    const data = await api("/api/daily/switch", { key: it.key, on });
+    const data = await api("/api/daily/switch", { key: it.key, on: next });
     dailyTasks.value = data.tasks || [];
   } catch (e) {
-    ev.target.checked = !!it.on;
+    it.on = prev;
     err.value = e.message;
+  } finally {
+    dailySwitching.value = "";
   }
 }
 
@@ -627,10 +635,16 @@ onUnmounted(() => {
             <tr v-for="it in dailyTasks" :key="it.key">
               <td>{{ it.name }}</td>
               <td>
-                <label class="choice">
-                  <input type="checkbox" :checked="it.on" @change="saveDailySwitch(it, $event)" />
-                  <span :class="it.on ? 'on' : 'muted'">{{ it.on ? "开" : "关" }}</span>
-                </label>
+                <el-switch
+                  class="daily-switch"
+                  size="large"
+                  inline-prompt
+                  active-text="开"
+                  inactive-text="关"
+                  :model-value="it.on"
+                  :loading="dailySwitching === it.key"
+                  @change="saveDailySwitch(it, $event)"
+                />
               </td>
               <td>{{ it.done }}/{{ it.max }}</td>
             </tr>
