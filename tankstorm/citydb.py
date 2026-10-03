@@ -2506,6 +2506,34 @@ def touch_attack_status() -> None:
         conn.close()
 
 
+def attack_cookie_logged_in(user_id: int) -> bool:
+    """这个攻打 QQ 的本地票据里还有没过期的 skey。不访问游戏。"""
+    uin = attack_qq_of(int(user_id or 0))
+    if not str(uin or "").isdigit():
+        return False
+    path = user_path(f"accounts/qq-{uin}.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            jar = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(jar, list):
+        return False
+    now = time.time()
+    for item in jar:
+        if not isinstance(item, dict) or item.get("name") != "skey" or not item.get("value"):
+            continue
+        exp = item.get("expires")
+        if exp in (None, "", 0):
+            return True
+        try:
+            if float(exp) > now:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
 def attack_status(user_id: int) -> dict:
     """给页面看这个登录账号自己的攻打 QQ。超过 25 秒没心跳就当没在跑。"""
     user_id = int(user_id)
@@ -2537,6 +2565,7 @@ def attack_status(user_id: int) -> dict:
     def pack(row: dict) -> dict:
         row = dict(row)
         row["qq"] = uin
+        row.setdefault("need_login", False)
         return _with_page_qr(row, user_id)
 
     mismatch = pack({"online": False, "phase": "offline", "detail": QQ_MISMATCH,
@@ -2573,6 +2602,8 @@ def attack_status(user_id: int) -> dict:
         detail = "空闲，等订单"
         if latest and latest[0] == "failed" and latest[1]:
             detail = f"空闲。上一单没打成：{latest[1]}"
+        if uin and not attack_cookie_logged_in(user_id):
+            detail = "登录已失效，请重新扫码"
     here = ""
     if here_id:
         name = city_name(here_id)
@@ -2583,7 +2614,10 @@ def attack_status(user_id: int) -> dict:
                  "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
                  "paused": paused,
                  "hold_left": int(hold_left) if show_hold else None,
-                 "move_note": str(parsed.get("move_note") or "")})
+                 "move_note": str(parsed.get("move_note") or ""),
+                 "need_login": bool(
+                     uin and phase not in ("login", "running", "hold")
+                     and not paused and not attack_cookie_logged_in(user_id))})
 
 
 def list_attack_fighters() -> list:
