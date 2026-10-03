@@ -1140,6 +1140,22 @@ def ordered_tasks():
     return head + tail
 
 
+# 免费两次走「征战世界」。这两项默认关，打开后跑一轮再做对应的那一次。
+CAMPAIGN_EXTRAS = (
+    ("征战第三次", "第三次征战"),
+    ("征战第4次", "第4次征战"),
+)
+
+
+def switch_keys():
+    """页面上可以保存的开关。普通任务，再加上第三次、第4次征战。"""
+    keys = [task.key for task in ordered_tasks()]
+    for key, _name in CAMPAIGN_EXTRAS:
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
 # ---------------------------------------------------------------- 每日状态
 
 def state_path_for_qq(uin: str) -> str:
@@ -1217,6 +1233,19 @@ def task_board(uin: str, switches: dict) -> list:
             "on": bool(switches.get(task.key)),
             "done": count,
             "max": int(task.max_per_day or 1),
+        })
+    for key, name in CAMPAIGN_EXTRAS:
+        try:
+            count = int(done.get(key) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        rows.append({
+            "key": key,
+            "name": name,
+            "on": bool(switches.get(key)),
+            "done": count,
+            "max": 1,
+            "extra": True,
         })
     return rows
 
@@ -1522,16 +1551,44 @@ def _run(rec, sock, config, schema):
                      st["done"].get(task.key, 0), task.max_per_day)
         continue
 
-    if (config.get("征战") or {}).get("第4次"):
-        from . import pve
-        ok, why = pve.vip_restart(rec, sock)
-        results["征战第4次"] = why if ok else f"失败：{why}"
+    _run_campaign_extras(rec, sock, switches, st, results)
 
     log.info("=== 每日任务结束 ===")
     for k, v in results.items():
         log.info("  %-12s %s", k, v)
 
     return results, details
+
+
+def _run_campaign_extras(rec, sock, switches, st, results):
+    """第三次、第4次。开关在登录账号上，默认关。免费两次仍走「征战世界」。"""
+    from . import pve
+
+    actions = (
+        ("征战第三次", pve.paid_restart),
+        ("征战第4次", pve.vip_restart),
+    )
+    for key, fn in actions:
+        if not (switches or {}).get(key):
+            continue
+        try:
+            done = int((st.get("done") or {}).get(key) or 0)
+        except (TypeError, ValueError):
+            done = 0
+        if done >= 1:
+            results[key] = "今日已做过，跳过"
+            log.info("[%s] %s", key, results[key])
+            continue
+        try:
+            ok, why = fn(rec, sock)
+        except Exception as exc:
+            ok, why = False, f"执行异常：{exc}"
+            log.exception("[%s] 抛异常", key)
+        results[key] = why if ok else f"失败：{why}"
+        log.info("[%s] %s %s", key, "✅" if ok else "❌", results[key])
+        if ok and "已重开" in str(why):
+            st.setdefault("done", {})[key] = 1
+            _save_state(st)
 
 
 def _do_once(task, sock, rec, st, results, details, field_names,
