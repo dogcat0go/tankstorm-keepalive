@@ -1125,9 +1125,9 @@ TASKS = [
     # 已经到了或超过终点时，先 type=2 免费重开，再接着打。一天最多重开 2 次。
     _t("征战世界", "征战世界·重开征战（推进活跃度）", "045b", "RcePVEFightOpt",
        {},
-       "实测", "和 --pve 一样发 type=7 打关。没到终点就从当前关打到终点，不重开。"
-               "到了或超过终点，先 type=2 免费重开，再从第 1 关打到终点。"
-               "留空只打当前关。8/10 抓包：type=2 响应 result=0，关卡回到第 1 关",
+       "实测", "和「打这些关」一样发 type=7。填了终点就打到那一关；留空打到打不过。"
+               "到了终点或打不过之后，免费重开一次就再打一轮，一天两次，两次之间会打。"
+               "8/10 抓包：type=2 响应 result=0，关卡回到第 1 关",
        max_per_day=2,
        runner=lambda rec, sock, config: _run_campaign_task(rec, sock, config),
        counts_itself=True),
@@ -1544,7 +1544,7 @@ def run(rec, sock, config: dict, schema=None, beat=None, on_fail=None) -> dict:
 
 
 def _campaign_goal(config):
-    """页面或这一轮参数里填的终点。空的表示这一轮只做免费重开。"""
+    """页面或这一轮参数里填的终点。空的表示打到打不过。"""
     raw = (config.get("征战") or {}).get("终点") if isinstance(config, dict) else None
     text = str(raw or "").strip()
     return text or None
@@ -1605,14 +1605,13 @@ def _run(rec, sock, config, schema, on_fail=None):
     # 连接断了才停，后面的任务没有连接可发。
     for task in ordered_tasks():
         try:
-            if not switches.get(task.key, False):
+            # 征战每次都打，和页面上的「打这些关」同一套，不看这项开关。
+            if task.key != "征战世界" and not switches.get(task.key, False):
                 results[task.key] = "未开启"
                 continue
 
             done = st["done"].get(task.key, 0)
-            # 免费重开记满 2 次之后，填了终点仍要接着打，不能把整项跳过。
-            if done >= task.max_per_day and not (
-                    task.key == "征战世界" and _campaign_goal(config)):
+            if task.key != "征战世界" and done >= task.max_per_day:
                 results[task.key] = f"今日已执行 {done}/{task.max_per_day} 次，跳过"
                 log.info("[%s] %s", task.key, results[task.key])
                 continue
@@ -1699,7 +1698,12 @@ def _run(rec, sock, config, schema, on_fail=None):
             _publish_failure(results, on_fail)
 
 
-    _run_campaign_extras(rec, sock, switches, st, results)
+    raw_gap = (config.get("征战") or {}).get("间隔秒", 1)
+    if raw_gap is None or raw_gap == "":
+        raw_gap = 1
+    _run_campaign_extras(
+        rec, sock, switches, st, results,
+        stages=_campaign_goal(config) or "", interval=float(raw_gap))
     _publish_failure(results, on_fail)
 
     log.info("=== 每日任务结束 ===")
@@ -1709,10 +1713,11 @@ def _run(rec, sock, config, schema, on_fail=None):
     return results, details
 
 
-def _run_campaign_extras(rec, sock, switches, st, results):
+def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1.0):
     """第三次、第4次。开关在登录账号上，默认关。免费两次仍走「征战世界」。
 
-    这一轮还在往终点打时先不做。免费重开会把关卡打回第 1 关，要等已经到了终点。
+    重开成功就按和「打这些关」一样再打一轮，然后才做下一次。
+    这一轮还在往终点打时先不做。
     """
     from . import pve
 
@@ -1727,6 +1732,7 @@ def _run_campaign_extras(rec, sock, switches, st, results):
             results[key] = "这一轮先打关卡，免费重开之后再做"
             log.info("[%s] %s", key, results[key])
         return
+    goal = "" if stages is None else str(stages).strip()
     third_open = bool((switches or {}).get("征战第三次"))
     third_ready = not third_open
     for key, fn in actions:
@@ -1751,6 +1757,17 @@ def _run_campaign_extras(rec, sock, switches, st, results):
         except Exception as exc:
             ok, why = False, f"执行异常：{exc}"
             log.exception("[%s] 抛异常", key)
+        if ok and "已重开" in str(why):
+            try:
+                fok, fwhy = pve.fight(rec, sock, goal, interval)
+            except Exception as exc:
+                fok, fwhy = False, f"执行异常：{exc}"
+                log.exception("[%s] 重开后开打失败", key)
+            why = f"{why}。然后{fwhy}"
+            if goal:
+                ok = bool(fok)
+            elif not fok and not pve._stuck(fwhy):
+                ok = False
         results[key] = why if ok else f"失败：{why}"
         log.info("[%s] %s %s", key, "✅" if ok else "❌", results[key])
         if key == "征战第三次" and ok and (

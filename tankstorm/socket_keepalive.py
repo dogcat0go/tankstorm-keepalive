@@ -1336,7 +1336,8 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 else:
                     extra = {}
                     daily._run_campaign_extras(
-                        rec, sock, switches, daily._load_state(), extra)
+                        rec, sock, switches, daily._load_state(), extra,
+                        stages=raw or "", interval=interval)
                     tail = daily.failure_brief(extra) or _daily_brief(extra)
                     if tail:
                         why = f"{why}。{tail}" if why else tail
@@ -2047,7 +2048,7 @@ def run_fund_once(qq, config: dict, building_id: int, times: int) -> int:
 def run_pve_once(qq, config: dict, stages=None) -> int:
     """连一次、打征战世界、退出。
 
-    stages 留空只打当前关。一个数字是终点关，从当前关打到这一关。
+    stages 留空从当前关打到打不过。一个数字是终点关，从当前关打到这一关。
     写成 1-10 或 3,5,8 时，当前关必须在名单里。
     config「征战.第4次」仍会先做 VIP 重开。
     """

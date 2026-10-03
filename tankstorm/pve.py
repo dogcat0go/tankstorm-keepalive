@@ -16,8 +16,8 @@
 
 所以只能打「当前这一关」。请求里不能指定关卡号。
 
-网页和命令行 --pve 同一套：留空只打当前关，只填一个数字就从当前关打到这一关。
-每日任务里，当前关到了或超过终点时，先做每天 2 次免费重开，再按这套接着打。
+网页和命令行 --pve 同一套：留空从当前关打到打不过，只填一个数字就从当前关打到这一关。
+每次重开之后都接着打，不会连着重开。
 """
 
 import re
@@ -241,7 +241,7 @@ def _restart_once(rec, sock):
     return True, "已重开"
 
 
-def _free_restarts(rec, sock, already, interval, panel=None):
+def _free_restarts(rec, sock, already, interval, panel=None, limit=None):
     """做今天还剩的免费重开。一天最多 2 次，并且不超过面板上的剩余次数。
 
     返回 (是否按规则做完, 说明, 今日已重开次数)。
@@ -265,6 +265,8 @@ def _free_restarts(rec, sock, already, interval, panel=None):
     if refresh <= 0:
         return True, "免费重开次数已用完", already
     times = min(room, int(refresh))
+    if limit:
+        times = min(times, int(limit))
     done = 0
     for i in range(times):
         ok, why = _restart_once(rec, sock)
@@ -300,14 +302,19 @@ def _single_end(raw):
     return None
 
 
+def _stuck(why):
+    """没打过这一关。没读到回包不算，那种要停，不能接着重开。"""
+    text = str(why or "")
+    return "没过去" in text and "没有结算" not in text
+
+
 def _fight_until(rec, sock, end, interval):
-    """end 为空只打当前关。否则从当前关打到终点关（含）。和命令行 --pve 同一套。"""
+    """end 为空就从当前关打到打不过。否则打到终点关（含）。"""
     cur, _panel = query(rec, sock)
     if cur is None:
         return False, "没读到当前关，不打"
     if end is None:
-        end = cur
-        log.info("[征战] 留空，只打当前第 %s 关", cur)
+        log.info("[征战] 当前第 %s 关，打到打不过", cur)
     else:
         if cur > end:
             return False, f"当前第 {cur} 关，已经过了终点第 {end} 关"
@@ -318,7 +325,7 @@ def _fight_until(rec, sock, end, interval):
     interval = float(interval if interval is not None else 1)
     done = []
     for _ in range(HARD_MAX):
-        if cur > end:
+        if end is not None and cur > end:
             break
         got = fight_once(rec, sock)
         if not isinstance(got, dict):
@@ -330,7 +337,7 @@ def _fight_until(rec, sock, end, interval):
         done.append(cur)
         log.info("[征战] 第 %s 关过了，下一关 %s", cur, nxt)
         cur = nxt
-        if cur > end:
+        if end is not None and cur > end:
             break
         if interval > 0:
             _nap(interval)
@@ -338,10 +345,12 @@ def _fight_until(rec, sock, end, interval):
 
 
 def campaign(rec, sock, stages, already=0, interval=1.0):
-    """每日任务里的征战。开打走 fight()，和命令行 --pve 同一套。
+    """每日任务和「打这些关」同一套。
 
-    还没到终点就直接打，不重开。到了或超过终点，先做今天剩下的免费重开，
-    回到第 1 关后再按 --pve 打到终点。没填终点就只打当前关。
+    填了终点：还没到就只打到终点，这一轮不重开。到了或超过终点，免费重开一次就打一轮，
+    最多两次，两次之间会打，不会连着重开。
+    没填终点：从当前关打到打不过，然后同样按次免费重开再打。
+    打到打不过算这一轮打完。没读到回包才算失败。
     返回 (是否成功, 说明, 今日免费重开次数, 这一轮是否还在往终点打)。
     最后一项为真时，调用方不要接着做第三次、第4次。
     """
@@ -360,27 +369,53 @@ def campaign(rec, sock, stages, already=0, interval=1.0):
     cur, panel = query(rec, sock)
     if cur is None:
         return False, "失败：没读到当前关，不打也不重开", already, True
-    log.info("[征战] 当前第 %s 关，终点 %s", cur, end if end is not None else "未填")
+    log.info("[征战] 当前第 %s 关，终点 %s", cur, end if end is not None else "打到打不过")
     total = already
-    if end is not None and cur >= end:
-        ok, why, total = _free_restarts(rec, sock, already, interval, panel=panel)
-        where = "已到" if cur == end else "已过"
-        head = f"当前第 {cur} 关，{where}指定的第 {end} 关，{why}"
+    notes = []
+
+    def _once(panel_now, allow_stuck):
+        nonlocal total
+        ok, why, nxt = _free_restarts(
+            rec, sock, total, interval, panel=panel_now, limit=1)
         if not ok:
-            return False, f"失败：{head}", total, True
-        if total <= already:
-            return True, head, total, False
+            total = nxt
+            return False, why
+        if nxt <= total:
+            return None, why
+        total = nxt
         ok2, why2 = fight(rec, sock, text, interval)
-        if not ok2:
-            return False, f"失败：{head}。然后{why2}", total, True
-        return True, f"{head}。然后{why2}", total, False
-    ok, why = fight(rec, sock, text, interval)
-    pushing = end is not None
-    if not ok:
-        if not str(why).startswith("失败"):
-            why = f"失败：{why}"
-        return False, why, total, True
-    return True, why, total, pushing
+        why = f"{why}。然后{why2}"
+        if ok2 or (allow_stuck and _stuck(why2)):
+            return True, why
+        return False, why
+
+    if end is not None and cur < end:
+        ok, why = fight(rec, sock, text, interval)
+        if not ok:
+            if not str(why).startswith("失败"):
+                why = f"失败：{why}"
+            return False, why, total, True
+        return True, why, total, True
+    if end is not None:
+        where = "已到" if cur == end else "已过"
+        notes.append(f"当前第 {cur} 关，{where}指定的第 {end} 关")
+    else:
+        ok, why = fight(rec, sock, text, interval)
+        notes.append(why)
+        if not ok and not _stuck(why):
+            if not str(why).startswith("失败"):
+                why = f"失败：{why}"
+            return False, why, total, True
+    used = panel if end is not None else None
+    for _ in (1, 2):
+        did, why = _once(used, end is None)
+        used = None
+        notes.append(why)
+        if did is None:
+            break
+        if not did:
+            return False, f"失败：{'。'.join(notes)}", total, True
+    return True, "。".join(notes), total, False
 
 
 def fight_once(rec, sock):
@@ -396,7 +431,7 @@ def fight_once(rec, sock):
 def fight(rec, sock, stages, interval=1.0):
     """打征战。和命令行 --pve 同一套。
 
-    留空：读面板，只打当前这一关。
+    留空：从当前关打到打不过。
     一个正整数：终点关。从当前关打到这一关（含）。已经过了终点就不打。
     区间或逗号名单：当前关必须在名单里，不能跳关。
 

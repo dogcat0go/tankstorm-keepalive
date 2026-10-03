@@ -629,7 +629,7 @@ onUnmounted(() => {
         <span class="switch">每日任务</span>
         <button type="submit" :disabled="!dailyQq">跑一轮</button>
       </form>
-      <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。</p>
+        <p class="muted">按下面今日进度里打开的项做。征战每次都会打，和「打这些关」一样，不看开关。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。</p>
       <div class="campaign-box">
         <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
           <span class="switch">征战世界</span>
@@ -654,7 +654,7 @@ onUnmounted(() => {
             <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
           </span>
         </div>
-        <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，先做每天 2 次免费重开，再从第 1 关打到终点。留空只打当前这一关。第三次、第4次排在后面；还在往终点打的这一轮先不做。第三次没做成时，不发第4次。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
+        <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，免费重开一次就再打到终点，一天两次。留空从当前关打到打不过。每次重开之后都接着打。第三次、第4次排在后面；还在往终点打的这一轮先不做。第三次没做成时，不发第4次。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
       </div>
       <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => (err = e.message))">
         <span class="switch">成就拨款</span>
