@@ -625,7 +625,7 @@ onUnmounted(() => {
         />
         <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
       </div>
-      <p v-if="campaignTasks.length" class="muted">这两项默认关。打开后，跑一轮会在免费的征战世界做完后接着做对应的那一次。第4次是 VIP 加次，会扣 100 勋章。第三次是付费重征，购买包还没抓到，跑一轮时只打开面板看次数。</p>
+      <p v-if="campaignTasks.length" class="muted">这两项默认关。打开后，跑一轮会在免费的征战世界做完后接着做对应的那一次。第4次是 VIP 加次，会扣 100 勋章。第三次是付费重征。</p>
       <form class="lock-row" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
         <span class="switch">征战世界</span>
         <label>关卡<input v-model="pveStages" placeholder="1-10，留空用服务器配置" /></label>
