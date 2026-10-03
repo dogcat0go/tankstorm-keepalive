@@ -828,9 +828,76 @@ def _interrupt_reason(exc) -> str:
     return "攻打中断：" + text
 
 
+def _fight_modo(rec, sock, config, beater, job) -> None:
+    """刷摩多军团。走进首都旁边两座城，召唤支援兵再打。恢复卡按订单上的数量。"""
+    from . import citydb, country_war
+
+    citydb.set_attack_status("running")
+    citydb.set_fighting_order(job["id"])
+    start_beats = int(job.get("beats") or 0)
+
+    def _beat_note(n, name=""):
+        citydb.note_attack_beats(job["id"], n)
+
+    tally = {"n": start_beats, "note": _beat_note}
+    citydb.note_attack_beats(job["id"], start_beats)
+    try:
+        try:
+            out = country_war.farm_modo_order(
+                rec, sock, config, int(job.get("cards") or 0),
+                beat=beater, tally=tally)
+        except OSError:
+            citydb.finish_attack_order(
+                job["id"], "failed", "连接中断", beats=int(tally.get("n") or 0))
+            raise
+        except Exception as exc:
+            why = _interrupt_reason(exc)
+            log.info("订单 %s %s", job["id"], why, exc_info=True)
+            citydb.finish_attack_order(
+                job["id"], "failed", why, beats=int(tally.get("n") or 0))
+            return
+        why = str(out.get("停止原因") or "")
+        note = str(out.get("说明") or "").strip()
+        hits = int(out.get("攻击") or 0)
+        beats = int(tally.get("n") or 0)
+        log.info("―― 摩多军团 ―― 打 %d 次，召唤 %d 次，用卡 %d 张",
+                 hits, int(out.get("召唤") or 0), int(out.get("用卡") or 0))
+        if why:
+            log.info("   结束原因：%s", why)
+        if why == "已暂停":
+            citydb.defer_attack_order(job["id"])
+            log.info("订单 %s 已暂停，放回排队", job["id"])
+            return
+        if why == "已手动关停" or why.endswith("已手动关停"):
+            citydb.finish_attack_order(job["id"], "ended", "已手动关停", beats=beats)
+            return
+        if _defeated(why):
+            citydb.finish_attack_order(
+                job["id"], "ended", why or "被别人打败，已回到首都", beats=beats)
+            return
+        show = note or why
+        if why and _person_blocking(why) and citydb.attack_hold_minutes() > 0:
+            citydb.park_attack_order(job["id"], show or why, beats=beats)
+            log.info("订单 %s 有人挡路，挂机期间继续看路径", job["id"])
+            return
+        if why and _person_blocking(why):
+            citydb.finish_attack_order(job["id"], "failed", show or why, beats=beats)
+            return
+        if hits > 0:
+            citydb.finish_attack_order(job["id"], "done", show, beats=beats)
+            return
+        citydb.finish_attack_order(
+            job["id"], "failed", show or why or "未打成", beats=beats)
+    finally:
+        citydb.set_fighting_order(0)
+
+
 def _fight_claimed(rec, sock, config, beater, job) -> None:
     from . import citydb, country_war
 
+    if str(job.get("kind") or "") == "modo":
+        _fight_modo(rec, sock, config, beater, job)
+        return
     uid = str(job.get("uid") or "").strip()
     citydb.set_attack_status("running")
     citydb.set_fighting_order(job["id"])
