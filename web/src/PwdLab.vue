@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import "./base.css";
 
 const me = ref(null);
@@ -12,6 +12,9 @@ const busy = ref(false);
 const err = ref("");
 const lab = ref(null);
 const accounts = ref([]);
+
+let tcaptchaWait = null;
+let capInst = null;
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -78,7 +81,75 @@ async function refresh() {
   accounts.value = list.items || [];
 }
 
-async function pwdLogin() {
+function dropCaptcha() {
+  if (capInst && typeof capInst.destroy === "function") {
+    try {
+      capInst.destroy();
+    } catch (_) {
+      /* TCaptcha destroy 偶尔会抛 */
+    }
+  }
+  capInst = null;
+}
+
+function loadTCaptcha() {
+  if (typeof window !== "undefined" && window.TencentCaptcha) return Promise.resolve();
+  if (tcaptchaWait) return tcaptchaWait;
+  tcaptchaWait = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://ssl.captcha.qq.com/TCaptcha.js";
+    s.async = true;
+    s.onload = () => {
+      if (window.TencentCaptcha) resolve();
+      else {
+        tcaptchaWait = null;
+        reject(new Error("腾讯验证码脚本没有挂上"));
+      }
+    };
+    s.onerror = () => {
+      tcaptchaWait = null;
+      reject(new Error("腾讯验证码脚本加载失败"));
+    };
+    document.head.appendChild(s);
+  });
+  return tcaptchaWait;
+}
+
+function onCaptcha(res) {
+  const ticket = res && res.ticket;
+  const randstr = res && (res.randstr || res.randStr);
+  if (res && res.ret === 0 && ticket && randstr) {
+    pwdLogin({ ticket, randstr }).catch((e) => {
+      err.value = e.message;
+    });
+    return;
+  }
+  if (res && res.ret === 2) return;
+  err.value = (res && (res.errorMessage || res.errMessage)) || "滑动验证没过";
+}
+
+async function openSlider() {
+  const data = lab.value;
+  if (!data || data.phase !== "captcha" || !data.sid) {
+    throw new Error("还没有验证码会话，请先点密码登录");
+  }
+  await loadTCaptcha();
+  dropCaptcha();
+  try {
+    capInst = new window.TencentCaptcha(String(data.aid || "549000912"), onCaptcha, {
+      sid: data.sid,
+      uin: String(qqUin.value || data.uin || ""),
+      type: "popup",
+      enableAged: true,
+    });
+    capInst.show();
+  } catch (e) {
+    capInst = null;
+    throw new Error((e && e.message) || "腾讯验证码打不开");
+  }
+}
+
+async function pwdLogin(extra) {
   err.value = "";
   busy.value = true;
   try {
@@ -86,11 +157,16 @@ async function pwdLogin() {
       qq: qqUin.value,
       password: qqPwd.value,
       low_login: lowLogin.value,
+      ...(extra && extra.ticket ? { ticket: extra.ticket, randstr: extra.randstr } : {}),
     });
     lab.value = data;
-    if (data.phase === "fail" || data.phase === "captcha") {
-      err.value = data.msg || "登录失败";
+    if (data.phase === "captcha") {
+      busy.value = false;
+      await openSlider();
+      return;
     }
+    dropCaptcha();
+    if (data.phase === "fail") err.value = data.msg || "登录失败";
   } finally {
     busy.value = false;
   }
@@ -103,17 +179,20 @@ async function checkGame() {
 
 async function clearLab() {
   err.value = "";
+  dropCaptcha();
   lab.value = await api("/api/pwd-lab/clear", {});
 }
 
 async function logout() {
   await api("/api/logout", {});
+  dropCaptcha();
   me.value = null;
   lab.value = null;
   accounts.value = [];
 }
 
 onMounted(loadMe);
+onBeforeUnmount(dropCaptcha);
 </script>
 
 <template>
@@ -146,7 +225,8 @@ onMounted(loadMe);
       <p class="muted">
         走 ptlogin2 账号密码（pt_tea=2）。默认与现有扫码同一套 xlogin（low_login=0），方便对照时效。
         勾选「下次自动登录」才会带 low_login_enable=1、720 小时。票据写在独立文件里，不绑攻打号、不拉攻打线程。
-        扫码登录不用在这里测。无过期表示腾讯没给 Expires。
+        第一次腾讯常会要滑块，在本页划完即可；划过并登录成功后设备记录会留下，下次密码登录可能就不用再验证。
+        清掉测试票据会把设备记录一并清掉，滑块可能又会出现。扫码登录不用在这里测。无过期表示腾讯没给 Expires。
       </p>
       <h2>这次密码登录</h2>
       <form class="stack" @submit.prevent="pwdLogin().catch((e) => (err = e.message))">
@@ -159,6 +239,13 @@ onMounted(loadMe);
         <p class="muted">{{ lab ? phaseText(lab.phase) : "—" }}<template v-if="lab && lab.msg"> · {{ lab.msg }}</template></p>
         <p class="proc">
           <button type="submit" :disabled="busy">{{ busy ? "登录中…" : "密码登录" }}</button>
+          <button
+            v-if="lab && lab.phase === 'captcha'"
+            type="button"
+            class="ghost"
+            :disabled="busy"
+            @click="openSlider().catch((e) => (err = e.message))"
+          >打开滑动验证</button>
           <button type="button" class="ghost" @click="checkGame().catch((e) => (err = e.message))">访问游戏页校验</button>
           <button type="button" class="ghost" @click="clearLab().catch((e) => (err = e.message))">清掉测试票据</button>
         </p>

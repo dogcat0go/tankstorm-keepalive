@@ -36,6 +36,9 @@ class _Box:
         self.msg = ""
         self.game_ok = None
         self.low_login = False
+        self.aid = ""
+        self.sid = ""
+        self.cap_cd = ""
         self.lock = threading.Lock()
 
 
@@ -51,17 +54,21 @@ def _box(user_id: int) -> _Box:
 
 def _view(box: _Box) -> dict:
     report = box.qq.ticket_report()
+    pending = getattr(box.qq, "_pwd_pending", None) or {}
     return {
         "phase": box.phase,
         "msg": box.msg,
         "game_ok": box.game_ok,
         "low_login": bool(box.low_login),
-        "uin": report.get("uin") or "",
+        "uin": report.get("uin") or pending.get("uin") or "",
         "long_term": bool(report.get("long_term")),
         "skey_left": report.get("skey_left"),
         "p_skey_left": report.get("p_skey_left"),
         "tickets": report.get("tickets") or [],
         "cookie": f"accounts/pwd-lab-{box.user_id}.json",
+        "aid": box.aid or "",
+        "sid": box.sid or "",
+        "cap_cd": box.cap_cd or "",
     }
 
 
@@ -75,21 +82,33 @@ def login(user_id: int, data: dict) -> dict:
     uin = str((data or {}).get("qq") or "").strip()
     password = str((data or {}).get("password") or "")
     low_login = bool((data or {}).get("low_login"))
+    ticket = str((data or {}).get("ticket") or "").strip()
+    randstr = str((data or {}).get("randstr") or "").strip()
     box = _box(user_id)
     with box.lock:
-        result = box.qq.password_login(uin, password, low_login=low_login)
+        result = box.qq.password_login(
+            uin, password, low_login=low_login, ticket=ticket, randstr=randstr)
         box.low_login = low_login
         box.game_ok = None
         if result.get("ok"):
             box.phase = "ok"
             box.msg = result.get("msg") or "密码登录完成"
             box.game_ok = True
+            box.aid = ""
+            box.sid = ""
+            box.cap_cd = ""
         elif result.get("captcha"):
             box.phase = "captcha"
-            box.msg = result.get("msg") or "这个号要滑块验证码"
+            box.msg = result.get("msg") or "请完成滑动验证"
+            box.aid = str(result.get("aid") or "")
+            box.sid = str(result.get("sid") or "")
+            box.cap_cd = str(result.get("cap_cd") or "")
         else:
             box.phase = "fail"
             box.msg = result.get("msg") or "密码登录失败"
+            box.aid = ""
+            box.sid = ""
+            box.cap_cd = ""
         log.info("密码登录测试：%s %s", citydb.username_of(user_id), box.msg)
         return _view(box)
 
@@ -119,6 +138,9 @@ def clear(user_id: int) -> dict:
         box.msg = "已清掉测试票据"
         box.game_ok = None
         box.low_login = False
+        box.aid = ""
+        box.sid = ""
+        box.cap_cd = ""
         return _view(box)
 
 

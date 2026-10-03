@@ -1066,18 +1066,29 @@ class QQSession:
             return {"code": "67", "msg": "已扫码，请在手机上确认", "done": False, "ok": False}
         return {"code": code, "msg": msg, "done": False, "ok": False}
 
-    def password_login(self, uin: str, password: str, low_login: bool = False) -> dict:
-        """ptlogin2 账号密码登录。要滑块时不代过验证码，返回 captcha=True。
+    def password_login(self, uin: str, password: str, low_login: bool = False,
+                       ticket: str = "", randstr: str = "") -> dict:
+        """ptlogin2 账号密码登录。第一次要滑块时把 sid 交给页面，用户划完再带着 ticket 继续。
 
         low_login 为真时带 low_login_enable=1、low_login_hour=720（下次自动登录）。
         默认 false，与现有扫码 xlogin 的 low_login=0 同一套入口，方便对照票据寿命。
+        划过并登录成功后设备票据会留下，下次 check 可能不再要滑块。
         """
         uin = str(uin or "").strip()
+        ticket = str(ticket or "").strip()
+        randstr = str(randstr or "").strip()
         if not uin.isdigit() or not 5 <= len(uin) <= 12:
             return {"ok": False, "captcha": False, "code": "", "msg": "QQ 号要是 5 到 12 位数字"}
         if not password:
             return {"ok": False, "captcha": False, "code": "", "msg": "密码是空的"}
 
+        pending = getattr(self, "_pwd_pending", None) or {}
+        fresh = pending.get("uin") == uin and time.time() - float(pending.get("at") or 0) < 600
+        if ticket and randstr and fresh:
+            return self._pt_password_submit(
+                password, pending, low_login=low_login, ticket=ticket, randstr=randstr)
+
+        self._pwd_pending = None
         self._clear_session_cookies(keep=DEVICE_COOKIES)
         guid_before = self._cookie("pt_guid_sig")
         low = "1" if low_login else "0"
@@ -1096,7 +1107,6 @@ class QQSession:
             self._set_cookie("pt_guid_sig", guid_before)
 
         login_sig = self._cookie("pt_login_sig") or ""
-        referer = {"Referer": "https://xui.ptlogin2.qq.com/"}
         try:
             r = self.session.get(
                 "https://ssl.ptlogin2.qq.com/check",
@@ -1106,7 +1116,8 @@ class QQSession:
                         "login_sig": login_sig, "u1": GAME_URL,
                         "r": str(random.random()), "pt_uistyle": "22",
                         "daid": DAID, "pt_3rd_aid": "0"},
-                headers=referer, timeout=15)
+                headers={"Referer": "https://xui.ptlogin2.qq.com/"},
+                timeout=15)
         except requests.RequestException as exc:
             return {"ok": False, "captcha": False, "code": "", "msg": f"check 失败: {exc}"}
 
@@ -1116,48 +1127,86 @@ class QQSession:
             return {"ok": False, "captcha": False, "code": "",
                     "msg": f"check 响应无法解析：{head}"}
         check_ret, vcode, salt_js, verifysession, randsalt, ptdrvs, sid = quoted[:7]
-        if check_ret == "1":
-            return {"ok": False, "captcha": True, "code": "1",
-                    "msg": "这个号要滑块验证码，测试页不代过验证码"}
         if check_ret == "2":
-            return {"ok": False, "captcha": False, "code": "2",
-                    "msg": "QQ 号不对"}
-        if check_ret not in ("0", "3"):
+            return {"ok": False, "captcha": False, "code": "2", "msg": "QQ 号不对"}
+        if check_ret not in ("0", "1", "3"):
             return {"ok": False, "captcha": False, "code": check_ret,
                     "msg": f"check 被拒（code={check_ret}）"}
         salt = _js_string_bytes(salt_js)
         if len(salt) < 8:
             salt = salt.ljust(8, b"\x00")
-        vcode = vcode or "!AAA"
-        session = verifysession or self._cookie("verifysession") or ""
+        pending = {
+            "uin": uin,
+            "salt_hex": salt.hex(),
+            "vcode": vcode or "!AAA",
+            "verifysession": verifysession or self._cookie("verifysession") or "",
+            "randsalt": randsalt or "2",
+            "ptdrvs": ptdrvs or "",
+            "sid": sid or "",
+            "login_sig": login_sig,
+            "cap_cd": vcode if check_ret == "1" else "",
+            "at": time.time(),
+        }
+        if check_ret == "1":
+            self._pwd_pending = pending
+            self._save_cookies()
+            log.info("密码登录要滑块 uin=%s，等页面划完", uin)
+            return {
+                "ok": False, "captcha": True, "code": "1",
+                "msg": "请完成滑动验证。划过一次之后，下次密码登录可能就不用再验证。",
+                "aid": PTLOGIN_APPID, "sid": pending["sid"],
+                "cap_cd": pending["cap_cd"],
+            }
+        return self._pt_password_submit(
+            password, pending, low_login=low_login, ticket="", randstr="")
+
+    def _pt_password_submit(self, password: str, pending: dict, low_login: bool = False,
+                            ticket: str = "", randstr: str = "") -> dict:
+        uin = pending.get("uin") or ""
+        salt = bytes.fromhex(pending.get("salt_hex") or "")
+        if len(salt) < 8:
+            salt = salt.ljust(8, b"\x00")
+        if ticket and randstr:
+            vcode = randstr
+            session = ticket
+            pt_vcode = "1"
+        else:
+            vcode = pending.get("vcode") or "!AAA"
+            session = pending.get("verifysession") or ""
+            pt_vcode = "0"
         try:
             enc = encrypt_pt_password(password, salt, vcode)
         except Exception as exc:
             return {"ok": False, "captcha": False, "code": "",
                     "msg": f"密码加密失败: {exc}"}
-
         params = {
-            "u": uin, "verifycode": vcode, "pt_vcode_v1": "0",
+            "u": uin, "verifycode": vcode, "pt_vcode_v1": pt_vcode,
             "pt_verifysession_v1": session, "p": enc,
-            "pt_randsalt": randsalt or "2",
+            "pt_randsalt": pending.get("randsalt") or "2",
             "u1": GAME_URL, "ptredirect": "0", "h": "1", "t": "1", "g": "1",
             "from_ui": "1", "ptlang": "2052",
             "action": f"2-0-{int(time.time() * 1000)}",
             "js_ver": "26071711", "js_type": "1",
-            "login_sig": login_sig, "pt_uistyle": "22",
+            "login_sig": pending.get("login_sig") or "",
+            "pt_uistyle": "22",
             "aid": PTLOGIN_APPID, "daid": DAID,
         }
-        if ptdrvs:
-            params["ptdrvs"] = ptdrvs
-        if sid:
-            params["sid"] = sid
+        if pending.get("ptdrvs"):
+            params["ptdrvs"] = pending["ptdrvs"]
+        if pending.get("sid"):
+            params["sid"] = pending["sid"]
+        if ticket:
+            params["ticket"] = ticket
+            params["rand_str"] = randstr
         if low_login:
             params["low_login_enable"] = "1"
             params["low_login_hour"] = "720"
         try:
             r = self.session.get(
                 "https://ssl.ptlogin2.qq.com/login",
-                params=params, headers=referer, timeout=20)
+                params=params,
+                headers={"Referer": "https://xui.ptlogin2.qq.com/"},
+                timeout=20)
         except requests.RequestException as exc:
             return {"ok": False, "captcha": False, "code": "", "msg": f"login 失败: {exc}"}
 
@@ -1168,8 +1217,11 @@ class QQSession:
                     "msg": f"login 响应无法解析：{head}"}
         code, url, msg = m.group(1), m.group(2), m.group(3)
         if code != "0":
+            self._pwd_pending = None
             log.info("密码登录被拒 uin=%s code=%s %s", uin, code, (msg or "")[:60])
-            return {"ok": False, "captcha": False, "code": code, "msg": msg or f"登录失败 code={code}"}
+            return {"ok": False, "captcha": False, "code": code,
+                    "msg": msg or f"登录失败 code={code}"}
+        self._pwd_pending = None
         try:
             self.session.get(url, allow_redirects=True, timeout=20)
         except requests.RequestException as exc:
