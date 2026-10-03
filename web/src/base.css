@@ -61,6 +61,18 @@ table.scan td select { min-width: 9em; }
 th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
 th { font-size: 13px; color: #555; }
 .on { color: #0b6b2f; font-weight: 700; }
+.daily-switch {
+  --el-switch-on-color: #0b6b2f;
+  --el-switch-off-color: #c8c8c4;
+  --el-color-white: #fff;
+  height: 28px;
+}
+.daily-switch .el-switch__input {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  max-width: none;
+}
 .off { color: #666; }
 code { font-size: 13px; }
 img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px solid #ddd; }

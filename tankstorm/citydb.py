@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_wait      INTEGER NOT NULL DEFAULT 0,
     clear_scan      INTEGER NOT NULL DEFAULT 0,
     modo_cards      INTEGER NOT NULL DEFAULT 0,
+    daily_switch    TEXT,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -307,6 +308,9 @@ def connect(readonly=False, timeout=15):
             if ucols and "attack_qq_block" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN attack_qq_block INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "daily_switch" not in ucols:
+                setup.execute("ALTER TABLE app_user ADD COLUMN daily_switch TEXT")
                 setup.commit()
             _forget_page_names(setup)
             _ensure_attack_qq_map(setup)
@@ -1801,14 +1805,20 @@ def clear_wait_minutes(user_id: int = 0) -> int:
     return int(clear_settings(user_id).get("wait_min") or 0)
 
 
-def schedule_empty_order(order_id: int, minutes: int, beats=None) -> bool:
-    """这几页没人。同一条订单过这么多分钟再排队。已经不在打的返回 False。"""
+def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False) -> bool:
+    """同一条清城订单过这么多分钟再排队。已经不在打的返回 False。
+
+    stuck 为真表示城里还留着打不过的人。否则是这几页没人。
+    """
     minutes = int(minutes or 0)
     if minutes <= 0:
         return False
     due = datetime.now(timezone.utc) + timedelta(minutes=minutes)
     run_at = due.strftime("%Y-%m-%dT%H:%M:%SZ")
-    reason = f"这座城是空的，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
+    if stuck:
+        reason = f"还有打不过的人，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
+    else:
+        reason = f"这座城是空的，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
     conn = connect()
     try:
         if beats is None:
@@ -1825,6 +1835,21 @@ def schedule_empty_order(order_id: int, minutes: int, beats=None) -> bool:
         return cur.rowcount == 1
     finally:
         conn.close()
+
+
+def attack_wait_pending() -> bool:
+    """这条线程还有没到点的清城再打。"""
+    user_id = attack_context_user()
+    if not user_id:
+        return False
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM atk_order WHERE user_id=? AND status='wait' LIMIT 1",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    return bool(row)
 
 
 def release_due_waits() -> int:
@@ -1957,17 +1982,21 @@ def queue_present_locks(user_id: int) -> int:
 
 def _order_row(r) -> dict:
     kind = str(r[7] or "") if len(r) > 7 else ""
+    run_at = str(r[8] or "") if len(r) > 8 else ""
+    if str(r[3] or "") != "wait":
+        run_at = ""
     return {"id": r[0], "city_id": r[1], "uid": r[2], "status": r[3],
             "reason": r[4], "created_at": beijing_ts(r[5]), "beats": r[6],
             "city_name": "" if kind == "modo" else city_name(r[1]),
-            "kind": kind}
+            "kind": kind, "run_at": run_at}
 
 
 def list_attack_orders(user_id: int, limit: int = 3) -> list:
     """页面上的订单。还没打完的最多带上两条，总共最多三条，新的在前。"""
     limit = max(1, min(int(limit or 3), 3))
     user_id = int(user_id)
-    cols = ("id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at, beats, IFNULL(kind,'')")
+    cols = ("id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at, beats, "
+            "IFNULL(kind,''), IFNULL(run_at,'')")
     conn = connect(readonly=True)
     try:
         valid = conn.execute(
@@ -2890,6 +2919,77 @@ def daily_job_open() -> bool:
     finally:
         conn.close()
     return bool(row)
+
+
+def _saved_daily_switches(conn, user_id: int):
+    """这个账号自己存过的开关。没存过返回 None。"""
+    row = conn.execute(
+        "SELECT daily_switch FROM app_user WHERE id=?",
+        (int(user_id),)).fetchone()
+    if not row or not str(row[0] or "").strip():
+        return None
+    try:
+        data = json.loads(row[0])
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def daily_switches(user_id: int, defaults: dict) -> dict:
+    """这个登录账号的每日任务开关。没改过的项用服务器配置。"""
+    defaults = defaults if isinstance(defaults, dict) else {}
+    base = {}
+    for key, val in defaults.items():
+        name = str(key or "")
+        if not name or name.startswith("_"):
+            continue
+        base[name] = bool(val)
+    conn = connect(readonly=True)
+    try:
+        saved = _saved_daily_switches(conn, user_id)
+    finally:
+        conn.close()
+    if not saved:
+        return base
+    for key, val in saved.items():
+        name = str(key or "")
+        if not name or name.startswith("_"):
+            continue
+        base[name] = bool(val)
+    return base
+
+
+def set_daily_switch(user_id: int, key: str, on, known, defaults: dict) -> str:
+    """记下一项开关。第一次保存时把当前看到的开关整份记下。"""
+    key = str(key or "").strip()
+    allowed = []
+    for item in known or []:
+        name = str(item or "").strip()
+        if name and not name.startswith("_") and name not in allowed:
+            allowed.append(name)
+    if key not in allowed:
+        return "没有这项任务"
+    current = daily_switches(user_id, defaults)
+    stored = {}
+    for name in allowed:
+        if name in current:
+            stored[name] = bool(current[name])
+        else:
+            stored[name] = bool((defaults or {}).get(name))
+    stored[key] = bool(on)
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET daily_switch=? WHERE id=?",
+            (json.dumps(stored, ensure_ascii=False), int(user_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "账号不存在"
+        return ""
+    finally:
+        conn.close()
 
 
 def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:

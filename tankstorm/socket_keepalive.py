@@ -785,6 +785,32 @@ def _empty_city(reason: str) -> bool:
     return str(reason or "") in ("这几页没有可打的人", "这一页没有可打的人")
 
 
+def _clear_hard_stop(reason: str) -> bool:
+    """这种停手不能过一会儿再清。"""
+    text = str(reason or "")
+    return any(k in text for k in (
+        "行动力", "已暂停", "已手动关停", "被别人打败", "回到首都", "出不了首都",
+        "遣返", "不相邻", "恢复卡", "位置变了", "连接中断", "攻打中断"))
+
+
+def _clear_stuck(reason: str, out) -> bool:
+    """城里还留着打不过的人。空城不算。"""
+    text = str(reason or "")
+    if "清不完" in text or "打不过" in text or "没打过" in text or "人数没减少" in text:
+        return True
+    try:
+        return int((out or {}).get("没打过") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _clear_cycle(reason: str, out) -> bool:
+    """空城，或还剩打不过的人，可以按空城再打的分钟再来一轮。"""
+    if _clear_hard_stop(reason):
+        return False
+    return _empty_city(reason) or _clear_stuck(reason, out)
+
+
 def _order_result(job, out) -> tuple:
     """这一单打完怎么收。返回 (动作, 状态, 原因)。
 
@@ -949,11 +975,16 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         beats = int(tally.get("n") or 0)
         if why:
             log.info("   结束原因：%s", why)
-        if (not uid and not job.get("auto") and action == "finish" and status == "failed"
-                and _empty_city(why)):
+        if (not uid and not job.get("auto") and action == "finish"
+                and _clear_cycle(why, out)):
             minutes = citydb.clear_wait_minutes()
-            if minutes > 0 and citydb.schedule_empty_order(job["id"], minutes, beats=beats):
-                log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], minutes)
+            stuck = _clear_stuck(why, out)
+            if minutes > 0 and citydb.schedule_empty_order(
+                    job["id"], minutes, beats=beats, stuck=stuck):
+                if stuck:
+                    log.info("订单 %s 还有打不过的人，%d 分钟后再打", job["id"], minutes)
+                else:
+                    log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], minutes)
                 return
         if action == "defer":
             citydb.defer_attack_order(job["id"])
@@ -1244,6 +1275,10 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             cfg = copy.deepcopy(config)
             block = cfg.setdefault("每日任务", {})
             block["启用"] = True
+            user_id = citydb.attack_context_user()
+            if user_id:
+                block["任务"] = citydb.daily_switches(
+                    user_id, (config.get("每日任务") or {}).get("任务") or {})
             path = daily.state_path_for_qq(citydb.attack_context_qq())
             with daily.using_state(path):
                 results, _details = daily.run(rec, sock, cfg, beat=beater)
@@ -1736,10 +1771,17 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 continue
             citydb.resume_stranded_orders()
             citydb.resume_daily_jobs()
+            citydb.release_due_waits()
+            if not (citydb.attack_order_open()
+                    or citydb.daily_job_open()
+                    or citydb.attack_wait_pending()
+                    or (citydb.attack_hold_left() or 0) > 0):
+                break
             if not (citydb.attack_order_open()
                     or citydb.daily_job_open()
                     or (citydb.attack_hold_left() or 0) > 0):
-                break
+                time.sleep(5)
+                continue
             _connect_attack_orders(qq, config)
             if (citydb.attack_hold_left() or 0) > 0:
                 time.sleep(1 if citydb.attack_order_open() else 5)

@@ -1,7 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ElMenu, ElMenuItem } from "element-plus";
+import { ElMenu, ElMenuItem, ElSwitch } from "element-plus";
 import "element-plus/es/components/menu/style/css";
+import "element-plus/es/components/switch/style/css";
 import "./base.css";
 
 const me = ref(null);
@@ -58,6 +59,7 @@ const pveStages = ref("");
 const fundBuilding = ref("");
 const fundTimes = ref("1");
 const dailyNote = ref("");
+const dailySwitching = ref("");
 const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
@@ -96,6 +98,24 @@ async function refreshDaily() {
   dailyQq.value = data.qq || "";
   dailyTasks.value = data.tasks || [];
   dailyJobs.value = data.jobs || [];
+}
+
+async function saveDailySwitch(it, on) {
+  const prev = !!it.on;
+  const next = !!on;
+  if (next === prev || dailySwitching.value) return;
+  it.on = next;
+  dailySwitching.value = it.key;
+  err.value = "";
+  try {
+    const data = await api("/api/daily/switch", { key: it.key, on: next });
+    dailyTasks.value = data.tasks || [];
+  } catch (e) {
+    it.on = prev;
+    err.value = e.message;
+  } finally {
+    dailySwitching.value = "";
+  }
 }
 
 async function runDaily(kind, extra) {
@@ -375,9 +395,7 @@ function orderUid(it) {
   return (it && it.uid) || "整座城";
 }
 
-function holdClock() {
-  if (!holdUntil.value) return "";
-  const sec = Math.max(0, Math.round((holdUntil.value - clock.value) / 1000));
+function formatClock(sec) {
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = sec % 60;
@@ -385,9 +403,31 @@ function holdClock() {
   return h ? h + ":" + pad(m) + ":" + pad(s) : m + ":" + pad(s);
 }
 
+function holdClock() {
+  if (!holdUntil.value) return "";
+  const sec = Math.max(0, Math.round((holdUntil.value - clock.value) / 1000));
+  return formatClock(sec);
+}
+
+function waitClock(it) {
+  if (!it || it.status !== "wait" || !it.run_at) return "";
+  const due = Date.parse(it.run_at);
+  if (!Number.isFinite(due)) return "";
+  const sec = Math.max(0, Math.round((due - clock.value) / 1000));
+  return formatClock(sec);
+}
+
+const clearRetryText = computed(() => {
+  const row = orders.value.find((it) => it.status === "wait" && it.run_at);
+  if (!row) return "";
+  const left = waitClock(row);
+  return left ? "下一轮还有 " + left : "";
+});
+
 function holdCell(it) {
+  if (it && it.status === "wait") return waitClock(it) || "—";
   const text = holdClock();
-  if (!text || it.status === "pending" || it.status === "running" || it.status === "wait") return "—";
+  if (!text || it.status === "pending" || it.status === "running") return "—";
   const finished = orders.value.find((row) => row.status !== "pending" && row.status !== "running" && row.status !== "wait");
   return finished && finished.id === it.id ? text : "—";
 }
@@ -417,7 +457,7 @@ function submitNote(data) {
 }
 
 function orderStatus(status) {
-  return { pending: "排队", running: "正在打", blocked: "等通路", wait: "等空城", done: "已打完", failed: "没打成", ended: "已结束" }[status] || status;
+  return { pending: "排队", running: "正在打", blocked: "等通路", wait: "等再打", done: "已打完", failed: "没打成", ended: "已结束" }[status] || status;
 }
 
 function orderOpen(it) {
@@ -568,7 +608,7 @@ onUnmounted(() => {
         <span class="switch">每日任务</span>
         <button type="submit" :disabled="!dailyQq">跑一轮</button>
       </form>
-      <p class="muted">按服务器里已经打开的那些项做。今日次数记在这个攻打号上，换一个号单独算。</p>
+      <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。</p>
       <form class="lock-row" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
         <span class="switch">征战世界</span>
         <label>关卡<input v-model="pveStages" placeholder="1-10，留空用服务器配置" /></label>
@@ -584,6 +624,7 @@ onUnmounted(() => {
       <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 30。</p>
       <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
       <h2>今日进度</h2>
+      <p class="muted">点开关就保存。跑一轮时按这里的开和关做。</p>
       <p v-if="!dailyTasks.length" class="muted">还没有任务表。</p>
       <div v-else class="wide">
         <table>
@@ -593,7 +634,18 @@ onUnmounted(() => {
           <tbody>
             <tr v-for="it in dailyTasks" :key="it.key">
               <td>{{ it.name }}</td>
-              <td :class="it.on ? 'on' : 'muted'">{{ it.on ? "开" : "关" }}</td>
+              <td>
+                <el-switch
+                  class="daily-switch"
+                  size="large"
+                  inline-prompt
+                  active-text="开"
+                  inactive-text="关"
+                  :model-value="it.on"
+                  :loading="dailySwitching === it.key"
+                  @change="saveDailySwitch(it, $event)"
+                />
+              </td>
               <td>{{ it.done }}/{{ it.max }}</td>
             </tr>
           </tbody>
@@ -725,6 +777,7 @@ onUnmounted(() => {
           <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
             <span class="switch">空城再打</span>
             <label class="choice">分钟<input v-model="clearWait" class="mins" inputmode="numeric" required /></label>
+            <span v-if="clearRetryText" class="muted">{{ clearRetryText }}</span>
           </form>
           <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
             <span class="switch">扫页冷却</span>
@@ -746,7 +799,7 @@ onUnmounted(() => {
             <button type="submit">保存</button>
             <span class="muted">{{ clearNote }}</span>
           </form>
-          <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人时，过上面的分钟再启动同一条订单。0 表示空了就结束。</p>
+          <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。</p>
         </div>
       </template>
         <p>

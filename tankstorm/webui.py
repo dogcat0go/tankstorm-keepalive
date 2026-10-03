@@ -322,7 +322,8 @@ def _handler(config: dict):
                     return
                 from . import daily
                 uin = citydb.attack_qq_of(user["id"])
-                switches = ((config.get("每日任务") or {}).get("任务") or {})
+                switches = citydb.daily_switches(
+                    user["id"], (config.get("每日任务") or {}).get("任务") or {})
                 _json(self, 200, {
                     "qq": uin,
                     "tasks": daily.task_board(uin, switches),
@@ -435,6 +436,25 @@ def _handler(config: dict):
                     _json(self, 200, {"ok": True, "login": followed["login"],
                                       "resumed": followed["resumed"], "scan": followed["scan"],
                                       "hold_min": hold_min, "card_max": card_max})
+                elif path == "/api/daily/switch":
+                    from . import daily
+                    on = data.get("on")
+                    if isinstance(on, str):
+                        on = on.strip().lower() in ("1", "true", "on", "开")
+                    else:
+                        on = bool(on)
+                    defaults = (config.get("每日任务") or {}).get("任务") or {}
+                    why = citydb.set_daily_switch(
+                        user["id"], data.get("key"), on,
+                        [task.key for task in daily.ordered_tasks()], defaults)
+                    if why:
+                        raise ValueError(why)
+                    uin = citydb.attack_qq_of(user["id"])
+                    switches = citydb.daily_switches(user["id"], defaults)
+                    _json(self, 200, {
+                        "ok": True,
+                        "tasks": daily.task_board(uin, switches),
+                    })
                 elif path == "/api/daily":
                     if citydb.account_expired(user.get("expires_at") or ""):
                         raise ValueError("账号已过期")
