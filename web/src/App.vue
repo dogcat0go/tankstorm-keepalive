@@ -39,6 +39,7 @@ const clearMode = ref("head");
 const clearFrom = ref("1");
 const clearTo = ref("5");
 const clearWait = ref("0");
+const clearScan = ref("0");
 const clearRows = ref([]);
 const clearNote = ref("");
 const prioUid = ref("");
@@ -172,6 +173,7 @@ function takeUser(user) {
   clearFrom.value = String(user.clear_from || 1);
   clearTo.value = String(user.clear_to || 5);
   clearWait.value = String(user.clear_wait ?? 0);
+  clearScan.value = String(user.clear_scan ?? 0);
   clearRows.value = (user.clear_priority || []).map((row) => ({
     uid: String(row.uid),
     rank: String(row.rank),
@@ -206,6 +208,7 @@ async function saveClearPlan() {
     page_from: clearFrom.value,
     page_to: clearTo.value,
     wait_min: clearWait.value,
+    scan_sec: clearScan.value,
     priority: clearRows.value.map((row) => ({ uid: row.uid, rank: row.rank })),
   });
   if (data.user) takeUser(data.user);
@@ -560,6 +563,10 @@ onUnmounted(() => {
             <span class="switch">空城再打</span>
             <label class="choice">分钟<input v-model="clearWait" class="mins" inputmode="numeric" required /></label>
           </form>
+          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
+            <span class="switch">扫页冷却</span>
+            <label class="choice">秒<input v-model="clearScan" class="mins" inputmode="numeric" required /></label>
+          </form>
           <form class="lock-row" @submit.prevent="addPriority().catch((e) => (err = e.message))">
             <span class="switch">优先 UID</span>
             <label>UID<input v-model="prioUid" inputmode="numeric" /></label>
@@ -576,7 +583,7 @@ onUnmounted(() => {
             <button type="submit">保存</button>
             <span class="muted">{{ clearNote }}</span>
           </form>
-          <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。每打完一次，冷却的那几秒会再扫一遍这些页，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人时，过上面的分钟再启动同一条订单。0 表示空了就结束。</p>
+          <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人时，过上面的分钟再启动同一条订单。0 表示空了就结束。</p>
         </div>
       </template>
         <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">

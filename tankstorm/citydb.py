@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_from      INTEGER NOT NULL DEFAULT 1,
     clear_to        INTEGER NOT NULL DEFAULT 5,
     clear_wait      INTEGER NOT NULL DEFAULT 0,
+    clear_scan      INTEGER NOT NULL DEFAULT 0,
     modo_cards      INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
@@ -278,6 +279,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "clear_wait" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN clear_wait INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "clear_scan" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_scan INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "modo_cards" not in ucols:
                 setup.execute(
@@ -1662,10 +1667,12 @@ def list_storm_rejects(user_id: int) -> list:
     return [{"name": str(name or ""), "at": beijing_ts(at)} for name, at in rows]
 
 
-def set_clear_plan(user_id: int, mode, page_from, page_to, priority, wait_min=0) -> str:
+def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
+                   wait_min=0, scan_sec=0) -> str:
     """清城高级配置。前 5 页，或一个页码范围。优先 UID 最多 50 个。
 
-    wait_min 是空城后再打的分钟。0 表示空了就结束。成功返回空字符串。
+    wait_min 是空城后再打的分钟。0 表示空了就结束。
+    scan_sec 是两次扫页至少隔开的秒数。0 表示每次出手冷却都扫。成功返回空字符串。
     """
     mode = str(mode or "head").strip()
     if mode not in ("head", "range"):
@@ -1709,11 +1716,21 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority, wait_min=0)
             return "空城周期要是分钟数"
     if wait < 0 or wait > 1440:
         return "空城周期要是 0 到 1440 分钟"
+    if scan_sec is None or str(scan_sec).strip() == "":
+        scan = 0
+    else:
+        try:
+            scan = int(str(scan_sec).strip())
+        except (TypeError, ValueError, AttributeError):
+            return "扫页冷却要是秒数"
+    if scan < 0 or scan > 300:
+        return "扫页冷却要是 0 到 300 秒"
     conn = connect()
     try:
         conn.execute(
-            "UPDATE app_user SET clear_mode=?, clear_from=?, clear_to=?, clear_wait=? WHERE id=?",
-            (mode, start, end, wait, int(user_id)))
+            "UPDATE app_user SET clear_mode=?, clear_from=?, clear_to=?, "
+            "clear_wait=?, clear_scan=? WHERE id=?",
+            (mode, start, end, wait, scan, int(user_id)))
         conn.execute("DELETE FROM clear_prio WHERE user_id=?", (int(user_id),))
         conn.executemany(
             "INSERT INTO clear_prio(user_id, uid, rank, seq) VALUES (?,?,?,?)",
@@ -1726,7 +1743,7 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority, wait_min=0)
 
 def clear_settings(user_id: int = 0) -> dict:
     """这个登录账号的清城扫页和优先 UID。名单按优先级、再按添加顺序。"""
-    mode, start, end, wait = "head", 1, 5, 0
+    mode, start, end, wait, scan = "head", 1, 5, 0, 0
     rows = []
     user_id = int(user_id or 0)
     if user_id:
@@ -1734,13 +1751,14 @@ def clear_settings(user_id: int = 0) -> dict:
         try:
             saved = conn.execute(
                 "SELECT IFNULL(clear_mode,'head'), IFNULL(clear_from,1), IFNULL(clear_to,5), "
-                "IFNULL(clear_wait,0) FROM app_user WHERE id=?",
+                "IFNULL(clear_wait,0), IFNULL(clear_scan,0) FROM app_user WHERE id=?",
                 (user_id,)).fetchone()
             if saved:
                 mode = str(saved[0] or "head")
                 start = int(saved[1] or 1)
                 end = int(saved[2] or 5)
                 wait = int(saved[3] or 0)
+                scan = int(saved[4] or 0)
             rows = conn.execute(
                 "SELECT uid, rank FROM clear_prio WHERE user_id=? ORDER BY rank, seq, uid",
                 (user_id,)).fetchall()
@@ -1754,11 +1772,14 @@ def clear_settings(user_id: int = 0) -> dict:
         end = start
     if wait < 0 or wait > 1440:
         wait = 0
+    if scan < 0 or scan > 300:
+        scan = 0
     return {
         "mode": mode,
         "page_from": start,
         "page_to": end,
         "wait_min": wait,
+        "scan_sec": scan,
         "priority": [{"uid": str(uid), "rank": int(rank)} for uid, rank in rows],
     }
 
@@ -1827,7 +1848,8 @@ def clear_fight_plan(user_id: int = 0) -> dict:
     else:
         pages = (0, 4)
     priority = {row["uid"]: int(row["rank"]) for row in saved["priority"]}
-    return {"pages": pages, "priority": priority}
+    return {"pages": pages, "priority": priority,
+            "scan_sec": int(saved.get("scan_sec") or 0)}
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:
