@@ -14,6 +14,11 @@ label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15
 label.choice { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
 span.switch { font-size: 15px; font-weight: 700; }
 .lead { margin: 0 0 16px; color: #444; }
+.attack-bar { margin: 0 0 10px; }
+.attack-bar > p { margin: 0 0 8px; }
+.attack-bar > p:last-child { margin-bottom: 0; }
+.attack-bar > p:first-child button.ghost { margin-left: 0; }
+.attack-bar img.qr { display: block; margin-top: 8px; }
 .page-nav.el-menu--horizontal { position: sticky; top: 0; z-index: 5; margin: 0 0 8px; }
 .page-nav.el-menu--horizontal > .el-menu-item { flex: 1 1 0; justify-content: center; min-width: 0; padding: 0 6px; }
 form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
@@ -73,11 +78,35 @@ th { font-size: 13px; color: #555; }
   background: transparent;
   max-width: none;
 }
+.campaign-box {
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px 14px 2px;
+  margin: 8px 0 4px;
+}
+.campaign-line {
+  display: grid;
+  grid-template-columns: 7.2em minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+  margin: 0 0 10px;
+}
+form.campaign-line { margin: 0 0 10px; }
+.campaign-ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+}
+.campaign-ops input { width: 14em; }
+.campaign-box > .muted { margin: 0 0 12px; }
 .off { color: #666; }
 code { font-size: 13px; }
 img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px solid #ddd; }
 @media (max-width: 720px) {
   main { padding: 16px 12px 40px; }
+  .campaign-line { grid-template-columns: 1fr; gap: 4px 12px; }
+  .campaign-ops input { width: 100%; }
   .page-nav.el-menu--horizontal > .el-menu-item { font-size: 13px; padding: 0 2px; }
   form.attack-row { display: grid; grid-template-columns: 1fr 1fr; }
   form.attack-row > button { grid-column: 1 / -1; }

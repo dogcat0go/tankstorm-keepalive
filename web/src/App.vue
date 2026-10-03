@@ -50,7 +50,6 @@ const clearNote = ref("");
 const prioUid = ref("");
 const prioRank = ref("1");
 const modoCards = ref("0");
-const modoOpen = ref(false);
 const tab = ref("attack");
 const dailyQq = ref("");
 const dailyTasks = ref([]);
@@ -489,7 +488,6 @@ async function logout() {
   proc.value = null;
   qrSrc.value = "";
   notice.value = null;
-  modoOpen.value = false;
   tab.value = "attack";
   dailyQq.value = "";
   dailyTasks.value = [];
@@ -595,8 +593,19 @@ onUnmounted(() => {
         <a v-if="me.admin" class="ghost" href="/admin">管理</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
+      <section class="attack-bar" aria-label="攻打号状态">
+        <p v-if="pushLoginVisible(proc)">
+          <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
+        </p>
+        <p class="proc">
+          <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
+          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login'" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
+          <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
+        </p>
+        <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
+      </section>
       <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="pickTab">
-        <el-menu-item index="attack">远程攻打</el-menu-item>
+        <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
         <el-menu-item index="qq">订阅QQ</el-menu-item>
@@ -604,34 +613,39 @@ onUnmounted(() => {
       <section v-show="tab === 'daily'">
       <h2>日常任务</h2>
       <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
-      <p v-else class="muted">还没绑定攻打 QQ。先在远程攻打里扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
+      <p v-else class="muted">还没绑定攻打 QQ。先在导航栏上方扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
       <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。后面的攻打单排在它后面。</p>
       <form class="lock-row" @submit.prevent="runDaily('daily').catch((e) => (err = e.message))">
         <span class="switch">每日任务</span>
         <button type="submit" :disabled="!dailyQq">跑一轮</button>
       </form>
       <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。</p>
-      <div v-for="it in campaignTasks" :key="it.key" class="lock-row">
-        <span class="switch">{{ it.name }}</span>
-        <el-switch
-          class="daily-switch"
-          size="large"
-          inline-prompt
-          active-text="开"
-          inactive-text="关"
-          :model-value="it.on"
-          :loading="dailySwitching === it.key"
-          @change="saveDailySwitch(it, $event)"
-        />
-        <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
+      <div class="campaign-box">
+        <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
+          <span class="switch">征战世界</span>
+          <span class="campaign-ops">
+            <input v-model="pveStages" aria-label="关卡" placeholder="1-10，留空用服务器配置" />
+            <button type="submit" :disabled="!dailyQq">打这些关</button>
+          </span>
+        </form>
+        <div v-for="it in campaignTasks" :key="it.key" class="campaign-line">
+          <span class="switch">{{ it.name }}</span>
+          <span class="campaign-ops">
+            <el-switch
+              class="daily-switch"
+              size="large"
+              inline-prompt
+              active-text="开"
+              inactive-text="关"
+              :model-value="it.on"
+              :loading="dailySwitching === it.key"
+              @change="saveDailySwitch(it, $event)"
+            />
+            <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
+          </span>
+        </div>
+        <p class="muted">打这些关是单独去打关卡，当前关不在名单里就停，不占每天 2 次。今日进度里的征战世界是免费重开，一天 2 次，点跑一轮才做，不打关。第三次、第4次也在这一轮里，排在免费 2 次后面。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
       </div>
-      <p v-if="campaignTasks.length" class="muted">这两项默认关。打开后，跑一轮会在免费的征战世界做完后接着做对应的那一次。第4次是 VIP 加次，会扣 100 勋章。第三次是付费重征，购买包还没抓到，跑一轮时只打开面板看次数。</p>
-      <form class="lock-row" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
-        <span class="switch">征战世界</span>
-        <label>关卡<input v-model="pveStages" placeholder="1-10，留空用服务器配置" /></label>
-        <button type="submit" :disabled="!dailyQq">打这些关</button>
-      </form>
-      <p class="muted">只打当前关，当前关不在名单里就停。对应命令行的征战。</p>
       <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => (err = e.message))">
         <span class="switch">成就拨款</span>
         <label>建筑 ID<input v-model="fundBuilding" class="mins" inputmode="numeric" placeholder="10138" required /></label>
@@ -639,6 +653,12 @@ onUnmounted(() => {
         <button type="submit" :disabled="!dailyQq">拨款</button>
       </form>
       <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 30。</p>
+      <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">
+        <span class="switch">刷摩多军团</span>
+        <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
+        <button type="submit" :disabled="!dailyQq">提交</button>
+      </form>
+      <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后记在国战助手的订单里。</p>
       <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
       <h2>今日进度</h2>
       <p class="muted">点开关就保存。跑一轮时按这里的开和关做。</p>
@@ -762,8 +782,8 @@ onUnmounted(() => {
       </div>
       </section>
       <section v-show="tab === 'attack'">
-      <h2>远程扫码攻打</h2>
-      <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。可以刷本国首都旁边的两座摩多军团。打人和清城要中级或高级。</p>
+      <h2>国战助手</h2>
+      <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。打人和清城要中级或高级。刷摩多军团在日常任务。</p>
       <template v-if="me.remote_attack">
         <form class="attack-row" @submit.prevent="addOrder()">
           <label>城市
@@ -819,25 +839,6 @@ onUnmounted(() => {
           <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。</p>
         </div>
       </template>
-        <p>
-          <button type="button" class="ghost" @click="modoOpen = !modoOpen">{{ modoOpen ? "收起" : "刷摩多军团" }}</button>
-        </p>
-        <div v-if="modoOpen">
-        <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">
-          <span class="switch">刷摩多军团</span>
-          <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
-          <button type="submit">提交</button>
-        </form>
-        <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。</p>
-        </div>
-        <p v-if="pushLoginVisible(proc)">
-          <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
-        </p>
-        <p class="proc">
-          <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
-          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login'" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
-          <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
-        </p>
         <p v-if="proc && proc.online" class="proc here-row">
           <span v-if="proc.here">目前在 {{ proc.here }}</span>
           <template v-if="me.remote_attack">
@@ -855,8 +856,7 @@ onUnmounted(() => {
           <p class="muted">最近 1 小时拒绝的超级强攻</p>
           <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
         </div>
-        <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，点推送登录会在下面出二维码。同一个 QQ 不能绑给两个登录账号。</p>
-        <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
+        <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，在导航栏上方点推送登录，二维码就出在那里。同一个 QQ 不能绑给两个登录账号。</p>
         <div class="orders" v-if="orders.length">
         <table>
           <thead>
