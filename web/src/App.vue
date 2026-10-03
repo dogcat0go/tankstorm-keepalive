@@ -1,5 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import { ElMenu, ElMenuItem } from "element-plus";
+import "element-plus/es/components/menu/style/css";
 import "./base.css";
 
 const me = ref(null);
@@ -511,11 +513,11 @@ onUnmounted(() => {
         <a v-if="me.admin" class="ghost" href="/admin">管理</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
-      <nav class="tabs" aria-label="功能">
-        <button type="button" :class="{ on: tab === 'qq' }" :aria-pressed="tab === 'qq'" @click="tab = 'qq'">订阅QQ</button>
-        <button type="button" :class="{ on: tab === 'attack' }" :aria-pressed="tab === 'attack'" @click="tab = 'attack'">远程攻打</button>
-        <button type="button" :class="{ on: tab === 'watch' }" :aria-pressed="tab === 'watch'" @click="tab = 'watch'">城市敌方</button>
-      </nav>
+      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="(key) => (tab = key)">
+        <el-menu-item index="qq">订阅QQ</el-menu-item>
+        <el-menu-item index="attack">远程攻打</el-menu-item>
+        <el-menu-item index="watch">监控敌人</el-menu-item>
+      </el-menu>
       <section v-show="tab === 'qq'">
       <h2>订阅 QQ</h2>
       <form class="stack" @submit.prevent="savePush().catch((e) => (err = e.message))">
@@ -528,7 +530,7 @@ onUnmounted(() => {
       <p class="muted">私聊发到这个 QQ。机器人地址和 Token 在服务器配置里，页面上不填写。</p>
       </section>
       <section v-show="tab === 'watch'">
-      <h2>城市与敌方</h2>
+      <h2>监控敌人</h2>
       <form @submit.prevent="addSub().catch((e) => (err = e.message))">
         <label>城市
           <select v-model="cityId" required>
