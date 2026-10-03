@@ -1308,6 +1308,33 @@ def run_remote_orders(qq, config: dict) -> int:
     who = citydb.username_of(user_id)
     log.info("开始领取远程扫码攻打，攻打号「%s」只打登录账号 %s 的订单", name, who)
     stop = _start_attack_status()
+    login_checked = [0.0]
+
+    def _skey_alive() -> bool:
+        now = time.time()
+        for c in qq.session.cookies:
+            if getattr(c, "name", "") != "skey" or not c.value:
+                continue
+            exp = getattr(c, "expires", None)
+            if not exp:
+                return True
+            try:
+                if float(exp) > now:
+                    return True
+            except (TypeError, ValueError):
+                return True
+        return False
+
+    def _idle_needs_login() -> bool:
+        """空闲时没有游戏连接。票据没了就是掉线，要重新扫码。票据还在时，一分钟问一次游戏。"""
+        if not _skey_alive():
+            return True
+        now = time.time()
+        if now - login_checked[0] < 60:
+            return False
+        login_checked[0] = now
+        return not qq.is_valid()
+
     try:
         citydb.resume_stranded_orders()
         while True:
@@ -1340,6 +1367,16 @@ def run_remote_orders(qq, config: dict) -> int:
                 citydb.fail_blocked_orders()
                 if left is not None:
                     citydb.clear_attack_hold()
+                if _idle_needs_login():
+                    citydb.set_attack_status("login")
+                    owner = citydb.attack_context_user()
+                    citydb.set_page_qr(True, owner)
+                    try:
+                        relogin_with_push(qq, config)
+                    finally:
+                        citydb.set_page_qr(False, owner)
+                    login_checked[0] = time.time()
+                    continue
                 citydb.set_attack_status("idle")
                 time.sleep(5)
                 continue

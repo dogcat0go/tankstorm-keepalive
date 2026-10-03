@@ -105,6 +105,7 @@ function reloadQr() {
 }
 
 function pushLoginVisible(p) {
+  if (p && p.need_login) return true;
   return !(p && p.online && p.phase !== "login");
 }
 
