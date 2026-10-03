@@ -34,6 +34,12 @@ function leftText(sec) {
   return Math.max(1, Math.round(sec / 60)) + " 分钟";
 }
 
+function namedLeft(data, name, sec) {
+  const has = ((data && data.tickets) || []).some((row) => row.name === name);
+  if (!has) return "没有";
+  return leftText(sec);
+}
+
 function expText(row) {
   if (!row || row.session || row.expires == null) return "无过期";
   return new Date(row.expires * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" });
@@ -153,8 +159,8 @@ onUnmounted(() => {
       <img v-if="qrSrc" class="qr" :src="qrSrc" alt="扫码登录测试二维码" />
       <p v-if="lab" class="muted">
         QQ {{ lab.uin || "还没有" }}
-        · skey {{ leftText(lab.skey_left) }}
-        · p_skey {{ leftText(lab.p_skey_left) }}
+        · skey {{ namedLeft(lab, "skey", lab.skey_left) }}
+        · p_skey {{ namedLeft(lab, "p_skey", lab.p_skey_left) }}
         · {{ lab.long_term ? "有长效凭据" : "没有 superkey / RK / ptcz" }}
         · 游戏页 {{ lab.game_ok == null ? "还没校验" : lab.game_ok ? "认" : "不认" }}
         · <code>{{ lab.cookie }}</code>
@@ -181,7 +187,7 @@ onUnmounted(() => {
         <p>
           {{ it.username || "未绑定登录账号" }}
           · QQ {{ it.qq || it.uin || "—" }}
-          · skey {{ it.missing ? "没有文件" : leftText(it.skey_left) }}
+          · skey {{ it.missing ? "没有文件" : namedLeft(it, "skey", it.skey_left) }}
           · {{ it.long_term ? "有长效凭据" : "没有长效凭据" }}
           · <code>{{ it.cookie }}</code>
         </p>
