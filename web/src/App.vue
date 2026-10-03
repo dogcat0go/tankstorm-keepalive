@@ -635,7 +635,7 @@ onUnmounted(() => {
           <span class="switch">征战世界</span>
           <span class="campaign-ops">
             <input v-model="pveStages" aria-label="关卡" placeholder="终点，例如 150" />
-            <button type="submit" :disabled="!dailyQq">打这些关</button>
+            <button type="submit" :disabled="!dailyQq">开始征战</button>
           </span>
         </form>
         <div v-for="it in campaignTasks" :key="it.key" class="campaign-line">
