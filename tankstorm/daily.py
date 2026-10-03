@@ -1136,7 +1136,7 @@ TASKS = [
        {1: ("int32", 4), 2: ("int32", 0), 3: ("int32", 1)},
        "实测", "8/10 抓包：{type:1} 开面板 → {type:4,trainskilltype:1} 训练。"
                "开面板响应 skilltraintimes = 剩余次数；用完后 ret=11 拒绝，不扣费",
-       max_per_day=7,
+       max_per_day=10,
        prelude=[("04a5", {1: ("int32", 1), 2: ("int32", 0),
                           3: ("int32", 0)})],
        gate=Gate("RseWarCollegeOpt", "skilltraintimes")),
@@ -1720,7 +1720,7 @@ def _run(rec, sock, config, schema, on_fail=None):
 
             # 一个任务在**一轮里就要把当天的次数做完**，而不是做一次就走。
             # freeVisitCnt=[3,1,1] 是三个档位各自的免费次数（低级 3 次、中级 1 次、
-            # 高级 1 次），三档都要领；战略训练更是一天 7 次同样的包。
+            # 高级 1 次），三档都要领；战略训练一天 10 次同样的包。
             # 早先每轮只发一次，等于绝大多数次数根本没用上。
             if task.runner is not None:
                 try:
