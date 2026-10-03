@@ -361,6 +361,9 @@ def _handler(config: dict):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if path == "/api/pwd-lab" or path.startswith("/api/pwd-lab/"):
+                self._pwd_lab_get(path)
+                return
             self._file(path)
 
         def do_POST(self):
@@ -392,6 +395,9 @@ def _handler(config: dict):
             user = self._user()
             if not user:
                 _json(self, 401, {"error": "请先登录"})
+                return
+            if path.startswith("/api/pwd-lab"):
+                self._pwd_lab_post(path, data)
                 return
             try:
                 if path == "/api/subs":
@@ -619,18 +625,67 @@ def _handler(config: dict):
                 return
             _json(self, 200, {"ok": True}, cookie=_set_cookie(self, token))
 
+        def _pwd_lab_user(self):
+            user = self._user()
+            if not user:
+                _json(self, 401, {"error": "请先登录"})
+                return None
+            if not user.get("admin"):
+                _json(self, 403, {"error": "只有管理员能用密码登录测试页"})
+                return None
+            return user
+
+        def _pwd_lab_get(self, path):
+            from . import pwd_lab
+            user = self._pwd_lab_user()
+            if not user:
+                return
+            try:
+                if path == "/api/pwd-lab":
+                    _json(self, 200, pwd_lab.snapshot(user["id"]))
+                    return
+                if path == "/api/pwd-lab/accounts":
+                    _json(self, 200, {"items": pwd_lab.account_tickets()})
+                    return
+            except Exception as exc:
+                _json(self, 500, {"error": str(exc)})
+                return
+            self.send_error(404)
+
+        def _pwd_lab_post(self, path, data):
+            from . import pwd_lab
+            user = self._pwd_lab_user()
+            if not user:
+                return
+            try:
+                if path == "/api/pwd-lab/login":
+                    _json(self, 200, pwd_lab.login(user["id"], data))
+                    return
+                if path == "/api/pwd-lab/check":
+                    _json(self, 200, pwd_lab.check(user["id"]))
+                    return
+                if path == "/api/pwd-lab/clear":
+                    _json(self, 200, pwd_lab.clear(user["id"]))
+                    return
+            except Exception as exc:
+                _json(self, 500, {"error": str(exc)})
+                return
+            self.send_error(404)
+
         def _file(self, path):
             if path == "/":
                 path = "/index.html"
             elif path in ("/admin", "/admin/"):
                 path = "/admin.html"
+            elif path in ("/pwd-lab", "/pwd-lab/", "/qr-lab", "/qr-lab/"):
+                path = "/pwd-lab.html"
             rel = os.path.normpath(path.lstrip("/"))
             if rel.startswith(".."):
                 self.send_error(404)
                 return
             full = os.path.join(_DIST, rel)
             if not os.path.isfile(full):
-                if path.startswith("/admin"):
+                if path.startswith("/admin") or path.startswith("/pwd-lab") or path.startswith("/qr-lab"):
                     self.send_error(404)
                     return
                 full = os.path.join(_DIST, "index.html")
@@ -667,6 +722,7 @@ def _announce(host, port, config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
         log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级。中级和高级可提交远程扫码攻打")
         log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin")
+    log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
     if _dev_login(config):
         log.warning("测试免注册已打开：POST /api/dev-login 会直接以 test 登录。正式对外前关掉「订阅.测试免注册」")
 
