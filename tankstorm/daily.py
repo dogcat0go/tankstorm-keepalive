@@ -41,6 +41,7 @@
 import json
 import os
 import re
+import threading
 import time
 from datetime import date
 
@@ -63,15 +64,40 @@ STATE_FILE = os.path.join(LOG_DIR, "daily-state.json")
 #
 # 用单线程的"到点就发"而不是后台线程：心跳虽然走明文豁免、不碰 RC4，
 # 但两个线程同时 sendall 会让帧字节交错，那是另一种更难查的坏法。
-_BEAT = None
+# 回调按线程分开。网页上每个攻打号一条线程，两个人同时做日常不能共用一个回调。
+_beat_local = threading.local()
+_state_local = threading.local()
+
+
+def current_beat():
+    return getattr(_beat_local, "fn", None)
+
+
+def install_beat(fn):
+    """换上这一线程的心跳回调，返回换之前的那个。"""
+    prev = current_beat()
+    _beat_local.fn = fn
+    return prev
+
+
+def bind_beat(fn):
+    """fn 有值时暂时换上，返回还原函数。空的就不动。"""
+    if fn is None:
+        return lambda: None
+    prev = install_beat(fn)
+
+    def _restore():
+        install_beat(prev)
+    return _restore
 
 
 def _beat() -> None:
     """该发心跳就发一次；没配回调就是空操作。"""
-    if _BEAT is None:
+    fn = current_beat()
+    if fn is None:
         return
     try:
-        _BEAT()
+        fn()
     except Exception as exc:                  # 心跳发不出去不该弄挂任务
         log.debug("心跳发送失败（忽略）: %s", exc)
 
@@ -1116,9 +1142,43 @@ def ordered_tasks():
 
 # ---------------------------------------------------------------- 每日状态
 
-def _load_state():
+def state_path_for_qq(uin: str) -> str:
+    """每个攻打号一份今日次数。命令行不带号时仍用原来的 daily-state.json。"""
+    digits = "".join(ch for ch in str(uin or "") if ch.isdigit())
+    if not digits:
+        return STATE_FILE
+    return os.path.join(LOG_DIR, f"daily-state-{digits}.json")
+
+
+def _state_path() -> str:
+    return getattr(_state_local, "path", None) or STATE_FILE
+
+
+class using_state:
+    """这一线程读写指定的今日次数文件。网页按攻打号分开，互不影响。"""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.prev = None
+
+    def __enter__(self):
+        self.prev = getattr(_state_local, "path", None)
+        _state_local.path = self.path
+        return self.path
+
+    def __exit__(self, *_exc):
+        if self.prev is None:
+            if hasattr(_state_local, "path"):
+                del _state_local.path
+        else:
+            _state_local.path = self.prev
+        return False
+
+
+def _load_state(path=None):
+    path = path or _state_path()
     try:
-        with open(STATE_FILE, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             st = json.load(f)
     except (OSError, ValueError):
         st = {}
@@ -1127,13 +1187,38 @@ def _load_state():
     return st
 
 
-def _save_state(st):
+def _save_state(st, path=None):
+    path = path or _state_path()
     try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(st, f, ensure_ascii=False, indent=1)
     except OSError as exc:
         log.debug("每日状态保存失败(忽略): %s", exc)
+
+
+def task_board(uin: str, switches: dict) -> list:
+    """页面上的今日进度。不连游戏。没绑攻打号时次数显示 0。"""
+    switches = switches if isinstance(switches, dict) else {}
+    if str(uin or "").strip():
+        st = _load_state(state_path_for_qq(uin))
+    else:
+        st = {"done": {}}
+    done = st.get("done") or {}
+    rows = []
+    for task in ordered_tasks():
+        try:
+            count = int(done.get(task.key) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        rows.append({
+            "key": task.key,
+            "name": task.name,
+            "on": bool(switches.get(task.key)),
+            "done": count,
+            "max": int(task.max_per_day or 1),
+        })
+    return rows
 
 
 # ---------------------------------------------------------------- 执行
@@ -1333,14 +1418,13 @@ def run(rec, sock, config: dict, schema=None, beat=None) -> dict:
     if schema is None:
         schema = _schema
 
-    # 心跳回调挂到模块级，_nap()/_await_response() 沿路都会调它。
-    # 用 try/finally 保证跑完就摘掉，免得下一次调用还拿着上一个连接的 socket。
-    global _BEAT
-    _BEAT = beat
+    # 心跳回调挂在这一线程上，_nap()/_await_response() 沿路都会调它。
+    # 跑完就摘掉，免得下一次调用还拿着上一个连接的 socket。
+    install_beat(beat)
     try:
         return _run(rec, sock, config, schema)
     finally:
-        _BEAT = None
+        install_beat(None)
 
 
 def _run(rec, sock, config, schema):

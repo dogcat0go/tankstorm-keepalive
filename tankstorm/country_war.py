@@ -430,18 +430,16 @@ def run(rec, sock, config: dict, rounds: int = 0, beat=None,
              "配置指定" if conf.get("自己国家ID") else "从服务端读到")
 
     # 打几百次要很久，全程必须续心跳。
-    # beat 为 None 时**不能动** _daily._BEAT —— 作为每日任务被调用时，
-    # daily.run() 已经装好了心跳器，这里再赋一次 None 就把它废了。
+    # beat 为 None 时不能换这一线程的心跳回调。作为每日任务被调用时，
+    # daily.run() 已经装好了，这里再装上 None 就把它废了。
     # 2026-08-29 实盘：国战跑了两分半，"共发心跳 0 次"，就是这么来的。
-    prev = _daily._BEAT
-    if beat is not None:
-        _daily._BEAT = beat
+    restore_beat = _daily.bind_beat(beat)
     try:
         return _loop(rec, sock, rounds, country, npc_country, npc_city,
                      cooldown, out, attack_only, use_card, card_limit,
                      card_item, tally)
     finally:
-        _daily._BEAT = prev
+        restore_beat()
 
 
 def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
@@ -922,14 +920,12 @@ def list_city_players(rec, sock, config: dict, city_id: int,
                       "或命令行加 --city-country")
         return out
 
-    prev = _daily._BEAT
-    if beat is not None:
-        _daily._BEAT = beat
+    restore_beat = _daily.bind_beat(beat)
     try:
         return _list_city_players(rec, sock, city_id, country, out, on_page,
                                  start_page, end_page)
     finally:
-        _daily._BEAT = prev
+        restore_beat()
 
 
 def _list_city_players(rec, sock, city_id, country, out, on_page=None,
@@ -1114,15 +1110,13 @@ def attack_player(rec, sock, config: dict, uid, times: int = 1,
             out["停止原因"] = "读不到自己的国家ID，停手"
             return out
 
-    prev = _daily._BEAT
-    if beat is not None:
-        _daily._BEAT = beat
+    restore_beat = _daily.bind_beat(beat)
     try:
         return _attack_player(rec, sock, my, uid, times, act, name, cost,
                               cooldown, out, conf, card_used, until_down,
                               last_act, page, cd_until, on_wait)
     finally:
-        _daily._BEAT = prev
+        restore_beat()
 
 
 def _lost_city_reason(loc, city, start=None) -> str:
@@ -1474,9 +1468,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
         out["停止原因"] = "读不到自己的国家ID，停手"
         return out
 
-    prev = _daily._BEAT
-    if beat is not None:
-        _daily._BEAT = beat
+    restore_beat = _daily.bind_beat(beat)
     try:
         power, loc, _, panel = _panel(sock, rec, country)
         if panel is None:
@@ -1801,7 +1793,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             out["挡路"] = "、".join(out["挡路人"])
         return out
     finally:
-        _daily._BEAT = prev
+        restore_beat()
 
 
 def _road_blocked(reason, fought=None) -> bool:
@@ -2251,9 +2243,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     blocked_at = 0
     block_who = ""
 
-    prev = _daily._BEAT
-    if beat is not None:
-        _daily._BEAT = beat
+    restore_beat = _daily.bind_beat(beat)
     try:
         stopped = _manual_stop()
         if stopped:
@@ -2656,4 +2646,4 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
         out["攻击"] = hit
         return out
     finally:
-        _daily._BEAT = prev
+        restore_beat()

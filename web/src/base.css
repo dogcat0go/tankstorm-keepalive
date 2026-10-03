@@ -45,6 +45,7 @@ label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color:
 input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
 input.mins { width: 6em; }
 button, a.ghost { font: inherit; padding: 8px 14px; border: 0; border-radius: 6px; background: #1a1a1a; color: #fff; cursor: pointer; }
+button:disabled { opacity: 0.45; cursor: default; }
 button.ghost, a.ghost { background: transparent; color: #333; border: 1px solid #bbb; text-decoration: none; }
 p button.ghost, p a.ghost { margin-left: 8px; }
 .err { color: #9b1c1c; min-height: 1.5em; }
@@ -65,7 +66,7 @@ code { font-size: 13px; }
 img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px solid #ddd; }
 @media (max-width: 720px) {
   main { padding: 16px 12px 40px; }
-  .page-nav.el-menu--horizontal > .el-menu-item { font-size: 14px; padding: 0 2px; }
+  .page-nav.el-menu--horizontal > .el-menu-item { font-size: 13px; padding: 0 2px; }
   form.attack-row { display: grid; grid-template-columns: 1fr 1fr; }
   form.attack-row > button { grid-column: 1 / -1; }
   .proc-text { flex: 1 1 100%; }

@@ -315,6 +315,21 @@ def _handler(config: dict):
                     "storms": citydb.list_storm_rejects(user["id"]),
                 })
                 return
+            if path == "/api/daily":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                from . import daily
+                uin = citydb.attack_qq_of(user["id"])
+                switches = ((config.get("每日任务") or {}).get("任务") or {})
+                _json(self, 200, {
+                    "qq": uin,
+                    "tasks": daily.task_board(uin, switches),
+                    "jobs": citydb.list_daily_jobs(user["id"]),
+                    "process": citydb.attack_status(user["id"]),
+                })
+                return
             if path == "/api/admin/fighters":
                 user = self._user()
                 if not user:
@@ -420,6 +435,15 @@ def _handler(config: dict):
                     _json(self, 200, {"ok": True, "login": followed["login"],
                                       "resumed": followed["resumed"], "scan": followed["scan"],
                                       "hold_min": hold_min, "card_max": card_max})
+                elif path == "/api/daily":
+                    if citydb.account_expired(user.get("expires_at") or ""):
+                        raise ValueError("账号已过期")
+                    why = citydb.enqueue_daily_job(user["id"], data.get("kind"), data)
+                    if why:
+                        raise ValueError(why)
+                    from .socket_keepalive import kick_attack_login
+                    login = kick_attack_login(config, user["id"])
+                    _json(self, 200, {"ok": True, "login": login})
                 elif path == "/api/modo":
                     if citydb.account_expired(user.get("expires_at") or ""):
                         raise ValueError("账号已过期")
