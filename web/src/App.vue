@@ -50,7 +50,6 @@ const clearNote = ref("");
 const prioUid = ref("");
 const prioRank = ref("1");
 const modoCards = ref("0");
-const modoOpen = ref(false);
 const tab = ref("attack");
 const dailyQq = ref("");
 const dailyTasks = ref([]);
@@ -489,7 +488,6 @@ async function logout() {
   proc.value = null;
   qrSrc.value = "";
   notice.value = null;
-  modoOpen.value = false;
   tab.value = "attack";
   dailyQq.value = "";
   dailyTasks.value = [];
@@ -607,7 +605,7 @@ onUnmounted(() => {
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
       </section>
       <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="pickTab">
-        <el-menu-item index="attack">远程攻打</el-menu-item>
+        <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
         <el-menu-item index="qq">订阅QQ</el-menu-item>
@@ -655,6 +653,12 @@ onUnmounted(() => {
         <button type="submit" :disabled="!dailyQq">拨款</button>
       </form>
       <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 30。</p>
+      <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">
+        <span class="switch">刷摩多军团</span>
+        <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
+        <button type="submit" :disabled="!dailyQq">提交</button>
+      </form>
+      <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后记在国战助手的订单里。</p>
       <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
       <h2>今日进度</h2>
       <p class="muted">点开关就保存。跑一轮时按这里的开和关做。</p>
@@ -778,8 +782,8 @@ onUnmounted(() => {
       </div>
       </section>
       <section v-show="tab === 'attack'">
-      <h2>远程扫码攻打</h2>
-      <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。可以刷本国首都旁边的两座摩多军团。打人和清城要中级或高级。</p>
+      <h2>国战助手</h2>
+      <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。打人和清城要中级或高级。刷摩多军团在日常任务。</p>
       <template v-if="me.remote_attack">
         <form class="attack-row" @submit.prevent="addOrder()">
           <label>城市
@@ -835,17 +839,6 @@ onUnmounted(() => {
           <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。</p>
         </div>
       </template>
-        <p>
-          <button type="button" class="ghost" @click="modoOpen = !modoOpen">{{ modoOpen ? "收起" : "刷摩多军团" }}</button>
-        </p>
-        <div v-if="modoOpen">
-        <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">
-          <span class="switch">刷摩多军团</span>
-          <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
-          <button type="submit">提交</button>
-        </form>
-        <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。</p>
-        </div>
         <p v-if="proc && proc.online" class="proc here-row">
           <span v-if="proc.here">目前在 {{ proc.here }}</span>
           <template v-if="me.remote_attack">
