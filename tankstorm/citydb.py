@@ -2473,12 +2473,14 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
     if qq:
         data["acct"] = qq
     if phase != "offline":
-        link = prev.get("link")
-        gap = prev.get("gap")
-        if isinstance(link, int) and not isinstance(link, bool) and link > 0:
-            data["link"] = link
-        if isinstance(gap, int) and not isinstance(gap, bool) and gap > 0:
-            data["gap"] = gap
+        # 登录中是扫码或重连窗口，不能把上一轮心跳留下，否则页面会当成已经保活。
+        if phase != "login":
+            link = prev.get("link")
+            gap = prev.get("gap")
+            if isinstance(link, int) and not isinstance(link, bool) and link > 0:
+                data["link"] = link
+            if isinstance(gap, int) and not isinstance(gap, bool) and gap > 0:
+                data["gap"] = gap
         note = str(prev.get("move_note") or "").strip()
         if note:
             data["move_note"] = note
@@ -2587,7 +2589,10 @@ def take_attack_move() -> int:
 
 
 def note_attack_link(interval: float) -> None:
-    """这个攻打 QQ 的游戏心跳刚发出去。挂机时用这个判断连接是不是真的还在。"""
+    """这个攻打 QQ 的游戏心跳刚发出去。挂机时用这个判断连接是不是真的还在。
+
+    扫码或重连还停在登录中时，心跳成功就切到挂机。日常、攻打那些阶段原样留着。
+    """
     if not attack_context_user() and not attack_context_qq():
         return
     name = _mark_name("proc")
@@ -2605,6 +2610,9 @@ def note_attack_link(interval: float) -> None:
             gap = 0
         if gap > 0:
             data["gap"] = gap
+        phase = str(data.get("phase") or "")
+        if phase in ("login", "idle", ""):
+            data["phase"] = "hold"
         _upsert_signal(name, json.dumps(data, ensure_ascii=False), touch=False)
     except sqlite3.Error:
         return
@@ -2640,8 +2648,22 @@ def clear_attack_link() -> None:
         return
 
 
+def attack_link_alive(user_id: int = 0) -> bool:
+    """游戏心跳还新鲜。不看阶段，登录中刚连上了也算。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return False
+    parsed, _seen, online = _read_user_proc(user_id)
+    if not online:
+        return False
+    return _hold_link_ok(parsed)
+
+
 def attack_in_keepalive(user_id: int = 0) -> bool:
-    """游戏连接还在，才能继续和接订单。进程心跳还在、游戏没连上，不算。"""
+    """游戏连接还在，才能继续和接订单。进程心跳还在、游戏没连上，不算。
+
+    登录中只是扫码或重连窗口，即使上一轮心跳还在也不接订单。
+    """
     user_id = int(user_id or attack_context_user() or 0)
     if not user_id:
         return False
@@ -2815,7 +2837,7 @@ def attack_status(user_id: int) -> dict:
             detail = f"{detail}，{note}"
     elif phase == "hold":
         if _hold_link_ok(parsed):
-            head = "挂机保活成功"
+            head = "保活中"
             if hold_left is not None and hold_left > 0:
                 detail = f"{head}，还剩 {(hold_left + 59) // 60} 分钟"
             else:
@@ -3009,7 +3031,7 @@ def ask_attack_login(user_id: int = 0) -> None:
 def note_attack_logging_in(user_id: int = 0) -> None:
     """点了推送登录或刚拉起线程，游戏还没连上。页面先显示登录中。
 
-    已经挂上游戏的不改，免得把挂机保活成功盖成登录中。
+    已经挂上游戏的不改，免得把保活中盖成登录中。
     """
     user_id = int(user_id or attack_context_user() or 0)
     if not user_id:
@@ -3023,6 +3045,7 @@ def note_attack_logging_in(user_id: int = 0) -> None:
         return
     data = dict(prev) if prev else {}
     data["phase"] = "login"
+    data.pop("link", None)
     data["user"] = user_id
     uin = attack_qq_of(user_id)
     if uin:
@@ -3550,6 +3573,29 @@ def claim_attack_order():
             return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5]),
                     "cards": None if row[6] is None else int(row[6]),
                     "kind": str(row[7] or "")}
+    finally:
+        conn.close()
+
+
+def note_lock_morale(morale) -> None:
+    """索敌正在打时，把敌方当前士气写进说明。清城订单不改。写库失败不影响继续打。"""
+    if isinstance(morale, bool) or not isinstance(morale, int):
+        return
+    order_id = int(getattr(_attack_local, "order", 0) or 0)
+    if not order_id:
+        return
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "UPDATE atk_order SET reason=? WHERE id=? AND status='running' "
+            "AND TRIM(IFNULL(uid,''))!=''",
+            (f"敌方士气 {int(morale)}", order_id))
+        conn.commit()
+    except sqlite3.Error:
+        return
     finally:
         conn.close()
 

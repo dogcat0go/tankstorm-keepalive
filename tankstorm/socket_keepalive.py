@@ -970,6 +970,9 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
 
     tally = {"n": start_beats, "note": _beat_note}
     citydb.note_attack_beats(job["id"], start_beats)
+    if uid:
+        info = citydb.find_player(uid) or {}
+        citydb.note_lock_morale(info.get("morale"))
     fight_config = config
     if job.get("cards") is not None:
         fight_config = dict(config)
@@ -1283,7 +1286,7 @@ def _begin_attack_hold(fresh=False) -> bool:
     if left is not None and left > 0:
         if fresh:
             citydb.set_attack_status(
-                "hold" if citydb.attack_in_keepalive() else "login")
+                "hold" if citydb.attack_link_alive() else "login")
         return True
     if minutes <= 0:
         citydb.fail_blocked_orders()
@@ -1304,7 +1307,7 @@ def _begin_attack_hold(fresh=False) -> bool:
         return False
     if fresh:
         citydb.set_attack_status(
-            "hold" if citydb.attack_in_keepalive() else "login")
+            "hold" if citydb.attack_link_alive() else "login")
     return True
 
 
@@ -1424,7 +1427,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             asked = citydb.take_attack_login()
             if asked:
                 _arm_push_keepalive()
-                if not citydb.attack_in_keepalive():
+                if not citydb.attack_link_alive():
                     citydb.set_attack_paused(False)
                     log.info("点了推送登录，游戏没挂上，准备重连")
                     return 0
@@ -1458,7 +1461,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             _arm_push_keepalive()
         if not _begin_attack_hold(fresh=not stated):
             return 0
-        if not citydb.attack_in_keepalive():
+        if not citydb.attack_link_alive():
             log.info("挂机保活游戏心跳没了，准备重连")
             return 0
         if not stated:
