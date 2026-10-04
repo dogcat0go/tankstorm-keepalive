@@ -1997,6 +1997,8 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
                 citydb.ask_attack_login(user_id)
             if not citydb.attack_in_keepalive(user_id):
                 citydb.note_attack_logging_in(user_id)
+                if on_page:
+                    citydb.set_page_qr(True, user_id)
                 if _drop_live_sock(user_id):
                     log.info("攻打 QQ %s 游戏没挂上，掐掉旧连接准备重连", uin)
             log.info("攻打 QQ %s 的线程已在跑", uin)
@@ -2255,7 +2257,7 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
         if getattr(qq, "attack_account", False):
             citydb.note_login_qr(path)
         if getattr(qq, "page_qr", False):
-            log.info("攻打号还没配置，登录二维码留在网页上：%s", path)
+            log.info("登录二维码留在网页上：%s", path)
             return
         elif getattr(qq, "attack_account", False):
             name = getattr(qq, "account_name", "") or "攻打号"
@@ -2280,18 +2282,28 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
                      "「限制本地扫码登录」。")
 
     attempt = 0
-    while True:
-        attempt += 1
-        # 注意：这里只说"正在尝试"，别在请求发出前就宣称已推送 —— 之前那样写，
-        # 推送其实失败了日志却显示"已推送"，很误导。
-        log.info("登录态失效，正在%s（第 %d 次尝试）",
-                 f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码", attempt)
-        if qq.qr_login(on_qr=on_qr, push_uin=push_uin):
-            if not getattr(qq, "attack_account", False):
-                notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
-            return note_attack_qq(qq)
-        log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
-        time.sleep(15)
+    owner = 0
+    from . import citydb
+    if getattr(qq, "page_qr", False):
+        owner = int(citydb.attack_context_user() or 0)
+        if owner:
+            citydb.set_page_qr(True, owner)
+    try:
+        while True:
+            attempt += 1
+            # 注意：这里只说"正在尝试"，别在请求发出前就宣称已推送 —— 之前那样写，
+            # 推送其实失败了日志却显示"已推送"，很误导。
+            log.info("登录态失效，正在%s（第 %d 次尝试）",
+                     f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码", attempt)
+            if qq.qr_login(on_qr=on_qr, push_uin=push_uin):
+                if not getattr(qq, "attack_account", False):
+                    notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
+                return note_attack_qq(qq)
+            log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
+            time.sleep(15)
+    finally:
+        if owner:
+            citydb.set_page_qr(False, owner)
 
 
 def run(qq, config: dict, with_daily: bool = False) -> int:
