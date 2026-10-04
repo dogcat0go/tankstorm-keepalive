@@ -63,6 +63,16 @@ const pveStages = ref("");
 let pveStagesReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
+const fundBuildings = [
+  { id: "10132", name: "比萨斜塔" },
+  { id: "10133", name: "埃菲尔铁塔" },
+  { id: "10134", name: "大本钟" },
+  { id: "10135", name: "女神像" },
+  { id: "10136", name: "红场" },
+  { id: "10137", name: "帝国大厦" },
+  { id: "10138", name: "万磁陀螺" },
+  { id: "10139", name: "英雄徽章雕塑" },
+];
 const dailyNote = ref("");
 const dailySwitching = ref("");
 const moveCity = ref("");
@@ -717,11 +727,16 @@ onUnmounted(() => {
       </div>
       <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => showErr(e.message))">
         <span class="switch">成就拨款</span>
-        <label>建筑 ID<input v-model="fundBuilding" class="mins" inputmode="numeric" placeholder="10138" required /></label>
+        <label>建筑
+          <select v-model="fundBuilding" class="fund-building" required>
+            <option value="" disabled>选择建筑</option>
+            <option v-for="b in fundBuildings" :key="b.id" :value="b.id">{{ b.name }}</option>
+          </select>
+        </label>
         <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
         <button type="submit" :disabled="!dailyQq">拨款</button>
       </form>
-      <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 30。</p>
+      <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。</p>
       <form class="lock-row" @submit.prevent="addModo().catch((e) => showErr(e.message))">
         <span class="switch">刷摩多军团</span>
         <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>

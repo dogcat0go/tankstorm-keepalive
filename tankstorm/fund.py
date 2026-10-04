@@ -41,7 +41,7 @@ ITEM_METAL = 20817          # 1000 万金属卡
 ITEM_OIL = 20818            # 1000 万石油卡
 CARD_GAIN = 10_000_000
 
-HARD_MAX_TIMES = 30
+HARD_MAX_TIMES = 999
 # 空仓库每种资源最多吃下 4 张 1000 万卡。一次只开 1 张，开满或被拒就停。
 MAX_OPEN = 4
 

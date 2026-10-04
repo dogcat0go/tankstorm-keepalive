@@ -3233,8 +3233,8 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "建筑和次数要是数字"
         if building <= 0:
             return "要填建筑 ID"
-        if not (1 <= times <= 30):
-            return "拨款次数要在 1 到 30"
+        if not (1 <= times <= 999):
+            return "拨款次数要在 1 到 999"
         clean["building_id"] = building
         clean["times"] = times
     conn = connect()
