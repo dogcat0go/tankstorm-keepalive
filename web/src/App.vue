@@ -395,7 +395,7 @@ async function addModo() {
     notice.value = {
       ok: true,
       title: "已提交到国战助手",
-      text: "刷摩多军团的订单和进度都在国战助手。击退数量按 4 次扫荡算 1 个。" + extra,
+      text: "刷摩多军团的订单和进度都在国战助手。" + extra,
     };
     pickTab("attack");
     await refreshAttacks();
