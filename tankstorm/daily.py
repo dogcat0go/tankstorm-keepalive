@@ -1250,11 +1250,12 @@ TASKS = [
                          desc="占下探到的无主矿")),
 
     # 开打和命令行 --pve 同一套：type=7 打当前关，一个数字就打到这一关。
-    # 已经到了或超过终点时，先 type=2 免费重开，再接着打。一天最多重开 2 次。
+    # 已经到了或超过终点时，每免费重开一次就从第 1 关再打到终点。一天最多 2 次。
     _t("征战世界", "征战世界·重开征战（推进活跃度）", "045b", "RcePVEFightOpt",
        {},
        "实测", "和 --pve 一样发 type=7 打关。没到终点就从当前关打到终点，不重开。"
-               "到了或超过终点，先 type=2 免费重开，再从第 1 关打到终点。"
+               "到了或超过终点，type=2 免费重开一次，再从第 1 关打到终点。"
+               "打到终点后还有免费次数，再重开一次再打。这一轮没打过就停。"
                "留空只打当前关。8/10 抓包：type=2 响应 result=0，关卡回到第 1 关",
        max_per_day=2,
        runner=lambda rec, sock, config: _run_campaign_task(rec, sock, config),
@@ -1706,7 +1707,7 @@ def note_campaign_stage(stage) -> None:
 
 
 def campaign_round(rec, sock, stages, interval=1.0):
-    """按 --pve 打征战。到了或超过终点时，先做今天剩下的免费重开再打。"""
+    """按 --pve 打征战。到了或超过终点时，每次免费重开后都从第 1 关再打到终点。"""
     from . import pve
 
     st = _load_state()
