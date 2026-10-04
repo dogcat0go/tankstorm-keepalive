@@ -342,12 +342,9 @@ DANGER_FIELD = re.compile(
 # (opcode, 字段名) 白名单：抓包实证这个字段在**这一条消息里**不是花钱字段。
 # 只按消息逐条放行，绝不整体放宽 DANGER_FIELD —— 同名字段在别的消息里照样危险。
 #
-# 0463 RceCountryOpt.count：国家宝箱领取/开箱的"第几档/开几个"，跟着面板回包的
-#   boxPage.field4 走。2026-08-10 真客户端抓包实证 {type:10,count:6,costCredit:0}
-#   与 {type:11,count:1,costCredit:0} 均 ret=0，全程免费；这条消息里真正花钱的是
-#   costCredit，我们恒发 0，安全检查照旧盯着它。
-#   注意：这个误伤是修好 schema 之后才暴露的 —— 以前字段名解不出来，
-#   拿 "field2" 去匹配危险词自然不命中，等于一直在裸奔。
+# 0463 RceCountryOpt.count：这条消息里真正花钱的是 costCredit。count 在
+#   2026-08-10 的开箱包里是免费的个数，值可以不是 0，不能被危险词拦下。
+#   国家宝箱从 2026-10-04 起改走 type:26，不再发 count。
 SAFE_FIELDS = {("0463", "count")}
 
 # 这些任务放到最后执行（它们领的是"前面动作累积出来的"奖励）
@@ -755,38 +752,6 @@ def _next_daily_gift(data):
     """每日任务的后续领取：还有达标未领的档位就继续领。"""
     tier = _eligible_gift_tier(data)
     return None if tier is None else {5: ("int32", tier)}
-
-
-def _country_fields(type_, count=0):
-    """RceCountryOpt 的整包字段（客户端 11 个字段全写，只有 type/count 有值）。"""
-    f = {1: ("int32", 0), 2: ("int32", count), 3: ("int32", 0),
-         4: ("int32", type_), 6: ("int32", 0), 7: ("int32", 0),
-         9: ("int32", 0), 13: ("int32", 0), 14: ("int32", 0),
-         15: ("int32", 0), 16: ("int32", 0)}
-    return f
-
-
-def _next_country_box(data):
-    """国家宝箱是三步，光发 type:15 什么也领不到。
-
-    8/10 抓包：
-        {type:15}            查询 → 响应 boxPage.field4 = 可领数量（实测 6）
-        {type:10, count:6}   领取 → countryData.field1 +6
-        {type:11, count:1}   开箱 → 响应带 field15（实测掉 30028/20012 两样东西）
-    按上一条响应的 type 决定下一步发什么。
-    """
-    t = data.get("type")
-    if t == 15:
-        box = data.get("boxPage")
-        if isinstance(box, list):
-            box = box[-1] if box else None
-        n = box.get("field4") if isinstance(box, dict) else None
-        if isinstance(n, int) and n > 0:
-            return _country_fields(10, n)
-        return None
-    if t == 10:
-        return _country_fields(11, 1)
-    return None
 
 
 class Gate:
@@ -1261,17 +1226,15 @@ TASKS = [
        runner=lambda rec, sock, config: _run_campaign_task(rec, sock, config),
        counts_itself=True),
 
-    # 客户端把 11 个字段全写了（除 type 外都是 0），照抄。
-    # 1=costCredit 虽然命中危险字段名，但值是 0，安全检查照样放行。
-    _t("国家宝箱", "国家·宝箱领取并开箱", "0463", "RceCountryOpt",
-       _country_fields(15),
-       "实测", "8/10 抓包三步：RceCountryOpen{} 开面板 → {type:15} 查询 → "
-               "{type:10,count:N} 领取 → {type:11,count:1} 开箱。"
-               "N 取自查询响应的 boxPage.field4（实测 6）。"
-               "此前只发了 type:15，等于只查询没领取",
-       prelude=[("0462", {})],
-       followup=Followup("0463", _next_country_box, max_rounds=3,
-                         desc="领取并开箱")),
+    # 2026-10-04 抓包：type:10/11 已经不是这条链路，接着发会 ret=13。
+    # 现在是按今日战功领 1..7 档，每档一包 type:26。形状不合流水线，走 runner。
+    _t("国家宝箱", "国家·按战功领宝箱", "0463", "RceCountryOpt",
+       {}, "实测",
+       "2026-10-04 抓包：RceCountryOpen{} → {type:15} 读今日战功和领取标记 "
+       "→ {type:26, dailyGiftId:N} 逐档领。旧的 type:10/11 会 ret=13",
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.country_war", fromlist=["daily_chest"]
+       ).daily_chest(rec, sock, config)),
 
     # 参加公会战。2026-08-30 抓包定案：**type:70 就是"参加"**，判据是回包里的
     # userGuild.field17.field1（上次参加时刻）被刷新到"刚刚"。
@@ -2097,10 +2060,9 @@ def _do_once(task, sock, rec, st, results, details, field_names,
             if extra:
                 results[task.key] = why + "；" + "；".join(extra)
             if fu_ok is False:
-                # 有些任务的"动作"其实只是开面板（国家宝箱的 type=15 恒回 ret=0），
-                # 真正干活的是后续步骤。后续被拒还把当天次数记满，就等于这一天
-                # 再也不会重试了 —— 国家宝箱要早上六点后才能领，凌晨那轮必然被拒，
-                # 记满之后当天就永远领不到。所以后续失败时退回这一次计数。
+                # 有些任务的"动作"其实只是开面板，真正干活的是后续步骤。
+                # 后续被拒还把当天次数记满，就等于这一天再也不会重试了。
+                # 所以后续失败时退回这一次计数。
                 st["done"][task.key] = done
                 _save_state(st)
                 log.info("[%s] 后续步骤未成，本次不计入当天次数，稍后可再试",

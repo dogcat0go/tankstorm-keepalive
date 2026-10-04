@@ -265,6 +265,87 @@ def _wait(sock, rec, since, type_, timeout=6.0):
                            want=lambda d: d.get("type") == type_)
 
 
+# 国家宝箱每日档。门槛来自 config_2026092906.xml 指向的
+# CountryDailyGift_2025092802.dat（列 exploits）。
+# 领取标记是 countryData.field22（dayGiftGetFlag）：第 id 位（1<<id）为 1 表示已领。
+# 2026-10-04 抓包：查询前标记 130（第 1、7 档已领），接着 type=26
+# dailyGiftId=2..6，标记依次变成 134、142、158、190、254。
+# 第 6 档奖励里国家宝箱数量是 0，所以 boxCnt 不会涨，不能拿 boxCnt 当成败。
+_CHEST_NEED = {1: 3000, 2: 6000, 3: 10000, 4: 18000, 5: 30000, 6: 50000, 7: 30000}
+_CHEST_OPEN = "0462"
+
+
+def _chest_progress(data):
+    """今日战功、领取标记。读不到就返回 (None, None)，调用方不许发。"""
+    gain = _read_path(data, "countryData.field17")
+    flag = _read_path(data, "countryData.field22")
+    if not isinstance(gain, int) or isinstance(gain, bool):
+        return None, None
+    if not isinstance(flag, int) or isinstance(flag, bool):
+        return None, None
+    return gain, flag
+
+
+def _send_chest_gift(sock, rec, gift_id):
+    """领一档。真客户端只写 type 和 dailyGiftId，不写 count / costCredit。"""
+    before = rec.seq_mark() if rec else 0
+    body = encode_message({4: ("int32", 26), 11: ("int32", gift_id)},
+                          omit_zero=False)
+    sender.send_frame(sock, OPCODE, body, rec.rc4_c2s)
+    return before
+
+
+def daily_chest(rec, sock, config):
+    """每日任务：按今日战功领取国家宝箱各档。
+
+    返回 (是否成功, 说明)。还有档位因为战功不够没领时返回 False，
+    好让下一轮再试；当天次数只在全部领完时才记满。
+    """
+    sender.send_frame(sock, _CHEST_OPEN, encode_message({}), rec.rc4_c2s)
+    _nap(0.4)
+    since = _send(sock, rec, 15)
+    panel = _wait(sock, rec, since, 15)
+    if not isinstance(panel, dict):
+        return False, "读不到国家面板（type:15 没回包），不领"
+    gain, flag = _chest_progress(panel)
+    if gain is None:
+        return False, "读不到今日战功或领取标记，不领（读不到就不做）"
+
+    claimed = []
+    for gid, need in _CHEST_NEED.items():
+        if flag & (1 << gid):
+            continue
+        if gain < need:
+            continue
+        _nap(0.4)
+        sent = _send_chest_gift(sock, rec, gid)
+        got = _wait(sock, rec, sent, 26)
+        if not isinstance(got, dict):
+            return False, f"第 {gid} 档没有回包" + _chest_done(claimed)
+        ret = got.get("ret")
+        if isinstance(ret, int) and not isinstance(ret, bool) and ret != 0:
+            return False, f"第 {gid} 档服务器返回 ret={ret}" + _chest_done(claimed)
+        gain, flag = _chest_progress(got)
+        if gain is None or not (flag & (1 << gid)):
+            return False, f"第 {gid} 档回包没有置上领取标记" + _chest_done(claimed)
+        claimed.append(gid)
+
+    pending = [gid for gid in _CHEST_NEED if not (flag & (1 << gid))]
+    if not pending:
+        if claimed:
+            return True, "成功：领了第 " + "、".join(str(g) for g in claimed) + " 档"
+        return True, "成功：今日各档都已领过"
+    gid = min(pending, key=_CHEST_NEED.get)
+    head = ("已领第 " + "、".join(str(g) for g in claimed) + " 档，") if claimed else ""
+    return False, f"{head}今日战功 {gain}，第 {gid} 档需要 {_CHEST_NEED[gid]}，跳过"
+
+
+def _chest_done(claimed):
+    if not claimed:
+        return ""
+    return "（已领第 " + "、".join(str(g) for g in claimed) + " 档）"
+
+
 def _def_from_btl(data, uid=""):
     """从 RseCountryBtlResult 取出防守方。field8 剩余士气，field14 本击掉了多少。"""
     if not isinstance(data, dict):
