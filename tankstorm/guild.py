@@ -184,9 +184,17 @@ _ORDER_ITEM = 10044               # 2026-10-04 抓包：contributeID=6 每包扣
 _DONATE_NAME = {2: "金属石油", 4: "功勋", 6: "军令"}
 
 
-def _donate_counts(data):
-    raw = _read_path(data, "userGuild.field9")
-    if raw is None or isinstance(raw, bool):
+def _donate_counts(data, missing_ok=False):
+    """userGuild.field9 是今日各类型已捐次数。查询包里没写，就是今天还没捐。"""
+    if not isinstance(data, dict):
+        return None
+    guild = data.get("userGuild")
+    if not isinstance(guild, dict):
+        return None
+    if "field9" not in guild or guild.get("field9") is None:
+        return [] if missing_ok else None
+    raw = guild.get("field9")
+    if isinstance(raw, bool):
         return None
     if isinstance(raw, int):
         return [raw]
@@ -253,7 +261,7 @@ def daily_donate(rec, sock, config):
 
     since = _send(sock, rec, TYPE_SELF)
     panel = _wait(sock, rec, since, TYPE_SELF)
-    counts = _donate_counts(panel)
+    counts = _donate_counts(panel, missing_ok=True)
     if counts is None:
         return False, "读不到今日捐献次数，不捐（读不到就不做）"
 
