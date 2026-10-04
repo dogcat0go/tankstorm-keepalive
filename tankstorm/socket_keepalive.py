@@ -1801,12 +1801,15 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
     qq = QQSession(cookie, qrcode_file=qr)
     who = citydb.username_of(user_id)
 
+    def on_page_qr(path, pushed=False):
+        citydb.set_page_login(user_id, path)
+        log.info("登录账号 %s 还没有攻打 QQ，二维码在网页上：%s", who, path)
+
     def _run():
         nonlocal cookie
         try:
             while not citydb.attack_qq_of(user_id):
-                if qq.qr_login(on_qr=lambda path, pushed=False: log.info(
-                        "登录账号 %s 还没有攻打 QQ，二维码在网页上：%s", who, path)):
+                if qq.qr_login(on_qr=on_page_qr):
                     uin = str(getattr(qq, "uin", "") or "").strip()
                     if uin.isdigit() and citydb.confirm_attack_qq(user_id, uin):
                         _store_attack_cookie(user_id, cookie, uin)
@@ -2230,9 +2233,6 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
     """需要重新扫码时：生成二维码并通过 PushPlus 推送给用户，等待扫码。
     二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。
     force_qr 为真时不再用旧票据续上，必须重新扫。攻打 QQ 对不上时用这个。"""
-    if getattr(qq, "attack_account", False) and getattr(qq, "qrcode_file", ""):
-        from . import citydb
-        citydb.note_login_qr(qq.qrcode_file)
     # 先向本机 NapCat 要当前票据。没有再试长效凭据静默续期。
     if not force_qr and qq.adopt_napcat(config):
         return True
@@ -2248,6 +2248,9 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
         push_uin = (config.get("登录", {}) or {}).get("推送登录QQ号") or qq.uin or None
 
     def on_qr(path, pushed=False):
+        from . import citydb
+        if getattr(qq, "attack_account", False):
+            citydb.note_login_qr(path)
         if getattr(qq, "page_qr", False):
             log.info("攻打号还没配置，登录二维码留在网页上：%s", path)
             return
