@@ -222,6 +222,15 @@ function cityLabel(c) {
   return same > 1 ? c.name + " " + c.id : c.name;
 }
 
+function hereText(p) {
+  if (!p) return "";
+  const bits = [];
+  if (p.here) bits.push("目前在 " + p.here);
+  if (p.morale != null) bits.push("士气 " + p.morale);
+  if (p.power != null) bits.push("体力 " + p.power);
+  return bits.join(" · ");
+}
+
 async function devEnter() {
   showErr("");
   await api("/api/dev-login", {});
@@ -865,7 +874,7 @@ onUnmounted(() => {
         </div>
       </template>
         <p v-if="proc && proc.online" class="proc here-row">
-          <span v-if="proc.here">目前在 {{ proc.here }}</span>
+          <span v-if="hereText(proc)">{{ hereText(proc) }}</span>
           <template v-if="me.remote_attack">
           <label class="choice">移动到
             <select v-model="moveCity">
