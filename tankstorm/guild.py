@@ -59,6 +59,7 @@ log = get_logger()
 OPCODE = "0479"
 RSE = "RseGuildOpt"
 
+TYPE_SELF = 0           # 打开自己的公会，回包里才有今日捐献次数
 TYPE_LIST = 73          # 公会列表，回包带 dayHasPK 和自己的参战时刻
 TYPE_JOIN = 70          # 参加公会战
 
