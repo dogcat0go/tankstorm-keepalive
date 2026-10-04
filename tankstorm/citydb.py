@@ -3577,6 +3577,29 @@ def claim_attack_order():
         conn.close()
 
 
+def note_lock_morale(morale) -> None:
+    """索敌正在打时，把敌方当前士气写进说明。清城订单不改。写库失败不影响继续打。"""
+    if isinstance(morale, bool) or not isinstance(morale, int):
+        return
+    order_id = int(getattr(_attack_local, "order", 0) or 0)
+    if not order_id:
+        return
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "UPDATE atk_order SET reason=? WHERE id=? AND status='running' "
+            "AND TRIM(IFNULL(uid,''))!=''",
+            (f"敌方士气 {int(morale)}", order_id))
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+
 def note_attack_beats(order_id: int, n: int, name: str = "") -> None:
     """正在打的订单记下已经击退几个人。清城时说明写成「击退 玩家名」。写库失败不影响继续打。"""
     try:

@@ -1325,6 +1325,8 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         if p and p.get("name"):
             out["名字"] = p["name"]
             who = p["name"]
+        if p is not None:
+            citydb.note_lock_morale(p.get("morale"))
         if p is None:
             if out["成功"]:
                 out["击退"] = True
@@ -1410,6 +1412,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         out["对方剩余"] = after_n
         out["自己降低"] = drop
         out["自己剩余"] = mine_n
+        citydb.note_lock_morale(after_n)
         log.info("[打人] 第 %d 次%s回包 ret=%s 战功=%s 战报士气=%s 击伤=%s 自己士气=%s",
                  i, name, ret, merit, after_n, lost_n, mine_n)
         if mine_n is not None and mine_n <= 0:

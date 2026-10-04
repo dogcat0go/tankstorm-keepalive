@@ -970,6 +970,9 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
 
     tally = {"n": start_beats, "note": _beat_note}
     citydb.note_attack_beats(job["id"], start_beats)
+    if uid:
+        info = citydb.find_player(uid) or {}
+        citydb.note_lock_morale(info.get("morale"))
     fight_config = config
     if job.get("cards") is not None:
         fight_config = dict(config)
