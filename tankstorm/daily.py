@@ -1277,13 +1277,15 @@ TASKS = [
                           22: ("int32", 0), 23: ("int32", 0)})],
        report=("dayHasPK", "lastBtlRank", "curSesionBtlOver", "bRankGet")),
 
+    # 2026-10-04 抓包是一键：金属石油、功勋、军令各捐到当天上限，不是只发一次。
     _t("公会捐献", "公会·捐献", "0479", "RceGuildOpt",
-       {2: ("int32", 16), 6: ("string", FromServer("RseInit", "username")),
-        12: ("int32", 1)},
-       "实测", "8/10 抓包：…→ type:14 → {type:16, tarUserName:'自己的游戏名', "
-               "contributeID:1}。名字不写死，登录时从 RseInit.username 取",
-       prelude=[("0479", {2: ("int32", 0)}), ("0479", {2: ("int32", 2)}),
-                ("0479", {2: ("int32", 14)})]),
+       {}, "实测",
+       "2026-10-04 抓包：type:0 读今日次数 → type:16 按档捐满。"
+       "金属石油 contributeID=2（一天 3 次），功勋 =4（6 次），军令 =6（6 次）。"
+       "不捐勋章。",
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.guild", fromlist=["daily_donate"]
+       ).daily_donate(rec, sock, config)),
 
     # ---- 必须最后执行 ----
     _t("周任务", "周任务领奖", "04de", "RceWeekQuestOpt",

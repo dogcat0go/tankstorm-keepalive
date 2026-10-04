@@ -168,3 +168,143 @@ def daily_join(rec, sock, config):
              time.strftime("%m-%d %H:%M:%S", time.localtime(now_at)))
     return True, (f"成功：已参加公会战（服务端记录时刻 "
                   f"{time.strftime('%m-%d %H:%M', time.localtime(now_at))}）")
+
+
+# GuildContribute_2016092801.dat。一键用每种的第二行。
+# 次数在 userGuild.field9，下标就是捐献类型，同类型两行共用。
+# 类型 0 是勋章，日上限还是 -1，不捐。
+# (contributeID, 类型下标, 日上限, 花费种类, 数量)
+_DONATE_ROWS = (
+    (2, 1, 3, "both", 2500000),   # 金属和石油，两边都要够
+    (4, 2, 6, "feats", 5000),     # 功勋
+    (6, 3, 6, "item", 1),         # 军令
+)
+_ORDER_ITEM = 10044               # 2026-10-04 抓包：contributeID=6 每包扣背包 10044 一件
+_DONATE_NAME = {2: "金属石油", 4: "功勋", 6: "军令"}
+
+
+def _donate_counts(data):
+    raw = _read_path(data, "userGuild.field9")
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return [raw]
+    if isinstance(raw, list) and all(
+            isinstance(x, int) and not isinstance(x, bool) for x in raw):
+        return raw
+    return None
+
+
+def _res(rec):
+    got = rec.latest.get("RseUserInfo") if rec else None
+    d = got[1] if got and isinstance(got[1], dict) else {}
+
+    def num(key):
+        v = d.get(key)
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+    return num("metal"), num("oil"), num("feats")
+
+
+def _send_donate(sock, rec, name, contribute_id):
+    fields = _fields(16)
+    fields[6] = ("string", name)
+    fields[12] = ("int32", contribute_id)
+    before = rec.seq_mark() if rec else 0
+    sender.send_frame(sock, OPCODE, encode_message(fields, omit_zero=False),
+                      rec.rc4_c2s)
+    return before
+
+
+def _lack(kind, cost, metal, oil, feats, items):
+    """够就返回空串。读不到和数量不够分开，读不到不能发。"""
+    if kind == "both":
+        if metal is None or oil is None:
+            return "读不到金属或石油"
+        if metal < cost or oil < cost:
+            return "金属或石油不够"
+    elif kind == "feats":
+        if feats is None:
+            return "读不到功勋"
+        if feats < cost:
+            return "功勋不够"
+    elif items is None:
+        return "读不到军令"
+    elif items < cost:
+        return "军令不够"
+    return ""
+
+
+def _spend(kind, cost, metal, oil, feats, items):
+    if kind == "both":
+        return metal - cost, oil - cost, feats, items
+    if kind == "feats":
+        return metal, oil, feats - cost, items
+    return metal, oil, feats, items - cost
+
+
+def daily_donate(rec, sock, config):
+    """把金属石油、功勋、军令三种一键捐到当天上限。不捐勋章。"""
+    got = rec.latest.get("RseInit") if rec else None
+    name = got[1].get("username") if got and isinstance(got[1], dict) else None
+    if not isinstance(name, str) or not name:
+        return False, "读不到角色名，不捐"
+
+    since = _send(sock, rec, TYPE_SELF)
+    panel = _wait(sock, rec, since, TYPE_SELF)
+    counts = _donate_counts(panel)
+    if counts is None:
+        return False, "读不到今日捐献次数，不捐（读不到就不做）"
+
+    metal, oil, feats = _res(rec)
+    from .shop import _bag_count
+    _, items = _bag_count(rec, _ORDER_ITEM)
+
+    done = []
+    short = []
+    for cid, idx, limit, kind, cost in _DONATE_ROWS:
+        label = _DONATE_NAME[cid]
+        used = counts[idx] if idx < len(counts) else 0
+        n = 0
+        while used < limit:
+            why = _lack(kind, cost, metal, oil, feats, items)
+            if why:
+                if why.startswith("读不到"):
+                    return False, f"{label}{why}，不捐" + _donated(done)
+                short.append(label + why)
+                break
+            _nap(0.4)
+            sent = _send_donate(sock, rec, name, cid)
+            r = _wait(sock, rec, sent, 16)
+            if not isinstance(r, dict):
+                return False, f"{label}没有回包" + _donated(done)
+            ret = r.get("ret")
+            if isinstance(ret, int) and not isinstance(ret, bool) and ret != 0:
+                return False, f"{label}服务器返回 ret={ret}" + _donated(done)
+            counts = _donate_counts(r)
+            if counts is None:
+                return False, f"{label}回包读不到捐献次数" + _donated(done)
+            now = counts[idx] if idx < len(counts) else 0
+            if now != used + 1:
+                return False, f"{label}次数没有增加（{used}→{now}）" + _donated(done)
+            used = now
+            n += 1
+            metal, oil, feats, items = _spend(kind, cost, metal, oil, feats, items)
+        if n:
+            done.append(f"{label}{n}次")
+
+    full = all(
+        (counts[idx] if idx < len(counts) else 0) >= limit
+        for _, idx, limit, _, _ in _DONATE_ROWS
+    )
+    text = "、".join(done)
+    if full:
+        return True, "成功：" + (text or "今日金属石油、功勋、军令都已捐满")
+    head = (text + "；") if text else ""
+    return False, head + "；".join(short) + "，跳过"
+
+
+def _donated(done):
+    if not done:
+        return ""
+    return "（已捐" + "、".join(done) + "）"
