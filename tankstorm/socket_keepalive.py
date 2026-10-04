@@ -953,6 +953,55 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
         citydb.set_fighting_order(0)
 
 
+_LOCK_LEFT = "已不在这座城，等下次出现再打"
+
+
+def _skip_stale_lock(rec, sock, config, beater, job, beats=0) -> bool:
+    """排队的自动锁敌开打前再确认人还在订单这座城。已经离开就结束这一单。
+    面板没打开时不算离开，照常走路。返回 True 表示这一单已经收掉。"""
+    from . import citydb, country_war
+
+    uid = str(job.get("uid") or "").strip()
+    if not job.get("auto") or not uid:
+        return False
+    try:
+        city_id = int(job.get("city_id") or 0)
+    except (TypeError, ValueError):
+        city_id = 0
+    if city_id <= 0:
+        return False
+    info = citydb.lock_target_info(city_id, uid)
+    if not info.get("gone"):
+        try:
+            peek = country_war.lock_target_here(
+                rec, sock, config, city_id, uid,
+                page=int(info.get("page") or 0), beat=beater)
+        except OSError:
+            raise
+        except Exception:
+            log.info("订单 %s 索敌前没看清 UID %s 还在不在城 %s，照常走",
+                     job["id"], uid, city_id, exc_info=True)
+            return False
+        if peek.get("here") is None:
+            log.info("订单 %s 索敌前没看清 UID %s 还在不在城 %s：%s，照常走",
+                     job["id"], uid, city_id, peek.get("原因") or "面板没打开")
+            return False
+        if peek.get("here"):
+            p = peek.get("player") or {}
+            if p.get("morale") is not None:
+                citydb.note_lock_morale(p.get("morale"))
+            try:
+                citydb.upsert_players(
+                    city_id, [p], citydb.now_ts(), page=int(peek.get("page") or 0))
+            except Exception:
+                pass
+            return False
+    log.info("订单 %s 索敌前 UID %s 已不在城 %s，跳过", job["id"], uid, city_id)
+    citydb.mark_watch_repelled(city_id, uid)
+    citydb.finish_attack_order(job["id"], "failed", _LOCK_LEFT, beats=int(beats or 0))
+    return True
+
+
 def _fight_claimed(rec, sock, config, beater, job) -> None:
     from . import citydb, country_war
 
@@ -970,9 +1019,6 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
 
     tally = {"n": start_beats, "note": _beat_note}
     citydb.note_attack_beats(job["id"], start_beats)
-    if uid:
-        info = citydb.find_player(uid) or {}
-        citydb.note_lock_morale(info.get("morale"))
     fight_config = config
     if job.get("cards") is not None:
         fight_config = dict(config)
@@ -985,6 +1031,12 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         citydb.begin_lock_cards()
     try:
         try:
+            if guarding and uid and _skip_stale_lock(
+                    rec, sock, config, beater, job, tally.get("n") or 0):
+                return
+            if uid:
+                info = citydb.find_player(uid) or {}
+                citydb.note_lock_morale(info.get("morale"))
             plan = citydb.clear_fight_plan() if not uid else None
             out = country_war.walk_to(
                 rec, sock, fight_config, job["city_id"], beat=beater, uid=uid,

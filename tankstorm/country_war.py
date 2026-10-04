@@ -1133,6 +1133,78 @@ def _list_city_players(rec, sock, city_id, country, out, on_page=None,
     return out
 
 
+def lock_target_here(rec, sock, config: dict, city_id: int, uid,
+                     page: int = 0, beat=None) -> dict:
+    """索敌前打开目标城面板，看这个人还在不在。不走路、不花行动力。
+
+    here True 还在；False 附近几页没有；None 面板没打开，不能当离开。
+    排队期间页码会随进出人挪动，先看上次那一页，再前后各翻两页。
+    """
+    uid = str(uid or "").strip()
+    out = {"here": None, "原因": "", "page": 0, "player": None}
+    try:
+        city_id = int(city_id or 0)
+    except (TypeError, ValueError):
+        city_id = 0
+    try:
+        page = max(0, int(page or 0))
+    except (TypeError, ValueError):
+        page = 0
+    if not uid or city_id <= 0:
+        out["原因"] = "没有目标和城市"
+        return out
+    conf = (config.get("国战", {}) or {})
+    country = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
+    restore_beat = _daily.bind_beat(beat)
+    try:
+        info = _open_city(sock, rec, city_id, country)
+        if not info:
+            out["原因"] = "打不开城市面板"
+            return out
+        cnt = int(info.get("userCnt") or 0)
+        if cnt <= 0:
+            out["here"] = False
+            return out
+        owner = int(info.get("owner") or country or 0)
+        last_page = max(0, (cnt - 1) // 15)
+        if page > last_page:
+            page = last_page
+        pages = [page]
+        for d in range(1, 3):
+            lo = page - d
+            if lo >= 0:
+                pages.append(lo)
+            hi = page + d
+            if hi <= last_page:
+                pages.append(hi)
+        log.info("[索敌] 开战前看 UID %s 还在不在城 %s，从第 %d 页起共看 %d 页",
+                 uid, city_id, page, len(pages))
+        for i, pg in enumerate(pages):
+            since = _send(sock, rec, 3, country=owner, city=city_id, page=pg)
+            cd = _wait(sock, rec, since, 3, timeout=WAIT_ATK)
+            if not isinstance(cd, dict):
+                out["原因"] = f"翻到第 {pg} 页没有回包"
+                return out
+            got_owner = _read_path(cd, "cityData.field2")
+            if isinstance(got_owner, int) and got_owner:
+                owner = got_owner
+            listed = _wait_city_users(sock, rec, since, city_id, timeout=2.0)
+            p = _listed_user(listed, uid)
+            if p is not None:
+                p["page"] = pg
+                out["here"] = True
+                out["page"] = pg
+                out["player"] = p
+                log.info("[索敌] UID %s 还在城 %s 第 %d 页", uid, city_id, pg)
+                return out
+            if i + 1 < len(pages):
+                _nap(0.4)
+        out["here"] = False
+        return out
+    finally:
+        restore_beat()
+
+
 def _miss_text(who, drop=None, left=None, lost=None, after=None) -> str:
     """这一击没有把人打掉。说明里写上玩家和士气，方便对战报。"""
     who = str(who or "").strip() or "对方"

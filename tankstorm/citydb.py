@@ -1918,6 +1918,62 @@ def online_attack_busy(user_id: int, city_id: int, uid: str) -> bool:
         conn.close()
 
 
+def _lock_gone_on(conn, user_id, city_id, uid) -> bool:
+    """库里已经能确定这个人不在订单这座城。扫描还没改、看不出时返回 False。"""
+    uid = str(uid or "").strip()
+    if not uid:
+        return False
+    try:
+        city_id = int(city_id)
+    except (TypeError, ValueError):
+        return False
+    if city_id <= 0:
+        return False
+    if user_id:
+        sub = conn.execute(
+            "SELECT last_present FROM watch_sub "
+            "WHERE user_id=? AND city_id=? AND uid=?",
+            (int(user_id), city_id, uid)).fetchone()
+        if sub is not None and sub[0] is not None and int(sub[0]) == 0:
+            return True
+    row = conn.execute(
+        "SELECT city_id FROM player WHERE uid=? ORDER BY fetched_at DESC LIMIT 1",
+        (uid,)).fetchone()
+    return row is not None and int(row[0]) != city_id
+
+
+def lock_target_info(city_id, uid) -> dict:
+    """自动锁敌开打前看库。gone 为真就可以跳过；否则带着 page 去现场翻页。"""
+    uid = str(uid or "").strip()
+    out = {"gone": False, "page": 0, "morale": None}
+    try:
+        city_id = int(city_id or 0)
+    except (TypeError, ValueError):
+        return out
+    if not uid or city_id <= 0:
+        return out
+    user_id = attack_context_user()
+    try:
+        conn = connect(readonly=True)
+    except sqlite3.Error:
+        return out
+    try:
+        if _lock_gone_on(conn, user_id, city_id, uid):
+            out["gone"] = True
+            return out
+        row = conn.execute(
+            "SELECT IFNULL(page,0), morale FROM player WHERE uid=? AND city_id=?",
+            (uid, city_id)).fetchone()
+        if row:
+            out["page"] = int(row[0] or 0)
+            out["morale"] = row[1]
+        return out
+    except sqlite3.Error:
+        return out
+    finally:
+        conn.close()
+
+
 def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
     """给这个订阅排一条自动攻打。同一人还没打完就不再排。还没打完的最多两条。没挂在游戏上就不排。"""
     uid = str(uid or "").strip()
@@ -3566,6 +3622,22 @@ def claim_attack_order():
                     "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
                     ("订阅档不够或账号已过期", now, row[0]))
                 continue
+            uid = str(row[2] or "").strip()
+            if bool(row[5]) and uid and str(row[7] or "") != "modo":
+                if _lock_gone_on(conn, user_id, int(row[1]), uid):
+                    conn.execute(
+                        "UPDATE atk_order SET status='failed', reason=?, updated_at=? "
+                        "WHERE id=? AND status='pending'",
+                        ("已不在这座城，等下次出现再打", now, row[0]))
+                    conn.execute(
+                        "UPDATE watch_sub SET last_present=0, lock_sent=0 "
+                        "WHERE city_id=? AND uid=? "
+                        "AND (last_present IS NULL OR last_present!=0 "
+                        "OR IFNULL(lock_sent,0)!=0)",
+                        (int(row[1]), uid))
+                    log.info("登录账号 %s 排队的自动锁敌 UID %s 已不在城 %s，跳过",
+                             username_of(user_id), uid, row[1])
+                    continue
             cur = conn.execute(
                 "UPDATE atk_order SET status='running', updated_at=? "
                 "WHERE id=? AND status='pending'",
