@@ -1390,9 +1390,9 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         elif kind == "fund":
             ok, why = fund.fund(
-                rec, sock, params.get("building_id"), params.get("times") or 1)
-            if not ok:
-                citydb.set_attack_status("daily", task=label, note=why)
+                rec, sock, params.get("building_id"), params.get("times") or 1,
+                on_progress=_show)
+            _show(why)
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         else:
             citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
