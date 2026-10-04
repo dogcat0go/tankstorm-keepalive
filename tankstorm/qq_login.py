@@ -1245,21 +1245,31 @@ class QQSession:
         腾讯的防钓鱼策略要求二维码显示在**另一块屏幕**上，而推送登录没有这个限制。
 
         参数取自真实客户端抓包：ptqrshow?qr_push=1&qr_push_uin=<uin>&type=1
+        二维码过期或这张等太久，马上换一张，页面才能跟上。
         """
         # uin 要在清 cookie 之前取，否则就拿不到了
         if push_uin is None:
             push_uin = self.uin or None
-        started = self.start_qr(push_uin=push_uin, on_qr=on_qr)
-        if not started.get("ok"):
-            return False
-        deadline = time.time() + timeout_sec
-        while time.time() < deadline:
-            result = self.poll_qr()
-            if result.get("done"):
-                return bool(result.get("ok"))
-            time.sleep(3)
-        log.error("扫码超时（%d 秒）", timeout_sec)
-        return False
+        while True:
+            started = self.start_qr(push_uin=push_uin, on_qr=on_qr)
+            if not started.get("ok"):
+                return False
+            deadline = time.time() + timeout_sec
+            expired = False
+            while time.time() < deadline:
+                result = self.poll_qr()
+                if result.get("done"):
+                    if result.get("ok"):
+                        return True
+                    if result.get("code") == "65":
+                        log.info("二维码过期，马上换一张")
+                        expired = True
+                        break
+                    return False
+                time.sleep(3)
+            if expired:
+                continue
+            log.info("这张二维码等了 %d 秒还没扫上，马上换一张", timeout_sec)
 
     def ensure_login(self, on_qr=None, push_uin=None) -> bool:
         """保证登录可用。顺序：现成 cookie → 长效凭据静默续期 → 推送/扫码登录。

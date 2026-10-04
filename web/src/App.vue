@@ -174,7 +174,10 @@ async function refreshAttacks() {
   holdUntil.value = left > 0 ? Date.now() + left * 1000 : 0;
   const wantQr = !!(proc.value && proc.value.qr);
   if (!wantQr) qrSrc.value = "";
-  else if (!qrSrc.value) qrSrc.value = "/api/attack-qr?t=" + Date.now();
+  else if (proc.value.qr_at) {
+    const next = "/api/attack-qr?t=" + encodeURIComponent(proc.value.qr_at);
+    if (qrSrc.value !== next) qrSrc.value = next;
+  } else if (!qrSrc.value) qrSrc.value = "/api/attack-qr?t=" + Date.now();
   if (wantQr) qrWait = 0;
 }
 

@@ -2089,6 +2089,18 @@ def login_qr_path(user_id: int = 0) -> str:
     return _signal_value(_mark_name("qrpath", user_id)).strip()
 
 
+def login_qr_at(user_id: int = 0) -> str:
+    """这张网页二维码是什么时候写下的。页面用它判断该不该换图。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return ""
+    if page_login_path(user_id):
+        return _signal_at(_page_login_key(user_id))
+    if login_qr_path(user_id):
+        return _signal_at(_mark_name("qrpath", user_id))
+    return ""
+
+
 def _page_login_key(user_id: int) -> str:
     return f"pagelogin-{int(user_id)}"
 
@@ -2250,6 +2262,16 @@ def _signal_value(name: str) -> str:
     try:
         row = conn.execute(
             "SELECT value FROM atk_signal WHERE name=?", (name,)).fetchone()
+    finally:
+        conn.close()
+    return str(row[0] or "") if row else ""
+
+
+def _signal_at(name: str) -> str:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT at FROM atk_signal WHERE name=?", (name,)).fetchone()
     finally:
         conn.close()
     return str(row[0] or "") if row else ""
@@ -2758,7 +2780,9 @@ def attack_status(user_id: int) -> dict:
         row["qq"] = uin
         row.setdefault("need_login", False)
         row.setdefault("keepalive", False)
-        return _with_page_qr(row, user_id)
+        row = _with_page_qr(row, user_id)
+        row["qr_at"] = login_qr_at(user_id) if row.get("qr") else ""
+        return row
 
     mismatch = pack({"online": False, "phase": "offline", "detail": QQ_MISMATCH,
                      "seen_at": beijing_ts(seen), "qr": False, "here": "",
