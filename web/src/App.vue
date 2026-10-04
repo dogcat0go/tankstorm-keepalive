@@ -11,6 +11,7 @@ const username = ref("");
 const password = ref("");
 const invite = ref("");
 const err = ref("");
+const errAt = ref("");
 const notice = ref(null);
 const items = ref([]);
 const cityCounts = ref([]);
@@ -69,6 +70,12 @@ let timer = 0;
 let atkTimer = 0;
 let clockTimer = 0;
 
+function showErr(message, where) {
+  const text = message || "";
+  err.value = text;
+  errAt.value = text ? (where || (me.value ? tab.value : "login")) : "";
+}
+
 async function api(path, body) {
   const r = await fetch(path, {
     method: body ? "POST" : "GET",
@@ -114,20 +121,20 @@ async function saveDailySwitch(it, on) {
   if (next === prev || dailySwitching.value) return;
   it.on = next;
   dailySwitching.value = it.key;
-  err.value = "";
+  showErr("");
   try {
     const data = await api("/api/daily/switch", { key: it.key, on: next });
     dailyTasks.value = data.tasks || [];
   } catch (e) {
     it.on = prev;
-    err.value = e.message;
+    showErr(e.message);
   } finally {
     dailySwitching.value = "";
   }
 }
 
 async function runDaily(kind, extra) {
-  err.value = "";
+  showErr("");
   dailyNote.value = "";
   await api("/api/daily", Object.assign({ kind }, extra || {}));
   dailyNote.value = "已交给绑定的攻打号";
@@ -136,7 +143,7 @@ async function runDaily(kind, extra) {
 
 function pickTab(key) {
   tab.value = key;
-  if (key === "daily") refreshDaily().catch((e) => (err.value = e.message));
+  if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
 }
 
 async function refreshAttacks() {
@@ -179,14 +186,14 @@ function procText(p) {
 }
 
 async function setAttackPause(on) {
-  err.value = "";
+  showErr("", "bar");
   const data = await api("/api/attack-pause", { on });
   if (proc.value) proc.value.paused = !!data.paused;
   await refreshAttacks();
 }
 
 async function enter() {
-  err.value = "";
+  showErr("");
   const path = mode.value === "register" && registerOpen.value ? "/api/register" : "/api/login";
   await api(path, {
     username: username.value,
@@ -206,7 +213,7 @@ async function loadCities() {
     const data = await api("/api/cities");
     cities.value = data.items || [];
   } catch (e) {
-    err.value = e.message;
+    showErr(e.message);
   }
 }
 
@@ -216,7 +223,7 @@ function cityLabel(c) {
 }
 
 async function devEnter() {
-  err.value = "";
+  showErr("");
   await api("/api/dev-login", {});
   await loadMe();
 }
@@ -264,7 +271,7 @@ function pinRetreatCity() {
 }
 
 function addPriority() {
-  err.value = "";
+  showErr("");
   const uid = prioUid.value.trim();
   if (!/^\d{1,32}$/.test(uid)) throw new Error("优先 UID 要是数字");
   if (clearRows.value.some((row) => row.uid === uid)) throw new Error("这个 UID 已经在名单里");
@@ -276,7 +283,7 @@ function addPriority() {
 }
 
 async function saveClearPlan() {
-  err.value = "";
+  showErr("");
   clearNote.value = "";
   const data = await api("/api/clear-plan", {
     mode: clearMode.value,
@@ -291,7 +298,7 @@ async function saveClearPlan() {
 }
 
 async function saveLockCards() {
-  err.value = "";
+  showErr("");
   lockNote.value = "";
   const data = await api("/api/lock-cards", { cards: lockCards.value });
   if (data.user) takeUser(data.user);
@@ -299,7 +306,7 @@ async function saveLockCards() {
 }
 
 async function saveRetreat() {
-  err.value = "";
+  showErr("");
   retreatNote.value = "";
   const data = await api("/api/retreat", {
     mode: retreatMode.value,
@@ -313,20 +320,20 @@ async function saveRetreat() {
 
 async function saveAutoLock(ev) {
   const on = ev.target.checked;
-  err.value = "";
+  showErr("");
   try {
     const data = await api("/api/auto-lock", { on });
     autoLock.value = !!data.auto_lock;
-    err.value = attackLoginError(data.login);
+    showErr(attackLoginError(data.login));
     await refreshAttacks();
   } catch (e) {
     ev.target.checked = autoLock.value;
-    err.value = e.message;
+    showErr(e.message);
   }
 }
 
 async function addSub() {
-  err.value = "";
+  showErr("");
   await api("/api/subs", { city_id: cityId.value, uid: uid.value });
   cityId.value = "";
   uid.value = "";
@@ -339,7 +346,7 @@ async function removeSub(it) {
 }
 
 async function moveToCity() {
-  err.value = "";
+  showErr("");
   if (!moveCity.value) throw new Error("要选移动到哪座城");
   const data = await api("/api/attack-move", { city_id: moveCity.value });
   if (proc.value) proc.value.move_note = data.move_note || "";
@@ -347,15 +354,15 @@ async function moveToCity() {
 }
 
 async function addModo() {
-  err.value = "";
+  showErr("");
   const data = await api("/api/modo", { cards: modoCards.value });
   if (data.modo_cards != null) modoCards.value = String(data.modo_cards);
-  err.value = attackLoginError(data.login);
+  showErr(attackLoginError(data.login));
   await refreshAttacks();
 }
 
 async function addOrder() {
-  err.value = "";
+  showErr("");
   const city = cities.value.find((c) => String(c.id) === String(attackCity.value));
   const where = city ? cityLabel(city) : String(attackCity.value || "");
   const who = String(attackUid.value || "").trim() || "整座城";
@@ -371,21 +378,21 @@ async function addOrder() {
     if (data.hold_min != null) holdMin.value = String(data.hold_min);
     if (data.card_max != null) cardMax.value = String(data.card_max);
     const extra = submitNote(data);
-    err.value = extra;
+    showErr(extra);
     notice.value = {
       ok: true,
       title: "提交成功",
       text: "已提交 " + where + "，" + who + "。" + extra,
     };
   } catch (e) {
-    err.value = e.message;
+    showErr(e.message);
     notice.value = { ok: false, title: "提交没成功", text: e.message || "请求失败" };
     return;
   }
   try {
     await refreshAttacks();
   } catch (e) {
-    err.value = e.message || err.value;
+    showErr(e.message || err.value);
   }
 }
 
@@ -443,9 +450,9 @@ function holdCell(it) {
 }
 
 async function pushLogin() {
-  err.value = "";
+  showErr("", "bar");
   const data = await api("/api/attack-login", {});
-  err.value = attackLoginError(data.login);
+  showErr(attackLoginError(data.login), "bar");
   await refreshAttacks();
 }
 
@@ -475,14 +482,14 @@ function orderOpen(it) {
 }
 
 async function cancelOrder(it) {
-  err.value = "";
+  showErr("");
   await api("/api/attacks/cancel", { id: it.id });
   await refreshAttacks();
 }
 
 async function savePush() {
   note.value = "";
-  err.value = "";
+  showErr("");
   await api("/api/push", { qq_target: qqTarget.value });
   note.value = "QQ 号已保存";
 }
@@ -497,6 +504,7 @@ async function logout() {
   proc.value = null;
   qrSrc.value = "";
   notice.value = null;
+  showErr("");
   tab.value = "attack";
   dailyQq.value = "";
   dailyTasks.value = [];
@@ -585,7 +593,7 @@ onUnmounted(() => {
     <p class="lead" v-if="!me">
       {{ registerOpen ? "注册一个账号，" : "使用管理员开通的账号登录，" }}订阅某座城里有没有某个用户 UID。
     </p>
-    <form v-if="!me" @submit.prevent="enter().catch((e) => (err = e.message))">
+    <form v-if="!me" @submit.prevent="enter().catch((e) => showErr(e.message))">
       <label>用户名<input v-model="username" autocomplete="username" required /></label>
       <label>密码<input v-model="password" type="password" autocomplete="current-password" required /></label>
       <label v-if="mode === 'register'">注册口令<input v-model="invite" autocomplete="off" /></label>
@@ -593,11 +601,12 @@ onUnmounted(() => {
       <button v-if="registerOpen" type="button" class="ghost" @click="mode = mode === 'login' ? 'register' : 'login'">
         {{ mode === "login" ? "去注册" : "去登录" }}
       </button>
-      <button v-if="devLogin" type="button" class="ghost" @click="devEnter().catch((e) => (err = e.message))">
+      <button v-if="devLogin" type="button" class="ghost" @click="devEnter().catch((e) => showErr(e.message))">
         测试进入
       </button>
     </form>
-    <template v-else>
+    <p v-if="!me && err && errAt === 'login'" class="err">{{ err }}</p>
+    <template v-if="me">
       <p class="lead">
         {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
         · 库 <code>{{ db }}</code>
@@ -606,14 +615,15 @@ onUnmounted(() => {
       </p>
       <section class="attack-bar" aria-label="攻打号状态">
         <p v-if="pushLoginVisible(proc)">
-          <button type="button" class="ghost" @click="pushLogin().catch((e) => (err = e.message))">推送登录二维码</button>
+          <button type="button" class="ghost" @click="pushLogin().catch((e) => showErr(e.message, 'bar'))">推送登录二维码</button>
         </p>
         <p class="proc">
           <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
-          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login' && proc.keepalive" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
-          <button v-else-if="proc && proc.online && proc.keepalive" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
+          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login' && proc.keepalive" type="button" class="ghost" @click="setAttackPause(false).catch((e) => showErr(e.message, 'bar'))">继续</button>
+          <button v-else-if="proc && proc.online && proc.keepalive" type="button" class="ghost" @click="setAttackPause(true).catch((e) => showErr(e.message, 'bar'))">暂停</button>
         </p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
+        <p v-if="err && errAt === 'bar'" class="err">{{ err }}</p>
       </section>
       <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
@@ -626,13 +636,13 @@ onUnmounted(() => {
       <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
       <p v-else class="muted">还没绑定攻打 QQ。先在导航栏上方扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
       <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。后面的攻打单排在它后面。</p>
-      <form class="lock-row" @submit.prevent="runDaily('daily', { stages: pveStages }).catch((e) => (err = e.message))">
+      <form class="lock-row" @submit.prevent="runDaily('daily', { stages: pveStages }).catch((e) => showErr(e.message))">
         <span class="switch">每日任务</span>
         <button type="submit" :disabled="!dailyQq">跑一轮</button>
       </form>
       <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。</p>
       <div class="campaign-box">
-        <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => (err = e.message))">
+        <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => showErr(e.message))">
           <span class="switch">征战世界</span>
           <span class="campaign-ops">
             <input v-model="pveStages" aria-label="关卡" placeholder="终点，例如 150" />
@@ -657,20 +667,21 @@ onUnmounted(() => {
         </div>
         <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，免费重开一次，再从第 1 关打到终点；打到了还有免费次数，再重开一次，再从第 1 关打。这一轮没打过就停，不再重开。一天最多 2 次。留空只打当前这一关。第三次、第4次排在后面；还在往终点打的这一轮先不做。第三次没做成时，不发第4次。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
       </div>
-      <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => (err = e.message))">
+      <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => showErr(e.message))">
         <span class="switch">成就拨款</span>
         <label>建筑 ID<input v-model="fundBuilding" class="mins" inputmode="numeric" placeholder="10138" required /></label>
         <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
         <button type="submit" :disabled="!dailyQq">拨款</button>
       </form>
       <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 30。</p>
-      <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">
+      <form class="lock-row" @submit.prevent="addModo().catch((e) => showErr(e.message))">
         <span class="switch">刷摩多军团</span>
         <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
         <button type="submit" :disabled="!dailyQq || !(proc && proc.keepalive)">提交</button>
       </form>
       <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后记在国战助手的订单里，要这个号已经挂机保活。</p>
       <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
+      <p v-if="err && errAt === 'daily'" class="err">{{ err }}</p>
       <h2>最近执行</h2>
       <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
       <div v-else class="wide">
@@ -719,7 +730,8 @@ onUnmounted(() => {
       </section>
       <section v-show="tab === 'qq'">
       <h2>订阅 QQ</h2>
-      <form class="stack" @submit.prevent="savePush().catch((e) => (err = e.message))">
+      <p v-if="err && errAt === 'qq'" class="err">{{ err }}</p>
+      <form class="stack" @submit.prevent="savePush().catch((e) => showErr(e.message))">
         <label>接收 QQ
           <input v-model="qqTarget" inputmode="numeric" autocomplete="off" placeholder="你的 QQ 号" />
         </label>
@@ -730,7 +742,8 @@ onUnmounted(() => {
       </section>
       <section v-show="tab === 'watch'">
       <h2>监控敌人</h2>
-      <form @submit.prevent="addSub().catch((e) => (err = e.message))">
+      <p v-if="err && errAt === 'watch'" class="err">{{ err }}</p>
+      <form @submit.prevent="addSub().catch((e) => showErr(e.message))">
         <label>城市
           <select v-model="cityId" required>
             <option value="" disabled>选择城市</option>
@@ -750,13 +763,13 @@ onUnmounted(() => {
         <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。</span>
       </p>
       <div v-if="me.remote_attack && advanced" class="advanced">
-        <form class="lock-row" @submit.prevent="saveLockCards().catch((e) => (err = e.message))">
+        <form class="lock-row" @submit.prevent="saveLockCards().catch((e) => showErr(e.message))">
           <label>1小时内最多恢复卡<input v-model="lockCards" class="mins" inputmode="numeric" required /></label>
           <button type="submit">保存</button>
           <span class="muted">{{ lockNote }}</span>
         </form>
         <p class="muted">只限制自动锁敌。最近 1 小时里最多开这么多张，用满就不再开，这一单跳过。手动攻打不占这个数。</p>
-        <form class="lock-row retreat-row" @submit.prevent="saveRetreat().catch((e) => (err = e.message))">
+        <form class="lock-row retreat-row" @submit.prevent="saveRetreat().catch((e) => showErr(e.message))">
           <span class="switch">打完后退</span>
           <label class="choice"><input type="radio" value="off" v-model="retreatMode" />不后退</label>
           <label class="choice"><input type="radio" value="hops" v-model="retreatMode" />后退几座城</label>
@@ -794,6 +807,7 @@ onUnmounted(() => {
       </section>
       <section v-show="tab === 'attack'">
       <h2>国战助手</h2>
+      <p v-if="err && errAt === 'attack'" class="err">{{ err }}</p>
       <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。打人和清城要中级或高级。刷摩多军团在日常任务。</p>
       <template v-if="me.remote_attack">
         <form class="attack-row" @submit.prevent="addOrder()">
@@ -813,7 +827,7 @@ onUnmounted(() => {
           <button type="button" class="ghost" @click="attackAdvanced = !attackAdvanced">{{ attackAdvanced ? "收起" : "高级配置" }}</button>
         </p>
         <div v-if="attackAdvanced" class="advanced">
-          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
+          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
             <span class="switch">清城扫页</span>
             <label class="choice"><input type="radio" value="head" v-model="clearMode" />前5页</label>
             <label class="choice"><input type="radio" value="range" v-model="clearMode" />指定范围</label>
@@ -822,16 +836,16 @@ onUnmounted(() => {
               <label>到<input v-model="clearTo" class="mins" inputmode="numeric" required /></label>
             </template>
           </form>
-          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
+          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
             <span class="switch">空城再打</span>
             <label class="choice">分钟<input v-model="clearWait" class="mins" inputmode="numeric" required /></label>
             <span v-if="clearRetryText" class="muted">{{ clearRetryText }}</span>
           </form>
-          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
+          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
             <span class="switch">扫页冷却</span>
             <label class="choice">秒<input v-model="clearScan" class="mins" inputmode="numeric" required /></label>
           </form>
-          <form class="lock-row" @submit.prevent="addPriority().catch((e) => (err = e.message))">
+          <form class="lock-row" @submit.prevent="addPriority().catch((e) => showErr(e.message))">
             <span class="switch">优先 UID</span>
             <label>UID<input v-model="prioUid" inputmode="numeric" /></label>
             <label>优先级<input v-model="prioRank" class="mins" inputmode="numeric" /></label>
@@ -843,7 +857,7 @@ onUnmounted(() => {
             <label>优先级<input v-model="row.rank" class="mins" inputmode="numeric" /></label>
             <button type="button" class="ghost" @click="clearRows = clearRows.filter((item) => item.uid !== row.uid)">删除</button>
           </div>
-          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => (err = e.message))">
+          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
             <button type="submit">保存</button>
             <span class="muted">{{ clearNote }}</span>
           </form>
@@ -859,7 +873,7 @@ onUnmounted(() => {
               <option v-for="c in cities" :key="'mv' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
             </select>
           </label>
-          <button type="button" @click="moveToCity().catch((e) => (err = e.message))">移动</button>
+          <button type="button" @click="moveToCity().catch((e) => showErr(e.message))">移动</button>
           <span v-if="proc.move_note" class="muted">{{ proc.move_note }}</span>
           </template>
         </p>
@@ -878,7 +892,7 @@ onUnmounted(() => {
               <td>{{ orderCity(it) }}</td>
               <td>{{ orderUid(it) }}</td>
               <td>{{ beatText(it) }}</td>
-              <td>{{ orderStatus(it.status) }}<button v-if="orderOpen(it)" type="button" class="ghost" @click="cancelOrder(it).catch((e) => (err = e.message))">关停</button></td>
+              <td>{{ orderStatus(it.status) }}<button v-if="orderOpen(it)" type="button" class="ghost" @click="cancelOrder(it).catch((e) => showErr(e.message))">关停</button></td>
               <td class="reason">{{ it.reason || "—" }}</td>
               <td>{{ holdCell(it) }}</td>
               <td>{{ it.created_at || "—" }}</td>
@@ -894,7 +908,7 @@ onUnmounted(() => {
             <p class="reason"><span class="k">说明</span>{{ it.reason || "—" }}</p>
             <p><span class="k">保活剩余倒计时</span>{{ holdCell(it) }}</p>
             <p><span class="k">北京时间</span>{{ it.created_at || "—" }}</p>
-            <p v-if="orderOpen(it)"><button type="button" class="ghost" @click="cancelOrder(it).catch((e) => (err = e.message))">关停</button></p>
+            <p v-if="orderOpen(it)"><button type="button" class="ghost" @click="cancelOrder(it).catch((e) => showErr(e.message))">关停</button></p>
           </article>
         </div>
         </div>
@@ -917,7 +931,6 @@ onUnmounted(() => {
       </div>
       </section>
     </template>
-    <p class="err">{{ err }}</p>
     <div v-if="notice" class="modal" @click.self="notice = null">
       <div class="modal-card" :class="{ bad: !notice.ok }" role="dialog" aria-modal="true" aria-labelledby="notice-title">
         <h2 id="notice-title">{{ notice.title }}</h2>
