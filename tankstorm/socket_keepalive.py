@@ -734,7 +734,7 @@ def _start_attack_status() -> threading.Event:
     qq = citydb.attack_context_qq()
     if user_id and not citydb.attack_qq_blocked(user_id):
         citydb.set_attack_paused(False, user_id)
-    citydb.set_attack_status("idle")
+    citydb.set_attack_status("login")
     threading.Thread(
         target=_attack_status_beater, args=(stop, user_id, qq),
         name=f"attack-status-{qq or user_id}", daemon=True).start()
@@ -1849,7 +1849,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     _arm_push_keepalive()
                     if not citydb.attack_in_keepalive(_owner()):
                         citydb.set_attack_paused(False, _owner())
-                        citydb.set_attack_status("hold")
+                        citydb.set_attack_status("login")
                         _connect_attack_orders(qq, config)
                         continue
                 time.sleep(5)
@@ -1862,7 +1862,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             asked = citydb.take_attack_login()
             if asked:
                 _arm_push_keepalive()
-                if qq.is_valid():
+                if citydb.attack_in_keepalive(_owner()):
                     citydb.set_attack_status("hold")
                 else:
                     citydb.set_attack_status("login")
@@ -1917,10 +1917,13 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
                 return "paused"
             if claim:
                 citydb.ask_attack_login(user_id)
+            if not citydb.attack_in_keepalive(user_id):
+                citydb.note_attack_logging_in(user_id)
             log.info("攻打 QQ %s 的线程已在跑", uin)
             return "busy"
         if claim:
             citydb.ask_attack_login(user_id)
+        citydb.note_attack_logging_in(user_id)
         th = threading.Thread(
             target=_attack_worker, args=(config, user_id, uin, name, on_page),
             name=f"attack-qq-{uin}", daemon=True)
@@ -1986,6 +1989,11 @@ def _connect_and(qq, config: dict, work) -> int:
         log.error("%s", exc)
         return 2
 
+    from . import citydb
+    if citydb.attack_context_user() or citydb.attack_context_qq():
+        if not citydb.attack_in_keepalive():
+            citydb.set_attack_status("login")
+
     if not qq.is_valid() and not relogin_with_push(qq, config):
         return 1
     if not note_attack_qq(qq):
@@ -2036,6 +2044,7 @@ def _connect_and(qq, config: dict, work) -> int:
                       got)
             return 1
         log.info("登录态数据接收完毕，开始执行")
+        citydb.note_attack_link(interval)
 
         return work(rec, sock, spec, ctx, heart)
     except OSError as exc:

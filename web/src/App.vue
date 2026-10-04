@@ -151,6 +151,7 @@ async function runDaily(kind, extra) {
   await api("/api/daily", Object.assign({ kind }, extra || {}));
   dailyNote.value = "已交给绑定的攻打号";
   await refreshDaily();
+  await refreshAttacks();
 }
 
 function pickTab(key) {
@@ -171,8 +172,10 @@ async function refreshAttacks() {
   proc.value = atk.process || null;
   const left = proc.value && proc.value.hold_left;
   holdUntil.value = left > 0 ? Date.now() + left * 1000 : 0;
-  qrSrc.value = proc.value && proc.value.qr ? "/api/attack-qr?t=" + Date.now() : "";
-  if (qrSrc.value) qrWait = 0;
+  const wantQr = !!(proc.value && proc.value.qr);
+  if (!wantQr) qrSrc.value = "";
+  else if (!qrSrc.value) qrSrc.value = "/api/attack-qr?t=" + Date.now();
+  if (wantQr) qrWait = 0;
 }
 
 let qrWait = 0;
@@ -633,7 +636,7 @@ onMounted(async () => {
     if (!me.value) return;
     refreshAttacks().catch(() => {});
     if (tab.value === "daily") refreshDaily().catch(() => {});
-  }, 5000);
+  }, 2000);
   clockTimer = setInterval(() => {
     clock.value = Date.now();
   }, 1000);
@@ -948,7 +951,7 @@ onUnmounted(() => {
           <p class="muted">最近 1 小时拒绝的超级强攻</p>
           <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
         </div>
-        <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，在导航栏上方点推送登录，二维码就出在那里。点了推送登录，就挂机保活 180 分钟，连上之后可以接订单。同一个 QQ 不能绑给两个登录账号。</p>
+        <p class="muted">每 2 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，在导航栏上方点推送登录，二维码就出在那里。点了推送登录，就挂机保活 180 分钟，连上之后可以接订单。同一个 QQ 不能绑给两个登录账号。</p>
         <div class="orders" v-if="orders.length">
         <table>
           <thead>
