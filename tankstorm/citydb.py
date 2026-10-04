@@ -1984,6 +1984,50 @@ def queue_present_locks(user_id: int) -> int:
     return n
 
 
+def queue_watch_lock(user_id: int, city_id: int, uid: str) -> str:
+    """手动给这条订阅排一条自动索敌。人要正在这座城里。成功返回空字符串。
+
+    和扫描自动排的是同一种订单。这一单还没打完时不再排第二条。
+    """
+    user_id = int(user_id)
+    try:
+        city_id = int(city_id)
+    except (TypeError, ValueError):
+        return "城市不对"
+    uid = str(uid or "").strip()
+    if city_id <= 0 or not uid:
+        return "没有这条订阅"
+    conn = connect(readonly=True)
+    try:
+        user = conn.execute(
+            "SELECT IFNULL(tier,'初级'), IFNULL(expires_at,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        sub = conn.execute(
+            "SELECT last_present FROM watch_sub WHERE user_id=? AND city_id=? AND uid=?",
+            (user_id, city_id, uid)).fetchone()
+    finally:
+        conn.close()
+    if not user or not attack_tier(user[0]):
+        return "自动索敌需要中级或高级订阅"
+    if account_expired(user[1]):
+        return "账号已过期"
+    if not sub:
+        return "没有这条订阅"
+    if sub[0] is None or int(sub[0]) != 1:
+        return "这个人不在这座城"
+    if not attack_in_keepalive(user_id):
+        return "不在保活，下了订单游戏也登不进去"
+    if online_attack_busy(user_id, city_id, uid):
+        return "这个人已经有一条还没打完的订单"
+    if not enqueue_online_attack(user_id, city_id, uid):
+        if online_attack_busy(user_id, city_id, uid):
+            return "这个人已经有一条还没打完的订单"
+        return "最多同时两条攻打订单"
+    mark_lock_sent(user_id, city_id, uid)
+    log.info("登录账号 %s 手动索敌，城市 %s UID %s", username_of(user_id), city_id, uid)
+    return ""
+
+
 def _order_row(r) -> dict:
     kind = str(r[7] or "") if len(r) > 7 else ""
     run_at = str(r[8] or "") if len(r) > 8 else ""

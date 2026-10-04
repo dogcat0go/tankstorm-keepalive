@@ -38,6 +38,8 @@ const retreatHops = ref("3");
 const retreatCity = ref("0");
 const retreatNote = ref("");
 const lockCards = ref("3");
+const lockHint = ref("");
+const locking = ref("");
 const lockNote = ref("");
 const advanced = ref(false);
 const attackAdvanced = ref(false);
@@ -341,6 +343,28 @@ async function saveAutoLock(ev) {
   }
 }
 
+function lockKey(it) {
+  return it.city_id + ":" + it.uid;
+}
+
+async function lockOne(it) {
+  const key = lockKey(it);
+  if (locking.value) return;
+  locking.value = key;
+  showErr("", "watch");
+  lockHint.value = "";
+  try {
+    const data = await api("/api/watch-lock", { city_id: it.city_id, uid: it.uid });
+    const where = it.city_name ? it.city_name + " " + it.city_id : String(it.city_id);
+    lockHint.value = where + " 已排队索敌";
+    showErr(attackLoginError(data.login), "watch");
+    await refresh();
+    await refreshAttacks();
+  } finally {
+    locking.value = "";
+  }
+}
+
 async function addSub() {
   showErr("");
   await api("/api/subs", { city_id: cityId.value, uid: uid.value });
@@ -521,6 +545,7 @@ async function logout() {
   pveStages.value = "";
   pveStagesReady = false;
   dailyNote.value = "";
+  lockHint.value = "";
 }
 
 function statusOf(it) {
@@ -769,7 +794,7 @@ onUnmounted(() => {
           自动锁敌
         </label>
         <button type="button" class="ghost" @click="advanced = !advanced">{{ advanced ? "收起" : "高级配置" }}</button>
-        <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。</span>
+        <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。人在城里时，这一行的索敌可以再排一条。</span>
       </p>
       <div v-if="me.remote_attack && advanced" class="advanced">
         <form class="lock-row" @submit.prevent="saveLockCards().catch((e) => showErr(e.message))">
@@ -796,6 +821,7 @@ onUnmounted(() => {
         </form>
         <p class="muted">只对自动锁敌打完的订单。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
       </div>
+      <p v-if="lockHint" class="muted">{{ lockHint }}</p>
       <p v-if="!items.length" class="muted">还没有订阅。</p>
       <div v-else class="subs">
         <details v-for="p in players" :key="p.uid" class="sub" :open="isSubOpen(p.uid)" @toggle="onSubToggle(p.uid, $event)">
@@ -809,7 +835,10 @@ onUnmounted(() => {
             <span class="sub-where">{{ cityText(it) }}</span>
             <span class="sub-status" :class="it.present ? 'on' : 'off'">{{ statusOf(it) }}<template v-if="it.present && it.page != null"> · 第{{ it.page }}页</template></span>
             <span class="sub-time muted">{{ whenOf(it) }}</span>
-            <button type="button" class="ghost" @click="removeSub(it)">取消</button>
+            <span class="sub-actions">
+              <button v-if="me.remote_attack && it.present" type="button" class="ghost" title="给这个人排一条自动索敌" :disabled="locking === lockKey(it)" @click="lockOne(it).catch((e) => showErr(e.message, 'watch'))">索敌</button>
+              <button type="button" class="ghost" @click="removeSub(it)">取消</button>
+            </span>
           </div>
         </details>
       </div>

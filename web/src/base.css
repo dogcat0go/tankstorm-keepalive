@@ -39,7 +39,8 @@ form.scan-form { max-width: none; }
 .sub-name { font-weight: 700; word-break: keep-all; }
 .sub-city { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 8px 0 8px 1.1em; border-top: 1px solid #eee; }
 .sub-where, .sub-status, .sub-time { white-space: nowrap; }
-.sub-city .ghost { margin-left: auto; padding: 4px 10px; }
+.sub-city .sub-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.sub-city .ghost { padding: 4px 10px; }
 .orders { overflow-x: auto; }
 .orders table { min-width: 760px; }
 .orders th, .orders td { white-space: nowrap; }
