@@ -103,9 +103,10 @@ form.campaign-line { margin: 0 0 10px; }
 table.daily-jobs th,
 table.daily-jobs td { white-space: nowrap; }
 table.daily-jobs td.reason {
-  white-space: normal;
+  white-space: pre-line;
   word-break: break-word;
   min-width: 12em;
+  line-height: 1.45;
 }
 .off { color: #666; }
 code { font-size: 13px; }
