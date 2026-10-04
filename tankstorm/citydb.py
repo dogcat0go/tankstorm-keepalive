@@ -2780,7 +2780,7 @@ def attack_status(user_id: int) -> dict:
         else:
             detail = "已暂停，不在保活，先连上再继续"
     elif phase == "login":
-        detail = "正在等扫码"
+        detail = "登录中"
     elif phase == "daily":
         label = str(parsed.get("task") or "").strip()
         detail = f"正在做{label}" if label else "正在做日常任务"
@@ -2788,13 +2788,16 @@ def attack_status(user_id: int) -> dict:
         if note:
             detail = f"{detail}，{note}"
     elif phase == "hold":
-        head = "挂机保活成功" if _hold_link_ok(parsed) else "挂机保活没连上"
-        if hold_left is not None and hold_left > 0:
-            detail = f"{head}，还剩 {(hold_left + 59) // 60} 分钟"
+        if _hold_link_ok(parsed):
+            head = "挂机保活成功"
+            if hold_left is not None and hold_left > 0:
+                detail = f"{head}，还剩 {(hold_left + 59) // 60} 分钟"
+            else:
+                detail = head
+            if waiting:
+                detail = f"{detail}，正在看路径"
         else:
-            detail = head
-        if waiting:
-            detail = f"{detail}，正在看路径"
+            detail = "登录中"
     elif phase == "running" and own and str(own[1] or "").strip():
         detail = f"正在打城市 {own[0]} 的 {own[1]}"
     elif phase == "running" and own:
@@ -2803,7 +2806,7 @@ def attack_status(user_id: int) -> dict:
         detail = "正在执行订单"
     else:
         if not _hold_link_ok(parsed):
-            detail = "不在保活，先连上再接订单"
+            detail = "登录中" if (hold_left or 0) > 0 else "不在保活，先连上再接订单"
         else:
             detail = _queued_attack_text(queued)
             if not detail:
@@ -2973,6 +2976,30 @@ def save_scan_plan(gap_sec, quiet_start, quiet_end, ranges) -> str:
 def ask_attack_login(user_id: int = 0) -> None:
     """让这个攻打 QQ 自己的线程去推二维码。不碰别的 QQ。"""
     _upsert_signal(_mark_name("login", user_id), "1")
+
+
+def note_attack_logging_in(user_id: int = 0) -> None:
+    """点了推送登录或刚拉起线程，游戏还没连上。页面先显示登录中。
+
+    已经挂上游戏的不改，免得把挂机保活成功盖成登录中。
+    """
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return
+    if attack_in_keepalive(user_id):
+        return
+    name = _mark_name("proc", user_id)
+    prev = _proc_payload(_signal_value(name))
+    phase = str(prev.get("phase") or "")
+    if phase in ("running", "daily") and _hold_link_ok(prev):
+        return
+    data = dict(prev) if prev else {}
+    data["phase"] = "login"
+    data["user"] = user_id
+    uin = attack_qq_of(user_id)
+    if uin:
+        data["acct"] = uin
+    _upsert_signal(name, json.dumps(data, ensure_ascii=False))
 
 
 def take_attack_login() -> bool:
@@ -3233,8 +3260,8 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "建筑和次数要是数字"
         if building <= 0:
             return "要填建筑 ID"
-        if not (1 <= times <= 30):
-            return "拨款次数要在 1 到 30"
+        if not (1 <= times <= 999):
+            return "拨款次数要在 1 到 999"
         clean["building_id"] = building
         clean["times"] = times
     conn = connect()

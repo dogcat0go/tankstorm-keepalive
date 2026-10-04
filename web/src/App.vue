@@ -63,6 +63,16 @@ const pveStages = ref("");
 let pveStagesReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
+const fundBuildings = [
+  { id: "10132", name: "比萨斜塔" },
+  { id: "10133", name: "埃菲尔铁塔" },
+  { id: "10134", name: "大本钟" },
+  { id: "10135", name: "女神像" },
+  { id: "10136", name: "红场" },
+  { id: "10137", name: "帝国大厦" },
+  { id: "10138", name: "万磁陀螺" },
+  { id: "10139", name: "英雄徽章雕塑" },
+];
 const dailyNote = ref("");
 const dailySwitching = ref("");
 const moveCity = ref("");
@@ -141,6 +151,7 @@ async function runDaily(kind, extra) {
   await api("/api/daily", Object.assign({ kind }, extra || {}));
   dailyNote.value = "已交给绑定的攻打号";
   await refreshDaily();
+  await refreshAttacks();
 }
 
 function pickTab(key) {
@@ -161,8 +172,10 @@ async function refreshAttacks() {
   proc.value = atk.process || null;
   const left = proc.value && proc.value.hold_left;
   holdUntil.value = left > 0 ? Date.now() + left * 1000 : 0;
-  qrSrc.value = proc.value && proc.value.qr ? "/api/attack-qr?t=" + Date.now() : "";
-  if (qrSrc.value) qrWait = 0;
+  const wantQr = !!(proc.value && proc.value.qr);
+  if (!wantQr) qrSrc.value = "";
+  else if (!qrSrc.value) qrSrc.value = "/api/attack-qr?t=" + Date.now();
+  if (wantQr) qrWait = 0;
 }
 
 let qrWait = 0;
@@ -623,7 +636,7 @@ onMounted(async () => {
     if (!me.value) return;
     refreshAttacks().catch(() => {});
     if (tab.value === "daily") refreshDaily().catch(() => {});
-  }, 5000);
+  }, 2000);
   clockTimer = setInterval(() => {
     clock.value = Date.now();
   }, 1000);
@@ -717,11 +730,16 @@ onUnmounted(() => {
       </div>
       <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => showErr(e.message))">
         <span class="switch">成就拨款</span>
-        <label>建筑 ID<input v-model="fundBuilding" class="mins" inputmode="numeric" placeholder="10138" required /></label>
+        <label>建筑
+          <select v-model="fundBuilding" class="fund-building" required>
+            <option value="" disabled>选择建筑</option>
+            <option v-for="b in fundBuildings" :key="b.id" :value="b.id">{{ b.name }}</option>
+          </select>
+        </label>
         <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
         <button type="submit" :disabled="!dailyQq">拨款</button>
       </form>
-      <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 30。</p>
+      <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。</p>
       <form class="lock-row" @submit.prevent="addModo().catch((e) => showErr(e.message))">
         <span class="switch">刷摩多军团</span>
         <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
@@ -933,7 +951,7 @@ onUnmounted(() => {
           <p class="muted">最近 1 小时拒绝的超级强攻</p>
           <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
         </div>
-        <p class="muted">每 5 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，在导航栏上方点推送登录，二维码就出在那里。点了推送登录，就挂机保活 180 分钟，连上之后可以接订单。同一个 QQ 不能绑给两个登录账号。</p>
+        <p class="muted">每 2 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，在导航栏上方点推送登录，二维码就出在那里。点了推送登录，就挂机保活 180 分钟，连上之后可以接订单。同一个 QQ 不能绑给两个登录账号。</p>
         <div class="orders" v-if="orders.length">
         <table>
           <thead>
