@@ -19,6 +19,7 @@
 网页和命令行 --pve 同一套：留空只打当前关，只填一个数字就从当前关打到这一关。
 每日任务里，当前关到了或超过终点时，免费重开一次就从第 1 关打到终点。
 打到了还有免费次数，再重开一次再打。这一轮没打过终点就停，不再重开。
+第三次、第4次也是重开之后从第 1 关打到终点，打完才算这一次做成。
 """
 
 import re
@@ -200,6 +201,78 @@ def paid_restart(rec, sock):
     return True, f"第三次已重开，从第 {cur} 关回到第 1 关"
 
 
+def extra_campaign(rec, sock, stages, interval=1.0, kind=3, already_done=False):
+    """第三次或第4次：必要时重开，再从当前关打到终点。
+
+    kind 为 3 或 4。返回 (是否成功, 说明, 这一次是否已经打完, 是否还在往终点打)。
+    还没打到终点时不要接着做下一次。只重开、没打完不算做成。
+    """
+    from . import daily
+
+    daily.note_campaign_round(3 if kind == 3 else 4)
+    interval = float(interval if interval is not None else 1)
+    text = "" if _blank_stages(stages) else str(stages).strip()
+    try:
+        end = end_stage(text) if text else None
+    except ValueError as exc:
+        return False, str(exc), False, True
+
+    cur, panel = query(rec, sock)
+    if cur is None or not isinstance(panel, dict):
+        return False, "没读到当前关，不打", False, True
+    daily.note_campaign_stage(cur)
+
+    refresh = _num(panel, "field2")
+    bought = _num(panel, "field3")
+    vip = _num(panel, "field10")
+    if refresh is None:
+        return False, "没读到免费重开次数，不发", False, True
+    if refresh > 0:
+        which = "第三次" if kind == 3 else "第4次"
+        return True, f"还有免费重开次数 {refresh}，{which}先不做", False, False
+
+    below = end is not None and cur < end
+    if below:
+        if kind == 3:
+            fourth_started = vip is not None and vip < 1
+            if already_done and fourth_started:
+                return True, "今日已做过，跳过", True, False
+            if not (bought and bought > 0):
+                return True, "还没到终点，第三次先不做", False, True
+        elif vip and vip > 0:
+            return True, "第三次还没打完，这一轮先不做第4次", False, True
+        log.info("[征战] 第%s次：当前第 %s 关，接着打到终点第 %s 关",
+                 kind, cur, end)
+        ok, why = fight(rec, sock, text, interval)
+        if not ok:
+            if not str(why).startswith("失败"):
+                why = f"失败：{why}"
+            return False, why, False, True
+        return True, why, True, False
+
+    if already_done:
+        return True, "今日已做过，跳过", True, False
+
+    restart = paid_restart if kind == 3 else vip_restart
+    ok, why = restart(rec, sock)
+    if not ok:
+        return False, why, False, False
+    if "已重开" not in str(why):
+        finished = "不用再做" in str(why) or "已经用过" in str(why)
+        return True, why, finished, False
+
+    daily.note_campaign_stage(1)
+    if interval > 0:
+        _nap(interval)
+    ok2, why2 = fight(rec, sock, text, interval)
+    text_out = f"{why}。{why2}"
+    if not ok2:
+        if not str(why2).startswith("失败"):
+            why2 = f"失败：{why2}"
+        return False, f"{why}。{why2}", False, True
+    return True, text_out, True, False
+
+
 def end_stage(raw):
     """指定关卡。一个数字就是终点，一段或一串取最大的那个。空的返回 None。"""
     text = str(raw or "").strip()
@@ -225,6 +298,19 @@ def end_stage(raw):
             raise ValueError(f"关卡超过 {HARD_MAX}")
         best = n if best is None else max(best, n)
     return best
+
+
+def _free_round(already):
+    """免费重开后正在打的是第几次。没有重开过算第 1 次，最多第 2 次。"""
+    try:
+        n = int(already or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n < 1:
+        return 1
+    if n > 2:
+        return 2
+    return n
 
 
 def _restart_once(rec, sock):
@@ -267,6 +353,8 @@ def _restart_if_room(rec, sock, already, panel=None):
         return False, "没读到免费重开次数，不发", already, False
     if refresh <= 0:
         return True, "免费重开次数已用完", already, False
+    from . import daily
+    daily.note_campaign_round(_free_round(already + 1))
     ok, why = _restart_once(rec, sock)
     if not ok:
         return False, why, already, False
@@ -402,7 +490,8 @@ def campaign(rec, sock, stages, already=0, interval=1.0):
     打到终点。打到了还有免费次数，再重开一次再打。这一轮没打过终点就停。
     没填终点就只打当前关。
     返回 (是否成功, 说明, 今日免费重开次数, 这一轮是否还在往终点打)。
-    最后一项为真时，调用方不要接着做第三次、第4次。
+    最后一项为真时，调用方不要接着做第三次、第4次。打到终点之后
+    这一项为假，第三次重开后要从第 1 关打到终点，打完才做第4次。
     """
     interval = float(interval if interval is not None else 1)
     try:
@@ -420,17 +509,21 @@ def campaign(rec, sock, stages, already=0, interval=1.0):
     if cur is None:
         return False, "失败：没读到当前关，不打也不重开", already, True
     log.info("[征战] 当前第 %s 关，终点 %s", cur, end if end is not None else "未填")
+    from . import daily
     total = already
     if end is not None and cur >= end:
+        daily.note_campaign_round(_free_round(already + 1))
+        daily.note_campaign_stage(cur)
         return _restart_and_refight(
             rec, sock, end, cur, panel, total, interval)
+    daily.note_campaign_round(_free_round(already))
+    daily.note_campaign_stage(cur)
     ok, why = fight(rec, sock, text, interval)
-    pushing = end is not None
     if not ok:
         if not str(why).startswith("失败"):
             why = f"失败：{why}"
         return False, why, total, True
-    return True, why, total, pushing
+    return True, why, total, False
 
 
 def fight_once(rec, sock):

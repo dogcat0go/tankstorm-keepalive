@@ -1391,7 +1391,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
         citydb.set_attack_status("daily", task=label, note=text)
 
     def _show_stage(stage):
-        _show(f"当前第 {int(stage)} 关")
+        n = daily.current_campaign_round()
+        if n:
+            _show(f"第{n}次 当前第 {int(stage)} 关")
+        else:
+            _show(f"当前第 {int(stage)} 关")
 
     prev_sock = daily.bind_sock(sock)
     daily.set_campaign_progress(_show_stage)
@@ -1435,7 +1439,8 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 else:
                     extra = {}
                     daily._run_campaign_extras(
-                        rec, sock, switches, daily._load_state(), extra)
+                        rec, sock, switches, daily._load_state(), extra,
+                        stages=raw, interval=interval)
                     tail = daily.page_brief(extra)
                     if tail:
                         why = f"{why}。{tail}" if why else tail

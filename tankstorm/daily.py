@@ -277,6 +277,12 @@ def _group_brief(items) -> str:
         if not rest:
             done.append(key)
             continue
+        if key in ("征战第三次", "征战第4次"):
+            joined = "；".join(rest)
+            if ("打完" in joined and "没打完" not in joined
+                    and not any(_is_failure(part) for part in rest)):
+                done.append(key)
+                continue
         shown = "；".join(_trim_done_prefix(part) for part in rest)
         line = f"{key}：{shown}"
         if any(_is_failure(part) for part in rest):
@@ -1208,6 +1214,7 @@ TASKS = [
        "实测", "和 --pve 一样发 type=7 打关。没到终点就从当前关打到终点，不重开。"
                "到了或超过终点，type=2 免费重开一次，再从第 1 关打到终点。"
                "打到终点后还有免费次数，再重开一次再打。这一轮没打过就停。"
+               "第三次、第4次重开后也从第 1 关打到终点，打完才算做成。"
                "留空只打当前关。8/10 抓包：type=2 响应 result=0，关卡回到第 1 关",
        max_per_day=2,
        runner=lambda rec, sock, config: _run_campaign_task(rec, sock, config),
@@ -1307,6 +1314,7 @@ def ordered_tasks():
 
 
 # 免费两次走「征战世界」。这两项默认关，打开后跑一轮再做对应的那一次。
+# 重开之后要从第 1 关打到终点，打完才算做成；只重开不算完成。
 CAMPAIGN_EXTRAS = (
     ("征战第三次", "第三次征战"),
     ("征战第4次", "第4次征战"),
@@ -1823,9 +1831,36 @@ def _campaign_goal(config):
     return text or None
 
 
+def _campaign_interval(config):
+    raw_gap = 1
+    if isinstance(config, dict):
+        raw_gap = (config.get("征战") or {}).get("间隔秒", 1)
+    if raw_gap is None or raw_gap == "":
+        raw_gap = 1
+    return float(raw_gap)
+
+
 def campaign_pushing() -> bool:
-    """这一轮还在往终点打。第三次、第4次要等免费重开的那一轮。"""
+    """这一轮还在往终点打。第三次、第4次要等打到终点再做。"""
     return bool(getattr(_state_local, "campaign_pushing", False))
+
+
+def current_campaign_round():
+    """正在打的是第几次征战。没有就 None。"""
+    try:
+        n = int(getattr(_state_local, "campaign_round", None))
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def note_campaign_round(n) -> None:
+    """记下正在打第几次。网页说明用。"""
+    try:
+        _state_local.campaign_round = int(n)
+    except (TypeError, ValueError):
+        if hasattr(_state_local, "campaign_round"):
+            del _state_local.campaign_round
 
 
 def set_campaign_progress(fn) -> None:
@@ -1873,14 +1908,13 @@ def campaign_round(rec, sock, stages, interval=1.0):
 
 def _run_campaign_task(rec, sock, config):
     raw = _campaign_goal(config) or ""
-    raw_gap = (config.get("征战") or {}).get("间隔秒", 1)
-    if raw_gap is None or raw_gap == "":
-        raw_gap = 1
-    return campaign_round(rec, sock, raw, float(raw_gap))
+    return campaign_round(rec, sock, raw, _campaign_interval(config))
 
 
 def _run(rec, sock, config, schema, on_fail=None):
     _state_local.campaign_pushing = False
+    if hasattr(_state_local, "campaign_round"):
+        del _state_local.campaign_round
     conf = (config.get("每日任务", {}) or {})
     if not conf.get("启用", False):
         log.info("每日任务未启用（config.json 每日任务.启用=false）")
@@ -2013,7 +2047,10 @@ def _run(rec, sock, config, schema, on_fail=None):
             _publish_failure(results, on_fail)
 
 
-    _run_campaign_extras(rec, sock, switches, st, results)
+    _run_campaign_extras(
+        rec, sock, switches, st, results,
+        stages=_campaign_goal(config) or "",
+        interval=_campaign_interval(config))
     _publish_failure(results, on_fail)
 
     log.info("=== 每日任务结束 ===")
@@ -2023,56 +2060,55 @@ def _run(rec, sock, config, schema, on_fail=None):
     return results, details
 
 
-def _run_campaign_extras(rec, sock, switches, st, results):
+def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1.0):
     """第三次、第4次。开关在登录账号上，默认关。免费两次仍走「征战世界」。
 
-    这一轮还在往终点打时先不做。免费重开会把关卡打回第 1 关，要等已经到了终点。
+    重开之后必须从第 1 关打到终点，打完才算这一次做成。只重开不算完成。
+    这一轮还在往终点打时先不做。第三次没打到终点时，不发第4次。
     """
     from . import pve
 
-    actions = (
-        ("征战第三次", pve.paid_restart),
-        ("征战第4次", pve.vip_restart),
-    )
     if campaign_pushing():
-        for key, _fn in actions:
+        for key, _name in CAMPAIGN_EXTRAS:
             if not (switches or {}).get(key):
                 continue
             results[key] = "这一轮先打关卡，免费重开之后再做"
             log.info("[%s] %s", key, results[key])
         return
+
+    def _done_of(key):
+        try:
+            return int((st.get("done") or {}).get(key) or 0) >= 1
+        except (TypeError, ValueError):
+            return False
+
     third_open = bool((switches or {}).get("征战第三次"))
-    third_ready = not third_open
-    for key, fn in actions:
+    third_done = (not third_open) or _done_of("征战第三次")
+    for key, kind in (("征战第三次", 3), ("征战第4次", 4)):
         if not (switches or {}).get(key):
             continue
-        try:
-            done = int((st.get("done") or {}).get(key) or 0)
-        except (TypeError, ValueError):
-            done = 0
-        if done >= 1:
-            results[key] = "今日已做过，跳过"
-            log.info("[%s] %s", key, results[key])
-            if key == "征战第三次":
-                third_ready = True
-            continue
-        if key == "征战第4次" and not third_ready:
-            results[key] = "第三次还没做成，第4次这一轮不发"
+        if key == "征战第4次" and not third_done:
+            results[key] = "第三次还没打完，这一轮先不做第4次"
             log.info("[%s] %s", key, results[key])
             continue
         try:
-            ok, why = fn(rec, sock)
+            ok, why, finished, pushing = pve.extra_campaign(
+                rec, sock, stages, interval, kind, already_done=_done_of(key))
         except Exception as exc:
-            ok, why = False, f"执行异常：{exc}"
+            ok, why, finished, pushing = False, f"执行异常：{exc}", False, True
             log.exception("[%s] 抛异常", key)
-        results[key] = why if ok else f"失败：{why}"
+        results[key] = why if ok else (
+            why if str(why).startswith("失败") else f"失败：{why}")
         log.info("[%s] %s %s", key, "✅" if ok else "❌", results[key])
-        if key == "征战第三次" and ok and (
-                "已重开" in str(why) or "不用再做" in str(why)):
-            third_ready = True
-        if ok and "已重开" in str(why):
+        if finished:
             st.setdefault("done", {})[key] = 1
             _save_state(st)
+            if key == "征战第三次":
+                third_done = True
+        elif key == "征战第三次":
+            third_done = False
+        if pushing:
+            _state_local.campaign_pushing = True
 
 
 def _do_once(task, sock, rec, st, results, details, field_names,
