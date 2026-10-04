@@ -167,6 +167,7 @@ function reloadQr() {
 
 function pushLoginVisible(p) {
   if (p && p.need_login) return true;
+  if (p && p.online && !p.keepalive && p.phase !== "login") return true;
   return !(p && p.online && p.phase !== "login");
 }
 
@@ -609,8 +610,8 @@ onUnmounted(() => {
         </p>
         <p class="proc">
           <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
-          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login'" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
-          <button v-else-if="proc && proc.online" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
+          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login' && proc.keepalive" type="button" class="ghost" @click="setAttackPause(false).catch((e) => (err = e.message))">继续</button>
+          <button v-else-if="proc && proc.online && proc.keepalive" type="button" class="ghost" @click="setAttackPause(true).catch((e) => (err = e.message))">暂停</button>
         </p>
         <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
       </section>
@@ -666,9 +667,9 @@ onUnmounted(() => {
       <form class="lock-row" @submit.prevent="addModo().catch((e) => (err = e.message))">
         <span class="switch">刷摩多军团</span>
         <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
-        <button type="submit" :disabled="!dailyQq">提交</button>
+        <button type="submit" :disabled="!dailyQq || !(proc && proc.keepalive)">提交</button>
       </form>
-      <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后记在国战助手的订单里。</p>
+      <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后记在国战助手的订单里，要这个号已经挂机保活。</p>
       <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
       <h2>最近执行</h2>
       <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
@@ -805,9 +806,9 @@ onUnmounted(() => {
           <label>UID<input v-model="attackUid" inputmode="numeric" placeholder="留空则打整座城" /></label>
           <label>挂机保活分钟<input v-model="holdMin" class="mins" inputmode="numeric" required /></label>
           <label>最多恢复卡<input v-model="cardMax" class="mins" inputmode="numeric" required /></label>
-          <button type="submit">提交攻打</button>
+          <button type="submit" :disabled="!(proc && proc.keepalive)">提交攻打</button>
         </form>
-        <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。有打不过的人挡路时，这段时间会继续看路径，通了立刻接着打原来的订单。0 表示打完就下线。</p>
+        <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。有打不过的人挡路时，这段时间会继续看路径，通了立刻接着打原来的订单。0 表示打完就下线。继续和提交攻打都要这个号已经挂机保活。没挂上就下单，游戏也登不进去。</p>
         <p>
           <button type="button" class="ghost" @click="attackAdvanced = !attackAdvanced">{{ attackAdvanced ? "收起" : "高级配置" }}</button>
         </p>

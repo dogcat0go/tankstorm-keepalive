@@ -993,6 +993,8 @@ def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
     user_id = int(user_id)
     uid = str(uid).strip()
     city_id = int(city_id)
+    if not attack_in_keepalive(user_id):
+        return "不在保活，下了订单游戏也登不进去"
     online = proc_online(user_id)
     if not online:
         skip_unfinished_auto(user_id)
@@ -1076,6 +1078,8 @@ def add_modo_order(user_id: int, cards) -> str:
     if n < 0 or n > 999:
         return "恢复卡数量要是 0 到 999"
     user_id = int(user_id)
+    if not attack_in_keepalive(user_id):
+        return "不在保活，下了订单游戏也登不进去"
     online = proc_online(user_id)
     if not online:
         skip_unfinished_auto(user_id)
@@ -1915,9 +1919,9 @@ def online_attack_busy(user_id: int, city_id: int, uid: str) -> bool:
 
 
 def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
-    """给这个订阅排一条自动攻打。同一人还没打完就不再排。还没打完的最多两条。"""
+    """给这个订阅排一条自动攻打。同一人还没打完就不再排。还没打完的最多两条。没挂在游戏上就不排。"""
     uid = str(uid or "").strip()
-    if not uid or online_attack_busy(user_id, city_id, uid):
+    if not uid or not attack_in_keepalive(user_id) or online_attack_busy(user_id, city_id, uid):
         return False
     conn = connect()
     try:
@@ -2528,6 +2532,38 @@ def _hold_link_ok(data: dict) -> bool:
     return age <= max(40, gap * 2 + 10)
 
 
+def clear_attack_link() -> None:
+    """游戏连接已经断开。留下的心跳时间不能再当成还在保活。"""
+    if not attack_context_user() and not attack_context_qq():
+        return
+    name = _mark_name("proc")
+    try:
+        raw = _signal_value(name)
+        if not raw:
+            return
+        data = _proc_payload(raw)
+        if not data or "link" not in data:
+            return
+        data.pop("link", None)
+        _upsert_signal(name, json.dumps(data, ensure_ascii=False), touch=False)
+    except sqlite3.Error:
+        return
+
+
+def attack_in_keepalive(user_id: int = 0) -> bool:
+    """游戏连接还在，才能继续和接订单。进程心跳还在、游戏没连上，不算。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return False
+    parsed, _seen, online = _read_user_proc(user_id)
+    if not online:
+        return False
+    phase = str(parsed.get("phase") or "")
+    if phase not in ("hold", "paused", "running", "daily", "queue"):
+        return False
+    return _hold_link_ok(parsed)
+
+
 def touch_attack_status() -> None:
     """这条攻打线程还活着就刷新时间。停掉之后不再把「没在跑」刷成在线。"""
     if not attack_context_user() and not attack_context_qq():
@@ -2645,10 +2681,15 @@ def attack_status(user_id: int) -> dict:
     page_on = _signal_value(_mark_name("pageqr", user_id)) == "1"
     show_qr = bool(page_login_path(user_id) or (page_on and online and phase == "login"))
 
+    keeping = (
+        phase in ("hold", "paused", "running", "daily", "queue")
+        and _hold_link_ok(parsed))
+
     def pack(row: dict) -> dict:
         row = dict(row)
         row["qq"] = uin
         row.setdefault("need_login", False)
+        row.setdefault("keepalive", False)
         return _with_page_qr(row, user_id)
 
     mismatch = pack({"online": False, "phase": "offline", "detail": QQ_MISMATCH,
@@ -2664,7 +2705,12 @@ def attack_status(user_id: int) -> dict:
                      "seen_at": beijing_ts(seen), "qr": False, "here": "",
                      "paused": False, "hold_left": None})
     if paused and phase != "login":
-        detail = QQ_MISMATCH if blocked else "已暂停"
+        if blocked:
+            detail = QQ_MISMATCH
+        elif _hold_link_ok(parsed):
+            detail = "已暂停"
+        else:
+            detail = "已暂停，不在保活，先连上再继续"
     elif phase == "login":
         detail = "正在等扫码"
     elif phase == "daily":
@@ -2688,11 +2734,14 @@ def attack_status(user_id: int) -> dict:
     elif phase == "running":
         detail = "正在执行订单"
     else:
-        detail = _queued_attack_text(queued)
-        if not detail:
-            detail = "空闲，等订单"
-            if latest and latest[0] == "failed" and latest[1]:
-                detail = f"空闲。上一单没打成：{latest[1]}"
+        if not _hold_link_ok(parsed):
+            detail = "不在保活，先连上再接订单"
+        else:
+            detail = _queued_attack_text(queued)
+            if not detail:
+                detail = "空闲，等订单"
+                if latest and latest[0] == "failed" and latest[1]:
+                    detail = f"空闲。上一单没打成：{latest[1]}"
         if uin and not attack_cookie_logged_in(user_id):
             detail = "登录已失效，请重新扫码"
     here = ""
@@ -2703,7 +2752,7 @@ def attack_status(user_id: int) -> dict:
                  and hold_left is not None and hold_left > 0)
     return pack({"online": True, "phase": phase, "detail": detail,
                  "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
-                 "paused": paused,
+                 "paused": paused, "keepalive": keeping,
                  "hold_left": int(hold_left) if show_hold else None,
                  "move_note": str(parsed.get("move_note") or ""),
                  "need_login": bool(
@@ -2900,6 +2949,10 @@ def pause_attack_for(user_id: int, on: bool) -> str:
         return QQ_MISMATCH
     if not attack_qq_of(user_id):
         return "这个登录账号还没有攻打 QQ"
+    if not attack_in_keepalive(user_id):
+        if on:
+            return "不在保活，先连上再暂停"
+        return "不在保活，不能继续接订单"
     if not set_attack_paused(on, user_id):
         return "这个登录账号还没有攻打 QQ"
     return ""
@@ -2941,9 +2994,11 @@ def users_with_daily_jobs() -> list:
 
 
 def users_needing_attack() -> list:
-    """主进程要照看的登录账号：还有订单、日常，或者攻打 QQ 的挂机还没结束。"""
-    ids = set(users_with_open_orders())
-    ids.update(users_with_daily_jobs())
+    """主进程要照看的登录账号：还有日常，或者攻打 QQ 的挂机还没结束。
+
+    只有订单时不拉起。没挂在游戏上就去登录，游戏那边进不去。
+    """
+    ids = set(users_with_daily_jobs())
     for user_id in mapped_attack_user_ids():
         left = attack_hold_left(user_id)
         if left is not None and left > 0:
