@@ -112,10 +112,26 @@ def fund_once(rec, sock, building_id):
     return got
 
 
-def fund(rec, sock, building_id, times):
+def _fund_value(got):
+    """回包里的拨款值。嵌套建筑没有 schema 名，常见是 field31。"""
+    building = got.get("building") if isinstance(got, dict) else None
+    if not isinstance(building, dict):
+        return None
+    for key in ("zhuziValue", "field31", "field35"):
+        val = building.get(key)
+        if isinstance(val, int) and not isinstance(val, bool):
+            return val
+        if isinstance(val, dict):
+            inner = val.get("field1")
+            if isinstance(inner, int) and not isinstance(inner, bool):
+                return inner
+    return None
+
+
+def fund(rec, sock, building_id, times, on_progress=None):
     """每次全部拨款之前，各开 4 张 1000 万金属卡和石油卡。
 
-    返回 (是否按次数做完, 说明)。
+    返回 (是否按次数做完, 说明)。拨款升级后建设值会重算，下降不算失败。
     """
     building_id = int(building_id)
     times = int(times)
@@ -165,16 +181,18 @@ def fund(rec, sock, building_id, times):
         if got.get("error") not in (0, None):
             return False, (f"第 {i} 次拨款被拒 error={got.get('error')} "
                            f"resources={got.get('resources')}，已完成 {done} 次")
-        now = (got.get("building") or {}).get("field35")
+        now = _fund_value(got)
         metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
-        log.info("[拨款] 第 %d/%d 次 建筑 %s error=0 拨款值 %s → %s，"
+        log.info("[拨款] 第 %d/%d 次 建筑 %s error=0 拨款值 %s，"
                  "剩余金属 %s 石油 %s",
-                 i, times, building_id, last_times, now, _wan(metal), _wan(oil))
-        if isinstance(now, int) and isinstance(last_times, int) and now <= last_times:
-            return False, (f"第 {i} 次拨款后拨款值没有增加"
-                           f"（{last_times} → {now}），停在 {done} 次")
+                 i, times, building_id, now, _wan(metal), _wan(oil))
         last_times = now
         done += 1
+        if on_progress:
+            text = f"第 {i}/{times} 次"
+            if now is not None:
+                text += f"，拨款值 {now}"
+            on_progress(text)
         if short:
             return True, (f"建筑 {building_id} 拨款 {done} 次，拨款值={last_times}。"
                           f"第 {i} 次资源没补满，已拨款并停止")
