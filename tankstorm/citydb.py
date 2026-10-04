@@ -2791,7 +2791,10 @@ def attack_status(user_id: int) -> dict:
     paused = blocked or attack_paused(user_id)
     hold_left = attack_hold_left(user_id)
     page_on = _signal_value(_mark_name("pageqr", user_id)) == "1"
-    show_qr = bool(page_login_path(user_id) or (page_on and online and phase == "login"))
+    show_qr = bool(
+        page_login_path(user_id)
+        or (online and phase == "login"
+            and (page_on or login_qr_path(user_id))))
 
     keeping = (
         phase in ("hold", "paused", "running", "daily", "queue")
