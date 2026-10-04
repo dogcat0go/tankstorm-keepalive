@@ -231,15 +231,90 @@ def _page_piece(text) -> str:
     return text
 
 
+def _brief_keys():
+    """说明里会出现的任务名。长的排前面，避免短名字切进长名字。"""
+    keys = [task.key for task in TASKS]
+    keys.extend(key for key, _name in CAMPAIGN_EXTRAS)
+    return sorted(set(keys), key=len, reverse=True)
+
+
+def _split_named(text):
+    """把「名称：结果；名称：结果」拆开。结果自己的分号留在该项里。"""
+    keys = _brief_keys()
+    if not keys:
+        return []
+    pat = re.compile("(" + "|".join(re.escape(key) for key in keys) + ")：")
+    matches = list(pat.finditer(text))
+    if not matches:
+        return []
+    items = []
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        value = text[match.end():end].strip().strip("；; \n")
+        if value:
+            items.append((match.group(1), value))
+    return items
+
+
+def _trim_done_prefix(text):
+    text = str(text or "").strip()
+    for prefix in ("成功：", "成功:"):
+        if text.startswith(prefix):
+            return text[len(prefix):].strip()
+    return text
+
+
+def _group_brief(items) -> str:
+    """已做过、成功收成一行名字。没做成的收成一行，并带上原因。"""
+    done = []
+    failed = []
+    other = []
+    for key, text in items:
+        pieces = [part.strip() for part in re.split(r"[；;]", str(text or "")) if part.strip()]
+        rest = [part for part in pieces if part not in ("已做过", "成功")]
+        if not pieces:
+            continue
+        if not rest:
+            done.append(key)
+            continue
+        shown = "；".join(_trim_done_prefix(part) for part in rest)
+        line = f"{key}：{shown}"
+        if any(_is_failure(part) for part in rest):
+            failed.append(line)
+        else:
+            other.append(line)
+    lines = []
+    if done:
+        lines.append("已完成：" + "、".join(done))
+    if failed:
+        lines.append("失败：" + "；".join(failed))
+    if other:
+        if done or failed or len(other) > 1:
+            lines.append("其他：" + "；".join(other))
+        else:
+            lines.append(other[0])
+    return "\n".join(lines)
+
+
 def page_brief(results) -> str:
-    """最近执行的说明。每一项只留结果，不写失败。"""
-    parts = []
+    """最近执行的说明。做完的收成一组，没做成的收成一组。"""
+    items = []
     for key, value in (results or {}).items():
         text = page_result(value)
-        if not text:
-            continue
-        parts.append(f"{key}：{text}")
-    return "；".join(parts)
+        if text:
+            items.append((str(key), text))
+    return _group_brief(items)
+
+
+def compact_detail(text) -> str:
+    """页面上的旧说明也按这一组分。已经分过组的原样返回。"""
+    raw = str(text or "").strip()
+    if not raw or raw.startswith(("已完成：", "失败：", "其他：")):
+        return raw
+    items = _split_named(raw)
+    if not items:
+        return raw
+    return _group_brief(items) or raw
 
 
 def _publish_failure(results, on_fail) -> None:

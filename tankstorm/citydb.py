@@ -3215,9 +3215,16 @@ def claim_daily_job():
     return {"id": int(row[0]), "kind": str(row[1] or ""), "params": params}
 
 
+def _job_detail(detail: str) -> str:
+    """说明里的换行留着，同一行里的多余空白收掉。"""
+    text = str(detail or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    return "\n".join(line for line in lines if line)[:500]
+
+
 def touch_daily_job(job_id: int, detail: str) -> None:
     """日常还在做。把当前结果写进说明，状态仍是正在做。"""
-    text = " ".join(str(detail or "").split())[:500]
+    text = _job_detail(detail)
     if not text:
         return
     conn = connect()
@@ -3232,7 +3239,7 @@ def touch_daily_job(job_id: int, detail: str) -> None:
 
 def finish_daily_job(job_id: int, status: str, detail: str) -> None:
     status = "done" if status == "done" else "failed"
-    text = " ".join(str(detail or "").split())[:500]
+    text = _job_detail(detail)
     conn = connect()
     try:
         conn.execute(
@@ -3273,6 +3280,7 @@ def list_daily_jobs(user_id: int, limit: int = 2) -> list:
             (int(user_id), int(limit))).fetchall()
     finally:
         conn.close()
+    from . import daily
     out = []
     for row in rows:
         out.append({
@@ -3280,7 +3288,7 @@ def list_daily_jobs(user_id: int, limit: int = 2) -> list:
             "kind": row[1],
             "label": DAILY_KIND_LABEL.get(row[1], row[1]),
             "status": _DAILY_STATUS.get(row[2], row[2]),
-            "detail": row[3] or "",
+            "detail": daily.compact_detail(row[3] or ""),
             "created_at": beijing_ts(row[4]) if row[4] else "",
         })
     return out
