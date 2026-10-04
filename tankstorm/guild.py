@@ -252,6 +252,27 @@ def _spend(kind, cost, metal, oil, feats, items):
     return metal, oil, feats, items - cost
 
 
+def _donate_total(counts):
+    """三种一键的已捐次数相加，每种不超过当天上限，合计最多 15。"""
+    total = 0
+    for _, idx, limit, _, _ in _DONATE_ROWS:
+        used = counts[idx] if idx < len(counts) else 0
+        if isinstance(used, bool) or not isinstance(used, int) or used < 0:
+            continue
+        total += limit if used > limit else used
+    return total
+
+
+def _note_donate(counts):
+    """把今天已经捐成的次数写进每日进度。没捐满也记，下次接着捐。"""
+    total = _donate_total(counts)
+    from .daily import _load_state, _save_state
+    st = _load_state()
+    st.setdefault("done", {})["公会捐献"] = total
+    _save_state(st)
+    return total
+
+
 def daily_donate(rec, sock, config):
     """把金属石油、功勋、军令三种一键捐到当天上限。不捐勋章。"""
     got = rec.latest.get("RseInit") if rec else None
@@ -264,6 +285,7 @@ def daily_donate(rec, sock, config):
     counts = _donate_counts(panel, missing_ok=True)
     if counts is None:
         return False, "读不到今日捐献次数，不捐（读不到就不做）"
+    total = _note_donate(counts)
 
     metal, oil, feats = _res(rec)
     from .shop import _bag_count
@@ -298,6 +320,7 @@ def daily_donate(rec, sock, config):
                 return False, f"{label}次数没有增加（{used}→{now}）" + _donated(done)
             used = now
             n += 1
+            total = _note_donate(counts)
             metal, oil, feats, items = _spend(kind, cost, metal, oil, feats, items)
         if n:
             done.append(f"{label}{n}次")
@@ -307,10 +330,11 @@ def daily_donate(rec, sock, config):
         for _, idx, limit, _, _ in _DONATE_ROWS
     )
     text = "、".join(done)
+    mark = f"（今日{total}/15）"
     if full:
-        return True, "成功：" + (text or "今日金属石油、功勋、军令都已捐满")
+        return True, "成功：" + (text or "今日金属石油、功勋、军令都已捐满") + mark
     head = (text + "；") if text else ""
-    return False, head + "；".join(short) + "，跳过"
+    return False, head + "；".join(short) + "，跳过" + mark
 
 
 def _donated(done):

@@ -1275,8 +1275,10 @@ TASKS = [
     _t("公会捐献", "公会·捐献", "0479", "RceGuildOpt",
        {}, "实测",
        "2026-10-04 抓包：type:0 读今日次数 → type:16 按档捐满。"
-       "金属石油 contributeID=2（一天 3 次），功勋 =4（6 次），军令 =6（6 次）。"
-       "不捐勋章。",
+       "金属石油一天 3 次，功勋 6 次，军令 6 次，合计 15。"
+       "界面按已经捐成的次数计。不捐勋章。",
+       max_per_day=15,
+       counts_itself=True,
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_donate"]
        ).daily_donate(rec, sock, config)),
