@@ -387,13 +387,12 @@ class _Beater:
                 self.sock.sendall(self.hb)
                 self.last = time.time()
                 self.count += 1
-                if self.last - self._link_note >= 10:
-                    self._link_note = self.last
-                    try:
-                        from . import citydb
-                        citydb.note_attack_link(self.interval)
-                    except Exception:
-                        log.debug("游戏心跳时间没写上", exc_info=True)
+                self._link_note = self.last
+                try:
+                    from . import citydb
+                    citydb.note_attack_link(self.interval)
+                except Exception:
+                    log.debug("游戏心跳时间没写上", exc_info=True)
                 if self.count % 10 == 1:
                     log.info("心跳運行中（第 %d 次，每 %.0fs）",
                              self.count, self.interval)
@@ -1390,6 +1389,13 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     path_at = 0.0
     while True:
         if citydb.attack_paused():
+            asked = citydb.take_attack_login()
+            if asked:
+                _arm_push_keepalive()
+                if not citydb.attack_in_keepalive():
+                    citydb.set_attack_paused(False)
+                    log.info("点了推送登录，游戏没挂上，准备重连")
+                    return 0
             citydb.set_attack_status("paused")
             if not _wait_socket(sock, spec, ctx):
                 raise OSError("服务器关闭连接")
@@ -1415,7 +1421,13 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             citydb.set_attack_status("queue")
             time.sleep(1)
             continue
+        asked = citydb.take_attack_login()
+        if asked:
+            _arm_push_keepalive()
         if not _begin_attack_hold(fresh=not stated):
+            return 0
+        if not citydb.attack_in_keepalive():
+            log.info("挂机保活游戏心跳没了，准备重连")
             return 0
         if not stated:
             here_at = 0.0
