@@ -1226,12 +1226,35 @@ def _run_requested_move(rec, sock, config, beater) -> bool:
     return True
 
 
+# 点「推送登录二维码」之后，先挂上这么久，连接断了也在这段时间里重连。
+PUSH_KEEPALIVE_MINUTES = 180
+
+
+def _arm_push_keepalive() -> None:
+    """推送登录之后开始保活。已经比这更长的，不把时间改短。"""
+    from . import citydb
+
+    left = citydb.attack_hold_left() or 0
+    need = PUSH_KEEPALIVE_MINUTES * 60
+    if left >= need:
+        return
+    citydb.note_attack_hold(time.time() + need)
+    log.info("推送登录后挂机保活 %d 分钟", PUSH_KEEPALIVE_MINUTES)
+
+
 def _begin_attack_hold(fresh=False) -> bool:
-    """队列空了就按配置开始或继续挂机。该结束时返回 False。"""
+    """队列空了就按配置开始或继续挂机。该结束时返回 False。
+
+    推送登录已经记下的剩余时间要接着挂，不因为表单里的分钟数是 0 就清掉。
+    """
     from . import citydb
 
     minutes = citydb.attack_hold_minutes()
     left = citydb.attack_hold_left()
+    if left is not None and left > 0:
+        if fresh:
+            citydb.set_attack_status("hold")
+        return True
     if minutes <= 0:
         citydb.fail_blocked_orders()
         if left is not None:
@@ -1244,7 +1267,7 @@ def _begin_attack_hold(fresh=False) -> bool:
         citydb.note_attack_hold(time.time() + minutes * 60)
         log.info("没有下一条订单，挂机保活 %d 分钟", minutes)
         fresh = True
-    elif left <= 0:
+    else:
         citydb.fail_blocked_orders()
         citydb.clear_attack_hold()
         log.info("挂机保活结束，攻打连接断开")
@@ -1823,8 +1846,10 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                         if on_page:
                             citydb.set_page_qr(False, user_id)
                         continue
+                    _arm_push_keepalive()
                     if not citydb.attack_in_keepalive(_owner()):
                         citydb.set_attack_paused(False, _owner())
+                        citydb.set_attack_status("hold")
                         _connect_attack_orders(qq, config)
                         continue
                 time.sleep(5)
@@ -1833,7 +1858,14 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             citydb.resume_daily_jobs()
             citydb.release_due_waits()
             # 订单本身不登录。先推送登录挂上游戏，这条连接再领单。
+            # 点了推送登录就先记 180 分钟，连不上也在这段时间里重连，不立刻退出。
             asked = citydb.take_attack_login()
+            if asked:
+                _arm_push_keepalive()
+                if qq.is_valid():
+                    citydb.set_attack_status("hold")
+                else:
+                    citydb.set_attack_status("login")
             holding = (citydb.attack_hold_left() or 0) > 0
             if not (asked or holding or citydb.daily_job_open()):
                 break
