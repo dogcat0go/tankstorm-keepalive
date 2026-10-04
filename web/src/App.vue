@@ -387,11 +387,22 @@ async function moveToCity() {
 }
 
 async function addModo() {
-  showErr("");
-  const data = await api("/api/modo", { cards: modoCards.value });
-  if (data.modo_cards != null) modoCards.value = String(data.modo_cards);
-  showErr(attackLoginError(data.login));
-  await refreshAttacks();
+  showErr("", "daily");
+  try {
+    const data = await api("/api/modo", { cards: modoCards.value });
+    if (data.modo_cards != null) modoCards.value = String(data.modo_cards);
+    const extra = submitNote(data);
+    notice.value = {
+      ok: true,
+      title: "已提交到国战助手",
+      text: "刷摩多军团的订单和进度都在国战助手。" + extra,
+    };
+    pickTab("attack");
+    await refreshAttacks();
+  } catch (e) {
+    showErr(e.message, "daily");
+    notice.value = { ok: false, title: "提交没成功", text: e.message || "请求失败" };
+  }
 }
 
 async function addOrder() {
@@ -430,8 +441,11 @@ async function addOrder() {
 }
 
 function beatText(it) {
-  if (it.beats == null) return "—";
-  return String(it.beats);
+  if (!it || it.beats == null) return "—";
+  const n = Number(it.beats);
+  if (!Number.isFinite(n)) return "—";
+  if (it.kind === "modo") return String(Math.floor(n / 4));
+  return String(Math.trunc(n));
 }
 
 function orderCity(it) {
@@ -713,7 +727,7 @@ onUnmounted(() => {
         <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
         <button type="submit" :disabled="!dailyQq || !(proc && proc.keepalive)">提交</button>
       </form>
-      <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后记在国战助手的订单里，要这个号已经挂机保活。</p>
+      <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后跳到国战助手，订单和进度都在那里。击退数量按 4 次扫荡算 1 个。要这个号已经挂机保活。</p>
       <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
       <p v-if="err && errAt === 'daily'" class="err">{{ err }}</p>
       <h2>最近执行</h2>
