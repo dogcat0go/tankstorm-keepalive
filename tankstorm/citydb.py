@@ -2113,6 +2113,14 @@ def _kept_here(data: dict) -> int:
     return here
 
 
+def _kept_int(data: dict, key: str):
+    """士气和体力可以是 0。缺了或类型不对就当还没读到。"""
+    val = data.get(key)
+    if isinstance(val, bool) or not isinstance(val, int):
+        return None
+    return val
+
+
 _attack_local = threading.local()
 
 
@@ -2388,6 +2396,10 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
     here = _kept_here(prev)
     if here:
         data["here"] = here
+    for key in ("morale", "power"):
+        val = _kept_int(prev, key)
+        if val is not None:
+            data[key] = val
     user_id = attack_context_user()
     qq = attack_context_qq()
     if user_id:
@@ -2407,13 +2419,20 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
     _upsert_signal(name, json.dumps(data, ensure_ascii=False))
 
 
-def note_attack_here(city_id) -> None:
-    """记下这个攻打 QQ 当前所在城市。库写失败不影响正在打的那一单。进程已停则不改。"""
+def note_attack_here(city_id, power=None, morale=None) -> None:
+    """记下这个攻打 QQ 当前所在城市，以及面板上的体力和士气。
+
+    页面上的体力就是国战行动力。没读到的那一项留着上次的数。
+    库写失败不影响正在打的那一单。进程已停则不改。
+    """
     try:
         cid = int(city_id or 0)
     except (TypeError, ValueError):
-        return
-    if isinstance(city_id, bool) or cid <= 0:
+        cid = 0
+    got_city = not isinstance(city_id, bool) and cid > 0
+    got_power = isinstance(power, int) and not isinstance(power, bool)
+    got_morale = isinstance(morale, int) and not isinstance(morale, bool)
+    if not got_city and not got_power and not got_morale:
         return
     if not attack_context_user() and not attack_context_qq():
         return
@@ -2422,7 +2441,12 @@ def note_attack_here(city_id) -> None:
         data = _proc_payload(_signal_value(name))
         if not data or data.get("phase") == "offline":
             return
-        data["here"] = cid
+        if got_city:
+            data["here"] = cid
+        if got_power:
+            data["power"] = int(power)
+        if got_morale:
+            data["morale"] = int(morale)
         _upsert_signal(name, json.dumps(data, ensure_ascii=False))
     except sqlite3.Error:
         return
@@ -2752,6 +2776,8 @@ def attack_status(user_id: int) -> dict:
                  and hold_left is not None and hold_left > 0)
     return pack({"online": True, "phase": phase, "detail": detail,
                  "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
+                 "morale": _kept_int(parsed, "morale"),
+                 "power": _kept_int(parsed, "power"),
                  "paused": paused, "keepalive": keeping,
                  "hold_left": int(hold_left) if show_hold else None,
                  "move_note": str(parsed.get("move_note") or ""),
@@ -3791,6 +3817,38 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
         return changes
     finally:
         conn.close()
+
+
+def mark_watch_repelled(city_id, uid) -> None:
+    """攻打把这个人从这座城击退了。订阅立刻改成不在，下次再出现可以再排。
+
+    别的城不动。写库失败不影响正在打的那一单。
+    """
+    if isinstance(city_id, bool):
+        return
+    try:
+        city_id = int(city_id or 0)
+    except (TypeError, ValueError):
+        return
+    uid = str(uid or "").strip()
+    if city_id <= 0 or not uid:
+        return
+    try:
+        conn = connect()
+        try:
+            cur = conn.execute(
+                "UPDATE watch_sub SET last_present=0, lock_sent=0 "
+                "WHERE city_id=? AND uid=? "
+                "AND (last_present IS NULL OR last_present!=0 OR IFNULL(lock_sent,0)!=0)",
+                (city_id, uid))
+            conn.commit()
+            n = cur.rowcount
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return
+    if n:
+        log.info("击退 uid=%s，城市 %s 的监控改成不在这座城，%d 条", uid, city_id, n)
 
 
 def list_city_targets(city_id: int, skip_failed=True, exclude_uid=""):

@@ -369,8 +369,12 @@ def _panel(sock, rec, country):
             log.info("[国战] 连接已断开，读不了面板")
             return None, None, None, None
         if isinstance(data, dict):
-            return (_read_path(data, F_POWER), _read_path(data, F_CITY),
-                    data.get("dayatktimes"), data)
+            power = _read_path(data, F_POWER)
+            loc = _read_path(data, F_CITY)
+            morale = _read_path(data, F_MORALE)
+            from . import citydb
+            citydb.note_attack_here(loc, power, morale)
+            return (power, loc, data.get("dayatktimes"), data)
         if time.time() - t0 < 0.4:
             log.info("[国战] 连接已断开，不再重试读面板")
             return None, None, None, None
@@ -1374,6 +1378,8 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             out.get("击伤"), out.get("对方剩余"))
     elif not out["停止原因"] and not out.get("击退") and not until_down and out["成功"] < cap:
         out["停止原因"] = f"只打成 {out['成功']}/{cap} 次"
+    if out.get("击退"):
+        citydb.mark_watch_repelled(city, uid)
     return out
 
 
