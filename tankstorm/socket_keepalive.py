@@ -1503,20 +1503,21 @@ def run_remote_orders(qq, config: dict) -> int:
             citydb.resume_daily_jobs()
             citydb.release_due_waits()
             asked = citydb.take_attack_login()
-            pending = citydb.attack_order_open()
             left = citydb.attack_hold_left()
             moving = citydb.attack_move_pending() > 0
             daily_wait = citydb.daily_job_open()
-            if (asked or pending or moving or daily_wait or (left or 0) > 0) and not qq.is_valid():
+            # 只有推送登录、挂机、移动或日常才连游戏。订单留着，等已经保活的连接来领。
+            need = asked or moving or daily_wait or (left or 0) > 0
+            if need and not qq.is_valid():
                 citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
                 if not ((citydb.attack_hold_left() or 0) > 0):
                     citydb.set_attack_status("idle")
-                pending = citydb.attack_order_open()
                 left = citydb.attack_hold_left()
                 moving = citydb.attack_move_pending() > 0
                 daily_wait = citydb.daily_job_open()
-            if not pending and not moving and not daily_wait and not ((left or 0) > 0):
+                need = asked or moving or daily_wait or (left or 0) > 0
+            if not need:
                 citydb.fail_blocked_orders()
                 if left is not None:
                     citydb.clear_attack_hold()
@@ -1533,14 +1534,10 @@ def run_remote_orders(qq, config: dict) -> int:
                 citydb.set_attack_status("idle")
                 time.sleep(5)
                 continue
-            if pending:
-                citydb.requeue_running_orders()
-                citydb.set_attack_status("queue")
             _connect_attack_orders(qq, config)
             if not ((citydb.attack_hold_left() or 0) > 0):
                 citydb.fail_blocked_orders()
-                if citydb.attack_order_open() or citydb.daily_job_open():
-                    citydb.set_attack_status("queue")
+                if citydb.daily_job_open() or citydb.attack_move_pending() > 0:
                     time.sleep(2)
                 else:
                     citydb.set_attack_status("idle")
@@ -1817,35 +1814,33 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
         while True:
             if citydb.attack_paused():
                 citydb.set_attack_status("paused")
-                if citydb.attack_qq_blocked(_owner()) and citydb.take_attack_login():
-                    citydb.set_attack_status("login")
-                    if on_page:
-                        citydb.set_page_qr(True, user_id)
-                    relogin_with_push(qq, config, force_qr=True)
-                    if on_page:
-                        citydb.set_page_qr(False, user_id)
-                    continue
+                if citydb.take_attack_login():
+                    if citydb.attack_qq_blocked(_owner()):
+                        citydb.set_attack_status("login")
+                        if on_page:
+                            citydb.set_page_qr(True, user_id)
+                        relogin_with_push(qq, config, force_qr=True)
+                        if on_page:
+                            citydb.set_page_qr(False, user_id)
+                        continue
+                    if not citydb.attack_in_keepalive(_owner()):
+                        citydb.set_attack_paused(False, _owner())
+                        _connect_attack_orders(qq, config)
+                        continue
                 time.sleep(5)
                 continue
             citydb.resume_stranded_orders()
             citydb.resume_daily_jobs()
             citydb.release_due_waits()
-            if not (citydb.attack_order_open()
-                    or citydb.daily_job_open()
-                    or citydb.attack_wait_pending()
-                    or (citydb.attack_hold_left() or 0) > 0):
+            # 订单本身不登录。先推送登录挂上游戏，这条连接再领单。
+            asked = citydb.take_attack_login()
+            holding = (citydb.attack_hold_left() or 0) > 0
+            if not (asked or holding or citydb.daily_job_open()):
                 break
-            if not (citydb.attack_order_open()
-                    or citydb.daily_job_open()
-                    or (citydb.attack_hold_left() or 0) > 0):
-                time.sleep(5)
-                continue
-            if citydb.attack_order_open():
-                citydb.set_attack_status("queue")
             _connect_attack_orders(qq, config)
             if (citydb.attack_hold_left() or 0) > 0:
                 time.sleep(1 if citydb.attack_order_open() else 5)
-            elif citydb.attack_order_open():
+            elif citydb.daily_job_open():
                 time.sleep(2)
     finally:
         if on_page:
@@ -1884,13 +1879,16 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
     with _pool_guard:
         running = _pool.get(uin)
         if running and running.is_alive():
+            if (citydb.attack_paused(user_id) and not citydb.attack_qq_blocked(user_id)
+                    and citydb.attack_in_keepalive(user_id)):
+                log.info("攻打 QQ %s 已在保活里暂停，先不拉起", uin)
+                return "paused"
             if claim:
                 citydb.ask_attack_login(user_id)
-            if citydb.attack_paused(user_id) and not citydb.attack_qq_blocked(user_id):
-                log.info("攻打 QQ %s 已暂停，先不拉起", uin)
-                return "paused"
             log.info("攻打 QQ %s 的线程已在跑", uin)
             return "busy"
+        if claim:
+            citydb.ask_attack_login(user_id)
         th = threading.Thread(
             target=_attack_worker, args=(config, user_id, uin, name, on_page),
             name=f"attack-qq-{uin}", daemon=True)
@@ -2020,6 +2018,7 @@ def _connect_and(qq, config: dict, work) -> int:
             pass
         rec.close()
         from . import citydb
+        citydb.clear_attack_link()
         citydb.flush_atk_fail()
 
 

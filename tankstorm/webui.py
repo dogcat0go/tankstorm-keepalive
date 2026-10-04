@@ -16,7 +16,6 @@ import os
 import re
 import secrets
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import citydb
@@ -187,64 +186,15 @@ def _scan_view(config: dict) -> dict:
     }
 
 
-def _attack_cookie_logged_in(config, user_id: int) -> bool:
-    """本地 cookie 里还有没过期的 skey，就当攻打号已经登录。不访问游戏。"""
-    from .paths import user_path
-    from .socket_keepalive import attack_account_for_user
-
-    name, why = attack_account_for_user(config, user_id)
-    if why or not name:
-        return False
-    spec = ((config.get("登录") or {}).get("账号") or {}).get(name) or {}
-    cookie = str((spec or {}).get("cookie") or "").strip()
-    if not cookie:
-        return False
-    path = user_path(cookie)
-    try:
-        with open(path, encoding="utf-8") as f:
-            jar = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return False
-    if not isinstance(jar, list):
-        return False
-    now = time.time()
-    for item in jar:
-        if not isinstance(item, dict) or item.get("name") != "skey" or not item.get("value"):
-            continue
-        exp = item.get("expires")
-        if exp in (None, "", 0):
-            return True
-        try:
-            if float(exp) > now:
-                return True
-        except (TypeError, ValueError):
-            return True
-    return False
-
-
 def _after_attack_submit(config, user_id: int) -> dict:
-    """订单已经记下。在跑并且暂停的攻打解开。还没登录就准备扫码。"""
+    """订单已经记在挂着的连接上。暂停中的保活解开，由这条连接接着打。不另开登录。"""
     blocked = citydb.attack_qq_blocked(user_id)
     resumed = False
-    if citydb.attack_paused(user_id) and not blocked:
-        status = citydb.attack_status(user_id)
-        if status.get("online"):
-            citydb.set_attack_paused(False, user_id)
-            resumed = True
-    from .socket_keepalive import kick_attack_login
-    login = kick_attack_login(config, user_id, claim=blocked)
-    if login == "unbound":
-        login = kick_attack_login(config, user_id, claim=True)
-    status = citydb.attack_status(user_id)
-    scan = ""
-    if login not in ("taken", "no_account"):
-        waiting = status.get("phase") == "login" or bool(status.get("qr"))
-        if blocked:
-            scan = "mismatch"
-        elif waiting or not _attack_cookie_logged_in(config, user_id):
-            on_page = bool(status.get("qr")) or login == "qr"
-            scan = "page" if on_page else "away"
-    return {"login": login, "resumed": resumed, "scan": scan}
+    if (citydb.attack_paused(user_id) and not blocked
+            and citydb.attack_in_keepalive(user_id)):
+        citydb.set_attack_paused(False, user_id)
+        resumed = True
+    return {"login": "busy", "resumed": resumed, "scan": ""}
 
 
 def _handler(config: dict):
@@ -477,11 +427,9 @@ def _handler(config: dict):
                     why = citydb.add_modo_order(user["id"], data.get("cards"))
                     if why:
                         raise ValueError(why)
-                    from .socket_keepalive import kick_attack_login
-                    login = kick_attack_login(config, user["id"])
                     saved = citydb.user_by_token(_cookie_token(self)) or user
                     _json(self, 200, {
-                        "ok": True, "login": login,
+                        "ok": True, "login": "busy",
                         "modo_cards": int(saved.get("modo_cards") or 0),
                     })
                 elif path == "/api/attacks/cancel":
@@ -754,7 +702,7 @@ def start(host="0.0.0.0", port=8765, config=None):
 
 
 def _wake_attack_orders(config) -> None:
-    """主进程：每个已绑定的攻打 QQ 各看一条线程。有订单或还在挂机、线程不在时拉起。"""
+    """主进程：每个已绑定的攻打 QQ 各看一条线程。有日常或还在挂机、线程不在时拉起。"""
     from .socket_keepalive import kick_attack_login
 
     gap = threading.Event()
