@@ -17,7 +17,8 @@
 所以只能打「当前这一关」。请求里不能指定关卡号。
 
 网页和命令行 --pve 同一套：留空只打当前关，只填一个数字就从当前关打到这一关。
-每日任务里，当前关到了或超过终点时，先做每天 2 次免费重开，再按这套接着打。
+每日任务里，当前关到了或超过终点时，免费重开一次就从第 1 关打到终点。
+打到了还有免费次数，再重开一次再打。这一轮没打过终点就停，不再重开。
 """
 
 import re
@@ -243,10 +244,11 @@ def _restart_once(rec, sock):
     return True, "已重开"
 
 
-def _free_restarts(rec, sock, already, interval, panel=None):
-    """做今天还剩的免费重开。一天最多 2 次，并且不超过面板上的剩余次数。
+def _restart_if_room(rec, sock, already, panel=None):
+    """还有今日名额、面板上也还有次数时，免费重开一次。
 
-    返回 (是否按规则做完, 说明, 今日已重开次数)。
+    一天最多 2 次。返回 (是否按规则处理完, 说明, 今日已重开次数, 这次有没有重开)。
+    次数用完时第一项为真，第四项为假。
     """
     try:
         already = int(already or 0)
@@ -254,29 +256,23 @@ def _free_restarts(rec, sock, already, interval, panel=None):
         already = 0
     if already < 0:
         already = 0
-    room = 2 - already
-    if room <= 0:
-        return True, "今日免费重开 2 次已用完", already
+    if already >= 2:
+        return True, "今日免费重开 2 次已用完", already, False
     if panel is None:
         _cur, panel = query(rec, sock)
     if not isinstance(panel, dict):
-        return False, "没读到征战面板，不重开", already
+        return False, "没读到征战面板，不重开", already, False
     refresh = _num(panel, "field2")
     if refresh is None:
-        return False, "没读到免费重开次数，不发", already
+        return False, "没读到免费重开次数，不发", already, False
     if refresh <= 0:
-        return True, "免费重开次数已用完", already
-    times = min(room, int(refresh))
-    done = 0
-    for i in range(times):
-        ok, why = _restart_once(rec, sock)
-        if not ok:
-            return False, why, already + done
-        done += 1
-        log.info("[征战] 免费重开 %s/%s", done, times)
-        if i + 1 < times and interval > 0:
-            _nap(interval)
-    return True, f"免费重开 {done} 次", already + done
+        return True, "免费重开次数已用完", already, False
+    ok, why = _restart_once(rec, sock)
+    if not ok:
+        return False, why, already, False
+    done = already + 1
+    log.info("[征战] 免费重开 %s/2", done)
+    return True, f"免费重开 {done}/2", done, True
 
 
 def _blank_stages(raw):
@@ -342,11 +338,69 @@ def _fight_until(rec, sock, end, interval):
     return True, f"打完 {_brief(done)}，当前第 {cur} 关"
 
 
+def _restart_and_refight(rec, sock, end, cur, panel, total, interval):
+    """当前关已经到了终点。每重开一次，立刻从第 1 关打到终点。
+
+    这一轮没打过终点就停，不再花下一次免费重开。
+    """
+    where = "已到" if cur == end else "已过"
+    opened = cur
+    rounds = []
+    fought = False
+    while cur >= end:
+        if fought and interval > 0:
+            _nap(interval)
+        ok, why, total, restarted = _restart_if_room(
+            rec, sock, total, panel=panel)
+        panel = None
+        if not ok:
+            return False, (
+                f"失败：当前第 {opened} 关，{where}指定的第 {end} 关，{why}"
+            ), total, True
+        if not restarted:
+            if not fought:
+                return True, (
+                    f"当前第 {opened} 关，{where}指定的第 {end} 关，{why}"
+                ), total, False
+            break
+        rounds.append(why)
+        if interval > 0:
+            _nap(interval)
+        ok2, why2 = fight(rec, sock, str(end), interval)
+        fought = True
+        rounds.append(why2)
+        if not ok2:
+            return False, (
+                f"失败：当前第 {opened} 关，{where}指定的第 {end} 关。"
+                + "。".join(rounds)
+            ), total, True
+        cur, panel = query(rec, sock)
+        if cur is None:
+            return False, (
+                f"失败：当前第 {opened} 关，{where}指定的第 {end} 关。"
+                + "。".join(rounds) + "。打完后没读到当前关"
+            ), total, True
+        if cur < end:
+            return False, (
+                f"失败：当前第 {opened} 关，{where}指定的第 {end} 关。"
+                + "。".join(rounds)
+                + f"。停在第 {cur} 关，还没到终点，不再重开"
+            ), total, True
+    text = (
+        f"当前第 {opened} 关，{where}指定的第 {end} 关。"
+        + "。".join(rounds)
+    )
+    if cur is not None:
+        text += f"。现在第 {cur} 关"
+    return True, text, total, False
+
+
 def campaign(rec, sock, stages, already=0, interval=1.0):
     """每日任务里的征战。开打走 fight()，和命令行 --pve 同一套。
 
-    还没到终点就直接打，不重开。到了或超过终点，先做今天剩下的免费重开，
-    回到第 1 关后再按 --pve 打到终点。没填终点就只打当前关。
+    还没到终点就直接打，不重开。到了或超过终点，免费重开一次，再从第 1 关
+    打到终点。打到了还有免费次数，再重开一次再打。这一轮没打过终点就停。
+    没填终点就只打当前关。
     返回 (是否成功, 说明, 今日免费重开次数, 这一轮是否还在往终点打)。
     最后一项为真时，调用方不要接着做第三次、第4次。
     """
@@ -368,17 +422,8 @@ def campaign(rec, sock, stages, already=0, interval=1.0):
     log.info("[征战] 当前第 %s 关，终点 %s", cur, end if end is not None else "未填")
     total = already
     if end is not None and cur >= end:
-        ok, why, total = _free_restarts(rec, sock, already, interval, panel=panel)
-        where = "已到" if cur == end else "已过"
-        head = f"当前第 {cur} 关，{where}指定的第 {end} 关，{why}"
-        if not ok:
-            return False, f"失败：{head}", total, True
-        if total <= already:
-            return True, head, total, False
-        ok2, why2 = fight(rec, sock, text, interval)
-        if not ok2:
-            return False, f"失败：{head}。然后{why2}", total, True
-        return True, f"{head}。然后{why2}", total, False
+        return _restart_and_refight(
+            rec, sock, end, cur, panel, total, interval)
     ok, why = fight(rec, sock, text, interval)
     pushing = end is not None
     if not ok:
