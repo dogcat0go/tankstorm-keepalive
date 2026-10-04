@@ -2781,6 +2781,8 @@ def attack_status(user_id: int) -> dict:
             detail = "已暂停，不在保活，先连上再继续"
     elif phase == "login":
         detail = "登录中"
+        if hold_left is not None and hold_left > 0:
+            detail = f"{detail}，还剩 {(hold_left + 59) // 60} 分钟"
     elif phase == "daily":
         label = str(parsed.get("task") or "").strip()
         detail = f"正在做{label}" if label else "正在做日常任务"
@@ -2798,6 +2800,8 @@ def attack_status(user_id: int) -> dict:
                 detail = f"{detail}，正在看路径"
         else:
             detail = "登录中"
+            if hold_left is not None and hold_left > 0:
+                detail = f"{detail}，还剩 {(hold_left + 59) // 60} 分钟"
     elif phase == "running" and own and str(own[1] or "").strip():
         detail = f"正在打城市 {own[0]} 的 {own[1]}"
     elif phase == "running" and own:

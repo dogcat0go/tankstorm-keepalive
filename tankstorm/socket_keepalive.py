@@ -321,6 +321,26 @@ def _push_daily_summary(config: dict, results: dict, details: dict) -> None:
     notify.send(config, title, html, template="html")
 
 
+def _force_close_socket(sock) -> None:
+    """从别的线程也能掐断。心跳卡在发包锁上时，普通 close 会一起卡死。"""
+    raw = sock
+    for _ in range(8):
+        nxt = getattr(raw, "_sock", None)
+        if nxt is None or nxt is raw:
+            break
+        raw = nxt
+    if raw is None:
+        return
+    try:
+        raw.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+    try:
+        raw.close()
+    except OSError:
+        pass
+
+
 class _LockedSock:
     """收发都加锁。心跳线程只 sendall；Windows 上和任务线程同时 recv 会让
     settimeout 失效，recv 一直卡住（冷却日志之后再也没下文）。"""
@@ -349,8 +369,7 @@ class _LockedSock:
         return self.sendall(data)
 
     def close(self):
-        with self._lock:
-            return self._sock.close()
+        _force_close_socket(self)
 
     def __getattr__(self, name):
         return getattr(self._sock, name)
@@ -723,6 +742,15 @@ def _attack_status_beater(stop: threading.Event, user_id: int, qq: str) -> None:
             citydb.touch_attack_status()
         except Exception:
             log.debug("攻打进程心跳没写上", exc_info=True)
+        try:
+            st = citydb.attack_status(user_id)
+            if (st.get("online") and not st.get("keepalive")
+                    and st.get("phase") in (
+                        "hold", "paused", "running", "daily", "queue")):
+                if _drop_live_sock(user_id):
+                    log.info("挂机保活游戏心跳没了，掐掉旧连接")
+        except Exception:
+            log.debug("旧游戏连接没掐掉", exc_info=True)
 
 
 def _start_attack_status() -> threading.Event:
@@ -1068,6 +1096,8 @@ def _wait_socket(sock, spec, ctx) -> bool:
         data = sock.recv(8192)
     except socket.timeout:
         return True
+    except OSError:
+        return False
     if not data:
         return False
     reply = protocol.maybe_online_reply(spec, data, ctx)
@@ -1252,7 +1282,8 @@ def _begin_attack_hold(fresh=False) -> bool:
     left = citydb.attack_hold_left()
     if left is not None and left > 0:
         if fresh:
-            citydb.set_attack_status("hold")
+            citydb.set_attack_status(
+                "hold" if citydb.attack_in_keepalive() else "login")
         return True
     if minutes <= 0:
         citydb.fail_blocked_orders()
@@ -1272,7 +1303,8 @@ def _begin_attack_hold(fresh=False) -> bool:
         log.info("挂机保活结束，攻打连接断开")
         return False
     if fresh:
-        citydb.set_attack_status("hold")
+        citydb.set_attack_status(
+            "hold" if citydb.attack_in_keepalive() else "login")
     return True
 
 
@@ -1802,6 +1834,34 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
 
 _pool_guard = threading.Lock()
 _pool = {}
+_live_guard = threading.Lock()
+_live_socks = {}
+
+
+def _live_key(user_id=0) -> int:
+    from . import citydb
+    return int(user_id or citydb.attack_context_user() or 0)
+
+
+def _register_live_sock(sock) -> None:
+    key = _live_key()
+    if not key:
+        return
+    with _live_guard:
+        _live_socks[key] = sock
+
+
+def _drop_live_sock(user_id=0) -> bool:
+    """掐掉这条攻打号当前的游戏连接。心跳卡死时点推送登录也要能重连。"""
+    key = _live_key(user_id)
+    if not key:
+        return False
+    with _live_guard:
+        sock = _live_socks.pop(key, None)
+    if sock is None:
+        return False
+    _force_close_socket(sock)
+    return True
 
 
 def attack_worker_alive(uin: str) -> bool:
@@ -1931,6 +1991,8 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
                 citydb.ask_attack_login(user_id)
             if not citydb.attack_in_keepalive(user_id):
                 citydb.note_attack_logging_in(user_id)
+                if _drop_live_sock(user_id):
+                    log.info("攻打 QQ %s 游戏没挂上，掐掉旧连接准备重连", uin)
             log.info("攻打 QQ %s 的线程已在跑", uin)
             return "busy"
         if claim:
@@ -2036,6 +2098,7 @@ def _connect_and(qq, config: dict, work) -> int:
                         uid=ctx.get("uid"), sid=ctx.get("sid"))
         rec.enable_crypto(ctx)
         sock = _LockedSock(sock)
+        _register_live_sock(sock)
         _arm_super_storm(rec, sock, config, qq)
         for data, delay in protocol.build_login_sequence(spec, ctx):
             sock.sendall(data)
@@ -2063,6 +2126,7 @@ def _connect_and(qq, config: dict, work) -> int:
         log.error("连接中断: %s", exc)
         return 1
     finally:
+        _drop_live_sock()
         if heart is not None:
             heart.stop()
         try:
