@@ -979,28 +979,15 @@ TASKS = [
     # 将领和参谋是两份独立的技能书，各领各的。原先是一个任务 max_per_day=2，
     # 但 fields 写死 ActiveType=0，跑第二次只是把将领那份又领一遍。
     # 8/10 抓包实测客户端确实发了两组：{0,0}→{1,0} 和 {0,1}→{1,1}。
-    # 8/12 抓包：英雄培养走的是通用的建筑操作 opcode，不是英雄那套。
-    #   RceBuildingModify {id:10049(英雄中心), type:75(培养),
-    #                      heroType:1122, heroupgradeIndex:0}
-    # 响应 RseBuildingModify 用的是 error 字段而不是 ret，error=0 为成功。
-    # ⚠️ heroType 是**这个号自己的英雄编号**，换号要重新抓。
-    # 该消息里 10=credit、13=usehonorcredit、17/18=itemID/itemCount 都是花钱字段，
-    # 我们一个都不发，安全检查也会拦。
-    # 这一项和别的不一样：它**本来就不是"免费次数"型**的。
-    # 培养消耗的是石油和金属 —— 会自然回复的产出资源，不是券也不是勋章，
-    # 花掉不心疼；一轮 8 小时，做完就能再做。所以没有剩余次数字段是正常的，
-    # 不是漏找了。用冷却限流即可，每 8 小时一次、一天至多 3 次。
-    #
-    # 安全性同参谋/军备：这条消息里 10=credit、13=usehonorcredit、
-    # 17/18=itemID/itemCount 才是花钱字段，付费变体要显式带上它们，
-    # 我们一个都不发，所以不可能变成花钱的那一档。
+    # 2026-10-04 抓包：type=75 的 id 是建筑类型 56 的英雄中心，不是 10049。
+    # 一次把已开的空槽都放上等级最高、没在培养、没死、没满 80 级的英雄。
+    # 开几个槽由 VIP 决定。不发勋章，也不发培养书（那是 type=78）。
     _t("英雄培养", "英雄中心·培养（8 小时一轮）", "0414", "RceBuildingModify",
-       {2: ("int32", 10049), 3: ("int32", 75),
-        15: ("int32", 1122), 16: ("int32", 0)},
-       "实测", "8/12 抓包实测。消耗石油/金属（自然回复的资源），一轮 8 小时可重复，"
-               "因此靠冷却而非免费次数限流。响应 RseBuildingModify 用 error 字段判成败。"
-               "⚠️ heroType=1122 是本账号的英雄编号，换号必须重抓",
-       max_per_day=3, cooldown_sec=8 * 3600),
+       {}, "实测",
+       "2026-10-04 抓包：先开英雄面板，再按槽发 type=75。"
+       "建筑取类型 56。金属 1 万、石油 5 千，不耗勋章。",
+       max_per_day=3,
+       runner=lambda rec, sock, config: daily_train(rec, sock, config)),
 
     # 技能书不是"一天一次"，是**每 24 小时一次**，而且以前既没闸门也没冷却，
     # 每轮都照发。2026-08-13 03:13 帧日志实测：
@@ -1609,6 +1596,198 @@ def _check_safety(task, field_names, fields=None):
     return True, ""
 
 
+# 客户端 HeroConstant.HERO_CENTER_TYPE。getBuildingByType(56) 的 id 才是培养请求的 id。
+# 2026-10-04 这号上类型 56 是 10130；10049 是类型 17，发过去 error=9。
+_HERO_CENTER = 56
+_TRAIN_METAL = 10000          # HeroBaseData.trainCostR1，表里 42 个英雄全是这个数
+_TRAIN_OIL = 5000             # trainCostR2，同样全表一个价
+_HERO_LEVEL_CAP = 80          # HERO_LEVEL_TOP_LIMIT，到了就不再培养
+
+
+def _one(v):
+    if isinstance(v, bool) or not isinstance(v, int):
+        return None
+    return v
+
+
+def _rows(v):
+    if isinstance(v, dict):
+        return [v]
+    if isinstance(v, list) and all(isinstance(x, dict) for x in v):
+        return v
+    return None
+
+
+def _open_slots(level, endtime, now):
+    """和 HeroTrainingPanel 的锁一致。过期或没有 VIP 只剩第 0 槽。
+
+    VIP 3 开第 1 槽，VIP 5 开第 2 槽，VIP 正好 7 才开第 3 槽。
+    """
+    if level <= 0 or endtime < now:
+        return 1
+    n = 1
+    if level >= 3:
+        n = 2
+    if level >= 5:
+        n = 3
+    if level == 7:
+        n = 4
+    return n
+
+
+def _train_slots(panel):
+    """upgradeherolst.field3 是槽位。field1 是英雄编号，0 或没写就是空的。
+    field3 是剩余秒数。2026-10-04 开面板时四个槽都是空的。"""
+    box = panel.get("upgradeherolst") if isinstance(panel, dict) else None
+    raw = box.get("field3") if isinstance(box, dict) else None
+    rows = _rows(raw)
+    if not rows:
+        return None
+    out = []
+    for row in rows:
+        hero = row.get("field1", 0)
+        left = row.get("field3", 0)
+        hero = 0 if hero is None else _one(hero)
+        left = 0 if left is None else _one(left)
+        if hero is None or left is None or hero < 0 or left < 0:
+            return None
+        out.append((hero, left))
+    return out
+
+
+def _ready_heroes(panel, busy):
+    """getReadyForTrainingHeroList：没死、不在槽里、没到 80 级。按等级从高到低。"""
+    rows = _rows(panel.get("hero") if isinstance(panel, dict) else None)
+    if not rows:
+        return None
+    if all(_one(row.get("field2")) is None for row in rows):
+        return None
+    ready = []
+    for row in rows:
+        hid = _one(row.get("field2"))
+        level = _one(row.get("field3"))
+        atk = row.get("field14")
+        health = _one(atk.get("field4")) if isinstance(atk, dict) else None
+        if hid is None or level is None or health is None or hid <= 0:
+            continue
+        if health <= 0 or hid in busy or level >= _HERO_LEVEL_CAP:
+            continue
+        ready.append((hid, level))
+    ready.sort(key=lambda item: (-item[1], -item[0]))
+    return ready
+
+
+def daily_train(rec, sock, config):
+    """把英雄中心已开的空槽都放上能培养的英雄。
+
+    返回 (是否记一次, 说明, 下次时刻或 None)。槽放满才给下次时刻。
+    """
+    load = (rec.latest.get("RseLoad") or (None, None))[1] if rec else None
+    if not isinstance(load, dict):
+        return False, "读不到基地数据，不培养"
+    buildings = _rows(load.get("buildingdata"))
+    bid = None
+    if buildings:
+        for b in buildings:
+            if b.get("field5") == _HERO_CENTER:
+                bid = _one(b.get("field4"))
+                break
+    if not bid or bid <= 0:
+        return False, "读不到英雄中心，不培养"
+    vip = load.get("vipData")
+    level = _one(vip.get("field1")) if isinstance(vip, dict) else None
+    endtime = _one(vip.get("field2")) if isinstance(vip, dict) else None
+    if level is None or endtime is None:
+        return False, "读不到 VIP，不培养（读不到就不做）"
+    wallet = (rec.latest.get("RseUserInfo") or (None, None))[1]
+    metal = _one(wallet.get("metal")) if isinstance(wallet, dict) else None
+    oil = _one(wallet.get("oil")) if isinstance(wallet, dict) else None
+    if metal is None or oil is None:
+        return False, "读不到金属或石油，不培养（读不到就不做）"
+
+    before = rec.seq_mark()
+    sender.send_frame(sock, "0400",
+                      encode_message({3: ("int32", 0)}, omit_zero=False),
+                      rec.rc4_c2s)
+    _nap(0.4)
+    panel = _await_response(sock, rec, "RseHeroOpen", before, 6,
+                            want=lambda d: d.get("type") == 0)
+    slots = _train_slots(panel)
+    if slots is None:
+        return False, "读不到培养槽，不培养（读不到就不做）"
+    opened = _open_slots(level, endtime, time.time())
+    opened = min(opened, len(slots))
+    busy = {hero for hero, _left in slots if hero}
+    heroes = _ready_heroes(panel, busy)
+    if heroes is None:
+        return False, "读不到英雄，不培养（读不到就不做）"
+
+    empty = [i for i in range(opened) if slots[i][0] == 0]
+    soonest = min((left for hero, left in slots[:opened] if hero and left > 0),
+                  default=0)
+
+    def wait():
+        return int(time.time() + soonest) if soonest else None
+
+    if not empty:
+        mins = max(1, soonest // 60) if soonest else 0
+        return (False,
+                f"已开的 {opened} 个槽都在培养，最早还要 {mins} 分钟，跳过",
+                wait())
+    if not heroes:
+        return False, "没有能培养的英雄，跳过"
+
+    done = []
+    for index in empty:
+        if metal < _TRAIN_METAL or oil < _TRAIN_OIL:
+            why = "金属或石油不够"
+            break
+        if not heroes:
+            why = "没有能培养的英雄"
+            break
+        hid, _level = heroes.pop(0)
+        _nap(0.4)
+        mark = rec.seq_mark()
+        sender.send_frame(
+            sock, "0414",
+            encode_message({2: ("int32", bid), 3: ("int32", 75),
+                            15: ("int32", hid), 16: ("int32", index)},
+                           omit_zero=False),
+            rec.rc4_c2s)
+        got = _await_response(sock, rec, "RseBuildingModify", mark, 6,
+                              want=lambda d: d.get("type") == 75)
+        if not isinstance(got, dict):
+            return False, f"槽 {index} 没有回包" + _trained(done)
+        err = got.get("error")
+        now = _train_slots(got)
+        placed = now[index][0] if now and index < len(now) else None
+        if err != 0 or placed != hid:
+            return False, (f"槽 {index} 服务器返回 error={err}"
+                           + _trained(done))
+        metal -= _TRAIN_METAL
+        oil -= _TRAIN_OIL
+        done.append(f"槽{index}英雄{hid}")
+        if now:
+            slots = now
+            soonest = min((left for hero, left in slots[:opened]
+                           if hero and left > 0), default=soonest)
+    else:
+        why = ""
+    text = "、".join(done)
+    if why:
+        head = f"培养了 {text}；" if text else ""
+        return False, head + why + "，跳过", wait() if not _still_empty(slots, opened) else None
+    return True, "成功：培养了 " + text, wait()
+
+
+def _trained(done):
+    return ("，已培养 " + "、".join(done)) if done else ""
+
+
+def _still_empty(slots, opened):
+    return any(slots[i][0] == 0 for i in range(min(opened, len(slots))))
+
+
 def run(rec, sock, config: dict, schema=None, beat=None, on_fail=None) -> dict:
     """执行每日任务。rec 是 Recorder（提供 C→S 的 RC4），sock 是已登录的 socket。
 
@@ -1765,18 +1944,37 @@ def _run(rec, sock, config, schema, on_fail=None):
             # 早先每轮只发一次，等于绝大多数次数根本没用上。
             if task.runner is not None:
                 try:
-                    ok, why = task.runner(rec, sock, config)
+                    got = task.runner(rec, sock, config)
                 except Exception as exc:
-                    ok, why = False, f"执行异常：{exc}"
+                    got = (False, f"执行异常：{exc}")
                     log.exception("[%s] 自定义执行器抛异常", task.key)
+                until = None
+                if isinstance(got, tuple) and len(got) == 3:
+                    ok, why, until = got
+                elif isinstance(got, tuple) and len(got) == 2:
+                    ok, why = got
+                else:
+                    ok, why = False, "执行器没有返回结果"
                 results[task.key] = why
                 log.info("[%s] %s %s", task.key, "✅" if ok else "❌", why)
+                # 第三个值是下次还能再做的时刻。英雄培养一轮把槽放满后要等槽空出来，
+                # 不能把当天次数直接打满，否则 8 小时后不会再放。
+                if (isinstance(until, (int, float)) and not isinstance(until, bool)
+                        and until > time.time()):
+                    st.setdefault("until", {})[task.key] = int(until)
                 if getattr(task, "counts_itself", False):
                     fresh = _load_state()
                     if isinstance(fresh.get("done"), dict):
                         st["done"] = fresh["done"]
+                    if until:
+                        _save_state(st)
                 elif ok:
-                    st["done"][task.key] = task.max_per_day
+                    if until:
+                        st["done"][task.key] = st["done"].get(task.key, 0) + 1
+                    else:
+                        st["done"][task.key] = task.max_per_day
+                    _save_state(st)
+                elif until:
                     _save_state(st)
                 continue
 
