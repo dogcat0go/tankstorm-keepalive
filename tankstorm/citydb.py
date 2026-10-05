@@ -3272,12 +3272,88 @@ def users_with_daily_jobs() -> list:
     return [int(r[0]) for r in rows]
 
 
-def users_needing_attack() -> list:
-    """主进程要照看的登录账号：还有日常，或者攻打 QQ 的挂机还没结束。
+def users_with_running_orders() -> list:
+    """手动订单还标着正在打。服务器停在这一下时，起来要登录接着打。"""
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM atk_order "
+            "WHERE status='running' AND IFNULL(auto,0)=0").fetchall()
+    finally:
+        conn.close()
+    return [int(r[0]) for r in rows]
 
-    只有订单时不拉起。没挂在游戏上就去登录，游戏那边进不去。
+
+def manual_orders_running(user_id: int = 0) -> bool:
+    """这个登录账号有没有还在打的手动订单。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return False
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM atk_order WHERE user_id=? AND status='running' "
+            "AND IFNULL(auto,0)=0 LIMIT 1",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+def mark_attack_resume(user_id: int = 0) -> None:
+    """记下这一单要在进程重新拉起后续打。改回排队之后标记还在，失败了也能再登。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return
+    _upsert_signal(_mark_name("resume", user_id), "1")
+
+
+def attack_resume_marked(user_id: int = 0) -> bool:
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return False
+    return _signal_value(_mark_name("resume", user_id)) == "1"
+
+
+def clear_attack_resume(user_id: int = 0) -> None:
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return
+    _delete_signal(_mark_name("resume", user_id))
+
+
+def users_marked_resume() -> list:
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT name FROM atk_signal WHERE value='1' AND name LIKE 'resume:%'"
+        ).fetchall()
+    finally:
+        conn.close()
+    ids = []
+    for (name,) in rows:
+        tail = str(name or "").split(":", 1)[1]
+        if tail.startswith("user:"):
+            try:
+                ids.append(int(tail[5:]))
+            except ValueError:
+                continue
+            continue
+        owner, _who = attack_qq_owner(tail)
+        if owner:
+            ids.append(owner)
+    return ids
+
+
+def users_needing_attack() -> list:
+    """主进程要照看的登录账号：还有日常，挂机还没结束，或有一单正在打。
+
+    只是排队、还没开打的订单不拉起。没挂在游戏上就去登录，游戏那边进不去。
+    服务器停前正在打的那一单还标着执行中，起来要重新登录接着打。
     """
     ids = set(users_with_daily_jobs())
+    ids.update(users_with_running_orders())
+    ids.update(users_marked_resume())
     for user_id in mapped_attack_user_ids():
         left = attack_hold_left(user_id)
         if left is not None and left > 0:
