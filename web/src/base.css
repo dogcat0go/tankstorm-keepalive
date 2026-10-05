@@ -14,6 +14,11 @@ label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15
 label.choice { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
 span.switch { font-size: 15px; font-weight: 700; }
 .lead { margin: 0 0 16px; color: #444; }
+.account-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.account-bar .account-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.account-bar form.hold-set { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
+.account-bar form.hold-set .err { margin: 0; }
+.account-bar button.ghost, .account-bar a.ghost { margin-left: 0; }
 .attack-bar { margin: 0 0 10px; }
 .attack-bar > p { margin: 0 0 8px; }
 .attack-bar > p:last-child { margin-bottom: 0; }

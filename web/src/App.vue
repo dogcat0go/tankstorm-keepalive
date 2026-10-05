@@ -31,6 +31,7 @@ const devLogin = ref(false);
 const registerOpen = ref(false);
 const autoLock = ref(false);
 const holdMin = ref("0");
+const holdNote = ref("");
 const cardMax = ref("100");
 const retreatMode = ref("hops");
 const retreatHops = ref("3");
@@ -443,6 +444,17 @@ async function addModo() {
   }
 }
 
+async function saveHold() {
+  showErr("", "hold");
+  holdNote.value = "";
+  const data = await api("/api/attack-hold", { minutes: holdMin.value });
+  if (data.hold_min != null) {
+    holdMin.value = String(data.hold_min);
+    if (me.value) me.value.hold_min = data.hold_min;
+  }
+  holdNote.value = "已保存";
+}
+
 async function addOrder() {
   showErr("");
   const city = cities.value.find((c) => String(c.id) === String(attackCity.value));
@@ -452,7 +464,6 @@ async function addOrder() {
     const data = await api("/api/attacks", {
       city_id: attackCity.value,
       uid: attackUid.value,
-      minutes: holdMin.value,
       cards: cardMax.value,
     });
     attackCity.value = "";
@@ -599,6 +610,7 @@ async function logout() {
   dailyAt.value = "";
   dailyAtNote.value = "";
   dailyAtReady = false;
+  holdNote.value = "";
   dailyNote.value = "";
   lockHint.value = "";
 }
@@ -696,11 +708,24 @@ onUnmounted(() => {
     </form>
     <p v-if="!me && err && errAt === 'login'" class="err">{{ err }}</p>
     <template v-if="me">
-      <p class="lead">
-        {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
-        <a v-if="me.admin" class="ghost" href="/admin">管理</a>
-        <button type="button" class="ghost" @click="logout">退出</button>
-      </p>
+      <div class="lead account-bar">
+        <span class="account-id">
+          {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
+        </span>
+        <form v-if="me.remote_attack" class="hold-set" @submit.prevent="saveHold().catch((e) => showErr(e.message, 'hold'))">
+          <label class="choice">挂机时间
+            <input v-model="holdMin" class="mins" inputmode="numeric" required />
+            分钟
+          </label>
+          <button type="submit">保存</button>
+          <span v-if="holdNote" class="muted">{{ holdNote }}</span>
+          <span v-if="err && errAt === 'hold'" class="err">{{ err }}</span>
+        </form>
+        <span class="account-actions">
+          <a v-if="me.admin" class="ghost" href="/admin">管理</a>
+          <button type="button" class="ghost" @click="logout">退出</button>
+        </span>
+      </div>
       <section class="attack-bar" aria-label="攻打号状态">
         <p v-if="pushLoginVisible(proc)">
           <button type="button" class="ghost" @click="pushLogin().catch((e) => showErr(e.message, 'bar'))">推送登录二维码</button>
@@ -922,11 +947,10 @@ onUnmounted(() => {
             </select>
           </label>
           <label>UID<input v-model="attackUid" inputmode="numeric" placeholder="留空则打整座城" /></label>
-          <label>挂机保活分钟<input v-model="holdMin" class="mins" inputmode="numeric" required /></label>
           <label>最多恢复卡<input v-model="cardMax" class="mins" inputmode="numeric" required /></label>
           <button type="submit" :disabled="!(proc && proc.keepalive)">提交攻打</button>
         </form>
-        <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。有打不过的人挡路时，这段时间会继续看路径，通了立刻接着打原来的订单。0 表示打完就下线。继续和提交攻打都要这个号已经挂机保活。没挂上就下单，游戏也登不进去。</p>
+        <p class="muted">打完或打不过之后，游戏连接再保持账号旁设定的挂机时间，可和自动锁敌一起用。有打不过的人挡路时，这段时间会继续看路径，通了立刻接着打原来的订单。0 表示打完就下线。继续和提交攻打都要这个号已经挂机保活。没挂上就下单，游戏也登不进去。</p>
         <p>
           <button type="button" class="ghost" @click="attackAdvanced = !attackAdvanced">{{ attackAdvanced ? "收起" : "高级配置" }}</button>
         </p>
