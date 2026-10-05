@@ -1091,8 +1091,9 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
             log.info("订单 %s 清城时被打回首都，订单结束", job["id"])
         elif status == "ended":
             log.info("订单 %s 已手动关停", job["id"])
-        if job.get("auto") and status == "done":
-            plan = citydb.retreat_settings()
+        plan = citydb.retreat_settings() if job.get("auto") else {}
+        if job.get("auto") and (
+                status == "done" or (status == "failed" and plan.get("on_fail"))):
             retreat_mode = str(plan.get("mode") or "off")
             if retreat_mode in ("hops", "city"):
                 label = str(plan.get("name") or "").strip()
@@ -1108,7 +1109,7 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
                     why = why or f"{prefix}时连接中断"
                     log.info("订单 %s %s", job["id"], why)
                     citydb.finish_attack_order(
-                        job["id"], "done", why, beats=beats)
+                        job["id"], status, why, beats=beats)
                     raise
                 except Exception as exc:
                     log.info("订单 %s %s失败", job["id"], prefix, exc_info=True)
@@ -1121,6 +1122,8 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
                     note = str((back or {}).get("说明") or "").strip()
                     if note and not why:
                         why = note
+                    elif note and why and note not in why:
+                        why = f"{why}。{note}"
                     if note:
                         log.info("订单 %s %s", job["id"], note)
         keep = status == "done" and not why and not uid
