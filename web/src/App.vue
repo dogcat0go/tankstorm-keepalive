@@ -703,7 +703,7 @@ onUnmounted(() => {
       </p>
       <section class="attack-bar" aria-label="攻打号状态">
         <p v-if="pushLoginVisible(proc)">
-          <button type="button" class="ghost" @click="pushLogin().catch((e) => showErr(e.message, 'bar'))">推送登录二维码</button>
+          <button type="button" class="login" @click="pushLogin().catch((e) => showErr(e.message, 'bar'))">登录</button>
         </p>
         <p class="proc">
           <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
