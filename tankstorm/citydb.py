@@ -1400,6 +1400,34 @@ def attack_qq_blocked(user_id: int) -> bool:
         conn.close()
 
 
+def _move_user_mark(conn, user_id: int, uin: str, kind: str) -> None:
+    """绑上 QQ 之前，状态记在登录账号上。页面之后按 QQ 号读，这一份要跟着过去。"""
+    src = f"{kind}:user:{int(user_id)}"
+    dst = f"{kind}:{uin}"
+    old = conn.execute(
+        "SELECT value, at FROM atk_signal WHERE name=?", (src,)).fetchone()
+    if not old:
+        return
+    value = old[0]
+    if kind == "proc":
+        data = _proc_payload(value)
+        if data:
+            data["user"] = int(user_id)
+            data["acct"] = uin
+            value = json.dumps(data, ensure_ascii=False)
+    new = conn.execute(
+        "SELECT at FROM atk_signal WHERE name=?", (dst,)).fetchone()
+    if not new:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?)",
+            (dst, value, old[1]))
+    elif str(old[1] or "") >= str(new[0] or ""):
+        conn.execute(
+            "UPDATE atk_signal SET value=?, at=? WHERE name=?",
+            (value, old[1], dst))
+    conn.execute("DELETE FROM atk_signal WHERE name=?", (src,))
+
+
 def confirm_attack_qq(user_id: int, uin: str) -> bool:
     """第一次扫码登录的 QQ 绑到这个登录账号。之后只核对这一次。
     对上返回 True。对不上就暂停这个账号的攻打，返回 False。"""
@@ -1430,6 +1458,8 @@ def confirm_attack_qq(user_id: int, uin: str) -> bool:
                 conn.execute(
                     "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
                     (uin, user_id))
+                for kind in ("proc", "hold", "login", "pause", "move"):
+                    _move_user_mark(conn, user_id, uin, kind)
                 conn.commit()
             except sqlite3.IntegrityError:
                 conn.rollback()
@@ -2420,6 +2450,12 @@ def _read_user_proc(user_id: int) -> tuple:
     user_id = int(user_id or 0)
     name = _mark_name("proc", user_id) if user_id else "proc"
     parsed, seen, online, found = _read_named_proc(name)
+    if user_id:
+        alt_name = f"proc:user:{user_id}"
+        if alt_name != name:
+            alt, alt_seen, alt_online, alt_found = _read_named_proc(alt_name)
+            if alt_found and alt_online and not online:
+                return alt, alt_seen, True
     if found:
         return parsed, seen, online
     if name == "proc" or not user_id:
@@ -2685,11 +2721,16 @@ def note_attack_link(interval: float) -> None:
     name = _mark_name("proc")
     try:
         raw = _signal_value(name)
-        if not raw:
+        data = _proc_payload(raw) if raw else {}
+        if data.get("phase") == "offline":
             return
-        data = _proc_payload(raw)
-        if not data or data.get("phase") == "offline":
-            return
+        if not data:
+            uid = attack_context_user()
+            acct = attack_context_qq() or (attack_qq_of(uid) if uid else "")
+            if uid:
+                data["user"] = uid
+            if acct:
+                data["acct"] = acct
         data["link"] = int(time.time())
         try:
             gap = int(float(interval))
