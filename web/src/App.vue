@@ -16,7 +16,6 @@ const notice = ref(null);
 const items = ref([]);
 const cityCounts = ref([]);
 const subOpen = ref({});
-const db = ref("");
 const cityId = ref("");
 const cities = ref([]);
 const uid = ref("");
@@ -105,7 +104,6 @@ async function refresh() {
   const data = await api("/api/subs");
   items.value = data.items || [];
   cityCounts.value = data.counts || [];
-  db.value = data.db || "";
 }
 
 async function refreshDaily() {
@@ -673,7 +671,6 @@ onUnmounted(() => {
     <template v-if="me">
       <p class="lead">
         {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
-        · 库 <code>{{ db }}</code>
         <a v-if="me.admin" class="ghost" href="/admin">管理</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
