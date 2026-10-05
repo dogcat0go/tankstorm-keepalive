@@ -14,6 +14,11 @@ label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15
 label.choice { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
 span.switch { font-size: 15px; font-weight: 700; }
 .lead { margin: 0 0 16px; color: #444; }
+.account-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+.account-bar .account-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.account-bar form.hold-set { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
+.account-bar form.hold-set .err { margin: 0; }
+.account-bar button.ghost, .account-bar a.ghost { margin-left: 0; }
 .attack-bar { margin: 0 0 10px; }
 .attack-bar > p { margin: 0 0 8px; }
 .attack-bar > p:last-child { margin-bottom: 0; }
@@ -86,9 +91,19 @@ th { font-size: 13px; color: #555; }
 .campaign-box {
   background: #fff;
   border-radius: 8px;
-  padding: 12px 14px 2px;
+  padding: 2px 14px 2px;
   margin: 8px 0 4px;
 }
+.campaign-box > summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 10px 0;
+  list-style: none;
+}
+.campaign-box > summary::-webkit-details-marker { display: none; }
+.campaign-box > summary::before { content: "▸"; color: #777; margin-right: 6px; }
+.campaign-box[open] > summary::before { content: "▾"; }
+.campaign-box[open] > summary { margin-bottom: 2px; }
 .campaign-line {
   display: grid;
   grid-template-columns: 7.2em minmax(0, 1fr);
@@ -96,7 +111,7 @@ th { font-size: 13px; color: #555; }
   align-items: center;
   margin: 0 0 10px;
 }
-form.campaign-line { margin: 0 0 10px; }
+form.campaign-line { margin: 0 0 10px; grid-template-columns: 1fr; }
 .campaign-ops {
   display: flex;
   flex-wrap: wrap;
