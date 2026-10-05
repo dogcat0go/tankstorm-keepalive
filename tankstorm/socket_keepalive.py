@@ -1615,6 +1615,9 @@ def run_remote_orders(qq, config: dict) -> int:
         return not qq.is_valid()
 
     try:
+        if citydb.manual_orders_running():
+            citydb.mark_attack_resume()
+            log.info("登录账号 %s 有订单还在打，重新登录接着做", who)
         citydb.resume_stranded_orders()
         citydb.resume_daily_jobs()
         while True:
@@ -1633,11 +1636,12 @@ def run_remote_orders(qq, config: dict) -> int:
             citydb.resume_daily_jobs()
             citydb.release_due_waits()
             asked = citydb.take_attack_login()
+            resumed = citydb.attack_resume_marked()
             left = citydb.attack_hold_left()
             moving = citydb.attack_move_pending() > 0
             daily_wait = citydb.daily_job_open()
-            # 只有推送登录、挂机、移动或日常才连游戏。订单留着，等已经保活的连接来领。
-            need = asked or moving or daily_wait or (left or 0) > 0
+            # 新订单本身不登录。服务器停前正在打的那一单要接着做。
+            need = asked or resumed or moving or daily_wait or (left or 0) > 0
             if need and not qq.is_valid():
                 citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
@@ -1646,7 +1650,8 @@ def run_remote_orders(qq, config: dict) -> int:
                 left = citydb.attack_hold_left()
                 moving = citydb.attack_move_pending() > 0
                 daily_wait = citydb.daily_job_open()
-                need = asked or moving or daily_wait or (left or 0) > 0
+                resumed = citydb.attack_resume_marked()
+                need = asked or resumed or moving or daily_wait or (left or 0) > 0
             if not need:
                 citydb.fail_blocked_orders()
                 if left is not None:
@@ -1665,6 +1670,8 @@ def run_remote_orders(qq, config: dict) -> int:
                 time.sleep(5)
                 continue
             _connect_attack_orders(qq, config)
+            if resumed:
+                citydb.clear_attack_resume()
             if not ((citydb.attack_hold_left() or 0) > 0):
                 citydb.fail_blocked_orders()
                 if citydb.daily_job_open() or citydb.attack_move_pending() > 0:
@@ -1960,6 +1967,9 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
     stop = None
     try:
         stop = _start_attack_status()
+        if citydb.manual_orders_running():
+            citydb.mark_attack_resume()
+            log.info("登录账号 %s 有订单还在打，重新登录接着做", who)
         citydb.resume_stranded_orders()
         citydb.resume_daily_jobs()
         if qq.is_valid():
@@ -1995,9 +2005,11 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             citydb.resume_stranded_orders()
             citydb.resume_daily_jobs()
             citydb.release_due_waits()
-            # 订单本身不登录。先推送登录挂上游戏，这条连接再领单。
+            # 新订单本身不登录。先推送登录挂上游戏，这条连接再领单。
+            # 服务器停前正在打的那一单要接着做，不另加挂机时间。
             # 点了推送登录就先记 180 分钟，连不上也在这段时间里重连，不立刻退出。
             asked = citydb.take_attack_login()
+            resumed = citydb.attack_resume_marked()
             if asked:
                 _arm_push_keepalive()
                 if citydb.attack_in_keepalive(_owner()):
@@ -2005,9 +2017,11 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 else:
                     citydb.set_attack_status("login")
             holding = (citydb.attack_hold_left() or 0) > 0
-            if not (asked or holding or citydb.daily_job_open()):
+            if not (asked or resumed or holding or citydb.daily_job_open()):
                 break
             _connect_attack_orders(qq, config)
+            if resumed:
+                citydb.clear_attack_resume()
             if (citydb.attack_hold_left() or 0) > 0:
                 time.sleep(1 if citydb.attack_order_open() else 5)
             elif citydb.daily_job_open():

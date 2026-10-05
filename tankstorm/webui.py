@@ -723,8 +723,8 @@ def start(host="0.0.0.0", port=8765, config=None):
 
 
 def _wake_attack_orders(config) -> None:
-    """主进程：每个已绑定的攻打 QQ 各看一条线程。有日常或还在挂机、线程不在时拉起。"""
-    from .socket_keepalive import kick_attack_login
+    """主进程：每个已绑定的攻打 QQ 各看一条线程。有日常、还在挂机，或有一单正在打、线程不在时拉起。"""
+    from .socket_keepalive import attack_worker_alive, kick_attack_login
 
     gap = threading.Event()
     noted = set()
@@ -737,14 +737,16 @@ def _wake_attack_orders(config) -> None:
             continue
         for user_id in users:
             try:
-                if not citydb.attack_qq_of(user_id):
+                uin = citydb.attack_qq_of(user_id)
+                if not uin:
                     if user_id not in noted:
                         log.info("登录账号 %s 还有订单，攻打 QQ 还没绑到这个人，不自动扫码",
                                  citydb.username_of(user_id))
                         noted.add(user_id)
                     continue
-                status = citydb.attack_status(user_id)
-                if status.get("online"):
+                # 进程刚停时，库里的心跳可能还新鲜。线程不在就要拉起，不能当成还在跑。
+                citydb.attack_status(user_id)
+                if attack_worker_alive(uin):
                     noted.discard(user_id)
                     continue
                 if citydb.unbound_login_waiting():
