@@ -242,7 +242,7 @@ def _handler(config: dict):
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                     return
-                _json(self, 200, {"db": citydb.DB_FILE, "items": items, "counts": counts})
+                _json(self, 200, {"items": items, "counts": counts})
                 return
             if path == "/api/scan-plan":
                 user = self._user()
