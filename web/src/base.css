@@ -50,6 +50,7 @@ form.scan-form { max-width: none; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
 input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
 input.mins { width: 6em; }
+input.clock { width: 8em; }
 select.fund-building { min-width: 10em; }
 button, a.ghost { font: inherit; padding: 8px 14px; border: 0; border-radius: 6px; background: #1a1a1a; color: #fff; cursor: pointer; }
 button:disabled { opacity: 0.45; cursor: default; }
