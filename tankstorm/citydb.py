@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     retreat_mode    TEXT NOT NULL DEFAULT 'hops',
     retreat_hops    INTEGER NOT NULL DEFAULT 3,
     retreat_city    INTEGER NOT NULL DEFAULT 0,
+    retreat_fail    INTEGER NOT NULL DEFAULT 0,
     lock_cards      INTEGER NOT NULL DEFAULT 3,
     clear_mode      TEXT NOT NULL DEFAULT 'head',
     clear_from      INTEGER NOT NULL DEFAULT 1,
@@ -272,6 +273,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "retreat_city" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN retreat_city INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "retreat_fail" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN retreat_fail INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "lock_cards" not in ucols:
                 setup.execute(
@@ -926,6 +931,7 @@ def user_by_token(token: str):
             "IFNULL(u.tier,'初级'), IFNULL(u.admin,0), IFNULL(u.auto_lock,0), "
             "IFNULL(u.hold_min,0), IFNULL(u.card_max,100), "
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
+            "IFNULL(u.retreat_fail,0), "
             "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
@@ -938,8 +944,9 @@ def user_by_token(token: str):
                 "retreat_mode": row[9] or "hops",
                 "retreat_hops": int(row[10] or 3),
                 "retreat_city": int(row[11] or 0),
-                "lock_cards": int(row[12] if row[12] is not None else 3),
-                "modo_cards": int(row[13] if row[13] is not None else 0)}
+                "retreat_fail": bool(row[12]),
+                "lock_cards": int(row[13] if row[13] is not None else 3),
+                "modo_cards": int(row[14] if row[14] is not None else 0)}
     finally:
         conn.close()
 
@@ -1488,7 +1495,7 @@ def bind_attack_account(user_id: int, account: str) -> str:
     return ""
 
 
-def set_retreat(user_id: int, mode, hops, city_id) -> str:
+def set_retreat(user_id: int, mode, hops, city_id, on_fail=None) -> str:
     """打完后退。hops 是朝一座城退几座，city 是退进指定城。两种不能同时用。"""
     mode = str(mode or "").strip()
     if mode not in ("off", "hops", "city"):
@@ -1509,11 +1516,16 @@ def set_retreat(user_id: int, mode, hops, city_id) -> str:
         return "要选退到哪座城"
     if cid > 0 and not city_name(cid):
         return "这座城不在目录里"
+    if isinstance(on_fail, str):
+        fail = 1 if on_fail.strip().lower() in ("1", "true", "on", "开") else 0
+    else:
+        fail = 1 if on_fail else 0
     conn = connect()
     try:
         conn.execute(
-            "UPDATE app_user SET retreat_mode=?, retreat_hops=?, retreat_city=? WHERE id=?",
-            (mode, n, cid, int(user_id)))
+            "UPDATE app_user SET retreat_mode=?, retreat_hops=?, retreat_city=?, "
+            "retreat_fail=? WHERE id=?",
+            (mode, n, cid, fail, int(user_id)))
         conn.commit()
     finally:
         conn.close()
@@ -1524,13 +1536,13 @@ def retreat_settings(user_id: int = 0) -> dict:
     """这个登录账号的打完后退。没填朝向时，后退几座城默认朝马奇诺。"""
     if not user_id:
         user_id = attack_context_user()
-    mode, hops, city_id = "hops", 3, 0
+    mode, hops, city_id, on_fail = "hops", 3, 0, False
     if user_id:
         conn = connect(readonly=True)
         try:
             row = conn.execute(
                 "SELECT IFNULL(retreat_mode,'hops'), IFNULL(retreat_hops,3), "
-                "IFNULL(retreat_city,0) FROM app_user WHERE id=?",
+                "IFNULL(retreat_city,0), IFNULL(retreat_fail,0) FROM app_user WHERE id=?",
                 (int(user_id),)).fetchone()
         finally:
             conn.close()
@@ -1538,6 +1550,7 @@ def retreat_settings(user_id: int = 0) -> dict:
             mode = str(row[0] or "hops")
             hops = int(row[1] or 3)
             city_id = int(row[2] or 0)
+            on_fail = bool(row[3])
     if mode not in ("off", "hops", "city"):
         mode = "hops"
     if hops < 1:
@@ -1548,7 +1561,8 @@ def retreat_settings(user_id: int = 0) -> dict:
         city_id = city_id_named(name)
     elif city_id > 0:
         name = city_name(city_id) or str(city_id)
-    return {"mode": mode, "hops": hops, "city_id": city_id, "name": name}
+    return {"mode": mode, "hops": hops, "city_id": city_id, "name": name,
+            "on_fail": on_fail}
 
 
 def set_lock_cards(user_id: int, cards) -> str:

@@ -35,6 +35,7 @@ const cardMax = ref("100");
 const retreatMode = ref("hops");
 const retreatHops = ref("3");
 const retreatCity = ref("0");
+const retreatFail = ref(false);
 const retreatNote = ref("");
 const lockCards = ref("3");
 const lockHint = ref("");
@@ -296,6 +297,7 @@ function takeUser(user) {
   retreatMode.value = picked === "off" || picked === "city" || picked === "hops" ? picked : "hops";
   retreatHops.value = String(user.retreat_hops ?? 3);
   retreatCity.value = String(user.retreat_city || 0);
+  retreatFail.value = !!user.retreat_fail;
   lockCards.value = String(user.lock_cards ?? 3);
   clearMode.value = user.clear_mode === "range" ? "range" : "head";
   clearFrom.value = String(user.clear_from || 1);
@@ -358,6 +360,7 @@ async function saveRetreat() {
     mode: retreatMode.value,
     hops: retreatHops.value,
     city_id: retreatCity.value,
+    on_fail: retreatFail.value,
   });
   if (data.user) takeUser(data.user);
   pinRetreatCity();
@@ -878,10 +881,11 @@ onUnmounted(() => {
               <option v-for="c in cities" :key="'r' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
             </select>
           </label>
+          <label class="choice"><input type="checkbox" v-model="retreatFail" />没打成也后退</label>
           <button type="submit">保存</button>
           <span class="muted">{{ retreatNote }}</span>
         </form>
-        <p class="muted">只对自动锁敌打完的订单。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
+        <p class="muted">只对自动锁敌。打完按上面的走法退。打开「没打成也后退」时，没打到人也会退一次。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
       </div>
       <p v-if="lockHint" class="muted">{{ lockHint }}</p>
       <p v-if="!items.length" class="muted">还没有订阅。</p>

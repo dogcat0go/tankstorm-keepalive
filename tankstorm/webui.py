@@ -136,6 +136,7 @@ def _user_out(user: dict) -> dict:
         "retreat_mode": user.get("retreat_mode") or "hops",
         "retreat_hops": int(user.get("retreat_hops") or 3),
         "retreat_city": int(user.get("retreat_city") or 0),
+        "retreat_fail": bool(user.get("retreat_fail")),
         "lock_cards": int(user.get("lock_cards") if user.get("lock_cards") is not None else 3),
         "clear_mode": plan["mode"],
         "clear_from": plan["page_from"],
@@ -507,7 +508,7 @@ def _handler(config: dict):
                         return
                     why = citydb.set_retreat(
                         user["id"], data.get("mode"), data.get("hops"),
-                        data.get("city_id"))
+                        data.get("city_id"), data.get("on_fail"))
                     if why:
                         raise ValueError(why)
                     saved = citydb.user_by_token(_cookie_token(self)) or user
