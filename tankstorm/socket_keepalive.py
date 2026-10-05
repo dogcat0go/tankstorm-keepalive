@@ -1835,7 +1835,8 @@ def _page_login_cookie(user_id: int) -> str:
 
 
 def start_unbound_page_qr(config: dict, user_id: int) -> str:
-    """还没绑定攻打 QQ 时，只在网页上出二维码。不读、不拉、不改正在跑的攻打进程。"""
+    """还没绑定攻打 QQ 时，只在网页上出二维码。不读、不拉、不改正在跑的攻打进程。
+    扫上并记到这个登录账号之后，立刻拉起这个 QQ 的挂机保活。"""
     import fcntl
     import os
 
@@ -1870,6 +1871,7 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
 
     def _run():
         nonlocal cookie
+        bound = ""
         try:
             while not citydb.attack_qq_of(user_id):
                 if qq.qr_login(on_qr=on_page_qr):
@@ -1878,6 +1880,8 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
                         _store_attack_cookie(user_id, cookie, uin)
                         log.info("登录账号 %s 扫码绑定攻打 QQ %s", who, uin)
                         cookie = ""
+                        bound = uin
+                        citydb.note_attack_logging_in(user_id)
                     break
                 time.sleep(15)
         finally:
@@ -1893,6 +1897,8 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
                 pass
             with _page_login_guard:
                 _page_login_users.discard(user_id)
+        if bound:
+            kick_attack_login(config, user_id, claim=True)
 
     threading.Thread(target=_run, name=f"page-login-{user_id}", daemon=True).start()
     return "qr"

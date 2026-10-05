@@ -1400,6 +1400,34 @@ def attack_qq_blocked(user_id: int) -> bool:
         conn.close()
 
 
+def _move_user_mark(conn, user_id: int, uin: str, kind: str) -> None:
+    """绑上 QQ 之前，状态记在登录账号上。页面之后按 QQ 号读，这一份要跟着过去。"""
+    src = f"{kind}:user:{int(user_id)}"
+    dst = f"{kind}:{uin}"
+    old = conn.execute(
+        "SELECT value, at FROM atk_signal WHERE name=?", (src,)).fetchone()
+    if not old:
+        return
+    value = old[0]
+    if kind == "proc":
+        data = _proc_payload(value)
+        if data:
+            data["user"] = int(user_id)
+            data["acct"] = uin
+            value = json.dumps(data, ensure_ascii=False)
+    new = conn.execute(
+        "SELECT at FROM atk_signal WHERE name=?", (dst,)).fetchone()
+    if not new:
+        conn.execute(
+            "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?)",
+            (dst, value, old[1]))
+    elif str(old[1] or "") >= str(new[0] or ""):
+        conn.execute(
+            "UPDATE atk_signal SET value=?, at=? WHERE name=?",
+            (value, old[1], dst))
+    conn.execute("DELETE FROM atk_signal WHERE name=?", (src,))
+
+
 def confirm_attack_qq(user_id: int, uin: str) -> bool:
     """第一次扫码登录的 QQ 绑到这个登录账号。之后只核对这一次。
     对上返回 True。对不上就暂停这个账号的攻打，返回 False。"""
@@ -1430,6 +1458,8 @@ def confirm_attack_qq(user_id: int, uin: str) -> bool:
                 conn.execute(
                     "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
                     (uin, user_id))
+                for kind in ("proc", "hold", "login", "pause", "move"):
+                    _move_user_mark(conn, user_id, uin, kind)
                 conn.commit()
             except sqlite3.IntegrityError:
                 conn.rollback()
@@ -2420,6 +2450,12 @@ def _read_user_proc(user_id: int) -> tuple:
     user_id = int(user_id or 0)
     name = _mark_name("proc", user_id) if user_id else "proc"
     parsed, seen, online, found = _read_named_proc(name)
+    if user_id:
+        alt_name = f"proc:user:{user_id}"
+        if alt_name != name:
+            alt, alt_seen, alt_online, alt_found = _read_named_proc(alt_name)
+            if alt_found and alt_online and not online:
+                return alt, alt_seen, True
     if found:
         return parsed, seen, online
     if name == "proc" or not user_id:
@@ -2685,11 +2721,16 @@ def note_attack_link(interval: float) -> None:
     name = _mark_name("proc")
     try:
         raw = _signal_value(name)
-        if not raw:
+        data = _proc_payload(raw) if raw else {}
+        if data.get("phase") == "offline":
             return
-        data = _proc_payload(raw)
-        if not data or data.get("phase") == "offline":
-            return
+        if not data:
+            uid = attack_context_user()
+            acct = attack_context_qq() or (attack_qq_of(uid) if uid else "")
+            if uid:
+                data["user"] = uid
+            if acct:
+                data["acct"] = acct
         data["link"] = int(time.time())
         try:
             gap = int(float(interval))
@@ -3360,26 +3401,42 @@ def daily_schedule(user_id: int) -> str:
 
 
 def set_daily_schedule(user_id: int, raw) -> str:
-    """记下每天跑日常的北京时间。空的表示关掉。成功返回空字符串。"""
+    """记下每天跑日常的北京时间。空的表示关掉。成功返回空字符串。
+
+    今天这一档已经排过，又改到还没到的时刻，就清掉标记，让新时刻再排一次。
+    改到已经过去的时刻则把新时刻记成做过，避免马上再跑一轮。
+    """
     try:
         at = _clock(raw)
     except ValueError as exc:
         return str(exc)
     conn = connect()
     try:
-        cur = conn.execute(
-            "UPDATE app_user SET daily_at=? WHERE id=?",
-            (at, int(user_id)))
-        conn.commit()
-        if cur.rowcount != 1:
+        row = conn.execute(
+            "SELECT IFNULL(daily_last,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+        if not row:
             return "账号不存在"
+        old_last = str(row[0] or "")
+        done_day, sep, done_at = old_last.partition("|")
+        ran_today = bool(old_last) and done_day == beijing_day()
+        clock = beijing_clock()
+        last = old_last
+        if at and ran_today and at >= clock and (not sep or done_at != at):
+            last = ""
+        elif at and ran_today and sep and done_at != at and at < clock:
+            last = f"{done_day}|{at}"
+        conn.execute(
+            "UPDATE app_user SET daily_at=?, daily_last=? WHERE id=?",
+            (at, last, int(user_id)))
+        conn.commit()
         return ""
     finally:
         conn.close()
 
 
 def enqueue_due_daily_jobs() -> list:
-    """到点且今天还没排过的账号，排一轮日常。返回刚排上的 user_id。"""
+    """到点且这一档今天还没排过的账号，排一轮日常。返回刚排上的 user_id。"""
     clock = beijing_clock()
     day = beijing_day()
     conn = connect()
@@ -3391,7 +3448,9 @@ def enqueue_due_daily_jobs() -> list:
             "FROM app_user WHERE IFNULL(daily_at,'') != ''").fetchall()
         queued = []
         for user_id, name, at, last, expires, qq, switch_raw in rows:
-            if last == day or clock < at or account_expired(expires):
+            done_day, sep, done_at = str(last or "").partition("|")
+            if ((done_day == day and (not sep or done_at == at))
+                    or clock < at or account_expired(expires)):
                 continue
             if not str(qq or "").strip():
                 continue
@@ -3402,16 +3461,25 @@ def enqueue_due_daily_jobs() -> list:
             if int(waiting or 0) >= 3:
                 continue
             daily_wait = conn.execute(
-                "SELECT created_at FROM daily_job "
+                "SELECT created_at, params FROM daily_job "
                 "WHERE user_id=? AND kind='daily' AND status IN ('pending','running') "
                 "ORDER BY id DESC LIMIT 1",
                 (user_id,)).fetchone()
             if daily_wait:
                 created = beijing_ts(daily_wait[0] or "")[:10]
                 if created == day:
-                    conn.execute(
-                        "UPDATE app_user SET daily_last=? WHERE id=?",
-                        (day, user_id))
+                    job_at = ""
+                    try:
+                        queued_params = json.loads(daily_wait[1] or "{}")
+                    except ValueError:
+                        queued_params = None
+                    if isinstance(queued_params, dict):
+                        job_at = str(queued_params.get("at") or "")
+                    # 手动排的、或就是这一档，记上。改点后旧档还在做，别把新时刻写成已做。
+                    if not job_at or job_at == at:
+                        conn.execute(
+                            "UPDATE app_user SET daily_last=? WHERE id=?",
+                            (f"{day}|{at}", user_id))
                 continue
             stages = ""
             if switch_raw:
@@ -3421,7 +3489,9 @@ def enqueue_due_daily_jobs() -> list:
                     saved = None
                 if isinstance(saved, dict):
                     stages = str(saved.get(_CAMPAIGN_END) or "").strip()
-            clean = {"stages": stages} if stages else {}
+            clean = {"at": at}
+            if stages:
+                clean["stages"] = stages
             now = now_ts()
             conn.execute(
                 "INSERT INTO daily_job(user_id, kind, params, status, detail, created_at, updated_at) "
@@ -3429,7 +3499,7 @@ def enqueue_due_daily_jobs() -> list:
                 (user_id, json.dumps(clean, ensure_ascii=False), now, now))
             conn.execute(
                 "UPDATE app_user SET daily_last=? WHERE id=?",
-                (day, user_id))
+                (f"{day}|{at}", user_id))
             queued.append(int(user_id))
             log.info("定时日常：账号 %s 到点 %s，已排队", name, at)
         conn.commit()
