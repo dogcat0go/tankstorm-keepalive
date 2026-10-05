@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_scan      INTEGER NOT NULL DEFAULT 0,
     modo_cards      INTEGER NOT NULL DEFAULT 0,
     daily_switch    TEXT,
+    daily_at        TEXT NOT NULL DEFAULT '',
+    daily_last      TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -316,6 +318,14 @@ def connect(readonly=False, timeout=15):
                 setup.commit()
             if ucols and "daily_switch" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN daily_switch TEXT")
+                setup.commit()
+            if ucols and "daily_at" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN daily_at TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "daily_last" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN daily_last TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             _forget_page_names(setup)
             _ensure_attack_qq_map(setup)
@@ -780,9 +790,16 @@ def now_ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def beijing_now():
+    return datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8)))
+
+
 def beijing_day() -> str:
-    return datetime.now(timezone.utc).astimezone(
-        timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    return beijing_now().strftime("%Y-%m-%d")
+
+
+def beijing_clock() -> str:
+    return beijing_now().strftime("%H:%M")
 
 
 TIERS = ("初级", "中级", "高级")
@@ -3328,6 +3345,97 @@ def campaign_stages(user_id: int) -> str:
     finally:
         conn.close()
     return str(saved.get(_CAMPAIGN_END) or "").strip()
+
+
+def daily_schedule(user_id: int) -> str:
+    """这个登录账号记下的定时。空字符串表示不定时。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(daily_at,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    return str(row[0] or "").strip() if row else ""
+
+
+def set_daily_schedule(user_id: int, raw) -> str:
+    """记下每天跑日常的北京时间。空的表示关掉。成功返回空字符串。"""
+    try:
+        at = _clock(raw)
+    except ValueError as exc:
+        return str(exc)
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET daily_at=? WHERE id=?",
+            (at, int(user_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "账号不存在"
+        return ""
+    finally:
+        conn.close()
+
+
+def enqueue_due_daily_jobs() -> list:
+    """到点且今天还没排过的账号，排一轮日常。返回刚排上的 user_id。"""
+    clock = beijing_clock()
+    day = beijing_day()
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT id, username, daily_at, IFNULL(daily_last,''), IFNULL(expires_at,''), "
+            "IFNULL(attack_qq,''), daily_switch "
+            "FROM app_user WHERE IFNULL(daily_at,'') != ''").fetchall()
+        queued = []
+        for user_id, name, at, last, expires, qq, switch_raw in rows:
+            if last == day or clock < at or account_expired(expires):
+                continue
+            if not str(qq or "").strip():
+                continue
+            waiting = conn.execute(
+                "SELECT COUNT(*) FROM daily_job "
+                "WHERE user_id=? AND status IN ('pending','running')",
+                (user_id,)).fetchone()[0]
+            if int(waiting or 0) >= 3:
+                continue
+            daily_wait = conn.execute(
+                "SELECT created_at FROM daily_job "
+                "WHERE user_id=? AND kind='daily' AND status IN ('pending','running') "
+                "ORDER BY id DESC LIMIT 1",
+                (user_id,)).fetchone()
+            if daily_wait:
+                created = beijing_ts(daily_wait[0] or "")[:10]
+                if created == day:
+                    conn.execute(
+                        "UPDATE app_user SET daily_last=? WHERE id=?",
+                        (day, user_id))
+                continue
+            stages = ""
+            if switch_raw:
+                try:
+                    saved = json.loads(switch_raw)
+                except ValueError:
+                    saved = None
+                if isinstance(saved, dict):
+                    stages = str(saved.get(_CAMPAIGN_END) or "").strip()
+            clean = {"stages": stages} if stages else {}
+            now = now_ts()
+            conn.execute(
+                "INSERT INTO daily_job(user_id, kind, params, status, detail, created_at, updated_at) "
+                "VALUES (?,'daily',?,'pending','',?,?)",
+                (user_id, json.dumps(clean, ensure_ascii=False), now, now))
+            conn.execute(
+                "UPDATE app_user SET daily_last=? WHERE id=?",
+                (day, user_id))
+            queued.append(int(user_id))
+            log.info("定时日常：账号 %s 到点 %s，已排队", name, at)
+        conn.commit()
+        return queued
+    finally:
+        conn.close()
 
 
 def set_campaign_stages(user_id: int, raw) -> str:

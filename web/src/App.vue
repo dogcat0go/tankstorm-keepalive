@@ -16,7 +16,6 @@ const notice = ref(null);
 const items = ref([]);
 const cityCounts = ref([]);
 const subOpen = ref({});
-const db = ref("");
 const cityId = ref("");
 const cities = ref([]);
 const uid = ref("");
@@ -75,7 +74,10 @@ const fundBuildings = [
   { id: "10139", name: "英雄徽章雕塑" },
 ];
 const dailyNote = ref("");
+const dailyAt = ref("");
+const dailyAtNote = ref("");
 const dailySwitching = ref("");
+let dailyAtReady = false;
 const moveCity = ref("");
 const holdUntil = ref(0);
 const clock = ref(Date.now());
@@ -106,7 +108,6 @@ async function refresh() {
   const data = await api("/api/subs");
   items.value = data.items || [];
   cityCounts.value = data.counts || [];
-  db.value = data.db || "";
 }
 
 async function refreshDaily() {
@@ -116,6 +117,9 @@ async function refreshDaily() {
     dailyJobs.value = [];
     pveStages.value = "";
     pveStagesReady = false;
+    dailyAt.value = "";
+    dailyAtNote.value = "";
+    dailyAtReady = false;
     return;
   }
   const data = await api("/api/daily");
@@ -125,6 +129,11 @@ async function refreshDaily() {
   if (!pveStagesReady) {
     pveStages.value = data.stages || "";
     pveStagesReady = true;
+  }
+  if (!dailyAtReady) {
+    dailyAt.value = data.schedule || "";
+    dailyAtReady = true;
+    dailyAtNote.value = data.schedule ? "已设定每天 " + data.schedule : "";
   }
 }
 
@@ -144,6 +153,15 @@ async function saveDailySwitch(it, on) {
   } finally {
     dailySwitching.value = "";
   }
+}
+
+async function saveDailyAt() {
+  showErr("");
+  dailyAtNote.value = "";
+  const data = await api("/api/daily/schedule", { at: dailyAt.value });
+  dailyAt.value = data.schedule || "";
+  dailyAtReady = true;
+  dailyAtNote.value = data.schedule ? "已设定每天 " + data.schedule : "已关掉定时";
 }
 
 async function runDaily(kind, extra) {
@@ -270,6 +288,7 @@ async function loadMe() {
 function takeUser(user) {
   me.value = user;
   pveStagesReady = false;
+  dailyAtReady = false;
   qqTarget.value = user.qq_target || "";
   autoLock.value = !!user.auto_lock;
   holdMin.value = String(user.hold_min ?? 0);
@@ -577,6 +596,9 @@ async function logout() {
   dailyJobs.value = [];
   pveStages.value = "";
   pveStagesReady = false;
+  dailyAt.value = "";
+  dailyAtNote.value = "";
+  dailyAtReady = false;
   dailyNote.value = "";
   lockHint.value = "";
 }
@@ -676,7 +698,6 @@ onUnmounted(() => {
     <template v-if="me">
       <p class="lead">
         {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
-        · 库 <code>{{ db }}</code>
         <a v-if="me.admin" class="ghost" href="/admin">管理</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
@@ -707,7 +728,13 @@ onUnmounted(() => {
         <span class="switch">每日任务</span>
         <button type="submit" :disabled="!dailyQq">跑一轮</button>
       </form>
-      <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。</p>
+      <form class="lock-row" @submit.prevent="saveDailyAt().catch((e) => showErr(e.message))">
+        <span class="switch">定时执行</span>
+        <label>北京时间<input v-model="dailyAt" type="time" class="clock" /></label>
+        <button type="submit">保存</button>
+        <span class="muted">{{ dailyAtNote }}</span>
+      </form>
+      <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。填了时间就每天到点再跑一轮，留空不定时。</p>
       <div class="campaign-box">
         <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => showErr(e.message))">
           <span class="switch">征战世界</span>

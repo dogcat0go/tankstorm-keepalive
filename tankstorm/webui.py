@@ -243,7 +243,7 @@ def _handler(config: dict):
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                     return
-                _json(self, 200, {"db": citydb.DB_FILE, "items": items, "counts": counts})
+                _json(self, 200, {"items": items, "counts": counts})
                 return
             if path == "/api/scan-plan":
                 user = self._user()
@@ -281,6 +281,7 @@ def _handler(config: dict):
                     "jobs": citydb.list_daily_jobs(user["id"]),
                     "process": citydb.attack_status(user["id"]),
                     "stages": citydb.campaign_stages(user["id"]),
+                    "schedule": citydb.daily_schedule(user["id"]),
                 })
                 return
             if path == "/api/admin/fighters":
@@ -394,6 +395,14 @@ def _handler(config: dict):
                     _json(self, 200, {"ok": True, "login": followed["login"],
                                       "resumed": followed["resumed"], "scan": followed["scan"],
                                       "hold_min": hold_min, "card_max": card_max})
+                elif path == "/api/daily/schedule":
+                    why = citydb.set_daily_schedule(user["id"], data.get("at"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {
+                        "ok": True,
+                        "schedule": citydb.daily_schedule(user["id"]),
+                    })
                 elif path == "/api/daily/switch":
                     from . import daily
                     on = data.get("on")
@@ -721,6 +730,7 @@ def _wake_attack_orders(config) -> None:
     noted = set()
     while not gap.wait(5):
         try:
+            citydb.enqueue_due_daily_jobs()
             users = citydb.users_needing_attack()
         except Exception:
             log.info("自动拉起攻打没成", exc_info=True)
