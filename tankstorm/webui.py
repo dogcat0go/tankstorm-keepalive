@@ -54,6 +54,7 @@ def _json(handler, code, obj, cookie=None):
     body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
     handler.send_response(code)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
     handler.send_header("Content-Length", str(len(body)))
     if cookie is not None:
         handler.send_header("Set-Cookie", cookie)
