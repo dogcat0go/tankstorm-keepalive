@@ -1,9 +1,14 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ElMenu, ElMenuItem, ElSwitch } from "element-plus";
+import { ElMenu, ElMenuItem } from "element-plus";
 import "element-plus/es/components/menu/style/css";
-import "element-plus/es/components/switch/style/css";
 import "./base.css";
+import AccountBar from "./pages/AccountBar.vue";
+import AttackStatus from "./pages/AttackStatus.vue";
+import AttackPage from "./pages/AttackPage.vue";
+import DailyPage from "./pages/DailyPage.vue";
+import WatchPage from "./pages/WatchPage.vue";
+import QqPage from "./pages/QqPage.vue";
 
 const me = ref(null);
 const mode = ref("login");
@@ -31,6 +36,7 @@ const devLogin = ref(false);
 const registerOpen = ref(false);
 const autoLock = ref(false);
 const holdMin = ref("0");
+const holdNote = ref("");
 const cardMax = ref("100");
 const retreatMode = ref("hops");
 const retreatHops = ref("3");
@@ -443,6 +449,17 @@ async function addModo() {
   }
 }
 
+async function saveHold() {
+  showErr("", "hold");
+  holdNote.value = "";
+  const data = await api("/api/attack-hold", { minutes: holdMin.value });
+  if (data.hold_min != null) {
+    holdMin.value = String(data.hold_min);
+    if (me.value) me.value.hold_min = data.hold_min;
+  }
+  holdNote.value = "已保存";
+}
+
 async function addOrder() {
   showErr("");
   const city = cities.value.find((c) => String(c.id) === String(attackCity.value));
@@ -452,7 +469,6 @@ async function addOrder() {
     const data = await api("/api/attacks", {
       city_id: attackCity.value,
       uid: attackUid.value,
-      minutes: holdMin.value,
       cards: cardMax.value,
     });
     attackCity.value = "";
@@ -599,6 +615,7 @@ async function logout() {
   dailyAt.value = "";
   dailyAtNote.value = "";
   dailyAtReady = false;
+  holdNote.value = "";
   dailyNote.value = "";
   lockHint.value = "";
 }
@@ -696,345 +713,147 @@ onUnmounted(() => {
     </form>
     <p v-if="!me && err && errAt === 'login'" class="err">{{ err }}</p>
     <template v-if="me">
-      <p class="lead">
-        {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
-        <a v-if="me.admin" class="ghost" href="/admin">管理</a>
-        <button type="button" class="ghost" @click="logout">退出</button>
-      </p>
-      <section class="attack-bar" aria-label="攻打号状态">
-        <p v-if="pushLoginVisible(proc)">
-          <button type="button" class="login" @click="pushLogin().catch((e) => showErr(e.message, 'bar'))">登录</button>
-        </p>
-        <p class="proc">
-          <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
-          <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login' && proc.keepalive" type="button" class="ghost" @click="setAttackPause(false).catch((e) => showErr(e.message, 'bar'))">继续</button>
-          <button v-else-if="proc && proc.online && proc.keepalive" type="button" class="ghost" @click="setAttackPause(true).catch((e) => showErr(e.message, 'bar'))">暂停</button>
-        </p>
-        <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
-        <p v-if="err && errAt === 'bar'" class="err">{{ err }}</p>
-      </section>
+      <AccountBar
+        v-model:hold-min="holdMin"
+        :me="me"
+        :hold-note="holdNote"
+        :err="err"
+        :err-at="errAt"
+        :save-hold="saveHold"
+        :logout="logout"
+        :show-err="showErr"
+      />
+      <AttackStatus
+        :proc="proc"
+        :qr-src="qrSrc"
+        :err="err"
+        :err-at="errAt"
+        :push-login-visible="pushLoginVisible"
+        :proc-text="procText"
+        :push-login="pushLogin"
+        :set-attack-pause="setAttackPause"
+        :reload-qr="reloadQr"
+        :show-err="showErr"
+      />
       <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
         <el-menu-item index="qq">订阅QQ</el-menu-item>
       </el-menu>
-      <section v-show="tab === 'daily'">
-      <h2>日常任务</h2>
-      <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
-      <p v-else class="muted">还没绑定攻打 QQ。先在导航栏上方扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
-      <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。后面的攻打单排在它后面。</p>
-      <form class="lock-row" @submit.prevent="runDaily('daily', { stages: pveStages }).catch((e) => showErr(e.message))">
-        <span class="switch">每日任务</span>
-        <button type="submit" :disabled="!dailyQq">跑一轮</button>
-      </form>
-      <form class="lock-row" @submit.prevent="saveDailyAt().catch((e) => showErr(e.message))">
-        <span class="switch">定时执行</span>
-        <label>北京时间<input v-model="dailyAt" type="time" class="clock" /></label>
-        <button type="submit">保存</button>
-        <span class="muted">{{ dailyAtNote }}</span>
-      </form>
-      <p class="muted">按下面今日进度里打开的项做。开关记在这个登录账号上。今日次数记在这个攻打号上，换一个号单独算。填了时间就每天到点再跑一轮，留空不定时。</p>
-      <div class="campaign-box">
-        <form class="campaign-line" @submit.prevent="runDaily('pve', { stages: pveStages }).catch((e) => showErr(e.message))">
-          <span class="switch">征战世界</span>
-          <span class="campaign-ops">
-            <input v-model="pveStages" aria-label="关卡" placeholder="终点，例如 150" />
-            <button type="submit" :disabled="!dailyQq">开始征战</button>
-          </span>
-        </form>
-        <div v-for="it in campaignTasks" :key="it.key" class="campaign-line">
-          <span class="switch">{{ it.name }}</span>
-          <span class="campaign-ops">
-            <el-switch
-              class="daily-switch"
-              size="large"
-              inline-prompt
-              active-text="开"
-              inactive-text="关"
-              :model-value="it.on"
-              :loading="dailySwitching === it.key"
-              @change="saveDailySwitch(it, $event)"
-            />
-            <span class="muted">今日 {{ it.done }}/{{ it.max }}</span>
-          </span>
-        </div>
-        <p class="muted">征战和命令行 --pve 同一套。填一个终点，就从当前关打到这一关。还没到就接着打，不重开。已经到了或超过，免费重开一次，再从第 1 关打到终点；打到了还有免费次数，再重开一次，再从第 1 关打。这一轮没打过就停，不再重开。一天最多 2 次。留空只打当前这一关。第三次、第4次排在后面；还在往终点打的这一轮先不做。第三次重开之后要从第 1 关打到终点，打完才发第4次；第4次也是重开后再打到终点。只重开没打完不算完成。第4次扣 100 勋章。第三次是付费重征。默认关。</p>
-      </div>
-      <form class="lock-row" @submit.prevent="runDaily('fund', { building_id: fundBuilding, times: fundTimes }).catch((e) => showErr(e.message))">
-        <span class="switch">成就拨款</span>
-        <label>建筑
-          <select v-model="fundBuilding" class="fund-building" required>
-            <option value="" disabled>选择建筑</option>
-            <option v-for="b in fundBuildings" :key="b.id" :value="b.id">{{ b.name }}</option>
-          </select>
-        </label>
-        <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
-        <button type="submit" :disabled="!dailyQq">拨款</button>
-      </form>
-      <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。</p>
-      <form class="lock-row" @submit.prevent="addModo().catch((e) => showErr(e.message))">
-        <span class="switch">刷摩多军团</span>
-        <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
-        <button type="submit" :disabled="!dailyQq || !(proc && proc.keepalive)">提交</button>
-      </form>
-      <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后跳到国战助手，订单和进度都在那里。击退数量按 4 次扫荡算 1 个。要这个号已经挂机保活。</p>
-      <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
-      <p v-if="err && errAt === 'daily'" class="err">{{ err }}</p>
-      <h2>最近执行</h2>
-      <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
-      <div v-else class="wide">
-        <table class="daily-jobs">
-          <thead>
-            <tr><th>项目</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="it in dailyJobs" :key="it.id">
-              <td>{{ it.label }}</td>
-              <td>{{ it.status }}</td>
-              <td class="reason">{{ it.detail || "—" }}</td>
-              <td>{{ it.created_at || "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <h2>今日进度</h2>
-      <p class="muted">点开关就保存。跑一轮时按这里的开和关做。</p>
-      <p v-if="!dailyTasks.length" class="muted">还没有任务表。</p>
-      <div v-else class="wide">
-        <table>
-          <thead>
-            <tr><th>任务</th><th>开关</th><th>今日</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="it in progressTasks" :key="it.key">
-              <td>{{ it.name }}</td>
-              <td>
-                <el-switch
-                  class="daily-switch"
-                  size="large"
-                  inline-prompt
-                  active-text="开"
-                  inactive-text="关"
-                  :model-value="it.on"
-                  :loading="dailySwitching === it.key"
-                  @change="saveDailySwitch(it, $event)"
-                />
-              </td>
-              <td>{{ it.done }}/{{ it.max }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      </section>
-      <section v-show="tab === 'qq'">
-      <h2>订阅 QQ</h2>
-      <p v-if="err && errAt === 'qq'" class="err">{{ err }}</p>
-      <form class="stack" @submit.prevent="savePush().catch((e) => showErr(e.message))">
-        <label>接收 QQ
-          <input v-model="qqTarget" inputmode="numeric" autocomplete="off" placeholder="你的 QQ 号" />
-        </label>
-        <button type="submit">保存</button>
-        <span class="muted">{{ note }}</span>
-      </form>
-      <p class="muted">私聊发到这个 QQ。机器人地址和 Token 在服务器配置里，页面上不填写。</p>
-      </section>
-      <section v-show="tab === 'watch'">
-      <h2>监控敌人</h2>
-      <p v-if="err && errAt === 'watch'" class="err">{{ err }}</p>
-      <form @submit.prevent="addSub().catch((e) => showErr(e.message))">
-        <label>城市
-          <select v-model="cityId" required>
-            <option value="" disabled>选择城市</option>
-            <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
-          </select>
-        </label>
-        <label>用户 UID<input v-model="uid" inputmode="numeric" required /></label>
-        <button type="submit">订阅</button>
-      </form>
-      <p class="muted">这个 UID 第一次出现在扫描结果里，发一条。之后只有从不在这座城变成在线，再发一条。这一轮扫完还没见到，就记成不在这座城。</p>
-      <p v-if="me.remote_attack" class="lock-row">
-        <label class="switch">
-          <input type="checkbox" :checked="autoLock" @change="saveAutoLock" />
-          自动锁敌
-        </label>
-        <button type="button" class="ghost" @click="advanced = !advanced">{{ advanced ? "收起" : "高级配置" }}</button>
-        <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。人在城里时，这一行的索敌可以再排一条。</span>
-      </p>
-      <div v-if="me.remote_attack && advanced" class="advanced">
-        <form class="lock-row" @submit.prevent="saveLockCards().catch((e) => showErr(e.message))">
-          <label>1小时内最多恢复卡<input v-model="lockCards" class="mins" inputmode="numeric" required /></label>
-          <button type="submit">保存</button>
-          <span class="muted">{{ lockNote }}</span>
-        </form>
-        <p class="muted">只限制自动锁敌。最近 1 小时里最多开这么多张，用满就不再开，这一单跳过。手动攻打不占这个数。</p>
-        <form class="lock-row retreat-row" @submit.prevent="saveRetreat().catch((e) => showErr(e.message))">
-          <span class="switch">打完后退</span>
-          <label class="choice"><input type="radio" value="off" v-model="retreatMode" />不后退</label>
-          <label class="choice"><input type="radio" value="hops" v-model="retreatMode" />后退几座城</label>
-          <label class="choice"><input type="radio" value="city" v-model="retreatMode" />退到指定城市</label>
-          <label v-if="retreatMode === 'hops'">座数<input v-model="retreatHops" class="mins" inputmode="numeric" required /></label>
-          <label v-if="retreatMode !== 'off'">{{ retreatMode === 'hops' ? '朝向' : '退到' }}
-            <select v-model="retreatCity" :required="retreatMode === 'city'">
-              <option v-if="retreatMode === 'city'" value="0" disabled>选择城市</option>
-              <option v-if="retreatMode === 'hops' && !cities.some((c) => c.name === '马奇诺')" value="0">马奇诺</option>
-              <option v-for="c in cities" :key="'r' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
-            </select>
-          </label>
-          <label class="choice"><input type="checkbox" v-model="retreatFail" />没打成也后退</label>
-          <button type="submit">保存</button>
-          <span class="muted">{{ retreatNote }}</span>
-        </form>
-        <p class="muted">只对自动锁敌。打完按上面的走法退。打开「没打成也后退」时，没打到人也会退一次。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
-      </div>
-      <p v-if="lockHint" class="muted">{{ lockHint }}</p>
-      <p v-if="!items.length" class="muted">还没有订阅。</p>
-      <div v-else class="subs">
-        <details v-for="p in players" :key="p.uid" class="sub" :open="isSubOpen(p.uid)" @toggle="onSubToggle(p.uid, $event)">
-          <summary>
-            <span class="sub-name">{{ p.name || p.uid }}</span>
-            <span v-if="p.name" class="muted">{{ p.uid }}</span>
-            <span v-if="p.present" class="on">在城里</span>
-            <span class="muted">{{ p.cities.length }} 座城</span>
-          </summary>
-          <div v-for="it in p.cities" :key="it.city_id" class="sub-city">
-            <span class="sub-where">{{ cityText(it) }}</span>
-            <span class="sub-status" :class="it.present ? 'on' : 'off'">{{ statusOf(it) }}<template v-if="it.present && it.page != null"> · 第{{ it.page }}页</template></span>
-            <span class="sub-time muted">{{ whenOf(it) }}</span>
-            <span class="sub-actions">
-              <button v-if="me.remote_attack && it.present" type="button" class="ghost" title="给这个人排一条自动索敌" :disabled="locking === lockKey(it)" @click="lockOne(it).catch((e) => showErr(e.message, 'watch'))">索敌</button>
-              <button type="button" class="ghost" @click="removeSub(it)">取消</button>
-            </span>
-          </div>
-        </details>
-      </div>
-      </section>
-      <section v-show="tab === 'attack'">
-      <h2>国战助手</h2>
-      <p v-if="err && errAt === 'attack'" class="err">{{ err }}</p>
-      <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。打人和清城要中级或高级。刷摩多军团在日常任务。</p>
-      <template v-if="me.remote_attack">
-        <form class="attack-row" @submit.prevent="addOrder()">
-          <label>城市
-            <select v-model="attackCity" required>
-              <option value="" disabled>选择城市</option>
-              <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
-            </select>
-          </label>
-          <label>UID<input v-model="attackUid" inputmode="numeric" placeholder="留空则打整座城" /></label>
-          <label>挂机保活分钟<input v-model="holdMin" class="mins" inputmode="numeric" required /></label>
-          <label>最多恢复卡<input v-model="cardMax" class="mins" inputmode="numeric" required /></label>
-          <button type="submit" :disabled="!(proc && proc.keepalive)">提交攻打</button>
-        </form>
-        <p class="muted">打完或打不过之后，游戏连接再保持这么久，可和自动锁敌一起用。有打不过的人挡路时，这段时间会继续看路径，通了立刻接着打原来的订单。0 表示打完就下线。继续和提交攻打都要这个号已经挂机保活。没挂上就下单，游戏也登不进去。</p>
-        <p>
-          <button type="button" class="ghost" @click="attackAdvanced = !attackAdvanced">{{ attackAdvanced ? "收起" : "高级配置" }}</button>
-        </p>
-        <div v-if="attackAdvanced" class="advanced">
-          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
-            <span class="switch">清城扫页</span>
-            <label class="choice"><input type="radio" value="head" v-model="clearMode" />前5页</label>
-            <label class="choice"><input type="radio" value="range" v-model="clearMode" />指定范围</label>
-            <template v-if="clearMode === 'range'">
-              <label>从<input v-model="clearFrom" class="mins" inputmode="numeric" required /></label>
-              <label>到<input v-model="clearTo" class="mins" inputmode="numeric" required /></label>
-            </template>
-          </form>
-          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
-            <span class="switch">空城再打</span>
-            <label class="choice">分钟<input v-model="clearWait" class="mins" inputmode="numeric" required /></label>
-            <span v-if="clearRetryText" class="muted">{{ clearRetryText }}</span>
-          </form>
-          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
-            <span class="switch">扫页冷却</span>
-            <label class="choice">秒<input v-model="clearScan" class="mins" inputmode="numeric" required /></label>
-          </form>
-          <form class="lock-row" @submit.prevent="addPriority().catch((e) => showErr(e.message))">
-            <span class="switch">优先 UID</span>
-            <label>UID<input v-model="prioUid" inputmode="numeric" /></label>
-            <label>优先级<input v-model="prioRank" class="mins" inputmode="numeric" /></label>
-            <button type="submit">添加</button>
-          </form>
-          <div v-for="(row, i) in prioShown" :key="row.uid" class="prio-row">
-            <span class="muted">{{ i + 1 }}</span>
-            <span>{{ row.uid }}</span>
-            <label>优先级<input v-model="row.rank" class="mins" inputmode="numeric" /></label>
-            <button type="button" class="ghost" @click="clearRows = clearRows.filter((item) => item.uid !== row.uid)">删除</button>
-          </div>
-          <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
-            <button type="submit">保存</button>
-            <span class="muted">{{ clearNote }}</span>
-          </form>
-          <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。</p>
-        </div>
-      </template>
-        <p v-if="proc && proc.online" class="proc here-row">
-          <span v-if="hereText(proc)">{{ hereText(proc) }}</span>
-          <template v-if="me.remote_attack">
-          <label class="choice">移动到
-            <select v-model="moveCity">
-              <option value="" disabled>选择城市</option>
-              <option v-for="c in cities" :key="'mv' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
-            </select>
-          </label>
-          <button type="button" @click="moveToCity().catch((e) => showErr(e.message))">移动</button>
-          <span v-if="proc.move_note" class="muted">{{ proc.move_note }}</span>
-          </template>
-        </p>
-        <div v-if="storms.length" class="storms">
-          <p class="muted">最近 1 小时拒绝的超级强攻</p>
-          <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
-        </div>
-        <p class="muted">每 2 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，在导航栏上方点推送登录，二维码就出在那里。点了推送登录，就挂机保活 180 分钟，连上之后可以接订单。同一个 QQ 不能绑给两个登录账号。</p>
-        <div class="orders" v-if="orders.length">
-        <table>
-          <thead>
-            <tr><th>城市</th><th>UID</th><th>击退敌方数量</th><th>状态</th><th>说明</th><th>保活剩余倒计时</th><th>北京时间</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="it in orders" :key="it.id">
-              <td>{{ orderCity(it) }}</td>
-              <td>{{ orderUid(it) }}</td>
-              <td>{{ beatText(it) }}</td>
-              <td>{{ orderStatus(it.status) }}<button v-if="orderOpen(it)" type="button" class="ghost" @click="cancelOrder(it).catch((e) => showErr(e.message))">关停</button></td>
-              <td class="reason">{{ it.reason || "—" }}</td>
-              <td>{{ holdCell(it) }}</td>
-              <td>{{ it.created_at || "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div class="order-cards">
-          <article class="order-card" v-for="it in orders" :key="'c' + it.id">
-            <p><span class="k">城市</span>{{ orderCity(it) }}</p>
-            <p><span class="k">UID</span>{{ orderUid(it) }}</p>
-            <p><span class="k">击退敌方数量</span>{{ beatText(it) }}</p>
-            <p><span class="k">状态</span>{{ orderStatus(it.status) }}</p>
-            <p class="reason"><span class="k">说明</span>{{ it.reason || "—" }}</p>
-            <p><span class="k">保活剩余倒计时</span>{{ holdCell(it) }}</p>
-            <p><span class="k">北京时间</span>{{ it.created_at || "—" }}</p>
-            <p v-if="orderOpen(it)"><button type="button" class="ghost" @click="cancelOrder(it).catch((e) => showErr(e.message))">关停</button></p>
-          </article>
-        </div>
-        </div>
-      <h2>城市人数</h2>
-      <p class="muted">订阅过的城。人数是最近一次扫描打开面板时的玩家数量，同一座城只列一行。</p>
-      <p v-if="!cityCounts.length" class="muted">还没有订阅的城市。</p>
-      <div v-else class="wide">
-        <table>
-          <thead>
-            <tr><th>城市</th><th>人数</th><th>扫描时间</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="it in cityCounts" :key="it.city_id">
-              <td>{{ cityText(it) }}</td>
-              <td>{{ it.user_cnt == null ? "—" : it.user_cnt }}</td>
-              <td>{{ it.scanned_at || "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      </section>
+      <DailyPage
+        v-show="tab === 'daily'"
+        v-model:daily-at="dailyAt"
+        v-model:pve-stages="pveStages"
+        v-model:fund-building="fundBuilding"
+        v-model:fund-times="fundTimes"
+        v-model:modo-cards="modoCards"
+        :daily-qq="dailyQq"
+        :campaign-tasks="campaignTasks"
+        :progress-tasks="progressTasks"
+        :daily-jobs="dailyJobs"
+        :daily-at-note="dailyAtNote"
+        :daily-note="dailyNote"
+        :daily-switching="dailySwitching"
+        :fund-buildings="fundBuildings"
+        :err="err"
+        :err-at="errAt"
+        :proc="proc"
+        :run-daily="runDaily"
+        :save-daily-at="saveDailyAt"
+        :save-daily-switch="saveDailySwitch"
+        :add-modo="addModo"
+        :show-err="showErr"
+      />
+      <QqPage
+        v-show="tab === 'qq'"
+        v-model:qq-target="qqTarget"
+        :err="err"
+        :err-at="errAt"
+        :note="note"
+        :save-push="savePush"
+        :show-err="showErr"
+      />
+      <WatchPage
+        v-show="tab === 'watch'"
+        v-model:city-id="cityId"
+        v-model:uid="uid"
+        v-model:lock-cards="lockCards"
+        v-model:retreat-mode="retreatMode"
+        v-model:retreat-hops="retreatHops"
+        v-model:retreat-city="retreatCity"
+        v-model:retreat-fail="retreatFail"
+        v-model:advanced="advanced"
+        :me="me"
+        :cities="cities"
+        :auto-lock="autoLock"
+        :err="err"
+        :err-at="errAt"
+        :lock-note="lockNote"
+        :retreat-note="retreatNote"
+        :lock-hint="lockHint"
+        :items="items"
+        :players="players"
+        :locking="locking"
+        :city-label="cityLabel"
+        :add-sub="addSub"
+        :save-auto-lock="saveAutoLock"
+        :save-lock-cards="saveLockCards"
+        :save-retreat="saveRetreat"
+        :lock-one="lockOne"
+        :remove-sub="removeSub"
+        :lock-key="lockKey"
+        :is-sub-open="isSubOpen"
+        :on-sub-toggle="onSubToggle"
+        :status-of="statusOf"
+        :when-of="whenOf"
+        :city-text="cityText"
+        :show-err="showErr"
+      />
+      <AttackPage
+        v-show="tab === 'attack'"
+        v-model:attack-city="attackCity"
+        v-model:attack-uid="attackUid"
+        v-model:card-max="cardMax"
+        v-model:attack-advanced="attackAdvanced"
+        v-model:clear-mode="clearMode"
+        v-model:clear-from="clearFrom"
+        v-model:clear-to="clearTo"
+        v-model:clear-wait="clearWait"
+        v-model:clear-scan="clearScan"
+        v-model:prio-uid="prioUid"
+        v-model:prio-rank="prioRank"
+        v-model:move-city="moveCity"
+        v-model:clear-rows="clearRows"
+        :me="me"
+        :proc="proc"
+        :cities="cities"
+        :orders="orders"
+        :storms="storms"
+        :city-counts="cityCounts"
+        :err="err"
+        :err-at="errAt"
+        :clear-note="clearNote"
+        :clear-retry-text="clearRetryText"
+        :prio-shown="prioShown"
+        :city-label="cityLabel"
+        :here-text="hereText"
+        :city-text="cityText"
+        :add-order="addOrder"
+        :save-clear-plan="saveClearPlan"
+        :add-priority="addPriority"
+        :move-to-city="moveToCity"
+        :cancel-order="cancelOrder"
+        :beat-text="beatText"
+        :order-city="orderCity"
+        :order-uid="orderUid"
+        :order-status="orderStatus"
+        :order-open="orderOpen"
+        :hold-cell="holdCell"
+        :show-err="showErr"
+      />
     </template>
+
     <div v-if="notice" class="modal" @click.self="notice = null">
       <div class="modal-card" :class="{ bad: !notice.ok }" role="dialog" aria-modal="true" aria-labelledby="notice-title">
         <h2 id="notice-title">{{ notice.title }}</h2>
