@@ -4078,22 +4078,38 @@ def claim_attack_order():
         conn.close()
 
 
-def note_lock_morale(morale) -> None:
-    """索敌正在打时，把敌方当前士气写进说明。清城订单不改。写库失败不影响继续打。"""
+def note_lock_morale(morale, confirmed=False) -> None:
+    """索敌正在打时，把敌方当前士气写进说明。清城订单不改。写库失败不影响继续打。
+
+    没读到数字就不改。已经记下大于 0 的士气后，城市名单或库里的 0
+    不算拿到了敌方士气，留着上次的数。战报里明确读到的 0 才覆盖。
+    """
     if isinstance(morale, bool) or not isinstance(morale, int):
         return
     order_id = int(getattr(_attack_local, "order", 0) or 0)
     if not order_id:
         return
+    morale = int(morale)
     try:
         conn = connect()
     except sqlite3.Error:
         return
     try:
+        if morale == 0 and not confirmed:
+            row = conn.execute(
+                "SELECT reason FROM atk_order WHERE id=? AND status='running' "
+                "AND TRIM(IFNULL(uid,''))!=''",
+                (order_id,)).fetchone()
+            prev = str(row[0] or "") if row else ""
+            head = "敌方士气 "
+            if prev.startswith(head):
+                tail = prev[len(head):].strip()
+                if tail.isdigit() and int(tail) > 0:
+                    return
         conn.execute(
             "UPDATE atk_order SET reason=? WHERE id=? AND status='running' "
             "AND TRIM(IFNULL(uid,''))!=''",
-            (f"敌方士气 {int(morale)}", order_id))
+            (f"敌方士气 {morale}", order_id))
         conn.commit()
     except sqlite3.Error:
         return
