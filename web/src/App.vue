@@ -614,6 +614,11 @@ async function savePush() {
   note.value = "QQ 号已保存";
 }
 
+async function savePassword(current, password) {
+  showErr("", "pwd");
+  await api("/api/password", { current, password });
+}
+
 async function logout() {
   await api("/api/logout", {});
   me.value = null;
@@ -742,6 +747,7 @@ onUnmounted(() => {
         :hold-all="holdAll"
         :hold-all-busy="holdAllBusy"
         :save-hold-all="saveHoldAll"
+        :save-password="savePassword"
         :logout="logout"
         :show-err="showErr"
       />
