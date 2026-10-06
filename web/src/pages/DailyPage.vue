@@ -21,6 +21,7 @@ defineProps({
   errAt: { type: String, default: "" },
   proc: { type: Object, default: null },
   runDaily: { type: Function, required: true },
+  cancelDaily: { type: Function, required: true },
   saveDailyAt: { type: Function, required: true },
   saveDailySwitch: { type: Function, required: true },
   addModo: { type: Function, required: true },
@@ -101,7 +102,7 @@ defineProps({
         <tbody>
           <tr v-for="it in dailyJobs" :key="it.id">
             <td>{{ it.label }}</td>
-            <td>{{ it.status }}</td>
+            <td>{{ it.status }}<button v-if="it.status === '排队' || it.status === '正在做'" type="button" class="ghost" @click="cancelDaily(it).catch((e) => showErr(e.message))">关停</button></td>
             <td class="reason">{{ it.detail || "—" }}</td>
             <td>{{ it.created_at || "—" }}</td>
           </tr>

@@ -124,6 +124,7 @@ form.campaign-line { margin: 0 0 10px; grid-template-columns: 1fr; }
 .campaign-box > .muted { margin: 0 0 12px; }
 table.daily-jobs th,
 table.daily-jobs td { white-space: nowrap; }
+table.daily-jobs button.ghost { margin-left: 8px; padding: 4px 10px; }
 table.daily-jobs td.reason {
   white-space: pre-line;
   word-break: break-word;

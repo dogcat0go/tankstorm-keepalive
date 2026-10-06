@@ -424,6 +424,15 @@ def _handler(config: dict):
                         "ok": True,
                         "tasks": daily.task_board(uin, switches),
                     })
+                elif path == "/api/daily/cancel":
+                    try:
+                        job_id = int(str(data.get("id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("任务编号不对") from None
+                    why = citydb.cancel_daily_job(user["id"], job_id)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True})
                 elif path == "/api/daily":
                     if citydb.account_expired(user.get("expires_at") or ""):
                         raise ValueError("账号已过期")
