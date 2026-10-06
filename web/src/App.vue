@@ -36,6 +36,8 @@ const devLogin = ref(false);
 const registerOpen = ref(false);
 const autoLock = ref(false);
 const holdMin = ref("0");
+const holdAll = ref(false);
+const holdAllBusy = ref(false);
 const holdNote = ref("");
 const cardMax = ref("100");
 const retreatMode = ref("hops");
@@ -298,6 +300,7 @@ function takeUser(user) {
   qqTarget.value = user.qq_target || "";
   autoLock.value = !!user.auto_lock;
   holdMin.value = String(user.hold_min ?? 0);
+  holdAll.value = !!user.hold_all;
   cardMax.value = String(user.card_max ?? 100);
   const picked = user.retreat_mode;
   retreatMode.value = picked === "off" || picked === "city" || picked === "hops" ? picked : "hops";
@@ -458,6 +461,22 @@ async function saveHold() {
     if (me.value) me.value.hold_min = data.hold_min;
   }
   holdNote.value = "已保存";
+}
+
+async function saveHoldAll(on) {
+  showErr("", "hold");
+  holdNote.value = "";
+  holdAllBusy.value = true;
+  try {
+    const data = await api("/api/attack-hold", { all: !!on });
+    holdAll.value = !!data.hold_all;
+    if (me.value) me.value.hold_all = holdAll.value;
+    holdNote.value = "已保存";
+  } catch (e) {
+    showErr(e.message, "hold");
+  } finally {
+    holdAllBusy.value = false;
+  }
 }
 
 async function addOrder() {
@@ -720,6 +739,9 @@ onUnmounted(() => {
         :err="err"
         :err-at="errAt"
         :save-hold="saveHold"
+        :hold-all="holdAll"
+        :hold-all-busy="holdAllBusy"
+        :save-hold-all="saveHoldAll"
         :logout="logout"
         :show-err="showErr"
       />
