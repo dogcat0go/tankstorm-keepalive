@@ -101,10 +101,20 @@ def _http_warmup(qq, ctx: dict) -> None:
         log.debug("warmup 失败(忽略): %s", exc)
 
 
+def _remember_region(qq, ctx) -> None:
+    """攻打号才记。区服在游戏链接的 region 里，扫描号不写到用户上。"""
+    if not getattr(qq, "attack_account", False):
+        return
+    from . import citydb
+    citydb.note_game_region(
+        citydb.attack_context_user() or citydb.login_for(), ctx.get("region"))
+
+
 def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                  with_daily: bool = False) -> str:
     """跑一次完整连接，直到断开。返回断开原因（字符串）。"""
     ctx = get_game_context(qq)
+    _remember_region(qq, ctx)
     host = ctx.get("server") or spec.get("default_host", "tankstorm-proxy.sincetimes.com")
     port = int(ctx.get("port") or spec.get("default_port", 8001))
     if not ctx.get("openkey"):
@@ -2177,6 +2187,7 @@ def _connect_and(qq, config: dict, work) -> int:
         return 1
 
     ctx = get_game_context(qq)
+    _remember_region(qq, ctx)
     host = ctx.get("server") or spec.get("default_host", "tankstorm-proxy.sincetimes.com")
     port = int(ctx.get("port") or spec.get("default_port", 8001))
     if not ctx.get("openkey"):

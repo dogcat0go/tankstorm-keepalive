@@ -40,8 +40,10 @@ defineProps({
 <template>
   <section>
     <h2>监控敌人</h2>
+    <p class="muted">目前只有 1 区支持订阅敌方。</p>
+    <p v-if="me.region && me.region !== 1" class="err">当前是 {{ me.region }} 区，还不能订阅。</p>
     <p v-if="err && errAt === 'watch'" class="err">{{ err }}</p>
-    <form @submit.prevent="addSub().catch((e) => showErr(e.message))">
+    <form v-if="!me.region || me.region === 1" @submit.prevent="addSub().catch((e) => showErr(e.message))">
       <label>城市
         <select v-model="cityId" required>
           <option value="" disabled>选择城市</option>
@@ -51,8 +53,8 @@ defineProps({
       <label>用户 UID<input v-model="uid" inputmode="numeric" required /></label>
       <button type="submit">订阅</button>
     </form>
-    <p class="muted">这个 UID 第一次出现在扫描结果里，发一条。之后只有从不在这座城变成在线，再发一条。这一轮扫完还没见到，就记成不在这座城。</p>
-    <p v-if="me.remote_attack" class="lock-row">
+    <p v-if="!me.region || me.region === 1" class="muted">这个 UID 第一次出现在扫描结果里，发一条。之后只有从不在这座城变成在线，再发一条。这一轮扫完还没见到，就记成不在这座城。</p>
+    <p v-if="me.remote_attack && (!me.region || me.region === 1)" class="lock-row">
       <label class="switch">
         <input type="checkbox" :checked="autoLock" @change="saveAutoLock" />
         自动锁敌
@@ -60,7 +62,7 @@ defineProps({
       <button type="button" class="ghost" @click="advanced = !advanced">{{ advanced ? "收起" : "高级配置" }}</button>
       <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。人在城里时，这一行的索敌可以再排一条。</span>
     </p>
-    <div v-if="me.remote_attack && advanced" class="advanced">
+    <div v-if="me.remote_attack && advanced && (!me.region || me.region === 1)" class="advanced">
       <form class="lock-row" @submit.prevent="saveLockCards().catch((e) => showErr(e.message))">
         <label>1小时内最多恢复卡<input v-model="lockCards" class="mins" inputmode="numeric" required /></label>
         <button type="submit">保存</button>

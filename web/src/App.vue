@@ -117,6 +117,9 @@ async function refresh() {
   const data = await api("/api/subs");
   items.value = data.items || [];
   cityCounts.value = data.counts || [];
+  if (me.value && data.region != null) {
+    me.value = { ...me.value, region: Number(data.region) || 0 };
+  }
 }
 
 async function refreshDaily() {

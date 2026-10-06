@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     daily_switch    TEXT,
     daily_at        TEXT NOT NULL DEFAULT '',
     daily_last      TEXT NOT NULL DEFAULT '',
+    region          INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -331,6 +332,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "daily_last" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN daily_last TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "region" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN region INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             _forget_page_names(setup)
             _ensure_attack_qq_map(setup)
@@ -973,7 +978,7 @@ def user_by_token(token: str):
             "IFNULL(u.hold_min,0), IFNULL(u.hold_all,0), IFNULL(u.card_max,100), "
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
             "IFNULL(u.retreat_fail,0), "
-            "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0) "
+            "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0), IFNULL(u.region,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
@@ -988,9 +993,32 @@ def user_by_token(token: str):
                 "retreat_city": int(row[12] or 0),
                 "retreat_fail": bool(row[13]),
                 "lock_cards": int(row[14] if row[14] is not None else 3),
-                "modo_cards": int(row[15] if row[15] is not None else 0)}
+                "modo_cards": int(row[15] if row[15] is not None else 0),
+                "region": int(row[16] or 0)}
     finally:
         conn.close()
+
+
+def note_game_region(user_id: int, region) -> None:
+    """攻打号打开游戏页后，把链接里的区服记到这个登录账号。认不出就不改。"""
+    user_id = int(user_id or 0)
+    try:
+        region = int(str(region or "").strip())
+    except (TypeError, ValueError):
+        return
+    if user_id <= 0 or region <= 0:
+        return
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET region=? WHERE id=? AND IFNULL(region,0)!=?",
+            (region, user_id, region))
+        conn.commit()
+        changed = cur.rowcount
+    finally:
+        conn.close()
+    if changed:
+        log.info("登录账号 %s 的区服是 %s", username_of(user_id), region)
 
 
 def open_session(username: str) -> str:
