@@ -487,7 +487,8 @@ def daily_attack(rec, sock, config):
 
 
 def run(rec, sock, config: dict, rounds: int = 0, beat=None,
-        attack_only: bool = False, tally=None) -> dict:
+        attack_only: bool = False, tally=None,
+        restock_on_summon_fail: bool = False) -> dict:
     """自动扫荡摩多军团。rounds 是最多打多少次，返回成果字典。
 
     有意**不做自动移动**：抓包里玩家全程待在同一座城，"当前城市"那个字段
@@ -508,8 +509,8 @@ def run(rec, sock, config: dict, rounds: int = 0, beat=None,
     card_limit = int(conf.get("单次最多用几张恢复卡", 100))
     card_item = int(conf.get("国战恢复卡物品ID", CARD_ITEM_ID))
 
-    out = {"扫荡": 0, "攻击": 0, "召唤": 0, "战功": 0, "用卡": 0, "停止原因": "",
-           "cd_sec": cooldown}
+    out = {"扫荡": 0, "攻击": 0, "召唤": 0, "战功": 0, "用卡": 0, "补兵": 0,
+           "停止原因": "", "cd_sec": cooldown}
     if rounds <= 0:
         out["停止原因"] = "次数为 0，什么都没做"
         return out
@@ -530,14 +531,44 @@ def run(rec, sock, config: dict, rounds: int = 0, beat=None,
     try:
         return _loop(rec, sock, rounds, country, npc_country, npc_city,
                      cooldown, out, attack_only, use_card, card_limit,
-                     card_item, tally)
+                     card_item, tally, config, restock_on_summon_fail)
     finally:
         restore_beat()
 
 
+def _summon_npc(sock, rec, npc_country, npc_city):
+    """召唤摩多支援兵。成功返回 (目标, 士气, "")，失败返回 (None, None, 原因)。"""
+    mark = rec.seq_mark() if rec else 0
+    since = _send(sock, rec, 45, country=npc_country, city=npc_city)
+    reply = _wait(sock, rec, since, 45)
+    if not isinstance(reply, dict):
+        return None, None, "召唤支援兵没有回包"
+    ret = reply.get("ret")
+    if isinstance(ret, int) and not isinstance(ret, bool) and ret not in (0,):
+        if ret == 21:
+            return None, None, "召唤支援兵冷却未到 ret=21"
+        return None, None, f"召唤支援兵被拒绝 ret={ret}"
+    target, npc_morale = None, None
+    deadline = time.time() + 6
+    while time.time() < deadline:
+        target, npc_morale = _target_id(rec, mark)
+        if target is not None:
+            break
+        _beat()
+        try:
+            sock.settimeout(0.5)
+            sock.recv(8192)
+        except Exception:
+            pass
+    if target is None:
+        return None, None, "召唤后 6 秒内没等到新的目标列表"
+    return target, npc_morale, ""
+
+
 def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
           attack_only=False, use_card=False, card_limit=1,
-          card_item=CARD_ITEM_ID, tally=None):
+          card_item=CARD_ITEM_ID, tally=None, config=None,
+          restock_on_summon_fail=False):
     merit0 = None
     last_act = 0.0
     located = False
@@ -546,6 +577,7 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
     target = None            # 当前攻击目标，跨轮保留
     npc_morale = None        # 它剩多少士气
     cards_used = 0           # 本次用掉几张恢复卡
+    restocked = False        # 这一次召唤失败已经补过一轮，再失败就停
 
     from . import citydb
 
@@ -616,29 +648,26 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
         if fresh is not None:                 # 有新推送就更新缓存
             target, npc_morale = fresh, fresh_morale
         if (not has_npc) or target is None or not npc_morale or force_summon:
-            mark = rec.seq_mark() if rec else 0
-            since = _send(sock, rec, 45, country=npc_country, city=npc_city)
-            if not isinstance(_wait(sock, rec, since, 45), dict):
-                out["停止原因"] = "召唤支援兵没有回包，停手"
-                break
-            out["召唤"] += 1
-            # 等**召唤之后**才推来的那份列表，最多等 6 秒
-            target, npc_morale = None, None
-            deadline = time.time() + 6
-            while time.time() < deadline:
-                target, npc_morale = _target_id(rec, mark)
-                if target is not None:
+            target, npc_morale, why = _summon_npc(
+                sock, rec, npc_country, npc_city)
+            if why:
+                # 冷却不是缺支援兵，补货也召唤不了。
+                if restock_on_summon_fail and not restocked and "冷却" not in why:
+                    from . import shop
+                    ok, msg, bought = shop.buy_round(rec, sock, config or {})
+                    log.info("[国战] %s，补一轮支援兵：%s", why, msg)
+                    if ok and bought > 0:
+                        restocked = True
+                        out["补兵"] = int(out.get("补兵") or 0) + int(bought)
+                        continue
+                    extra = msg if not ok else "没有买到"
+                    out["停止原因"] = f"{why}；补支援兵没成：{extra}"
                     break
-                _beat()
-                try:
-                    sock.settimeout(0.5)
-                    sock.recv(8192)
-                except Exception:
-                    pass
-            if target is None:
-                out["停止原因"] = "召唤后 6 秒内没等到新的目标列表，停手"
+                out["停止原因"] = why + "，停手"
                 break
+            restocked = False
             force_summon = False
+            out["召唤"] += 1
             log.info("[国战] 已召唤支援兵，目标 %s（士气 %s）", target, npc_morale)
 
         # 够 15 点就扫荡，不够就退而求其次用普通攻击。
@@ -734,7 +763,8 @@ def farm_modo_order(rec, sock, config, card_limit, beat=None, tally=None) -> dic
 
     conf = config.get("国战") or {}
     country = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
-    out = {"攻击": 0, "召唤": 0, "扫荡": 0, "用卡": 0, "停止原因": "", "说明": ""}
+    out = {"攻击": 0, "召唤": 0, "扫荡": 0, "用卡": 0, "补兵": 0,
+           "停止原因": "", "说明": ""}
     if not country:
         out["停止原因"] = "读不到攻打号的国家，停手"
         return out
@@ -768,12 +798,16 @@ def farm_modo_order(rec, sock, config, card_limit, beat=None, tally=None) -> dic
         war["自动使用国战恢复卡"] = cap > 0
         war["单次最多用几张恢复卡"] = cap
         fight_config["国战"] = war
-        fought = run(rec, sock, fight_config, rounds=100000, beat=beat, tally=tally)
+        shop_conf = fight_config.get("功勋商城") or {}
+        restock = bool(shop_conf.get("刷摩多召唤失败补一轮", True))
+        fought = run(rec, sock, fight_config, rounds=100000, beat=beat,
+                     tally=tally, restock_on_summon_fail=restock)
         hits = (fought.get("扫荡") or 0) + (fought.get("攻击") or 0)
         out["攻击"] += hits
         out["扫荡"] += fought.get("扫荡") or 0
         out["召唤"] += fought.get("召唤") or 0
         out["用卡"] += fought.get("用卡") or 0
+        out["补兵"] += fought.get("补兵") or 0
         used = out["用卡"]
         reason = str(fought.get("停止原因") or "")
         if "未开启自动使用国战恢复卡" in reason:
@@ -797,6 +831,8 @@ def farm_modo_order(rec, sock, config, card_limit, beat=None, tally=None) -> dic
     summary = "；".join(notes)
     if out["用卡"]:
         summary = (summary + "。" if summary else "") + f"用了 {out['用卡']} 张恢复卡"
+    if out["补兵"]:
+        summary = (summary + "。" if summary else "") + f"补了 {out['补兵']} 个支援兵"
     if out["停止原因"] and out["停止原因"] not in summary:
         summary = (summary + "。" if summary else "") + out["停止原因"]
     out["说明"] = summary

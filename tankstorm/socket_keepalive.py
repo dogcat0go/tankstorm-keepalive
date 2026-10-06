@@ -921,8 +921,9 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
         note = str(out.get("说明") or "").strip()
         hits = int(out.get("攻击") or 0)
         beats = int(tally.get("n") or 0)
-        log.info("―― 摩多军团 ―― 打 %d 次，召唤 %d 次，用卡 %d 张",
-                 hits, int(out.get("召唤") or 0), int(out.get("用卡") or 0))
+        log.info("―― 摩多军团 ―― 打 %d 次，召唤 %d 次，用卡 %d 张，补支援兵 %d 个",
+                 hits, int(out.get("召唤") or 0), int(out.get("用卡") or 0),
+                 int(out.get("补兵") or 0))
         if why:
             log.info("   结束原因：%s", why)
         if why == "已暂停":

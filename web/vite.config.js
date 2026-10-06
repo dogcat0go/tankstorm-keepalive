@@ -16,6 +16,13 @@ export default defineConfig({
         admin: fileURLToPath(new URL("./admin.html", import.meta.url)),
         "pwd-lab": fileURLToPath(new URL("./pwd-lab.html", import.meta.url)),
       },
+      // 文件名不带内容哈希。web/dist 要提交进仓库，哈希一变就是「旧文件被改、新文件被删」，
+      // 两条都动过页面的分支在 GitHub 上必定冲突。固定名字后只剩同一文件的内容冲突。
+      output: {
+        entryFileNames: "assets/[name].js",
+        chunkFileNames: "assets/[name].js",
+        assetFileNames: "assets/[name][extname]",
+      },
     },
   },
 });
