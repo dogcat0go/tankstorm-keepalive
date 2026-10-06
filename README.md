@@ -734,6 +734,7 @@ endpoints.json               旧的 HTTP 接口任务定义（已废弃，仅 --
 requirements.txt             依赖，只有 requests
 run_keepalive.sh / .bat      保活启动脚本
 run_daily.sh   / .bat        每日任务启动脚本
+update.sh                    服务器更新：拉代码、构建页面、重启订阅页面
 
 tankstorm/
   __init__.py                包定义，游戏 URL 常量
@@ -783,7 +784,16 @@ docs/
 ```
 
 运行时生成、不进版本库的：`cookies.json`（登录凭据）、`qrcode.png`、
-`config.local.json`（密钥）、`logs/`（日志与原始流）、`wiki/`（Wiki 本地副本）。
+`config.local.json`（密钥）、`logs/`（日志与原始流）、`wiki/`（Wiki 本地副本）、
+`web/dist/`（页面构建结果）。
+
+服务器上更新（需要已安装 Node）：
+
+```bash
+./update.sh
+```
+
+拉取当前分支，安装 Python 依赖，在 `web` 里构建页面，然后重新拉起 `web.py`。
 
 ### 抓包分析链路
 
