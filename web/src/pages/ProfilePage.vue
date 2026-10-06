@@ -35,6 +35,7 @@ async function submitPwd() {
     <p>
       {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
     </p>
+    <h3>修改密码</h3>
     <form class="stack" @submit.prevent="submitPwd().catch((e) => showErr(e.message, 'pwd'))">
       <label>当前密码
         <input v-model="currentPwd" type="password" autocomplete="current-password" required />
