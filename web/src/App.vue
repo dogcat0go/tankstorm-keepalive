@@ -191,6 +191,12 @@ function openProfile() {
   tab.value = "profile";
 }
 
+function openQq() {
+  tab.value = "qq";
+}
+
+const sideOn = computed(() => tab.value === "profile" || tab.value === "qq");
+
 async function refreshAttacks() {
   if (!me.value) {
     orders.value = [];
@@ -754,11 +760,13 @@ onUnmounted(() => {
         :save-hold-all="saveHoldAll"
         :open-profile="openProfile"
         :profile-on="tab === 'profile'"
+        :open-qq="openQq"
+        :qq-on="tab === 'qq'"
         :logout="logout"
         :show-err="showErr"
       />
       <AttackStatus
-        v-show="tab !== 'profile'"
+        v-show="!sideOn"
         :proc="proc"
         :qr-src="qrSrc"
         :err="err"
@@ -770,11 +778,10 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
-      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab === 'profile' ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
+      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="sideOn ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
-        <el-menu-item index="qq">订阅QQ</el-menu-item>
       </el-menu>
       <ProfilePage
         v-show="tab === 'profile'"

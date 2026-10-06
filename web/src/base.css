@@ -16,6 +16,7 @@ span.switch { font-size: 15px; font-weight: 700; }
 .lead { margin: 0 0 16px; color: #444; }
 .account-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
 .account-bar .account-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.account-bar .account-nav { display: flex; gap: 8px; align-items: center; }
 .account-bar form.hold-set { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
 .account-bar form.hold-set .err { margin: 0; }
 .account-bar button.ghost, .account-bar a.ghost { margin-left: 0; }

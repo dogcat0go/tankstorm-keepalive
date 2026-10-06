@@ -15,6 +15,8 @@ defineProps({
   saveHoldAll: { type: Function, required: true },
   openProfile: { type: Function, required: true },
   profileOn: { type: Boolean, default: false },
+  openQq: { type: Function, required: true },
+  qqOn: { type: Boolean, default: false },
   logout: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
@@ -47,7 +49,10 @@ defineProps({
     </form>
     <span class="account-actions">
       <a v-if="me.admin" class="ghost" href="/admin">管理</a>
-      <button type="button" class="ghost" :class="{ here: profileOn }" @click="openProfile">个人中心</button>
+      <nav class="account-nav" aria-label="账号">
+        <button type="button" class="ghost" :class="{ here: profileOn }" @click="openProfile">个人中心</button>
+        <button type="button" class="ghost" :class="{ here: qqOn }" @click="openQq">订阅QQ</button>
+      </nav>
       <button type="button" class="ghost" @click="logout">退出</button>
     </span>
   </div>
