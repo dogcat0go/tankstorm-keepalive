@@ -424,6 +424,15 @@ def _handler(config: dict):
                         "ok": True,
                         "tasks": daily.task_board(uin, switches),
                     })
+                elif path == "/api/daily/cancel":
+                    try:
+                        job_id = int(str(data.get("id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("任务编号不对") from None
+                    why = citydb.cancel_daily_job(user["id"], job_id)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True})
                 elif path == "/api/daily":
                     if citydb.account_expired(user.get("expires_at") or ""):
                         raise ValueError("账号已过期")
@@ -686,7 +695,7 @@ def _handler(config: dict):
                     return
                 full = os.path.join(_DIST, "index.html")
                 if not os.path.isfile(full):
-                    body = ("前端还没构建。在 web 目录执行 npm install && npm run build"
+                    body = ("前端还没构建。在仓库根目录执行 bash update_tankstorm.sh"
                             ).encode("utf-8")
                     self.send_response(503)
                     self.send_header("Content-Type", "text/plain; charset=utf-8")

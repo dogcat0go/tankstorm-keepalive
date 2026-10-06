@@ -20,7 +20,7 @@
 """
 
 from . import sender
-from .daily import _await_response, _nap, _pick_recent
+from .daily import _await_response, _nap, _pick_recent, raise_if_stopped
 from .log import get_logger
 from .proto_encode import encode_message
 
@@ -146,6 +146,7 @@ def fund(rec, sock, building_id, times, on_progress=None):
     done = 0
     last_times = None
     for i in range(1, times + 1):
+        raise_if_stopped()
         if isinstance(bag, dict):
             log.info("[拨款] 第 %d/%d 次：先各开 %d 张金属卡和石油卡",
                      i, times, MAX_OPEN)

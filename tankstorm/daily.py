@@ -142,10 +142,21 @@ def _drain_incoming() -> None:
         raise OSError("服务器关闭连接")
 
 
+class Stopped(BaseException):
+    """网页关停了正在做的这项。不继承 Exception，各项自己的异常处理接不住。"""
+
+
+def raise_if_stopped() -> None:
+    from . import citydb
+    if citydb.daily_job_stopped():
+        raise Stopped()
+
+
 def _nap(seconds: float) -> None:
     """等到点。心跳在独立线程发，这里把已经到达的包读掉。"""
     end = time.time() + max(0.0, float(seconds or 0))
     while True:
+        raise_if_stopped()
         left = end - time.time()
         if left <= 0:
             return
@@ -189,6 +200,40 @@ def finish_text(results) -> str:
     return failed + "。这一轮没有停，后面的任务已继续做"
 
 
+# 页面说明里不展示这些协议字段。成功后面的 freeVisitCnt、名次积分那一长串都去掉。
+_DUMP_NAMES = (
+    "freeVisitCnt|leftFreeCnt|getTimes|leftTime|nResult|addsoul|addoil|"
+    "addmetal|jungong|trainExp|nAddRes|bSignIn|nSignInDays|nReplenishDays|"
+    "logonDays|nRankSelf|nRankSelfLast|nIntegralScore|nCanFightTimes|"
+    "nJoinPlayers|bScoreGiftGain|bLastRankGet|ngetdailyawd|ncangetCnt|"
+    "dayHasPK|lastBtlRank|curSesionBtlOver|bRankGet|field\\d+"
+)
+_DUMP_ASSIGN = (
+    rf"(?:{_DUMP_NAMES})(?:\[[^\]]*\])?(?:\.field\d+(?:\[[^\]]*\])?)*"
+    rf"\s*=\s*(?:\[[^\]]*\]|True|False|None|-?\d+(?:\.\d+)?)?"
+)
+
+
+def _strip_dumps(text) -> str:
+    """去掉协议字段赋值。括号里全是字段的，整段拿掉。"""
+    text = re.sub(rf"[（(]\s*(?:{_DUMP_ASSIGN}[\s,，]*)+[）)]", "", text)
+    text = re.sub(rf"\s*{_DUMP_ASSIGN}", "", text)
+    text = re.sub(r"[（(]\s*[）)]", "", text)
+    text = re.sub(r"成功[：:]\s*$", "成功", text)
+    text = re.sub(r"成功[：:]\s+", "成功 ", text)
+    return text
+
+
+def _only_dump(text) -> bool:
+    """整段只剩协议字段，没有别的说明。"""
+    raw = str(text or "")
+    if not re.search(r"[A-Za-z_]\w*\s*=", raw):
+        return False
+    left = _strip_dumps(raw)
+    left = re.sub(r"[\s；;，,。：:（）()成功]+", "", left)
+    return left == ""
+
+
 def page_result(text) -> str:
     """最近执行里的一项结果。去掉失败字样和字段、错误码解释。"""
     raw = str(text or "").strip()
@@ -199,7 +244,11 @@ def page_result(text) -> str:
         piece = _page_piece(piece)
         if piece:
             parts.append(piece)
-    return "；".join(parts)
+    if parts:
+        return "；".join(parts)
+    if _only_dump(raw):
+        return "成功"
+    return ""
 
 
 def _page_piece(text) -> str:
@@ -222,12 +271,15 @@ def _page_piece(text) -> str:
         "", text)
     text = re.sub(r"\s+result=None", "", text)
     text = re.sub(r"成功[：:](?:ret|result|error|nret)=\d+", "成功", text)
+    text = _strip_dumps(text)
     text = re.sub(r"今日已执行\s*\d+\s*/\s*\d+\s*次，跳过", "已做过", text)
     text = text.replace("今日已做过，跳过", "已做过")
     text = text.replace("参数未实测，已跳过", "未实测，已跳过")
     text = text.replace("占用中，服务器给的结束时刻还有", "占用中，还有")
     text = text.replace("失败：", "").replace("闸门拦截：", "")
     text = re.sub(r"\s+", " ", text).strip(" ；，。")
+    if text in ("成功：", "成功:"):
+        return "成功"
     return text
 
 
@@ -268,11 +320,15 @@ def _group_brief(items) -> str:
     """已做过、成功收成一行名字。没做成的收成一行，并带上原因。"""
     done = []
     failed = []
+    held = []
     other = []
     for key, text in items:
         pieces = [part.strip() for part in re.split(r"[；;]", str(text or "")) if part.strip()]
         rest = [part for part in pieces if part not in ("已做过", "成功")]
         if not pieces:
+            continue
+        if all(part.startswith("暂不执行") for part in pieces):
+            held.append(key)
             continue
         if not rest:
             done.append(key)
@@ -283,7 +339,15 @@ def _group_brief(items) -> str:
                     and not any(_is_failure(part) for part in rest)):
                 done.append(key)
                 continue
-        shown = "；".join(_trim_done_prefix(part) for part in rest)
+        shown_parts = []
+        for part in rest:
+            part = _trim_done_prefix(part).strip()
+            if part and part not in ("成功", "已做过"):
+                shown_parts.append(part)
+        if not shown_parts:
+            done.append(key)
+            continue
+        shown = "；".join(shown_parts)
         line = f"{key}：{shown}"
         if any(_is_failure(part) for part in rest):
             failed.append(line)
@@ -294,6 +358,8 @@ def _group_brief(items) -> str:
         lines.append("已完成：" + "、".join(done))
     if failed:
         lines.append("失败：" + "；".join(failed))
+    if held:
+        lines.append("未执行：" + "、".join(held) + "。反复被拒会打断连接，先不做")
     if other:
         if done or failed or len(other) > 1:
             lines.append("其他：" + "；".join(other))
@@ -303,7 +369,7 @@ def _group_brief(items) -> str:
 
 
 def page_brief(results) -> str:
-    """最近执行的说明。做完的收成一组，没做成的收成一组。"""
+    """最近执行的说明。做完的收成一组，没做成的收成一组。整轮结束才用。"""
     items = []
     for key, value in (results or {}).items():
         text = page_result(value)
@@ -312,27 +378,107 @@ def page_brief(results) -> str:
     return _group_brief(items)
 
 
+def page_task(key, text) -> str:
+    """正在做的这一项。只写这一项，不带前面已经做过的。"""
+    shown = page_result(text)
+    key = str(key or "").strip()
+    if not shown:
+        return f"{key}：进行中" if key else ""
+    if not key:
+        return shown
+    return f"{key}：{shown}"
+
+
+def _clean_grouped(raw) -> str:
+    """已经分过组的旧说明，去掉字段后再分一次。"""
+    done = []
+    items = []
+    seen = set()
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("已完成："):
+            for part in re.split(r"[、,，]", line[len("已完成："):]):
+                name = part.strip()
+                if name and name not in seen:
+                    done.append(name)
+                    seen.add(name)
+            continue
+        body = line
+        for prefix in ("失败：", "其他："):
+            if body.startswith(prefix):
+                body = body[len(prefix):]
+                break
+        for key, value in _split_named(body):
+            if key in seen:
+                continue
+            text = page_result(value)
+            if not text:
+                continue
+            items.append((key, text))
+            seen.add(key)
+    ordered = [(key, "成功") for key in done]
+    ordered.extend(items)
+    return _group_brief(ordered) or raw
+
+
 def compact_detail(text) -> str:
-    """页面上的旧说明也按这一组分。已经分过组的原样返回。"""
+    """页面上的旧说明也按这一组分，并去掉协议字段。"""
     raw = str(text or "").strip()
-    if not raw or raw.startswith(("已完成：", "失败：", "其他：")):
+    if not raw:
         return raw
+    if raw.startswith(("已完成：", "失败：", "其他：")):
+        return _clean_grouped(raw)
     items = _split_named(raw)
     if not items:
         return raw
     return _group_brief(items) or raw
 
 
-def _publish_failure(results, on_fail) -> None:
-    if not on_fail:
-        return
-    text = page_brief(results)
-    if not text:
+def display_job_detail(status, detail) -> str:
+    """正在做时只留当前一项。做完才显示这一轮的总状态。"""
+    raw = str(detail or "").strip()
+    if status != "running":
+        return compact_detail(raw)
+    if not raw.startswith(("已完成：", "失败：", "其他：")):
+        return raw
+    items = []
+    for line in raw.split("\n"):
+        body = line.strip()
+        for prefix in ("已完成：", "失败：", "其他："):
+            if body.startswith(prefix):
+                body = body[len(prefix):]
+                break
+        items.extend(_split_named(body))
+    if items:
+        key, value = items[-1]
+        return page_task(key, value)
+    if raw.startswith("已完成："):
+        names = [part.strip() for part in re.split(
+            r"[、,，]", raw.split("\n", 1)[0][len("已完成："):]) if part.strip()]
+        if names:
+            return f"{names[-1]}：成功"
+    return raw
+
+
+def _publish(text, on_fail) -> None:
+    if not on_fail or not text:
         return
     try:
         on_fail(text)
     except Exception:
         log.info("日常进度没写上页面", exc_info=True)
+
+
+def _publish_current(key, text, on_fail) -> None:
+    """做着的时候，页面只更新这一项。"""
+    _publish(page_task(key, text), on_fail)
+
+
+def _publish_total(results, on_fail) -> None:
+    """全部做完，换成这一轮的总状态。"""
+    _publish(page_brief(results) or "这一轮没有要做的", on_fail)
 
 # 字段名命中这些词 = 可能花钱/耗券，值必须为 0
 #
@@ -355,6 +501,11 @@ SAFE_FIELDS = {("0463", "count")}
 
 # 这些任务放到最后执行（它们领的是"前面动作累积出来的"奖励）
 ORDER_LAST = {"每日任务", "周任务"}
+
+# 军事演习会把有人的场地逐个打下去，服务器回 ret=4，最后把连接打断。
+# 矿区争夺同样不稳。先不做。开关保持关，最近执行里写明。
+HELD_TASKS = ("军事演习", "矿区争夺")
+HELD_STATUS = "暂不执行，反复被拒会打断连接"
 
 # 连续多少轮收不到响应就放弃该任务（当天）。
 # 设 3 是为了容忍偶发的网络抖动/响应慢，又不至于无限期地空发。
@@ -1397,10 +1548,13 @@ def task_board(uin: str, switches: dict) -> list:
             count = int(done.get(task.key) or 0)
         except (TypeError, ValueError):
             count = 0
+        name = task.name
+        if task.key in HELD_TASKS:
+            name = name + "（暂不执行）"
         rows.append({
             "key": task.key,
-            "name": task.name,
-            "on": bool(switches.get(task.key)),
+            "name": name,
+            "on": False if task.key in HELD_TASKS else bool(switches.get(task.key)),
             "done": count,
             "max": int(task.max_per_day or 1),
         })
@@ -2252,6 +2406,11 @@ def _run(rec, sock, config, schema, on_fail=None):
     # 连接断了才停，后面的任务没有连接可发。
     for task in ordered_tasks():
         try:
+            raise_if_stopped()
+            if task.key in HELD_TASKS:
+                results[task.key] = HELD_STATUS
+                log.info("[%s] %s", task.key, results[task.key])
+                continue
             if not switches.get(task.key, False):
                 results[task.key] = "未开启"
                 continue
@@ -2288,6 +2447,7 @@ def _run(rec, sock, config, schema, on_fail=None):
                 log.warning("[%s] %s", task.key, results[task.key])
                 continue
 
+            _publish_current(task.key, None, on_fail)
             field_names = _field_names(schema, task.opcode)
 
             # 一个任务在**一轮里就要把当天的次数做完**，而不是做一次就走。
@@ -2332,12 +2492,14 @@ def _run(rec, sock, config, schema, on_fail=None):
 
             ran = 0
             while st["done"].get(task.key, 0) < task.max_per_day:
+                raise_if_stopped()
                 done = st["done"].get(task.key, 0)
                 more = _do_once(task, sock, rec, st, results, details,
                                 field_names, resp_timeout, gap, done, schema)
                 if not more:
                     break
                 ran += 1
+                _publish_current(task.key, results.get(task.key), on_fail)
                 # 服务器说这东西被占用到某时刻（占了演习场/占了矿），就别接着刷了
                 if st.get("until", {}).get(task.key, 0) > time.time():
                     break
@@ -2362,14 +2524,16 @@ def _run(rec, sock, config, schema, on_fail=None):
         finally:
             if _is_failure(results.get(task.key)):
                 log.info("[%s] 这一项没做成，继续下一项", task.key)
-            _publish_failure(results, on_fail)
+            if results.get(task.key) not in (None, "未开启"):
+                _publish_current(task.key, results.get(task.key), on_fail)
 
 
     _run_campaign_extras(
         rec, sock, switches, st, results,
         stages=_campaign_goal(config) or "",
-        interval=_campaign_interval(config))
-    _publish_failure(results, on_fail)
+        interval=_campaign_interval(config),
+        on_fail=on_fail)
+    _publish_total(results, on_fail)
 
     log.info("=== 每日任务结束 ===")
     for k, v in results.items():
@@ -2378,7 +2542,8 @@ def _run(rec, sock, config, schema, on_fail=None):
     return results, details
 
 
-def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1.0):
+def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1.0,
+                         on_fail=None):
     """第三次、第4次。开关在登录账号上，默认关。免费两次仍走「征战世界」。
 
     重开之后必须从第 1 关打到终点，打完才算这一次做成。只重开不算完成。
@@ -2408,7 +2573,9 @@ def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1
         if key == "征战第4次" and not third_done:
             results[key] = "第三次还没打完，这一轮先不做第4次"
             log.info("[%s] %s", key, results[key])
+            _publish_current(key, results[key], on_fail)
             continue
+        _publish_current(key, None, on_fail)
         try:
             ok, why, finished, pushing = pve.extra_campaign(
                 rec, sock, stages, interval, kind, already_done=_done_of(key))
@@ -2418,6 +2585,7 @@ def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1
         results[key] = why if ok else (
             why if str(why).startswith("失败") else f"失败：{why}")
         log.info("[%s] %s %s", key, "✅" if ok else "❌", results[key])
+        _publish_current(key, results[key], on_fail)
         if finished:
             st.setdefault("done", {})[key] = 1
             _save_state(st)
@@ -2785,6 +2953,7 @@ def _await_response(sock, rec, rse_msg, since_seq, timeout, want=None,
         return None
     deadline = time.time() + timeout
     while time.time() < deadline:
+        raise_if_stopped()
         hit = _pick_recent(rec, rse_msg, since_seq, want)
         if hit is not None:
             return hit
