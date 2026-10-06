@@ -1409,9 +1409,9 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     def _show_stage(stage):
         n = daily.current_campaign_round()
         if n:
-            _show(f"第{n}次 当前第 {int(stage)} 关")
+            _show(f"征战世界：第{n}次 当前第 {int(stage)} 关")
         else:
-            _show(f"当前第 {int(stage)} 关")
+            _show(f"征战世界：当前第 {int(stage)} 关")
 
     prev_sock = daily.bind_sock(sock)
     daily.set_campaign_progress(_show_stage)
