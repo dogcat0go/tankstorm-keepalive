@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS watch_sub (
     created_at   TEXT NOT NULL,
     last_present INTEGER,
     lock_sent    INTEGER NOT NULL DEFAULT 0,
+    name         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (user_id, city_id, uid)
 );
 """
@@ -238,6 +239,28 @@ def connect(readonly=False, timeout=15):
             if wcols and "lock_sent" not in wcols:
                 setup.execute(
                     "ALTER TABLE watch_sub ADD COLUMN lock_sent INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if wcols and "name" not in wcols:
+                setup.execute(
+                    "ALTER TABLE watch_sub ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+                setup.execute(
+                    "UPDATE watch_sub SET name=("
+                    " SELECT p.name FROM player p"
+                    " WHERE p.uid=watch_sub.uid AND TRIM(IFNULL(p.name,''))!=''"
+                    " ORDER BY p.fetched_at DESC LIMIT 1"
+                    ") WHERE TRIM(IFNULL(name,''))='' AND EXISTS ("
+                    " SELECT 1 FROM player p"
+                    " WHERE p.uid=watch_sub.uid AND TRIM(IFNULL(p.name,''))!=''"
+                    ")")
+                setup.execute(
+                    "UPDATE watch_sub SET name=("
+                    " SELECT f.name FROM atk_fail f"
+                    " WHERE f.uid=watch_sub.uid AND TRIM(IFNULL(f.name,''))!=''"
+                    " ORDER BY f.at DESC LIMIT 1"
+                    ") WHERE TRIM(IFNULL(name,''))='' AND EXISTS ("
+                    " SELECT 1 FROM atk_fail f"
+                    " WHERE f.uid=watch_sub.uid AND TRIM(IFNULL(f.name,''))!=''"
+                    ")")
                 setup.commit()
             ucols = {r[1] for r in setup.execute("PRAGMA table_info(app_user)")}
             if ucols and "expires_at" not in ucols:
@@ -508,8 +531,13 @@ def neighbors(city_id: int) -> set:
 
 
 def fort_locked(city_id) -> bool:
-    """编号第 2 位是 1 或 2 的城，不是自己国家时不能占领。"""
+    """编号第 2 位是 1 或 2 的城，不是自己国家时不能占领。
+
+    编号以 9 开头的是马奇诺及周边，可以攻打和占领，不受第 2 位限制。
+    """
     s = str(int(city_id or 0))
+    if s.startswith("9"):
+        return False
     return len(s) > 1 and s[1] in "12"
 
 
@@ -558,6 +586,7 @@ def plan_route(here, target, my_country, avoid=None, avoid_why=None) -> dict:
 
     归属国与自己相同的城可以直接经过。别国的城要先占领，才能落脚或当走廊。
     编号第 2 位是 1 或 2、又不是自己国家的城不能占领，也不能借道。
+    编号以 9 开头的马奇诺及周边城例外，可以攻打和占领。
     原属国是 21（黑暗联盟）的城例外，可以占领。
     目标城本身不必走进去，站在相邻城就能打。先走最短：少占领，再少走几步。
     avoid 里的城是已经打不过的，这条路不再经过。
@@ -779,9 +808,19 @@ def upsert_players(city_id: int, players: list, fetched_at: str, page=None):
 
 
 def drop_stale(city_id: int, fetched_at: str) -> int:
-    """删掉这座城里本次没再出现的人（完整拉完才调用）。"""
+    """删掉这座城里本次没再出现的人（完整拉完才调用）。名字先留在订阅上。"""
     conn = connect()
     try:
+        conn.execute(
+            "UPDATE watch_sub SET name=("
+            " SELECT p.name FROM player p"
+            " WHERE p.uid=watch_sub.uid AND p.city_id=? AND p.fetched_at<?"
+            " AND TRIM(IFNULL(p.name,''))!='' LIMIT 1"
+            ") WHERE TRIM(IFNULL(name,''))='' AND uid IN ("
+            " SELECT uid FROM player WHERE city_id=? AND fetched_at<?"
+            " AND TRIM(IFNULL(name,''))!=''"
+            ")",
+            (int(city_id), fetched_at, int(city_id), fetched_at))
         cur = conn.execute(
             "DELETE FROM player WHERE city_id=? AND fetched_at<?",
             (int(city_id), fetched_at))
@@ -2291,7 +2330,9 @@ def set_page_qr(on: bool, user_id: int = 0) -> None:
 
 def note_login_qr(path: str, user_id: int = 0) -> None:
     """这次扫码的图写在哪。只给这个攻打 QQ 对应的登录账号看。"""
-    _upsert_signal(_mark_name("qrpath", user_id), str(path or ""))
+    _upsert_signal(
+        _mark_name("qrpath", user_id), str(path or ""),
+        at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
 
 
 def login_qr_path(user_id: int = 0) -> str:
@@ -2321,7 +2362,8 @@ def set_page_login(user_id: int, path: str) -> None:
         conn.execute(
             "INSERT INTO atk_signal(name, value, at) VALUES (?, ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            (_page_login_key(user_id), str(path or ""), now_ts()))
+            (_page_login_key(user_id), str(path or ""),
+             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")))
         conn.commit()
     finally:
         conn.close()
@@ -2486,19 +2528,20 @@ def _signal_at(name: str) -> str:
     return str(row[0] or "") if row else ""
 
 
-def _upsert_signal(name: str, value: str, touch: bool = True) -> None:
+def _upsert_signal(name: str, value: str, touch: bool = True, at: str = "") -> None:
     conn = connect()
     try:
+        stamp = at or now_ts()
         if touch:
             conn.execute(
                 "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?) "
                 "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-                (name, value, now_ts()))
+                (name, value, stamp))
         else:
             conn.execute(
                 "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?) "
                 "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
-                (name, value, now_ts()))
+                (name, value, stamp))
         conn.commit()
     finally:
         conn.close()
@@ -3512,12 +3555,20 @@ def daily_switches(user_id: int, defaults: dict) -> dict:
     finally:
         conn.close()
     if not saved:
+        from . import daily
+        for key in daily.HELD_TASKS:
+            if key in base:
+                base[key] = False
         return base
     for key, val in saved.items():
         name = str(key or "")
         if not name or name.startswith("_"):
             continue
         base[name] = bool(val)
+    from . import daily
+    for key in daily.HELD_TASKS:
+        if key in base:
+            base[key] = False
     return base
 
 
@@ -3531,6 +3582,9 @@ def set_daily_switch(user_id: int, key: str, on, known, defaults: dict) -> str:
             allowed.append(name)
     if key not in allowed:
         return "没有这项任务"
+    from . import daily
+    if key in daily.HELD_TASKS and bool(on):
+        return f"{key}暂不执行，反复被拒会打断连接"
     current = daily_switches(user_id, defaults)
     stored = {}
     for name in allowed:
@@ -3799,7 +3853,7 @@ def _job_detail(detail: str) -> str:
     """说明里的换行留着，同一行里的多余空白收掉。"""
     text = str(detail or "").replace("\r\n", "\n").replace("\r", "\n")
     lines = [" ".join(line.split()) for line in text.split("\n")]
-    return "\n".join(line for line in lines if line)[:500]
+    return "\n".join(line for line in lines if line)[:4000]
 
 
 def touch_daily_job(job_id: int, detail: str) -> None:
@@ -3914,7 +3968,7 @@ def list_daily_jobs(user_id: int, limit: int = 2) -> list:
             "kind": row[1],
             "label": DAILY_KIND_LABEL.get(row[1], row[1]),
             "status": _DAILY_STATUS.get(row[2], row[2]),
-            "detail": daily.compact_detail(row[3] or ""),
+            "detail": daily.display_job_detail(row[2], row[3] or ""),
             "created_at": beijing_ts(row[4]) if row[4] else "",
         })
     return out
@@ -4328,9 +4382,15 @@ def list_watches(user_id: int) -> list:
         rows = conn.execute(
             "SELECT s.city_id, s.uid, s.created_at, s.last_present, IFNULL(c.name, ''), "
             "COALESCE(NULLIF(TRIM(IFNULL(p.name,'')), ''), "
+            "NULLIF(TRIM(IFNULL(s.name,'')), ''), "
+            "(SELECT s2.name FROM watch_sub s2 WHERE s2.uid=s.uid "
+            "AND TRIM(IFNULL(s2.name,''))!='' LIMIT 1), "
             "(SELECT p2.name FROM player p2 WHERE p2.uid=s.uid "
             "AND TRIM(IFNULL(p2.name,''))!='' "
-            "ORDER BY p2.fetched_at DESC LIMIT 1), ''), "
+            "ORDER BY p2.fetched_at DESC LIMIT 1), "
+            "(SELECT f.name FROM atk_fail f WHERE f.uid=s.uid "
+            "AND TRIM(IFNULL(f.name,''))!='' "
+            "ORDER BY f.at DESC LIMIT 1), ''), "
             "p.lvl, p.fetched_at, p.page, "
             "(SELECT MAX(fetched_at) FROM player WHERE city_id=s.city_id), "
             "o.fetched_at "
@@ -4425,9 +4485,13 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                 "SELECT name, page FROM player WHERE city_id=? AND uid=?",
                 (city_id, uid)).fetchone()
             if nrow:
-                name = nrow[0] or ""
+                name = str(nrow[0] or "").strip()
                 if nrow[1] is not None:
                     page = int(nrow[1]) + 1
+            if name:
+                conn.execute(
+                    "UPDATE watch_sub SET name=? WHERE uid=? AND IFNULL(name,'')!=?",
+                    (name, uid, name))
             just = last is None or int(last) != 1
             sent = int(lock_sent or 0)
             if last is None or int(last) != now or (now == 0 and sent):

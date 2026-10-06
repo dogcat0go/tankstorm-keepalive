@@ -200,6 +200,40 @@ def finish_text(results) -> str:
     return failed + "。这一轮没有停，后面的任务已继续做"
 
 
+# 页面说明里不展示这些协议字段。成功后面的 freeVisitCnt、名次积分那一长串都去掉。
+_DUMP_NAMES = (
+    "freeVisitCnt|leftFreeCnt|getTimes|leftTime|nResult|addsoul|addoil|"
+    "addmetal|jungong|trainExp|nAddRes|bSignIn|nSignInDays|nReplenishDays|"
+    "logonDays|nRankSelf|nRankSelfLast|nIntegralScore|nCanFightTimes|"
+    "nJoinPlayers|bScoreGiftGain|bLastRankGet|ngetdailyawd|ncangetCnt|"
+    "dayHasPK|lastBtlRank|curSesionBtlOver|bRankGet|field\\d+"
+)
+_DUMP_ASSIGN = (
+    rf"(?:{_DUMP_NAMES})(?:\[[^\]]*\])?(?:\.field\d+(?:\[[^\]]*\])?)*"
+    rf"\s*=\s*(?:\[[^\]]*\]|True|False|None|-?\d+(?:\.\d+)?)?"
+)
+
+
+def _strip_dumps(text) -> str:
+    """去掉协议字段赋值。括号里全是字段的，整段拿掉。"""
+    text = re.sub(rf"[（(]\s*(?:{_DUMP_ASSIGN}[\s,，]*)+[）)]", "", text)
+    text = re.sub(rf"\s*{_DUMP_ASSIGN}", "", text)
+    text = re.sub(r"[（(]\s*[）)]", "", text)
+    text = re.sub(r"成功[：:]\s*$", "成功", text)
+    text = re.sub(r"成功[：:]\s+", "成功 ", text)
+    return text
+
+
+def _only_dump(text) -> bool:
+    """整段只剩协议字段，没有别的说明。"""
+    raw = str(text or "")
+    if not re.search(r"[A-Za-z_]\w*\s*=", raw):
+        return False
+    left = _strip_dumps(raw)
+    left = re.sub(r"[\s；;，,。：:（）()成功]+", "", left)
+    return left == ""
+
+
 def page_result(text) -> str:
     """最近执行里的一项结果。去掉失败字样和字段、错误码解释。"""
     raw = str(text or "").strip()
@@ -210,7 +244,11 @@ def page_result(text) -> str:
         piece = _page_piece(piece)
         if piece:
             parts.append(piece)
-    return "；".join(parts)
+    if parts:
+        return "；".join(parts)
+    if _only_dump(raw):
+        return "成功"
+    return ""
 
 
 def _page_piece(text) -> str:
@@ -233,12 +271,15 @@ def _page_piece(text) -> str:
         "", text)
     text = re.sub(r"\s+result=None", "", text)
     text = re.sub(r"成功[：:](?:ret|result|error|nret)=\d+", "成功", text)
+    text = _strip_dumps(text)
     text = re.sub(r"今日已执行\s*\d+\s*/\s*\d+\s*次，跳过", "已做过", text)
     text = text.replace("今日已做过，跳过", "已做过")
     text = text.replace("参数未实测，已跳过", "未实测，已跳过")
     text = text.replace("占用中，服务器给的结束时刻还有", "占用中，还有")
     text = text.replace("失败：", "").replace("闸门拦截：", "")
     text = re.sub(r"\s+", " ", text).strip(" ；，。")
+    if text in ("成功：", "成功:"):
+        return "成功"
     return text
 
 
@@ -279,11 +320,15 @@ def _group_brief(items) -> str:
     """已做过、成功收成一行名字。没做成的收成一行，并带上原因。"""
     done = []
     failed = []
+    held = []
     other = []
     for key, text in items:
         pieces = [part.strip() for part in re.split(r"[；;]", str(text or "")) if part.strip()]
         rest = [part for part in pieces if part not in ("已做过", "成功")]
         if not pieces:
+            continue
+        if all(part.startswith("暂不执行") for part in pieces):
+            held.append(key)
             continue
         if not rest:
             done.append(key)
@@ -294,7 +339,15 @@ def _group_brief(items) -> str:
                     and not any(_is_failure(part) for part in rest)):
                 done.append(key)
                 continue
-        shown = "；".join(_trim_done_prefix(part) for part in rest)
+        shown_parts = []
+        for part in rest:
+            part = _trim_done_prefix(part).strip()
+            if part and part not in ("成功", "已做过"):
+                shown_parts.append(part)
+        if not shown_parts:
+            done.append(key)
+            continue
+        shown = "；".join(shown_parts)
         line = f"{key}：{shown}"
         if any(_is_failure(part) for part in rest):
             failed.append(line)
@@ -305,6 +358,8 @@ def _group_brief(items) -> str:
         lines.append("已完成：" + "、".join(done))
     if failed:
         lines.append("失败：" + "；".join(failed))
+    if held:
+        lines.append("未执行：" + "、".join(held) + "。反复被拒会打断连接，先不做")
     if other:
         if done or failed or len(other) > 1:
             lines.append("其他：" + "；".join(other))
@@ -314,7 +369,7 @@ def _group_brief(items) -> str:
 
 
 def page_brief(results) -> str:
-    """最近执行的说明。做完的收成一组，没做成的收成一组。"""
+    """最近执行的说明。做完的收成一组，没做成的收成一组。整轮结束才用。"""
     items = []
     for key, value in (results or {}).items():
         text = page_result(value)
@@ -323,27 +378,107 @@ def page_brief(results) -> str:
     return _group_brief(items)
 
 
+def page_task(key, text) -> str:
+    """正在做的这一项。只写这一项，不带前面已经做过的。"""
+    shown = page_result(text)
+    key = str(key or "").strip()
+    if not shown:
+        return f"{key}：进行中" if key else ""
+    if not key:
+        return shown
+    return f"{key}：{shown}"
+
+
+def _clean_grouped(raw) -> str:
+    """已经分过组的旧说明，去掉字段后再分一次。"""
+    done = []
+    items = []
+    seen = set()
+    for line in raw.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("已完成："):
+            for part in re.split(r"[、,，]", line[len("已完成："):]):
+                name = part.strip()
+                if name and name not in seen:
+                    done.append(name)
+                    seen.add(name)
+            continue
+        body = line
+        for prefix in ("失败：", "其他："):
+            if body.startswith(prefix):
+                body = body[len(prefix):]
+                break
+        for key, value in _split_named(body):
+            if key in seen:
+                continue
+            text = page_result(value)
+            if not text:
+                continue
+            items.append((key, text))
+            seen.add(key)
+    ordered = [(key, "成功") for key in done]
+    ordered.extend(items)
+    return _group_brief(ordered) or raw
+
+
 def compact_detail(text) -> str:
-    """页面上的旧说明也按这一组分。已经分过组的原样返回。"""
+    """页面上的旧说明也按这一组分，并去掉协议字段。"""
     raw = str(text or "").strip()
-    if not raw or raw.startswith(("已完成：", "失败：", "其他：")):
+    if not raw:
         return raw
+    if raw.startswith(("已完成：", "失败：", "其他：")):
+        return _clean_grouped(raw)
     items = _split_named(raw)
     if not items:
         return raw
     return _group_brief(items) or raw
 
 
-def _publish_failure(results, on_fail) -> None:
-    if not on_fail:
-        return
-    text = page_brief(results)
-    if not text:
+def display_job_detail(status, detail) -> str:
+    """正在做时只留当前一项。做完才显示这一轮的总状态。"""
+    raw = str(detail or "").strip()
+    if status != "running":
+        return compact_detail(raw)
+    if not raw.startswith(("已完成：", "失败：", "其他：")):
+        return raw
+    items = []
+    for line in raw.split("\n"):
+        body = line.strip()
+        for prefix in ("已完成：", "失败：", "其他："):
+            if body.startswith(prefix):
+                body = body[len(prefix):]
+                break
+        items.extend(_split_named(body))
+    if items:
+        key, value = items[-1]
+        return page_task(key, value)
+    if raw.startswith("已完成："):
+        names = [part.strip() for part in re.split(
+            r"[、,，]", raw.split("\n", 1)[0][len("已完成："):]) if part.strip()]
+        if names:
+            return f"{names[-1]}：成功"
+    return raw
+
+
+def _publish(text, on_fail) -> None:
+    if not on_fail or not text:
         return
     try:
         on_fail(text)
     except Exception:
         log.info("日常进度没写上页面", exc_info=True)
+
+
+def _publish_current(key, text, on_fail) -> None:
+    """做着的时候，页面只更新这一项。"""
+    _publish(page_task(key, text), on_fail)
+
+
+def _publish_total(results, on_fail) -> None:
+    """全部做完，换成这一轮的总状态。"""
+    _publish(page_brief(results) or "这一轮没有要做的", on_fail)
 
 # 字段名命中这些词 = 可能花钱/耗券，值必须为 0
 #
@@ -366,6 +501,11 @@ SAFE_FIELDS = {("0463", "count")}
 
 # 这些任务放到最后执行（它们领的是"前面动作累积出来的"奖励）
 ORDER_LAST = {"每日任务", "周任务"}
+
+# 军事演习会把有人的场地逐个打下去，服务器回 ret=4，最后把连接打断。
+# 矿区争夺同样不稳。先不做。开关保持关，最近执行里写明。
+HELD_TASKS = ("军事演习", "矿区争夺")
+HELD_STATUS = "暂不执行，反复被拒会打断连接"
 
 # 连续多少轮收不到响应就放弃该任务（当天）。
 # 设 3 是为了容忍偶发的网络抖动/响应慢，又不至于无限期地空发。
@@ -653,7 +793,6 @@ class Followup:
     """动作成功之后，按响应内容继续发的后续请求。
 
     有两类任务光发一包不够：
-      · 矿区争夺 —— 先探索，服务器回一串矿，再从里面挑无人的占下来
       · 每日任务 —— 活跃度够几档就领几档，一档一包
 
     build(上一条响应) 返回下一包的 fields，返回 None 就结束。
@@ -1187,38 +1326,31 @@ TASKS = [
                           3: ("int32", 0)})],
        gate=Gate("RseWarCollegeOpt", "skilltraintimes")),
 
-    # 占领是真正拿收益的那一步，此前只发了查询，等于什么也没做。
+    # 占领是真正拿收益的那一步。有空场就占空场；没有就打这次查到的场。
     # tokenNum 是当天剩余占领次数（实测 3，占一次变 2），正好当闸门。
+    # 形状不合"挑一个就发一包"：没有空位时要换目标接着打，所以走 runner。
     _t("军事演习", "战争学院·军事演习（占场地）", "04a7", "RceWarGameOpt",
-       {1: ("int32", 2),
-        2: ("int32", FromResponse("RseWarGameOpt", _pick_free_wargame_site,
-                                  "挑一个无人占领的演习场"))},
-       "实测", "8/10 抓包：{type:1} 查询（分页推 300 个场地/页）→ "
-               "{type:2,siteID:409} 占领。空场地 = 列表条目里没有 field6(占领者)。"
-               "占领响应 bOccupySite=true、siteEndTime 给出结束时刻",
+       {}, "实测",
+       "8/10 抓包：{type:1} 查询（分页推送，bLastMsg 为最后一页）→ "
+       "{type:2,siteID} 占领空场。空场 = 条目里没有 field6(占领者)。"
+       "没有空位时按这次查到的场地挨个打，请求再带上占领者 uid，占住一场就停。"
+       "不发 forceFlag。bOccupySite=true 才算占住，siteEndTime 是结束时刻",
        max_per_day=3,
-       prelude=[("04a7", {1: ("int32", 1)})],
        gate=Gate("RseWarGameOpt", "tokenNum"),
-       # 占领时长由服务端定，别猜。占领响应里 startTime→siteEndTime
-       # 实测相差 14400 秒（4 小时），此前写死的 60 分钟错了四倍。
-       cooldown_until="siteEndTime"),
+       cooldown_until="siteEndTime",
+       runner=lambda rec, sock, config: _run_wargame(rec, sock, config)),
 
-    # 探索只是找矿，占下来才有产出。占矿的 resourceID 来自探索响应。
+    # 探索只是找矿，占下来才有产出。没有无主矿就打这次探到的有主矿。
     _t("矿区争夺", "矿区争夺·探索并占矿", "049a", "RceResourceOpt",
-       {1: ("int32", 2), 2: ("int32", 0), 3: ("int32", 1), 4: ("string", "")},
-       "实测", "8/10 抓包：{type:1} 查询 → {type:2,searchType:1} 探索 → "
-               "{type:3,resourceID:120007} 占矿。探索响应 field5 是探到的矿，"
-               "只有 field1 没有 field6 的就是无人占领的那个。"
-               "查询响应 searchTimes 是当天剩余搜索次数（实测 5）",
+       {}, "实测",
+       "8/10 抓包：{type:1} 查询 → {type:2,searchType:1} 探索 → "
+       "{type:3,resourceID} 占无主矿。没有无主矿时按这次探到的矿挨个打，"
+       "再带上占领者 uid，占住一个就停。searchTimes 是剩余搜索次数。"
+       "resourceEndTime 在占矿回包里",
        max_per_day=5,
-       prelude=[("049a", {1: ("int32", 1), 2: ("int32", 0),
-                          3: ("int32", 0), 4: ("string", "")})],
        gate=Gate("RseResourceOpt", "searchTimes"),
-       # 占矿时长跟矿的等级有关，写死必错：实测 8/10 那次约 1.06 小时，
-       # 8/12 那次约 1.4 小时。resourceEndTime 在占矿（后续步骤）的回包里。
        cooldown_until="resourceEndTime",
-       followup=Followup("049a", _next_mine_to_occupy, max_rounds=1,
-                         desc="占下探到的无主矿")),
+       runner=lambda rec, sock, config: _run_mine(rec, sock, config)),
 
     # 开打和命令行 --pve 同一套：type=7 打当前关，一个数字就打到这一关。
     # 已经到了或超过终点时，每免费重开一次就从第 1 关再打到终点。一天最多 2 次。
@@ -1416,10 +1548,13 @@ def task_board(uin: str, switches: dict) -> list:
             count = int(done.get(task.key) or 0)
         except (TypeError, ValueError):
             count = 0
+        name = task.name
+        if task.key in HELD_TASKS:
+            name = name + "（暂不执行）"
         rows.append({
             "key": task.key,
-            "name": task.name,
-            "on": bool(switches.get(task.key)),
+            "name": name,
+            "on": False if task.key in HELD_TASKS else bool(switches.get(task.key)),
             "done": count,
             "max": int(task.max_per_day or 1),
         })
@@ -1921,6 +2056,328 @@ def campaign_round(rec, sock, stages, interval=1.0):
     return ok, why
 
 
+def _future_stamp(data, key):
+    """结束时刻。只认未来 30 天以内的 unix 秒。"""
+    if not isinstance(data, dict):
+        return None
+    ts = data.get(key)
+    now = time.time()
+    if isinstance(ts, bool) or not isinstance(ts, int):
+        return None
+    if now < ts < now + 30 * 86400:
+        return ts
+    return None
+
+
+def _daily_wait(config):
+    conf = (config or {}).get("每日任务", {}) or {}
+    try:
+        timeout = float(conf.get("响应等待秒", 6))
+    except (TypeError, ValueError):
+        timeout = 6.0
+    try:
+        gap = float(conf.get("间隔秒", 3))
+    except (TypeError, ValueError):
+        gap = 3.0
+    return timeout, gap
+
+
+def _task_of(key):
+    return next(t for t in TASKS if t.key == key)
+
+
+def _wargame_sites(pages):
+    sites, seen = [], set()
+    for data in pages:
+        for blk in _aslist(data.get("field14") if isinstance(data, dict) else None):
+            if not isinstance(blk, dict):
+                continue
+            for e in _aslist(blk.get("field2")):
+                if not isinstance(e, dict):
+                    continue
+                sid = e.get("field1")
+                if isinstance(sid, bool) or not isinstance(sid, int) or sid in seen:
+                    continue
+                seen.add(sid)
+                sites.append(e)
+    return sites
+
+
+def _wargame_attempts(sites, me):
+    """有空场只占那一个。没有就按探测顺序打有主的，自己的和停战中的跳过。"""
+    free_id = _pick_free_wargame_site({"field14": {"field2": sites}})
+    if isinstance(free_id, int) and not isinstance(free_id, bool):
+        return [(f"占领空场 {free_id}",
+                 {1: ("int32", 2), 2: ("int32", free_id)})]
+    now = time.time()
+    attempts = []
+    for e in sites:
+        uid = e.get("field6")
+        if not isinstance(uid, str) or not uid or (me and uid == me):
+            continue
+        if e.get("field12") is True:
+            continue
+        truce = e.get("field13")
+        if isinstance(truce, int) and not isinstance(truce, bool) and truce > now:
+            continue
+        sid = e["field1"]
+        name = e.get("field7") if isinstance(e.get("field7"), str) and e.get("field7") else uid
+        # 空场的实测包只有 type+siteID。有主的多带占领者 uid，不发 forceFlag。
+        attempts.append((f"打下场 {sid}（{name}）",
+                         {1: ("int32", 2), 2: ("int32", sid), 3: ("string", uid)}))
+    return attempts
+
+
+def _mine_attempts(data, me):
+    """有无主矿只占那一个。没有就按探测顺序打有主的。"""
+    free = _next_mine_to_occupy(data)
+    if free:
+        return [("占下探到的无主矿", free)]
+    attempts = []
+    for e in _aslist(data.get("field5") if isinstance(data, dict) else None):
+        if not isinstance(e, dict):
+            continue
+        rid = e.get("field1")
+        uid = e.get("field6")
+        if isinstance(rid, bool) or not isinstance(rid, int):
+            continue
+        if not isinstance(uid, str) or not uid or (me and uid == me):
+            continue
+        name = e.get("field2") if isinstance(e.get("field2"), str) and e.get("field2") else uid
+        attempts.append((f"打矿 {rid}（{name}）",
+                         {1: ("int32", 3), 2: ("int32", rid), 4: ("string", uid)}))
+    return attempts
+
+
+def _contest(rec, sock, task, attempts, hold, left, left_key, timeout, gap):
+    """按顺序打，占住就停。
+
+    ret=1（要花钱）或没回包，整串都停。
+    只是这一场被拒或没打赢，还有免费次数就换下一个。
+    响应里带回剩余次数就改信那个数；没带回就每发一次减一，减到 0 不再发。
+    矿区 left 为空：探到的几个都打完为止，但 ret=1 照样停。
+    """
+    names = _field_names(_schema, task.opcode)
+    rse = _rse_name(task.msg)
+    tried = 0
+    saw_left = False
+    for label, fields in attempts:
+        if left is not None and left <= 0:
+            return False, f"打了 {tried} 个都没占住，免费次数已用完", None
+        safe, why = _check_safety(task, names, fields)
+        if not safe:
+            return False, f"安全检查拦截：{why}", None
+        before = rec.seq_mark() if rec else 0
+        desc = ", ".join(f"{names.get(k, k)}={v[1]!r}"
+                         for k, v in sorted(fields.items()))
+        try:
+            sender.send_frame(sock, task.opcode,
+                              encode_message(fields, omit_zero=False),
+                              rec.rc4_c2s)
+        except OSError:
+            raise
+        except Exception as exc:
+            return False, f"发送失败：{exc}", None
+        log.info("[%s] 已发送 %s {%s}", task.key, label, desc)
+        data = _await_response(sock, rec, rse, before, timeout,
+                               want=_echo_want(fields, names))
+        judged, why, _stop = judge(rse, data, ignore_left=True)
+        log.info("[%s] %s %s", task.key, "✅" if judged else "❌", why)
+        tried += 1
+        if isinstance(data, dict) and left_key:
+            n = data.get(left_key)
+            if isinstance(n, int) and not isinstance(n, bool) and n >= 0:
+                left = n
+                saw_left = True
+            elif left is not None and not saw_left:
+                left -= 1
+        elif left is not None and not saw_left:
+            left -= 1
+        if judged:
+            held = hold(data)
+            if held:
+                until = held if isinstance(held, int) else None
+                text = f"{label}: {why}"
+                if isinstance(until, int):
+                    mins = (until - time.time()) / 60
+                    text += f"；占用至 {mins:.0f} 分钟后"
+                return True, text, until
+            if left is not None and left <= 0:
+                return False, f"打了 {tried} 个都没占住，免费次数已用完", None
+            _nap(gap)
+            continue
+        ret = data.get("ret") if isinstance(data, dict) else None
+        if data is None or ret == 1:
+            return False, f"{label}: {why}", None
+        if left is not None and left <= 0:
+            return False, f"{label}: {why}；免费次数已用完，停下", None
+        _nap(gap)
+    if tried:
+        return False, f"打了 {tried} 个都没占住", None
+    return False, "没有可打的目标", None
+
+
+def _send_op(sock, rec, task, fields):
+    sender.send_frame(sock, task.opcode,
+                      encode_message(fields, omit_zero=False), rec.rc4_c2s)
+
+
+def _collect_wargame_pages(sock, rec, since, timeout):
+    """把这次查询推来的场地页攒齐。bLastMsg 到了就停，超时就用已经拿到的。"""
+    deadline = time.time() + timeout
+    pages, seen = [], set()
+    while time.time() < deadline:
+        hist = (getattr(rec, "recent", {}) or {}).get("RseWarGameOpt") or []
+        if not hist:
+            got = (getattr(rec, "latest", {}) or {}).get("RseWarGameOpt")
+            hist = [got] if got else []
+        for seq, data in hist:
+            if not isinstance(data, dict) or seq in seen or seq <= since:
+                continue
+            if data.get("type") not in (None, 1):
+                continue
+            if ("field14" not in data and "tokenNum" not in data
+                    and data.get("bLastMsg") is not True):
+                continue
+            seen.add(seq)
+            pages.append(data)
+        if any(p.get("bLastMsg") is True for p in pages):
+            break
+        _beat()
+        try:
+            sock.settimeout(0.5)
+            if not sock.recv(8192):
+                break
+        except TimeoutError:
+            continue
+        except OSError:
+            break
+    return pages
+
+
+def _run_wargame(rec, sock, config):
+    """有空场就占。没有就按这次查到的场地挨个打，占住就停。"""
+    task = _task_of("军事演习")
+    if rec is None or sock is None:
+        return False, "没有连接，不打"
+    timeout, gap = _daily_wait(config)
+    since = rec.seq_mark()
+    try:
+        _send_op(sock, rec, task, {1: ("int32", 1)})
+    except OSError:
+        raise
+    except Exception as exc:
+        return False, f"发送失败：{exc}"
+    log.info("[%s] 查询场地", task.key)
+    pages = _collect_wargame_pages(sock, rec, since, timeout)
+    if pages and not any(p.get("bLastMsg") is True for p in pages):
+        log.info("[%s] 场地列表没等齐最后一页，按已收到的继续", task.key)
+    panel = next((p for p in pages
+                  if isinstance(p.get("tokenNum"), int)
+                  and not isinstance(p.get("tokenNum"), bool)), None)
+    for p in pages:
+        if p.get("bOccupySite") is not True:
+            continue
+        ts = _future_stamp(p, "siteEndTime")
+        if ts:
+            mins = (ts - time.time()) / 60
+            return False, f"已经占着场地，占用至 {mins:.0f} 分钟后", ts
+        return False, "已经占着演习场，这一轮不打"
+    passed, why, _exhausted, _tier = _check_gate(task.gate, panel)
+    if not passed:
+        return False, f"闸门拦截：{why}"
+    log.info("[%s] 闸门放行：%s", task.key, why)
+    sites = _wargame_sites(pages)
+    me = str(getattr(rec, "uid", "") or "")
+    attempts = _wargame_attempts(sites, me)
+    if not attempts:
+        n = len(sites)
+        if n:
+            return False, f"探测到 {n} 个演习场，没有空位，也没有能打的，跳过"
+        return False, "没有探测到演习场，跳过"
+    if attempts[0][0].startswith("打"):
+        log.info("[%s] 没有空位，按探测顺序打 %d 个，占住就停",
+                 task.key, len(attempts))
+    left = panel.get("tokenNum") if isinstance(panel, dict) else None
+
+    def hold(data):
+        if not isinstance(data, dict) or data.get("bOccupySite") is not True:
+            return None
+        return _future_stamp(data, "siteEndTime") or True
+
+    return _contest(rec, sock, task, attempts, hold, left, "tokenNum",
+                    timeout, gap)
+
+
+def _run_mine(rec, sock, config):
+    """先探索。有无主矿就占。没有就按这次探到的矿挨个打，占住就停。"""
+    task = _task_of("矿区争夺")
+    if rec is None or sock is None:
+        return False, "没有连接，不打"
+    timeout, gap = _daily_wait(config)
+    query = {1: ("int32", 1), 2: ("int32", 0), 3: ("int32", 0), 4: ("string", "")}
+    before = rec.seq_mark()
+    try:
+        _send_op(sock, rec, task, query)
+    except OSError:
+        raise
+    except Exception as exc:
+        return False, f"发送失败：{exc}"
+    log.info("[%s] 查询矿区", task.key)
+    panel = _await_response(
+        sock, rec, "RseResourceOpt", before, timeout,
+        want=lambda d: (isinstance(d, dict)
+                        and isinstance(d.get("searchTimes"), int)
+                        and not isinstance(d.get("searchTimes"), bool)))
+    ts = _future_stamp(panel, "resourceEndTime")
+    if ts:
+        mins = (ts - time.time()) / 60
+        return False, f"已经占着矿，占用至 {mins:.0f} 分钟后", ts
+    passed, why, _exhausted, _tier = _check_gate(task.gate, panel)
+    if not passed:
+        return False, f"闸门拦截：{why}"
+    log.info("[%s] 闸门放行：%s", task.key, why)
+    explore = {1: ("int32", 2), 2: ("int32", 0), 3: ("int32", 1), 4: ("string", "")}
+    names = _field_names(_schema, task.opcode)
+    safe, why = _check_safety(task, names, explore)
+    if not safe:
+        return False, f"安全检查拦截：{why}"
+    before = rec.seq_mark()
+    try:
+        _send_op(sock, rec, task, explore)
+    except OSError:
+        raise
+    except Exception as exc:
+        return False, f"发送失败：{exc}"
+    log.info("[%s] 已发送探索", task.key)
+    data = _await_response(
+        sock, rec, "RseResourceOpt", before, timeout,
+        want=lambda d: isinstance(d, dict) and d.get("type") == 2 and "field5" in d,
+        relaxed=lambda d: isinstance(d, dict) and d.get("type") == 2)
+    judged, why, _stop = judge("RseResourceOpt", data, ignore_left=True)
+    if not judged:
+        return False, f"探索: {why}"
+    ts = _future_stamp(data, "resourceEndTime")
+    if ts:
+        mins = (ts - time.time()) / 60
+        return False, f"已经占着矿，占用至 {mins:.0f} 分钟后", ts
+    me = str(getattr(rec, "uid", "") or "")
+    attempts = _mine_attempts(data, me)
+    if not attempts:
+        n = len(_aslist(data.get("field5")))
+        if n:
+            return False, f"这次探到 {n} 个矿，没有无主的，也没有能打的，跳过"
+        return False, "这次没探到矿，跳过"
+    if attempts[0][0].startswith("打"):
+        log.info("[%s] 没有无主矿，按探测顺序打 %d 个，占住就停",
+                 task.key, len(attempts))
+
+    def hold(resp):
+        return _future_stamp(resp, "resourceEndTime")
+
+    return _contest(rec, sock, task, attempts, hold, None, None, timeout, gap)
+
+
 def _run_campaign_task(rec, sock, config):
     raw = _campaign_goal(config) or ""
     return campaign_round(rec, sock, raw, _campaign_interval(config))
@@ -1950,6 +2407,10 @@ def _run(rec, sock, config, schema, on_fail=None):
     for task in ordered_tasks():
         try:
             raise_if_stopped()
+            if task.key in HELD_TASKS:
+                results[task.key] = HELD_STATUS
+                log.info("[%s] %s", task.key, results[task.key])
+                continue
             if not switches.get(task.key, False):
                 results[task.key] = "未开启"
                 continue
@@ -1986,6 +2447,7 @@ def _run(rec, sock, config, schema, on_fail=None):
                 log.warning("[%s] %s", task.key, results[task.key])
                 continue
 
+            _publish_current(task.key, None, on_fail)
             field_names = _field_names(schema, task.opcode)
 
             # 一个任务在**一轮里就要把当天的次数做完**，而不是做一次就走。
@@ -2037,6 +2499,7 @@ def _run(rec, sock, config, schema, on_fail=None):
                 if not more:
                     break
                 ran += 1
+                _publish_current(task.key, results.get(task.key), on_fail)
                 # 服务器说这东西被占用到某时刻（占了演习场/占了矿），就别接着刷了
                 if st.get("until", {}).get(task.key, 0) > time.time():
                     break
@@ -2061,14 +2524,16 @@ def _run(rec, sock, config, schema, on_fail=None):
         finally:
             if _is_failure(results.get(task.key)):
                 log.info("[%s] 这一项没做成，继续下一项", task.key)
-            _publish_failure(results, on_fail)
+            if results.get(task.key) not in (None, "未开启"):
+                _publish_current(task.key, results.get(task.key), on_fail)
 
 
     _run_campaign_extras(
         rec, sock, switches, st, results,
         stages=_campaign_goal(config) or "",
-        interval=_campaign_interval(config))
-    _publish_failure(results, on_fail)
+        interval=_campaign_interval(config),
+        on_fail=on_fail)
+    _publish_total(results, on_fail)
 
     log.info("=== 每日任务结束 ===")
     for k, v in results.items():
@@ -2077,7 +2542,8 @@ def _run(rec, sock, config, schema, on_fail=None):
     return results, details
 
 
-def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1.0):
+def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1.0,
+                         on_fail=None):
     """第三次、第4次。开关在登录账号上，默认关。免费两次仍走「征战世界」。
 
     重开之后必须从第 1 关打到终点，打完才算这一次做成。只重开不算完成。
@@ -2107,7 +2573,9 @@ def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1
         if key == "征战第4次" and not third_done:
             results[key] = "第三次还没打完，这一轮先不做第4次"
             log.info("[%s] %s", key, results[key])
+            _publish_current(key, results[key], on_fail)
             continue
+        _publish_current(key, None, on_fail)
         try:
             ok, why, finished, pushing = pve.extra_campaign(
                 rec, sock, stages, interval, kind, already_done=_done_of(key))
@@ -2117,6 +2585,7 @@ def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1
         results[key] = why if ok else (
             why if str(why).startswith("失败") else f"失败：{why}")
         log.info("[%s] %s %s", key, "✅" if ok else "❌", results[key])
+        _publish_current(key, results[key], on_fail)
         if finished:
             st.setdefault("done", {})[key] = 1
             _save_state(st)
