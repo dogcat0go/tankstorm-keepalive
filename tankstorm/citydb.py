@@ -508,8 +508,13 @@ def neighbors(city_id: int) -> set:
 
 
 def fort_locked(city_id) -> bool:
-    """编号第 2 位是 1 或 2 的城，不是自己国家时不能占领。"""
+    """编号第 2 位是 1 或 2 的城，不是自己国家时不能占领。
+
+    编号以 9 开头的是马奇诺及周边，可以攻打和占领，不受第 2 位限制。
+    """
     s = str(int(city_id or 0))
+    if s.startswith("9"):
+        return False
     return len(s) > 1 and s[1] in "12"
 
 
@@ -558,6 +563,7 @@ def plan_route(here, target, my_country, avoid=None, avoid_why=None) -> dict:
 
     归属国与自己相同的城可以直接经过。别国的城要先占领，才能落脚或当走廊。
     编号第 2 位是 1 或 2、又不是自己国家的城不能占领，也不能借道。
+    编号以 9 开头的马奇诺及周边城例外，可以攻打和占领。
     原属国是 21（黑暗联盟）的城例外，可以占领。
     目标城本身不必走进去，站在相邻城就能打。先走最短：少占领，再少走几步。
     avoid 里的城是已经打不过的，这条路不再经过。
