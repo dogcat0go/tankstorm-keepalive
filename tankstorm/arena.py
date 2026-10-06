@@ -202,7 +202,7 @@ def _read_panel(data):
             data.get("nIntegralScore"))
 
 
-def rank_window(sock, rec, my_rank, country, timeout=6.0):
+def rank_window(sock, rec, my_rank, country, timeout=6.0, behind_top=False):
     """取可挑战名单。返回 (名单, 真人名字表)，名单是 [(名次, uid), …]。
 
     一条请求会引来**两条**同名回包：type:2 是"名次→uid"，type:3 是
@@ -210,6 +210,7 @@ def rank_window(sock, rec, my_rank, country, timeout=6.0):
 
     ⚠️ 只取 field2.field3 —— 那才是可挑战的窗口（十个人都排在自己前面）。
     同一条回包里的 field4 是**全国前十**，拿它当目标就等于去打榜首。
+    behind_top 只在自己已经是第一名时打开：前面没有人，改从第 2～10 名里挑。
     """
     since = _send(sock, rec, OP_RANK,
                   {1: ("int32", 2), 2: ("int32", my_rank),
@@ -230,30 +231,51 @@ def rank_window(sock, rec, my_rank, country, timeout=6.0):
             if isinstance(e, dict) and isinstance(e.get("field1"), str):
                 names[e["field1"]] = e.get("field2")
 
-    return _parse_board(board, country), names
+    return _parse_board(board, country, behind_top=behind_top), names
 
 
-def _parse_board(board, country):
+def _entry_rows(raw):
+    """把榜单里的一列读成 [(名次, uid), …]。"""
+    if isinstance(raw, dict):
+        raw = [raw]
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for e in raw:
+        if (isinstance(e, dict) and isinstance(e.get("field2"), str)
+                and isinstance(e.get("field1"), int)
+                and not isinstance(e.get("field1"), bool)):
+            out.append((e["field1"], e["field2"]))
+    return out
+
+
+def _parse_board(board, country, behind_top=False):
     """从榜单回包里抽出本国的 [(名次, uid), …]。
 
     ⚠️ 只取 field3。同一条回包里的 field4 是**全国前十**，拿它当目标就等于
-    去打榜首。type:1（全服榜）是六个国家一段一段的，所以必须按国家挑对那段。
+    去打榜首。唯一的例外是自己已经是第一名（behind_top）：前面没有人，
+    这时才把 field4 里的第 2～10 名并进来。
+    type:1（全服榜）是六个国家一段一段的，所以必须按国家挑对那段。
     """
     blocks = board.get("field2") or []
     if isinstance(blocks, dict):
         blocks = [blocks]
-    out = []
+    out, seen = [], set()
     for b in blocks:
         if not isinstance(b, dict):
             continue
         if b.get("field1") not in (None, country):
             continue
-        rows = b.get("field3") or []
-        for e in (rows if isinstance(rows, list) else [rows]):
-            if (isinstance(e, dict) and isinstance(e.get("field2"), str)
-                    and isinstance(e.get("field1"), int)
-                    and not isinstance(e.get("field1"), bool)):
-                out.append((e["field1"], e["field2"]))
+        rows = _entry_rows(b.get("field3"))
+        if behind_top:
+            rows = rows + _entry_rows(b.get("field4"))
+        for rank, uid in rows:
+            if behind_top and not (2 <= rank <= 10):
+                continue
+            if (rank, uid) in seen:
+                continue
+            seen.add((rank, uid))
+            out.append((rank, uid))
     return out
 
 
@@ -300,11 +322,17 @@ def pick_target(entries, my_rank, prefer="最弱优先", allow_player=True,
     真人只在名单里一个 NPC 都没有时才打，且取**名次离自己最近**的那个，
     也就是窗口里最保守的一个。
 
+    自己已经是第一名时，前面没有对手。名单改成第 2～10 名，挑法不变：
+    还是 NPC 优先；真人都在自己后面，名次数字最小的（第 2 名）离得最近。
+
     avoid 是已经打输过的 (名次, uid)。打输了名次不动，下一轮拿到的名单
     一模一样，不排掉就会对着同一个人一直撞到次数耗光。
     """
     avoid = set(avoid)
-    usable = [e for e in entries if e[0] < my_rank and e not in avoid]
+    if my_rank == 1:
+        usable = [e for e in entries if 2 <= e[0] <= 10 and e not in avoid]
+    else:
+        usable = [e for e in entries if e[0] < my_rank and e not in avoid]
     npcs = [(r, u) for r, u in usable if npc_id(u)]
     if npcs:
         if prefer == "最高名次优先":
@@ -315,6 +343,8 @@ def pick_target(entries, my_rank, prefer="最弱优先", allow_player=True,
     players = [(r, u) for r, u in usable if not npc_id(u)]
     if not players:
         return None
+    if my_rank == 1:
+        return min(players, key=lambda x: x[0])
     return max(players, key=lambda x: x[0])
 
 
@@ -349,21 +379,25 @@ def _my_uid(rec):
 # ---------------------------------------------------------------- 对外
 
 def daily_challenge(rec, sock, config):
-    """每日任务用：把今天的挑战次数打完。
+    """每日任务用：把服务端给的剩余挑战次数打光，不留剩余。
 
     返回 (是否成功, 说明)，签名符合 daily.Task 的 runner 约定。
     """
     conf = (config.get("争霸战", {}) or {})
-    want = int(conf.get("每日挑战次数", 10))
+    # 0 = 打到 nCanFightTimes 归零。以前默认 10，面板实际会给到 12，
+    # 打满 10 次还剩 2 次，每日任务却显示成做完了。
+    want = int(conf.get("每日挑战次数") or 0)
     out = run(rec, sock, config, rounds=want)
     done = out["挑战"]
-    # 服务端说次数已经归零，这件事今天就算做完了 —— 哪怕本次一场没打
-    # （玩家自己在游戏里打完了就是这种情形）。不这么判的话，每轮都会
-    # 报一次 ❌ 并且明天之前一直重试。
-    ok = done >= want or out["剩余次数"] == 0
+    goal = out.get("目标次数")
+    if not isinstance(goal, int):
+        goal = done
+    # 只认服务端剩余次数归零。打满一个固定场数却还剩次数，不算做完。
+    # 开打前就已经是 0（玩家自己打完了）也算今天做完，否则会一直重试。
+    ok = out["剩余次数"] == 0
     # 汇总按 v.startswith("成功") 判 ✅（socket_keepalive._push_daily_summary），
     # 打满了却不以"成功"开头会显示成失败。
-    why = (f"{'成功：' if ok else ''}挑战 {done}/{want} 次（胜 {out['胜']}）；"
+    why = (f"{'成功：' if ok else ''}挑战 {done}/{goal} 次（胜 {out['胜']}）；"
            f"名次 {out['起始名次']}→{out['名次']}；积分 +{out['积分']}；"
            f"剩余挑战 {out['剩余次数']} 次")
     if out["停止原因"] and not ok:
@@ -372,7 +406,7 @@ def daily_challenge(rec, sock, config):
 
 
 def run(rec, sock, config: dict, rounds: int = 0) -> dict:
-    """自动挑战争霸战。rounds 是最多打几次，返回成果字典。
+    """自动挑战争霸战。rounds 是最多打几次；0 表示打光服务端剩余次数。返回成果字典。
 
     ⚠️ **不要在这里碰 `_daily._BEAT`**。争霸战只作为每日任务运行，进来之前
     `daily.run()` 已经把心跳器装好了；这里再赋一次值（哪怕是 None）就会把它
@@ -390,9 +424,10 @@ def run(rec, sock, config: dict, rounds: int = 0) -> dict:
     prefer = str(conf.get("选目标", "最弱优先"))
     allow_player = bool(conf.get("没有NPC时打真人", True))
     out = {"挑战": 0, "胜": 0, "积分": 0, "名次": None, "起始名次": None,
-           "剩余次数": None, "停止原因": ""}
-    if rounds <= 0:
-        out["停止原因"] = "次数为 0，什么都没做"
+           "剩余次数": None, "目标次数": None, "停止原因": ""}
+    # rounds<=0 不是"什么都不做"：读完面板后按 nCanFightTimes 把次数打光。
+    if rounds < 0:
+        out["停止原因"] = "次数为负，什么都没做"
         return out
     if not country:
         out["停止原因"] = ("读不到自己的国家ID（RseFightSimpInfo.countryid 和 "
@@ -432,15 +467,29 @@ def _loop(rec, sock, rounds, country, gap, prefer, allow_player, out):
 
     out["起始名次"] = out["名次"] = my_rank
     out["剩余次数"] = left
+    # rounds<=0：把面板上的剩余次数打光。正数是额外上限，也不会超过剩余次数。
+    if not isinstance(left, int) or isinstance(left, bool) or left < 0:
+        out["停止原因"] = f"剩余挑战次数读数异常（{left}），停手"
+        return out
+    if rounds <= 0 or rounds > left:
+        rounds = left
+    if rounds > 100:
+        log.warning("[争霸战] 剩余挑战 %s 次，超过硬上限 100，只打 100 次", left)
+        rounds = 100
+    out["目标次数"] = rounds
     score0 = score or 0
-    log.info("[争霸战] 开局：本国名次 %s，剩余挑战 %s 次，积分 %s（国家 %s）",
-             my_rank, left, score, country)
+    log.info("[争霸战] 开局：本国名次 %s，剩余挑战 %s 次，本轮打 %s 次，积分 %s（国家 %s）",
+             my_rank, left, rounds, score, country)
+    if rounds <= 0:
+        out["停止原因"] = "今日挑战次数已用完（nCanFightTimes=0）"
+        return out
 
     fails = 0
     last_act = 0.0
     lost_to = set()          # 打输过的 (名次, uid)，下一轮别再挑同一个
+    told_top = False
     # ⚠️ 按**实际打成的场数**循环，不是按轮数 —— 一次"没生效"的试探
-    # （比如新赛季在试 indexself）不该吃掉一个名额，否则就打不满十场了。
+    # （比如新赛季在试 indexself）不该吃掉一个名额，否则就打不完剩余次数。
     # attempts 只是防死循环的兜底。
     attempts, max_attempts = 0, rounds * 3 + 10
     while out["挑战"] < rounds and attempts < max_attempts:
@@ -453,14 +502,21 @@ def _loop(rec, sock, rounds, country, gap, prefer, allow_player, out):
             out["停止原因"] = "今日挑战次数已用完（nCanFightTimes=0）"
             break
 
-        entries, names = rank_window(sock, rec, my_rank, country)
+        if my_rank == 1 and not told_top:
+            log.info("[争霸战] 当前已是第一名，改为挑战第 2～10 名")
+            told_top = True
+        entries, names = rank_window(
+            sock, rec, my_rank, country, behind_top=(my_rank == 1))
+        if my_rank == 1:
+            entries = [e for e in entries if str(e[1]) != me]
         if not entries:
-            out["停止原因"] = "取不到可挑战名单，停手"
+            out["停止原因"] = ("已是第一名，但取不到第 2～10 名，停手"
+                             if my_rank == 1 else "取不到可挑战名单，停手")
             break
         target = pick_target(entries, my_rank, prefer, allow_player, lost_to)
         if target is None and lost_to:
             # 打输过的都排除完了，说明这一圈名单已经被打了个遍。
-            # **目标是把十次挑战用满**（输赢无所谓，每日任务只认次数），
+            # **目标是把剩余次数打光**（输赢无所谓，每日任务只认次数），
             # 所以这里不能收手 —— 清掉排除名单，从头再挑一个。
             log.info("[争霸战] 名单里的人都打过一轮了，清空排除名单接着打")
             lost_to.clear()
@@ -492,7 +548,7 @@ def _loop(rec, sock, rounds, country, gap, prefer, allow_player, out):
         if new_left >= left:
             # 注意：**打输了也会扣次数**，所以次数没少只可能是这一击压根没生效
             # （被拒、或者面板还没刷新），不是"输了"。输赢在下面按名次判。
-            # 目标是把十次用满，所以给足重试，连着三次没生效才认定是真出问题。
+            # 目标是把剩余次数打光，所以给足重试，连着三次没生效才认定是真出问题。
             fails += 1
             log.info("[争霸战] 第 %d 轮打 %s 没消耗次数（result=%s，仍剩 %s 次），"
                      "重试（连续 %d 次）", i, who(uid, names), r.get("result"),
@@ -508,13 +564,16 @@ def _loop(rec, sock, rounds, country, gap, prefer, allow_player, out):
 
         fails = 0
         out["挑战"] += 1
-        won = new_rank is not None and new_rank < my_rank
+        # 打前面的人：名次数字变小才是赢。已经是第一名、改打第 2～10 名时，
+        # 赢了会变成对方的名次（数字变大），名次不动则是没打过。
+        won = new_rank is not None and (
+            new_rank < my_rank or (my_rank == 1 and new_rank != my_rank))
         if won:
             out["胜"] += 1
         else:
             # 输了照样算一次挑战（次数已经扣了），每日任务只认次数，不认输赢。
             # 但名次不动、下一轮名单一模一样，所以把这个对手记下来换一个打，
-            # 免得十次机会全喂给同一个人。名单打完一圈会自动清空重来。
+            # 免得剩余次数全喂给同一个人。名单打完一圈会自动清空重来。
             lost_to.add(target)
         log.info("[争霸战] 第 %d/%d 轮：打 %s（名次 %s）%s，"
                  "自己名次 %s→%s，剩余 %s 次",
