@@ -2291,7 +2291,9 @@ def set_page_qr(on: bool, user_id: int = 0) -> None:
 
 def note_login_qr(path: str, user_id: int = 0) -> None:
     """这次扫码的图写在哪。只给这个攻打 QQ 对应的登录账号看。"""
-    _upsert_signal(_mark_name("qrpath", user_id), str(path or ""))
+    _upsert_signal(
+        _mark_name("qrpath", user_id), str(path or ""),
+        at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"))
 
 
 def login_qr_path(user_id: int = 0) -> str:
@@ -2321,7 +2323,8 @@ def set_page_login(user_id: int, path: str) -> None:
         conn.execute(
             "INSERT INTO atk_signal(name, value, at) VALUES (?, ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-            (_page_login_key(user_id), str(path or ""), now_ts()))
+            (_page_login_key(user_id), str(path or ""),
+             datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")))
         conn.commit()
     finally:
         conn.close()
@@ -2486,19 +2489,20 @@ def _signal_at(name: str) -> str:
     return str(row[0] or "") if row else ""
 
 
-def _upsert_signal(name: str, value: str, touch: bool = True) -> None:
+def _upsert_signal(name: str, value: str, touch: bool = True, at: str = "") -> None:
     conn = connect()
     try:
+        stamp = at or now_ts()
         if touch:
             conn.execute(
                 "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?) "
                 "ON CONFLICT(name) DO UPDATE SET value=excluded.value, at=excluded.at",
-                (name, value, now_ts()))
+                (name, value, stamp))
         else:
             conn.execute(
                 "INSERT INTO atk_signal(name, value, at) VALUES (?,?,?) "
                 "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
-                (name, value, now_ts()))
+                (name, value, stamp))
         conn.commit()
     finally:
         conn.close()

@@ -1881,7 +1881,12 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
         with _page_login_guard:
             _page_login_users.discard(user_id)
         return "qr"
-    citydb.set_page_login(user_id, qr)
+    # 新图写好之前，页面上不留上一张。
+    citydb.clear_page_login(user_id)
+    try:
+        os.remove(qr)
+    except OSError:
+        pass
     qq = QQSession(cookie, qrcode_file=qr)
     who = citydb.username_of(user_id)
 
