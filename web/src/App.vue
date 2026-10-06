@@ -9,6 +9,7 @@ import AttackPage from "./pages/AttackPage.vue";
 import DailyPage from "./pages/DailyPage.vue";
 import WatchPage from "./pages/WatchPage.vue";
 import QqPage from "./pages/QqPage.vue";
+import ProfilePage from "./pages/ProfilePage.vue";
 
 const me = ref(null);
 const mode = ref("login");
@@ -36,6 +37,8 @@ const devLogin = ref(false);
 const registerOpen = ref(false);
 const autoLock = ref(false);
 const holdMin = ref("0");
+const holdAll = ref(false);
+const holdAllBusy = ref(false);
 const holdNote = ref("");
 const cardMax = ref("100");
 const retreatMode = ref("hops");
@@ -184,6 +187,16 @@ function pickTab(key) {
   if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
 }
 
+function openProfile() {
+  tab.value = "profile";
+}
+
+function openQq() {
+  tab.value = "qq";
+}
+
+const sideOn = computed(() => tab.value === "profile" || tab.value === "qq");
+
 async function refreshAttacks() {
   if (!me.value) {
     orders.value = [];
@@ -298,6 +311,7 @@ function takeUser(user) {
   qqTarget.value = user.qq_target || "";
   autoLock.value = !!user.auto_lock;
   holdMin.value = String(user.hold_min ?? 0);
+  holdAll.value = !!user.hold_all;
   cardMax.value = String(user.card_max ?? 100);
   const picked = user.retreat_mode;
   retreatMode.value = picked === "off" || picked === "city" || picked === "hops" ? picked : "hops";
@@ -460,6 +474,22 @@ async function saveHold() {
   holdNote.value = "已保存";
 }
 
+async function saveHoldAll(on) {
+  showErr("", "hold");
+  holdNote.value = "";
+  holdAllBusy.value = true;
+  try {
+    const data = await api("/api/attack-hold", { all: !!on });
+    holdAll.value = !!data.hold_all;
+    if (me.value) me.value.hold_all = holdAll.value;
+    holdNote.value = "已保存";
+  } catch (e) {
+    showErr(e.message, "hold");
+  } finally {
+    holdAllBusy.value = false;
+  }
+}
+
 async function addOrder() {
   showErr("");
   const city = cities.value.find((c) => String(c.id) === String(attackCity.value));
@@ -595,6 +625,11 @@ async function savePush() {
   note.value = "QQ 号已保存";
 }
 
+async function savePassword(current, password) {
+  showErr("", "pwd");
+  await api("/api/password", { current, password });
+}
+
 async function logout() {
   await api("/api/logout", {});
   me.value = null;
@@ -720,10 +755,18 @@ onUnmounted(() => {
         :err="err"
         :err-at="errAt"
         :save-hold="saveHold"
+        :hold-all="holdAll"
+        :hold-all-busy="holdAllBusy"
+        :save-hold-all="saveHoldAll"
+        :open-profile="openProfile"
+        :profile-on="tab === 'profile'"
+        :open-qq="openQq"
+        :qq-on="tab === 'qq'"
         :logout="logout"
         :show-err="showErr"
       />
       <AttackStatus
+        v-show="!sideOn"
         :proc="proc"
         :qr-src="qrSrc"
         :err="err"
@@ -735,12 +778,19 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
-      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="pickTab">
+      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="sideOn ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
-        <el-menu-item index="qq">订阅QQ</el-menu-item>
       </el-menu>
+      <ProfilePage
+        v-show="tab === 'profile'"
+        :me="me"
+        :err="err"
+        :err-at="errAt"
+        :save-password="savePassword"
+        :show-err="showErr"
+      />
       <DailyPage
         v-show="tab === 'daily'"
         v-model:daily-at="dailyAt"

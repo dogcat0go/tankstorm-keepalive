@@ -1070,12 +1070,14 @@ TASKS = [
     # 先把上期的奖领了，再开打。
     # 延迟导入：arena 反过来要用 daily 的 _await_response/_nap，
     # 模块级 import 会成环。
-    _t("争霸战挑战", "争霸战·挑战 10 次", "0469", "RceArenaOpt",
+    _t("争霸战挑战", "争霸战·把剩余次数打完", "0469", "RceArenaOpt",
        {}, "实测",
        "8/29 抓包实测三场：RceArenaInfo{type:1} 开面板读 nCanFightTimes → "
        "RceArenaRankInfo{type:2,nIndex,nCountry} 取可挑战名单 → "
        "RceArenaOpt{type:1,uidself,uidfight,indexself,indexfight,"
-       "countryidself} 挑战。优先打 NPC（短 uid），成败以面板变化为准",
+       "countryidself} 挑战。打到 nCanFightTimes 归零，不留剩余。"
+       "优先打 NPC（短 uid）；已经是第一名时改打第 2～10 名。"
+       "成败以面板变化为准",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.arena", fromlist=["daily_challenge"]
        ).daily_challenge(rec, sock, config)),

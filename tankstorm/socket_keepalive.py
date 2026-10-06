@@ -938,7 +938,8 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
                 job["id"], "ended", why or "被别人打败，已回到首都", beats=beats)
             return
         show = note or why
-        if why and _person_blocking(why) and citydb.attack_hold_minutes() > 0:
+        if why and _person_blocking(why) and (
+                citydb.attack_hold_minutes() > 0 or citydb.attack_hold_always()):
             citydb.park_attack_order(job["id"], show or why, beats=beats)
             log.info("订单 %s 有人挡路，挂机期间继续看路径", job["id"])
             return
@@ -1080,7 +1081,8 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
             citydb.defer_attack_order(job["id"])
             log.info("订单 %s 已暂停，放回排队", job["id"])
             return
-        if action == "park" and citydb.attack_hold_minutes() > 0:
+        if action == "park" and (
+                citydb.attack_hold_minutes() > 0 or citydb.attack_hold_always()):
             citydb.park_attack_order(job["id"], why, beats=beats)
             log.info("订单 %s 有人挡路，挂机期间继续看路径", job["id"])
             return
@@ -1316,6 +1318,9 @@ def _run_requested_move(rec, sock, config, beater) -> bool:
 
 # 点「推送登录二维码」之后，先挂上这么久，连接断了也在这段时间里重连。
 PUSH_KEEPALIVE_MINUTES = 180
+# 全天候开着时，剩余不到这么多分钟就再续一段，避免到点断开。
+ALWAYS_HOLD_REFRESH_MIN = 10
+ALWAYS_HOLD_WINDOW_MIN = 30
 
 
 def _arm_push_keepalive() -> None:
@@ -1338,7 +1343,14 @@ def _begin_attack_hold(fresh=False) -> bool:
     from . import citydb
 
     minutes = citydb.attack_hold_minutes()
+    always = citydb.attack_hold_always()
     left = citydb.attack_hold_left()
+    if always and (left is None or left <= ALWAYS_HOLD_REFRESH_MIN * 60):
+        citydb.note_attack_hold(time.time() + ALWAYS_HOLD_WINDOW_MIN * 60)
+        if left is None or left <= 0:
+            log.info("全天候挂机，接着保活")
+            fresh = True
+        left = ALWAYS_HOLD_WINDOW_MIN * 60
     if left is not None and left > 0:
         if fresh:
             citydb.set_attack_status(
@@ -1642,17 +1654,17 @@ def run_remote_orders(qq, config: dict) -> int:
             moving = citydb.attack_move_pending() > 0
             daily_wait = citydb.daily_job_open()
             # 新订单本身不登录。服务器停前正在打的那一单要接着做。
-            need = asked or resumed or moving or daily_wait or (left or 0) > 0
+            need = asked or resumed or moving or daily_wait or citydb.attack_hold_on()
             if need and not qq.is_valid():
                 citydb.set_attack_status("login")
                 relogin_with_push(qq, config)
-                if not ((citydb.attack_hold_left() or 0) > 0):
+                if not citydb.attack_hold_on():
                     citydb.set_attack_status("idle")
                 left = citydb.attack_hold_left()
                 moving = citydb.attack_move_pending() > 0
                 daily_wait = citydb.daily_job_open()
                 resumed = citydb.attack_resume_marked()
-                need = asked or resumed or moving or daily_wait or (left or 0) > 0
+                need = asked or resumed or moving or daily_wait or citydb.attack_hold_on()
             if not need:
                 citydb.fail_blocked_orders()
                 if left is not None:
@@ -1673,7 +1685,7 @@ def run_remote_orders(qq, config: dict) -> int:
             _connect_attack_orders(qq, config)
             if resumed:
                 citydb.clear_attack_resume()
-            if not ((citydb.attack_hold_left() or 0) > 0):
+            if not citydb.attack_hold_on():
                 citydb.fail_blocked_orders()
                 if citydb.daily_job_open() or citydb.attack_move_pending() > 0:
                     time.sleep(2)
@@ -2023,13 +2035,13 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     citydb.set_attack_status("hold")
                 else:
                     citydb.set_attack_status("login")
-            holding = (citydb.attack_hold_left() or 0) > 0
+            holding = citydb.attack_hold_on()
             if not (asked or resumed or holding or citydb.daily_job_open()):
                 break
             _connect_attack_orders(qq, config)
             if resumed:
                 citydb.clear_attack_resume()
-            if (citydb.attack_hold_left() or 0) > 0:
+            if citydb.attack_hold_on():
                 time.sleep(1 if citydb.attack_order_open() else 5)
             elif citydb.daily_job_open():
                 time.sleep(2)

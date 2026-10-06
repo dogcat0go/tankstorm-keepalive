@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     admin           INTEGER NOT NULL DEFAULT 0,
     auto_lock       INTEGER NOT NULL DEFAULT 0,
     hold_min        INTEGER NOT NULL DEFAULT 0,
+    hold_all        INTEGER NOT NULL DEFAULT 0,
     card_max        INTEGER NOT NULL DEFAULT 100,
     retreat_mode    TEXT NOT NULL DEFAULT 'hops',
     retreat_hops    INTEGER NOT NULL DEFAULT 3,
@@ -257,6 +258,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "hold_min" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN hold_min INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "hold_all" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN hold_all INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "card_max" not in ucols:
                 setup.execute(
@@ -921,6 +926,42 @@ def login_user(username: str, password: str):
         conn.close()
 
 
+def change_password(user_id: int, current, new, keep_token: str = "") -> str:
+    """改登录密码。成功返回空字符串。别的登录态作废，这一次留下。"""
+    import secrets
+    current = "" if current is None else str(current)
+    new = "" if new is None else str(new)
+    if len(new) < 6 or len(new) > 72:
+        return "密码至少 6 位"
+    user_id = int(user_id)
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT password_hash FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not row or "$" not in str(row[0] or ""):
+            return "当前密码不对"
+        salt, digest = str(row[0]).split("$", 1)
+        if not secrets.compare_digest(_password_hash(current, salt).split("$", 1)[1], digest):
+            return "当前密码不对"
+        if secrets.compare_digest(_password_hash(new, salt).split("$", 1)[1], digest):
+            return "新密码要和当前密码不一样"
+        conn.execute(
+            "UPDATE app_user SET password_hash=? WHERE id=?",
+            (_password_hash(new), user_id))
+        keep = str(keep_token or "")
+        if keep:
+            conn.execute(
+                "DELETE FROM app_session WHERE user_id=? AND token!=?",
+                (user_id, keep))
+        else:
+            conn.execute("DELETE FROM app_session WHERE user_id=?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
+
+
 def user_by_token(token: str):
     if not token:
         return None
@@ -929,7 +970,7 @@ def user_by_token(token: str):
         row = conn.execute(
             "SELECT u.id, u.username, IFNULL(u.qq_target,''), IFNULL(u.expires_at,''), "
             "IFNULL(u.tier,'初级'), IFNULL(u.admin,0), IFNULL(u.auto_lock,0), "
-            "IFNULL(u.hold_min,0), IFNULL(u.card_max,100), "
+            "IFNULL(u.hold_min,0), IFNULL(u.hold_all,0), IFNULL(u.card_max,100), "
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
             "IFNULL(u.retreat_fail,0), "
             "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0) "
@@ -940,13 +981,14 @@ def user_by_token(token: str):
         return {"id": row[0], "username": row[1], "qq_target": row[2],
                 "expires_at": row[3], "tier": row[4], "admin": bool(row[5]),
                 "auto_lock": bool(row[6]), "hold_min": int(row[7] or 0),
-                "card_max": int(row[8] if row[8] is not None else 100),
-                "retreat_mode": row[9] or "hops",
-                "retreat_hops": int(row[10] or 3),
-                "retreat_city": int(row[11] or 0),
-                "retreat_fail": bool(row[12]),
-                "lock_cards": int(row[13] if row[13] is not None else 3),
-                "modo_cards": int(row[14] if row[14] is not None else 0)}
+                "hold_all": bool(row[8]),
+                "card_max": int(row[9] if row[9] is not None else 100),
+                "retreat_mode": row[10] or "hops",
+                "retreat_hops": int(row[11] or 3),
+                "retreat_city": int(row[12] or 0),
+                "retreat_fail": bool(row[13]),
+                "lock_cards": int(row[14] if row[14] is not None else 3),
+                "modo_cards": int(row[15] if row[15] is not None else 0)}
     finally:
         conn.close()
 
@@ -1188,6 +1230,29 @@ def set_attack_hold(user_id: int, minutes) -> str:
     return ""
 
 
+def set_hold_all(user_id: int, on) -> str:
+    """全天候挂机。关掉并且挂机时间是 0 时，这次保活也停。"""
+    user_id = int(user_id)
+    flag = 1 if on else 0
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(hold_min,0) FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not row:
+            return "没有这个账号"
+        conn.execute(
+            "UPDATE app_user SET hold_all=? WHERE id=?",
+            (flag, user_id))
+        conn.commit()
+        minutes = int(row[0] or 0)
+    finally:
+        conn.close()
+    if not flag and minutes <= 0:
+        _delete_signal(_mark_name("hold", user_id))
+    return ""
+
+
 def _hold_owner_and_text(raw: str):
     """挂机值是「登录账号|时间」。旧数据没有账号，只还给当时的攻打进程。"""
     text = str(raw or "").strip()
@@ -1259,6 +1324,33 @@ def attack_hold_minutes() -> int:
     if not row or not attack_tier(row[1]) or account_expired(row[2]):
         return 0
     return int(row[0] or 0)
+
+
+def attack_hold_always(user_id=None) -> bool:
+    """这个账号开了全天候挂机。初级和过期账号不算。"""
+    if user_id is None:
+        user_id = attack_context_user()
+    user_id = int(user_id or 0)
+    if not user_id:
+        return False
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(hold_all,0), IFNULL(tier,'初级'), IFNULL(expires_at,'') "
+            "FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not int(row[0] or 0):
+        return False
+    return bool(attack_tier(row[1]) and not account_expired(row[2]))
+
+
+def attack_hold_on(user_id=None) -> bool:
+    """还要挂着：这次保活没到点，或者开了全天候。"""
+    if (attack_hold_left(user_id) or 0) > 0:
+        return True
+    return attack_hold_always(user_id)
 
 
 def username_of(user_id: int) -> str:
@@ -2918,6 +3010,15 @@ def attack_status(user_id: int) -> dict:
     blocked = attack_qq_blocked(user_id)
     paused = blocked or attack_paused(user_id)
     hold_left = attack_hold_left(user_id)
+    always = attack_hold_always(user_id)
+
+    def hold_note(text):
+        if always:
+            return f"{text}，全天候"
+        if hold_left is not None and hold_left > 0:
+            return f"{text}，还剩 {(hold_left + 59) // 60} 分钟"
+        return text
+
     page_on = _signal_value(_mark_name("pageqr", user_id)) == "1"
     show_qr = bool(
         page_login_path(user_id)
@@ -2957,9 +3058,7 @@ def attack_status(user_id: int) -> dict:
         else:
             detail = "已暂停，不在保活，先连上再继续"
     elif phase == "login":
-        detail = "登录中"
-        if hold_left is not None and hold_left > 0:
-            detail = f"{detail}，还剩 {(hold_left + 59) // 60} 分钟"
+        detail = hold_note("登录中")
     elif phase == "daily":
         label = str(parsed.get("task") or "").strip()
         detail = f"正在做{label}" if label else "正在做日常任务"
@@ -2968,17 +3067,11 @@ def attack_status(user_id: int) -> dict:
             detail = f"{detail}，{note}"
     elif phase == "hold":
         if _hold_link_ok(parsed):
-            head = "保活中"
-            if hold_left is not None and hold_left > 0:
-                detail = f"{head}，还剩 {(hold_left + 59) // 60} 分钟"
-            else:
-                detail = head
+            detail = hold_note("保活中")
             if waiting:
                 detail = f"{detail}，正在看路径"
         else:
-            detail = "登录中"
-            if hold_left is not None and hold_left > 0:
-                detail = f"{detail}，还剩 {(hold_left + 59) // 60} 分钟"
+            detail = hold_note("登录中")
     elif phase == "running" and own and str(own[1] or "").strip():
         detail = f"正在打城市 {own[0]} 的 {own[1]}"
     elif phase == "running" and own:
@@ -2987,7 +3080,7 @@ def attack_status(user_id: int) -> dict:
         detail = "正在执行订单"
     else:
         if not _hold_link_ok(parsed):
-            detail = "登录中" if (hold_left or 0) > 0 else "不在保活，先连上再接订单"
+            detail = hold_note("登录中") if ((hold_left or 0) > 0 or always) else "不在保活，先连上再接订单"
         else:
             detail = _queued_attack_text(queued)
             if not detail:
@@ -3000,7 +3093,7 @@ def attack_status(user_id: int) -> dict:
     if here_id:
         name = city_name(here_id)
         here = f"{here_id} {name}".strip() if name else str(here_id)
-    show_hold = (not paused and phase == "hold"
+    show_hold = (not paused and phase == "hold" and not always
                  and hold_left is not None and hold_left > 0)
     return pack({"online": True, "phase": phase, "detail": detail,
                  "seen_at": beijing_ts(seen), "qr": show_qr, "here": here,
@@ -3346,7 +3439,7 @@ def users_marked_resume() -> list:
 
 
 def users_needing_attack() -> list:
-    """主进程要照看的登录账号：还有日常，挂机还没结束，或有一单正在打。
+    """主进程要照看的登录账号：还有日常，挂机还没结束，开了全天候，或有一单正在打。
 
     只是排队、还没开打的订单不拉起。没挂在游戏上就去登录，游戏那边进不去。
     服务器停前正在打的那一单还标着执行中，起来要重新登录接着打。
@@ -3358,6 +3451,17 @@ def users_needing_attack() -> list:
         left = attack_hold_left(user_id)
         if left is not None and left > 0:
             ids.add(user_id)
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id, IFNULL(tier,'初级'), IFNULL(expires_at,'') "
+            "FROM app_user WHERE IFNULL(hold_all,0)!=0"
+        ).fetchall()
+    finally:
+        conn.close()
+    for user_id, tier, expires in rows:
+        if attack_tier(tier) and not account_expired(expires):
+            ids.add(int(user_id))
     return sorted(ids)
 
 
@@ -3850,7 +3954,7 @@ def resume_stranded_orders() -> None:
     if user_id:
         skip_unfinished_auto(user_id)
     requeue_running_orders()
-    if not ((attack_hold_left() or 0) > 0):
+    if not attack_hold_on():
         requeue_blocked_orders()
 
 
