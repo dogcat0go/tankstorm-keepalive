@@ -731,33 +731,226 @@ def _next_mine_to_occupy(data):
     return None
 
 
+# 活跃度门槛。客户端按这个顺序各领一次，不是领到一档就停。
+_GIFT_TIERS = (10, 30, 50, 80, 100)
+
+
+def _gift_rows(data):
+    if not isinstance(data, dict):
+        return []
+    return [e for e in _aslist(data.get("getGift")) if isinstance(e, dict)]
+
+
+def _activity_of(data):
+    task = data.get("dailyTask") if isinstance(data, dict) else None
+    if isinstance(task, list):
+        task = task[-1] if task else None
+    act = task.get("field2") if isinstance(task, dict) else None
+    if isinstance(act, bool) or not isinstance(act, int):
+        return None
+    return act
+
+
+def _sync_gift_memory():
+    """换天或换了攻打号的状态文件，就清掉这一线程记下的档位。磁盘上的记录还在。"""
+    st = _load_state()
+    token = (_state_path(), st.get("date"))
+    if getattr(_state_local, "gifts_token", None) != token:
+        _state_local.gifts = set()
+        _state_local.gift_skip = set()
+        _state_local.gifts_token = token
+    return st
+
+
+def _int_set(raw):
+    if not isinstance(raw, list):
+        return set()
+    return {t for t in raw if isinstance(t, int) and not isinstance(t, bool)}
+
+
+def _gift_lists():
+    """(今天领成功的档, 今天被拒后不再发的档)。"""
+    st = _sync_gift_memory()
+    gifts = st.get("gifts") or {}
+    claimed = _int_set(gifts.get("每日任务")) | set(_state_local.gifts or ())
+    skipped = _int_set(gifts.get("每日任务跳过")) | set(_state_local.gift_skip or ())
+    return claimed, skipped
+
+
+def _sent_gift_ids():
+    """今天不要再发的档。领奖即时回包里刚领的档仍标着未领，不能再拿回包当依据。"""
+    claimed, skipped = _gift_lists()
+    return claimed | skipped
+
+
+def _claimed_gift_ids():
+    claimed, _skipped = _gift_lists()
+    return claimed
+
+
+def _store_gift(st, key, mem_attr, tier):
+    if isinstance(tier, bool) or not isinstance(tier, int):
+        return
+    _sync_gift_memory()
+    gifts = st.setdefault("gifts", {})
+    got = gifts.get(key)
+    if not isinstance(got, list):
+        got = []
+        gifts[key] = got
+    if tier not in got:
+        got.append(tier)
+    getattr(_state_local, mem_attr).add(tier)
+    _save_state(st)
+
+
+def _remember_gift(st, tier):
+    """记下这一档今天领成功了。同一天再进来会跳过，不会把同一档再领一遍。"""
+    _store_gift(st, "每日任务", "gifts", tier)
+
+
+def _skip_gift(st, tier):
+    """这一档被服务器拒绝。今天不再发它，别挡住后面达标的档。"""
+    _store_gift(st, "每日任务跳过", "gift_skip", tier)
+
+
+def _int_field(fields, no):
+    if not isinstance(fields, dict) or no not in fields:
+        return None
+    pair = fields[no]
+    if not isinstance(pair, tuple) or len(pair) < 2:
+        return None
+    val = pair[1]
+    if isinstance(val, bool) or not isinstance(val, int):
+        return None
+    return val
+
+
+def _unclaimed_tiers(data):
+    """列表里还没领、并且今天没发过也没被拒过的档。没有列表就返回 None。"""
+    rows = _gift_rows(data)
+    if not rows:
+        return None
+    sent = _sent_gift_ids()
+    out = []
+    for e in rows:
+        tier = e.get("field1")
+        if isinstance(tier, bool) or not isinstance(tier, int):
+            continue
+        if e.get("field2") or tier in sent:
+            continue
+        out.append(tier)
+    return out
+
+
+def _daily_task_snapshot(rec):
+    got = rec.latest.get("RseDailyTask") if rec else None
+    if not got or not isinstance(got[1], dict):
+        return None
+    return got[1]
+
+
+def _gifts_all_taken(data):
+    """五档都已经领到（服务器标记，或今天这轮领成功）才算领完。被拒的不算。"""
+    if not _gift_rows(data):
+        return False
+    claimed = _claimed_gift_ids()
+    taken = set()
+    for e in _gift_rows(data):
+        tier = e.get("field1")
+        if isinstance(tier, bool) or not isinstance(tier, int):
+            continue
+        if e.get("field2"):
+            taken.add(tier)
+    for tier in _GIFT_TIERS:
+        if tier not in taken and tier not in claimed:
+            return False
+    return True
+
+
+def _settle_daily_gifts(st, results, why, data, fu_ok):
+    """按今天领成功的档记账。没领完不把当天次数记满，下次达标再领。
+
+    返回 False，让本轮的次数循环停住。下一轮每日任务还会进来看有没有新达标的档。
+    """
+    sent = sorted(_claimed_gift_ids())
+    st["done"]["每日任务"] = len(sent)
+    st.setdefault("miss", {}).pop("每日任务", None)
+    _save_state(st)
+    base = results.get("每日任务") or why
+    note = ""
+    if sent:
+        note = "领了 " + "、".join(str(t) for t in sent)
+    left = _unclaimed_tiers(data)
+    if _gifts_all_taken(data):
+        st["done"]["每日任务"] = len(_GIFT_TIERS)
+        _save_state(st)
+        left = []
+    if left:
+        act = _activity_of(data)
+        locked = [t for t in left if act is not None and t > act]
+        ready = [t for t in left if t not in locked]
+        bits = []
+        if ready:
+            bits.append("还有 " + "、".join(str(t) for t in ready) + " 达标未领")
+        if locked:
+            bits.append("、".join(str(t) for t in locked) + " 还没达标")
+        extra = "，".join(bits)
+        if extra:
+            note = (note + "；" if note else "") + extra + "，下次再领"
+    if note:
+        results["每日任务"] = base + "；" + note
+    if fu_ok is False:
+        log.info("[每日任务] 有一档没领成。已领 %s，今天不重复领",
+                 "、".join(str(t) for t in sent) or "无")
+    elif not left:
+        log.info("[每日任务] 达标档位已领完（今日 %d/5）", st["done"]["每日任务"])
+    else:
+        log.info("[每日任务] %s", note)
+    return False
+
+
 def _eligible_gift_tier(data):
-    """每日任务：返回一个"活跃度已达标且还没领"的档位，没有就 None。
+    """每日任务：返回一个活跃度已达标、还没领、今天也没发过的档位。没有就 None。
 
     响应 RseDailyTask：
         dailyTask.field2 = 当前活跃度
         getGift = [{field1: 档位(10/30/50/80/100), field2: 0未领/1已领}, ...]
-    实测活跃度 64，领了 10/30/50 三档，80/100 因为没达标领不了。
+    五档各领一次。领奖的即时回包里刚领的档仍是未领，所以还要跳过今天已经发出去的。
+    实测活跃度 64 时领 10/30/50，80/100 没达标不领。
     """
-    task = data.get("dailyTask")
-    if isinstance(task, list):
-        task = task[-1] if task else None
-    act = task.get("field2") if isinstance(task, dict) else None
-    if not isinstance(act, int):
+    act = _activity_of(data)
+    if act is None:
         return None
-    for e in _aslist(data.get("getGift")):
-        if not isinstance(e, dict):
-            continue
+    sent = _sent_gift_ids()
+    for e in _gift_rows(data):
         tier, taken = e.get("field1"), e.get("field2")
-        if isinstance(tier, int) and tier <= act and not taken:
+        if isinstance(tier, bool) or not isinstance(tier, int):
+            continue
+        if tier <= act and not taken and tier not in sent:
             return tier
     return None
 
 
 def _next_daily_gift(data):
-    """每日任务的后续领取：还有达标未领的档位就继续领。"""
+    """每日任务的后续领取：还有达标未领的档位就继续领下一档。"""
     tier = _eligible_gift_tier(data)
     return None if tier is None else {5: ("int32", tier)}
+
+
+def _gift_view(prev, new):
+    """挑下一档用的视图。领奖回包若没带活跃度或领奖列表，沿用上一份。"""
+    if not isinstance(new, dict):
+        return prev if isinstance(prev, dict) else new
+    if not isinstance(prev, dict):
+        return new
+    if "getGift" in new and "dailyTask" in new:
+        return new
+    merged = dict(new)
+    if "getGift" not in new and "getGift" in prev:
+        merged["getGift"] = prev["getGift"]
+    if "dailyTask" not in new and "dailyTask" in prev:
+        merged["dailyTask"] = prev["dailyTask"]
+    return merged
 
 
 class Gate:
@@ -1290,16 +1483,18 @@ TASKS = [
        {1: ("int32", 0), 2: ("int32", 0)}, "待确认", "需实测"),
 
     # 必须最后执行：前面每做一项，活跃度就涨一截，先领就少领。
-    # 实测活跃度 64 时能领 10/30/50 三档，80/100 没达标领不了。
+    # 五档 10/30/50/80/100，达标的每一档各领一次。没达标的留下，下次活跃度够了再领。
     _t("每日任务", "每日任务·按活跃度领奖", "043d", "RceDailyTask",
        {5: ("int32", FromResponse("RseDailyTask", _eligible_gift_tier,
                                   "取一个达标且未领的档位", fresh=False))},
        "实测", "8/10 抓包：客户端发 {giftID:10} / {giftID:30} / {giftID:50}，"
                "giftID 是 5 号字段（此前写的 getGift/taskId 是错的）。"
                "服务器持续推 RseDailyTask，dailyTask.field2 是当前活跃度，"
-               "getGift=[{档位, 是否已领}]。一轮把所有达标档位领完",
+               "getGift=[{档位, 是否已领}]。五档各领一次。"
+               "领奖即时回包里刚领的档仍标未领，靠今日已发记录跳过，避免只领到第一档",
        followup=Followup("043d", _next_daily_gift, max_rounds=5,
-                         desc="继续领剩下达标的档位")),
+                         desc="继续领剩下达标的档位"),
+       max_per_day=5),
 ]
 
 # 白名单：动作 opcode 和前置 opcode 都要在内 —— 前置请求同样是真实发出的包，
@@ -1950,6 +2145,11 @@ def _run(rec, sock, config, schema, on_fail=None):
                 log.info("[%s] %s", task.key, results[task.key])
                 continue
 
+            if task.key == "每日任务" and st.get("gift_halt"):
+                results[task.key] = "多次没领到，今天不再试"
+                log.info("[%s] %s", task.key, results[task.key])
+                continue
+
             # 冷却之一：服务器明确告诉我们"到这个时刻才能再做"（占领结束时刻等）。
             # 这个是读来的，优先于任何写死的秒数。
             until = st.get("until", {}).get(task.key, 0)
@@ -2216,6 +2416,24 @@ def _do_once(task, sock, rec, st, results, details, field_names,
         # 所以检查看到的就是真正要发出去的内容。
         fields, why = _resolve_fields(task, rec, sock, gate_before)
         if fields is None:
+            if task.key == "每日任务":
+                snap = _daily_task_snapshot(rec)
+                if snap and _gifts_all_taken(snap):
+                    st["done"][task.key] = task.max_per_day
+                    _save_state(st)
+                    results[task.key] = (f"今日已执行 {task.max_per_day}/"
+                                         f"{task.max_per_day} 次，跳过")
+                    log.info("[%s] 五档都已领过", task.key)
+                    return False
+                left = _unclaimed_tiers(snap) if snap else None
+                if left:
+                    act = _activity_of(snap)
+                    locked = [t for t in left if act is not None and t > act]
+                    if locked and len(locked) == len(left):
+                        results[task.key] = ("、".join(str(t) for t in locked)
+                                             + " 还没达标，跳过")
+                        log.info("[%s] %s", task.key, results[task.key])
+                        return False
             if done == 0:
                 results[task.key] = why
             log.info("[%s] %s", task.key, why)
@@ -2288,17 +2506,30 @@ def _do_once(task, sock, rec, st, results, details, field_names,
             why = f"{why}（{panel_note}）"
         results[task.key] = why
         if ok:
-            # 只有**确认成功**才算用掉一次每日额度
-            st["done"][task.key] = done + 1
-            st.setdefault("miss", {}).pop(task.key, None)   # 成功就清零重试计数
-            _save_state(st)
-            log.info("[%s] ✅ %s（今日 %d/%d）", task.key, why,
-                     done + 1, task.max_per_day)
+            if task.key == "每日任务":
+                # 先记下这一档。回包里它往往还标着未领，不记的话后续会再领同一档。
+                gid = _int_field(fields, 5)
+                if gid is not None:
+                    _remember_gift(st, gid)
+                log.info("[%s] ✅ %s（giftID=%s）", task.key, why,
+                         gid if gid is not None else "?")
+            else:
+                # 只有**确认成功**才算用掉一次每日额度
+                st["done"][task.key] = done + 1
+                st.setdefault("miss", {}).pop(task.key, None)   # 成功就清零重试计数
+                _save_state(st)
+                log.info("[%s] ✅ %s（今日 %d/%d）", task.key, why,
+                         done + 1, task.max_per_day)
             extra, last_data, fu_ok = _run_followup(task, sock, rec, data,
                                                     field_names, resp_timeout,
-                                                    gap)
+                                                    gap, st=st)
             if extra:
                 results[task.key] = why + "；" + "；".join(extra)
+            if task.key == "每日任务":
+                snap = last_data if _gift_rows(last_data) else data
+                if data is not None:
+                    details[task.key] = data
+                return _settle_daily_gifts(st, results, why, snap, fu_ok)
             if fu_ok is False:
                 # 有些任务的"动作"其实只是开面板，真正干活的是后续步骤。
                 # 后续被拒还把当天次数记满，就等于这一天再也不会重试了。
@@ -2330,6 +2561,17 @@ def _do_once(task, sock, rec, st, results, details, field_names,
                     # 这时候把当天次数打满是错的 —— 等冷却过去还该再试。
                     log.info("[%s] 本次被拒，等冷却过去再试", task.key)
                 else:
+                    if task.key == "每日任务":
+                        # 这一档被拒不能把五档全部记满，否则后面达标的档今天领不到。
+                        gid = _int_field(fields, 5)
+                        if gid is None or gid in _sent_gift_ids():
+                            log.info("[%s] 这一档被拒，不再往下试", task.key)
+                            return False
+                        _skip_gift(st, gid)
+                        log.info("[%s] 这一档被拒，跳过，接着看后面的档", task.key)
+                        if data is not None:
+                            details[task.key] = data
+                        return True
                     # 服务器明确拒绝，且没有冷却依据，今天别再撞了
                     st["done"][task.key] = task.max_per_day
                     log.info("[%s] 今日不再重试", task.key)
@@ -2340,9 +2582,15 @@ def _do_once(task, sock, rec, st, results, details, field_names,
                 miss = st.setdefault("miss", {}).get(task.key, 0) + 1
                 st["miss"][task.key] = miss
                 if miss >= MAX_MISS:
-                    st["done"][task.key] = task.max_per_day
-                    log.info("[%s] 连续 %d 轮收不到响应，今日不再重试",
-                             task.key, miss)
+                    if task.key == "每日任务":
+                        # 记满 5 会让进度看起来像五档都领了。这里只停今天的重试。
+                        st["gift_halt"] = True
+                        log.info("[%s] 连续 %d 轮收不到响应，今天不再试",
+                                 task.key, miss)
+                    else:
+                        st["done"][task.key] = task.max_per_day
+                        log.info("[%s] 连续 %d 轮收不到响应，今日不再重试",
+                                 task.key, miss)
                 else:
                     log.info("[%s] 第 %d/%d 次没等到响应，下一轮还会再试",
                              task.key, miss, MAX_MISS)
@@ -2376,7 +2624,8 @@ def _note_until(task, st, results, data):
     results[task.key] = results.get(task.key, "") + f"；占用至 {mins:.0f} 分钟后"
 
 
-def _run_followup(task, sock, rec, data, field_names, resp_timeout, gap):
+def _run_followup(task, sock, rec, data, field_names, resp_timeout, gap,
+                  st=None):
     """动作成功后按响应继续发（占矿、把达标的奖励档位领完）。
 
     返回 (每一轮的说明列表, 最后一条响应, 成败)。第二项用来读"下次可用时刻"
@@ -2390,19 +2639,21 @@ def _run_followup(task, sock, rec, data, field_names, resp_timeout, gap):
     if fu is None or data is None:
         return [], None, None
     out, last, seen, verdict = [], data, set(), None
+    view = data
     for _ in range(fu.max_rounds):
         try:
-            nxt = fu.build(last)
+            src = view if task.opcode == "043d" else last
+            nxt = fu.build(src)
         except Exception as exc:
             log.debug("[%s] 后续步骤构造失败: %s", task.key, exc)
             break
         if not nxt:
             break
-        # 同一包别发第二遍。服务器对领奖的即时回包里状态还没更新
-        # （实测领了 giftID=10，回包里它仍标着"未领"），照着算就会再领一次。
+        # 同一包别发第二遍。领奖即时回包里刚领的档仍标着未领，
+        # 下一档靠今日已发记录跳过；这里再挡一次，避免同一档连发。
         sig = tuple(sorted((k, v[1]) for k, v in nxt.items()))
         if sig in seen:
-            log.debug("[%s] 后续步骤重复（%s），停", task.key, sig)
+            log.info("[%s] 后续步骤和刚发的一样（%s），停", task.key, sig)
             break
         seen.add(sig)
         ok, why = _check_safety(task, field_names, nxt)
@@ -2429,6 +2680,17 @@ def _run_followup(task, sock, rec, data, field_names, resp_timeout, gap):
         log.info("[%s] 后续结果：%s %s", task.key, "✅" if ok else "❌", why)
         out.append(f"{fu.desc}: {why}")
         verdict = bool(ok)
+        if task.opcode == "043d":
+            view = _gift_view(view, last if isinstance(last, dict) else None)
+        if task.opcode == "043d" and st is not None:
+            gid = _int_field(nxt, 5)
+            if ok and gid is not None:
+                _remember_gift(st, gid)
+            elif not ok and last is not None and gid is not None \
+                    and gid not in _sent_gift_ids():
+                # 这一档被拒就跳过，继续领后面达标的档。
+                _skip_gift(st, gid)
+                continue
         if not ok or last is None:
             break
     return out, last, verdict
