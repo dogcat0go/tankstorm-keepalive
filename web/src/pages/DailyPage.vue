@@ -88,7 +88,7 @@ defineProps({
       <label class="choice">恢复卡<input v-model="modoCards" class="mins" inputmode="numeric" required /></label>
       <button type="submit" :disabled="!dailyQq || !(proc && proc.keepalive)">提交</button>
     </form>
-    <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后跳到国战助手，订单和进度都在那里。击退数量按 4 次扫荡算 1 个。要这个号已经挂机保活。</p>
+    <p class="muted">按攻打号的国家，去首都旁边两座摩多军团。先走进那座城，召唤支援兵，再打。召唤失败时用功勋补一轮支援兵，再召唤一次；紧接着还失败就停。这两座共用这么多张恢复卡，先打的那座最多用一半。0 表示不用卡，行动力不够就停。提交后跳到国战助手，订单和进度都在那里。击退数量按 4 次扫荡算 1 个。要这个号已经挂机保活。</p>
     <p v-if="dailyNote" class="muted">{{ dailyNote }}</p>
     <p v-if="err && errAt === 'daily'" class="err">{{ err }}</p>
     <h2>最近执行</h2>
