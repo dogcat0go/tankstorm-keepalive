@@ -305,22 +305,19 @@ def daily_restock(rec, sock, config):
 def buy_round(rec, sock, config):
     """刷摩多召唤失败时买一轮支援兵。
 
-    一轮 = min(单次最多买几个, 目标库存 − 现有, 硬上限)。
-    不看「自动补支援兵」：那是每日任务的开关，刷摩多另走「召唤失败补一轮」。
-    库存已经不低于目标库存就不再买。返回 (是否成功, 说明, 买到几个)。
+    一轮就是配置里的「单次最多买几个」，现在是 99。不按离目标库存还差多少去缩。
+    代码硬上限仍是 100。不看「自动补支援兵」。
+    返回 (是否成功, 说明, 买到几个)。
     """
     conf = (config.get("功勋商城", {}) or {})
     item_id, shop_id, price = _shop_ids(conf)
-    target = int(conf.get("目标库存", 50))
-    cap = int(conf.get("单次最多买几个", 10))
-    if price <= 0 or cap <= 0 or target <= 0:
-        return False, "配置里的单价/上限/目标库存必须是正数，什么都没做", 0
+    cap = int(conf.get("单次最多买几个", 99))
+    if price <= 0 or cap <= 0:
+        return False, "配置里的单价或单次数量必须是正数，什么都没做", 0
 
     _slot, have = _bag_count(rec, item_id)
     if have is None:
         return False, f"读不到背包里物品 {item_id} 的数量，不买（读不到就不做）", 0
-    want = _round_want(have, target, cap)
-    if want <= 0:
-        return False, (f"支援兵还有 {have} 个，已经达到目标库存 {target}，不买"), 0
+    want = min(cap, HARD_MAX_BUY)
     log.info("[功勋商城] 召唤失败，补一轮：现有 %d，这一轮买 %d 个", have, want)
     return _purchase(rec, sock, item_id, shop_id, price, want, have)
