@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS watch_sub (
     created_at   TEXT NOT NULL,
     last_present INTEGER,
     lock_sent    INTEGER NOT NULL DEFAULT 0,
+    name         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (user_id, city_id, uid)
 );
 """
@@ -238,6 +239,28 @@ def connect(readonly=False, timeout=15):
             if wcols and "lock_sent" not in wcols:
                 setup.execute(
                     "ALTER TABLE watch_sub ADD COLUMN lock_sent INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if wcols and "name" not in wcols:
+                setup.execute(
+                    "ALTER TABLE watch_sub ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+                setup.execute(
+                    "UPDATE watch_sub SET name=("
+                    " SELECT p.name FROM player p"
+                    " WHERE p.uid=watch_sub.uid AND TRIM(IFNULL(p.name,''))!=''"
+                    " ORDER BY p.fetched_at DESC LIMIT 1"
+                    ") WHERE TRIM(IFNULL(name,''))='' AND EXISTS ("
+                    " SELECT 1 FROM player p"
+                    " WHERE p.uid=watch_sub.uid AND TRIM(IFNULL(p.name,''))!=''"
+                    ")")
+                setup.execute(
+                    "UPDATE watch_sub SET name=("
+                    " SELECT f.name FROM atk_fail f"
+                    " WHERE f.uid=watch_sub.uid AND TRIM(IFNULL(f.name,''))!=''"
+                    " ORDER BY f.at DESC LIMIT 1"
+                    ") WHERE TRIM(IFNULL(name,''))='' AND EXISTS ("
+                    " SELECT 1 FROM atk_fail f"
+                    " WHERE f.uid=watch_sub.uid AND TRIM(IFNULL(f.name,''))!=''"
+                    ")")
                 setup.commit()
             ucols = {r[1] for r in setup.execute("PRAGMA table_info(app_user)")}
             if ucols and "expires_at" not in ucols:
@@ -779,9 +802,19 @@ def upsert_players(city_id: int, players: list, fetched_at: str, page=None):
 
 
 def drop_stale(city_id: int, fetched_at: str) -> int:
-    """删掉这座城里本次没再出现的人（完整拉完才调用）。"""
+    """删掉这座城里本次没再出现的人（完整拉完才调用）。名字先留在订阅上。"""
     conn = connect()
     try:
+        conn.execute(
+            "UPDATE watch_sub SET name=("
+            " SELECT p.name FROM player p"
+            " WHERE p.uid=watch_sub.uid AND p.city_id=? AND p.fetched_at<?"
+            " AND TRIM(IFNULL(p.name,''))!='' LIMIT 1"
+            ") WHERE TRIM(IFNULL(name,''))='' AND uid IN ("
+            " SELECT uid FROM player WHERE city_id=? AND fetched_at<?"
+            " AND TRIM(IFNULL(name,''))!=''"
+            ")",
+            (int(city_id), fetched_at, int(city_id), fetched_at))
         cur = conn.execute(
             "DELETE FROM player WHERE city_id=? AND fetched_at<?",
             (int(city_id), fetched_at))
@@ -4281,9 +4314,15 @@ def list_watches(user_id: int) -> list:
         rows = conn.execute(
             "SELECT s.city_id, s.uid, s.created_at, s.last_present, IFNULL(c.name, ''), "
             "COALESCE(NULLIF(TRIM(IFNULL(p.name,'')), ''), "
+            "NULLIF(TRIM(IFNULL(s.name,'')), ''), "
+            "(SELECT s2.name FROM watch_sub s2 WHERE s2.uid=s.uid "
+            "AND TRIM(IFNULL(s2.name,''))!='' LIMIT 1), "
             "(SELECT p2.name FROM player p2 WHERE p2.uid=s.uid "
             "AND TRIM(IFNULL(p2.name,''))!='' "
-            "ORDER BY p2.fetched_at DESC LIMIT 1), ''), "
+            "ORDER BY p2.fetched_at DESC LIMIT 1), "
+            "(SELECT f.name FROM atk_fail f WHERE f.uid=s.uid "
+            "AND TRIM(IFNULL(f.name,''))!='' "
+            "ORDER BY f.at DESC LIMIT 1), ''), "
             "p.lvl, p.fetched_at, p.page, "
             "(SELECT MAX(fetched_at) FROM player WHERE city_id=s.city_id), "
             "o.fetched_at "
@@ -4378,9 +4417,13 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                 "SELECT name, page FROM player WHERE city_id=? AND uid=?",
                 (city_id, uid)).fetchone()
             if nrow:
-                name = nrow[0] or ""
+                name = str(nrow[0] or "").strip()
                 if nrow[1] is not None:
                     page = int(nrow[1]) + 1
+            if name:
+                conn.execute(
+                    "UPDATE watch_sub SET name=? WHERE uid=? AND IFNULL(name,'')!=?",
+                    (name, uid, name))
             just = last is None or int(last) != 1
             sent = int(lock_sent or 0)
             if last is None or int(last) != now or (now == 0 and sent):
