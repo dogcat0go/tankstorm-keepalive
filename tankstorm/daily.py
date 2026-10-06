@@ -2457,6 +2457,8 @@ def _run(rec, sock, config, schema, on_fail=None):
             if task.runner is not None:
                 try:
                     got = task.runner(rec, sock, config)
+                except OSError:
+                    raise
                 except Exception as exc:
                     got = (False, f"执行异常：{exc}")
                     log.exception("[%s] 自定义执行器抛异常", task.key)
@@ -2579,6 +2581,8 @@ def _run_campaign_extras(rec, sock, switches, st, results, stages="", interval=1
         try:
             ok, why, finished, pushing = pve.extra_campaign(
                 rec, sock, stages, interval, kind, already_done=_done_of(key))
+        except OSError:
+            raise
         except Exception as exc:
             ok, why, finished, pushing = False, f"执行异常：{exc}", False, True
             log.exception("[%s] 抛异常", key)

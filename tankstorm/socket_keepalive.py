@@ -1479,7 +1479,10 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
         log.info("日常已手动关停：%s", label)
     except OSError:
         citydb.set_attack_status("daily", task=label, note="连接中断")
-        citydb.finish_daily_job(job["id"], "failed", "连接中断")
+        if kind == "daily":
+            citydb.touch_daily_job(job["id"], "连接中断，重连后再做")
+        else:
+            citydb.finish_daily_job(job["id"], "failed", "连接中断")
         raise
     except Exception as exc:
         log.info("日常没做成", exc_info=True)
