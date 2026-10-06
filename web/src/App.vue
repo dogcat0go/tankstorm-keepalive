@@ -187,6 +187,10 @@ function pickTab(key) {
   if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
 }
 
+function openProfile() {
+  tab.value = "profile";
+}
+
 async function refreshAttacks() {
   if (!me.value) {
     orders.value = [];
@@ -748,6 +752,8 @@ onUnmounted(() => {
         :hold-all="holdAll"
         :hold-all-busy="holdAllBusy"
         :save-hold-all="saveHoldAll"
+        :open-profile="openProfile"
+        :profile-on="tab === 'profile'"
         :logout="logout"
         :show-err="showErr"
       />
@@ -764,12 +770,11 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
-      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="pickTab">
+      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab === 'profile' ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
         <el-menu-item index="qq">订阅QQ</el-menu-item>
-        <el-menu-item index="profile">个人中心</el-menu-item>
       </el-menu>
       <ProfilePage
         v-show="tab === 'profile'"

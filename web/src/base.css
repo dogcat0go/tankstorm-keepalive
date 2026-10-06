@@ -19,6 +19,7 @@ span.switch { font-size: 15px; font-weight: 700; }
 .account-bar form.hold-set { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
 .account-bar form.hold-set .err { margin: 0; }
 .account-bar button.ghost, .account-bar a.ghost { margin-left: 0; }
+.account-bar button.ghost.here { background: #e7e7e3; border-color: #1a1a1a; }
 .attack-bar { margin: 0 0 10px; }
 .attack-bar > p { margin: 0 0 8px; }
 .attack-bar > p:last-child { margin-bottom: 0; }
