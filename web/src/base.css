@@ -19,10 +19,6 @@ span.switch { font-size: 15px; font-weight: 700; }
 .account-bar form.hold-set { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
 .account-bar form.hold-set .err { margin: 0; }
 .account-bar button.ghost, .account-bar a.ghost { margin-left: 0; }
-.account-head { margin: 0 0 16px; }
-.account-head .lead { margin: 0; }
-form.pwd-form { margin: 8px 0 0; }
-form.pwd-form .err { margin: 8px 0 0; flex-basis: 100%; }
 .attack-bar { margin: 0 0 10px; }
 .attack-bar > p { margin: 0 0 8px; }
 .attack-bar > p:last-child { margin-bottom: 0; }

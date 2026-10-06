@@ -9,6 +9,7 @@ import AttackPage from "./pages/AttackPage.vue";
 import DailyPage from "./pages/DailyPage.vue";
 import WatchPage from "./pages/WatchPage.vue";
 import QqPage from "./pages/QqPage.vue";
+import ProfilePage from "./pages/ProfilePage.vue";
 
 const me = ref(null);
 const mode = ref("login");
@@ -747,11 +748,11 @@ onUnmounted(() => {
         :hold-all="holdAll"
         :hold-all-busy="holdAllBusy"
         :save-hold-all="saveHoldAll"
-        :save-password="savePassword"
         :logout="logout"
         :show-err="showErr"
       />
       <AttackStatus
+        v-show="tab !== 'profile'"
         :proc="proc"
         :qr-src="qrSrc"
         :err="err"
@@ -768,7 +769,16 @@ onUnmounted(() => {
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
         <el-menu-item index="qq">订阅QQ</el-menu-item>
+        <el-menu-item index="profile">个人中心</el-menu-item>
       </el-menu>
+      <ProfilePage
+        v-show="tab === 'profile'"
+        :me="me"
+        :err="err"
+        :err-at="errAt"
+        :save-password="savePassword"
+        :show-err="showErr"
+      />
       <DailyPage
         v-show="tab === 'daily'"
         v-model:daily-at="dailyAt"
