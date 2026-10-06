@@ -734,7 +734,7 @@ endpoints.json               旧的 HTTP 接口任务定义（已废弃，仅 --
 requirements.txt             依赖，只有 requests
 run_keepalive.sh / .bat      保活启动脚本
 run_daily.sh   / .bat        每日任务启动脚本
-update.sh                    服务器更新：拉代码、构建页面、重启订阅页面
+update_tankstorm.sh          服务器更新：停服务、拉代码、构建页面、再启动
 
 tankstorm/
   __init__.py                包定义，游戏 URL 常量
@@ -790,10 +790,10 @@ docs/
 服务器上更新（需要已安装 Node）：
 
 ```bash
-./update.sh
+bash update_tankstorm.sh
 ```
 
-拉取当前分支，安装 Python 依赖，在 `web` 里构建页面，然后重新拉起 `web.py`。
+先停 `tankstorm.service` 和 `tankstorm-web.service`，拉取当前分支，在 `web` 里构建页面，再把两个服务拉起来。
 
 ### 抓包分析链路
 

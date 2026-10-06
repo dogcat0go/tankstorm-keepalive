@@ -33,7 +33,7 @@ __pycache__/
 venv/
 env/
 
-# Vue 依赖和页面构建结果。服务器用 update.sh 构建，不提交。
+# Vue 依赖和页面构建结果。服务器用 update_tankstorm.sh 构建，不提交。
 web/node_modules/
 
 # ===== 编辑器 / 系统 =====

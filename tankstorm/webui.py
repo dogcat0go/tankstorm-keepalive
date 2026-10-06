@@ -686,7 +686,7 @@ def _handler(config: dict):
                     return
                 full = os.path.join(_DIST, "index.html")
                 if not os.path.isfile(full):
-                    body = ("前端还没构建。在仓库根目录执行 ./update.sh"
+                    body = ("前端还没构建。在仓库根目录执行 bash update_tankstorm.sh"
                             ).encode("utf-8")
                     self.send_response(503)
                     self.send_header("Content-Type", "text/plain; charset=utf-8")
