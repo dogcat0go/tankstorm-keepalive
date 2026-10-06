@@ -567,6 +567,13 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, _scan_view(config))
+                elif path == "/api/password":
+                    why = citydb.change_password(
+                        user["id"], data.get("current"), data.get("password"),
+                        keep_token=_cookie_token(self))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True})
                 elif path == "/api/push":
                     qq_target = str(data.get("qq_target", "")).strip()
                     if qq_target and (not qq_target.isdigit() or not 5 <= len(qq_target) <= 12):

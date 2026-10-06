@@ -926,6 +926,42 @@ def login_user(username: str, password: str):
         conn.close()
 
 
+def change_password(user_id: int, current, new, keep_token: str = "") -> str:
+    """改登录密码。成功返回空字符串。别的登录态作废，这一次留下。"""
+    import secrets
+    current = "" if current is None else str(current)
+    new = "" if new is None else str(new)
+    if len(new) < 6 or len(new) > 72:
+        return "密码至少 6 位"
+    user_id = int(user_id)
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT password_hash FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not row or "$" not in str(row[0] or ""):
+            return "当前密码不对"
+        salt, digest = str(row[0]).split("$", 1)
+        if not secrets.compare_digest(_password_hash(current, salt).split("$", 1)[1], digest):
+            return "当前密码不对"
+        if secrets.compare_digest(_password_hash(new, salt).split("$", 1)[1], digest):
+            return "新密码要和当前密码不一样"
+        conn.execute(
+            "UPDATE app_user SET password_hash=? WHERE id=?",
+            (_password_hash(new), user_id))
+        keep = str(keep_token or "")
+        if keep:
+            conn.execute(
+                "DELETE FROM app_session WHERE user_id=? AND token!=?",
+                (user_id, keep))
+        else:
+            conn.execute("DELETE FROM app_session WHERE user_id=?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
+
+
 def user_by_token(token: str):
     if not token:
         return None

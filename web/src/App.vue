@@ -9,6 +9,7 @@ import AttackPage from "./pages/AttackPage.vue";
 import DailyPage from "./pages/DailyPage.vue";
 import WatchPage from "./pages/WatchPage.vue";
 import QqPage from "./pages/QqPage.vue";
+import ProfilePage from "./pages/ProfilePage.vue";
 
 const me = ref(null);
 const mode = ref("login");
@@ -185,6 +186,16 @@ function pickTab(key) {
   tab.value = key;
   if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
 }
+
+function openProfile() {
+  tab.value = "profile";
+}
+
+function openQq() {
+  tab.value = "qq";
+}
+
+const sideOn = computed(() => tab.value === "profile" || tab.value === "qq");
 
 async function refreshAttacks() {
   if (!me.value) {
@@ -614,6 +625,11 @@ async function savePush() {
   note.value = "QQ 号已保存";
 }
 
+async function savePassword(current, password) {
+  showErr("", "pwd");
+  await api("/api/password", { current, password });
+}
+
 async function logout() {
   await api("/api/logout", {});
   me.value = null;
@@ -742,10 +758,15 @@ onUnmounted(() => {
         :hold-all="holdAll"
         :hold-all-busy="holdAllBusy"
         :save-hold-all="saveHoldAll"
+        :open-profile="openProfile"
+        :profile-on="tab === 'profile'"
+        :open-qq="openQq"
+        :qq-on="tab === 'qq'"
         :logout="logout"
         :show-err="showErr"
       />
       <AttackStatus
+        v-show="!sideOn"
         :proc="proc"
         :qr-src="qrSrc"
         :err="err"
@@ -757,12 +778,19 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
-      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="tab" aria-label="功能" @select="pickTab">
+      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="sideOn ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
-        <el-menu-item index="qq">订阅QQ</el-menu-item>
       </el-menu>
+      <ProfilePage
+        v-show="tab === 'profile'"
+        :me="me"
+        :err="err"
+        :err-at="errAt"
+        :save-password="savePassword"
+        :show-err="showErr"
+      />
       <DailyPage
         v-show="tab === 'daily'"
         v-model:daily-at="dailyAt"
