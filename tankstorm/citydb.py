@@ -3798,7 +3798,7 @@ def _job_detail(detail: str) -> str:
     """说明里的换行留着，同一行里的多余空白收掉。"""
     text = str(detail or "").replace("\r\n", "\n").replace("\r", "\n")
     lines = [" ".join(line.split()) for line in text.split("\n")]
-    return "\n".join(line for line in lines if line)[:500]
+    return "\n".join(line for line in lines if line)[:4000]
 
 
 def touch_daily_job(job_id: int, detail: str) -> None:
@@ -3867,7 +3867,7 @@ def list_daily_jobs(user_id: int, limit: int = 2) -> list:
             "kind": row[1],
             "label": DAILY_KIND_LABEL.get(row[1], row[1]),
             "status": _DAILY_STATUS.get(row[2], row[2]),
-            "detail": daily.compact_detail(row[3] or ""),
+            "detail": daily.display_job_detail(row[2], row[3] or ""),
             "created_at": beijing_ts(row[4]) if row[4] else "",
         })
     return out
