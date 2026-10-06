@@ -3554,12 +3554,20 @@ def daily_switches(user_id: int, defaults: dict) -> dict:
     finally:
         conn.close()
     if not saved:
+        from . import daily
+        for key in daily.HELD_TASKS:
+            if key in base:
+                base[key] = False
         return base
     for key, val in saved.items():
         name = str(key or "")
         if not name or name.startswith("_"):
             continue
         base[name] = bool(val)
+    from . import daily
+    for key in daily.HELD_TASKS:
+        if key in base:
+            base[key] = False
     return base
 
 
@@ -3573,6 +3581,9 @@ def set_daily_switch(user_id: int, key: str, on, known, defaults: dict) -> str:
             allowed.append(name)
     if key not in allowed:
         return "没有这项任务"
+    from . import daily
+    if key in daily.HELD_TASKS and bool(on):
+        return f"{key}暂不执行，反复被拒会打断连接"
     current = daily_switches(user_id, defaults)
     stored = {}
     for name in allowed:
