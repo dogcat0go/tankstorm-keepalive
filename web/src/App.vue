@@ -618,6 +618,12 @@ async function cancelOrder(it) {
   await refreshAttacks();
 }
 
+async function cancelDaily(it) {
+  showErr("", "daily");
+  await api("/api/daily/cancel", { id: it.id });
+  await refreshDaily();
+}
+
 async function savePush() {
   note.value = "";
   showErr("");
@@ -810,6 +816,7 @@ onUnmounted(() => {
         :err-at="errAt"
         :proc="proc"
         :run-daily="runDaily"
+        :cancel-daily="cancelDaily"
         :save-daily-at="saveDailyAt"
         :save-daily-switch="saveDailySwitch"
         :add-modo="addModo"

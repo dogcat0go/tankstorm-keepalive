@@ -3394,6 +3394,7 @@ _DAILY_STATUS = {
     "running": "正在做",
     "done": "做完",
     "failed": "没做成",
+    "ended": "已关停",
 }
 
 
@@ -3876,9 +3877,55 @@ def finish_daily_job(job_id: int, status: str, detail: str) -> None:
     conn = connect()
     try:
         conn.execute(
-            "UPDATE daily_job SET status=?, detail=?, updated_at=? WHERE id=?",
+            "UPDATE daily_job SET status=?, detail=?, updated_at=? "
+            "WHERE id=? AND status='running'",
             (status, text, now_ts(), int(job_id)))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def set_running_daily(job_id: int) -> None:
+    """这条线程正在做的日常。关停后 daily_job_stopped 变成真。"""
+    _attack_local.daily_job = int(job_id or 0)
+
+
+def daily_job_stopped() -> bool:
+    """网页已经关停当前这项。没有正在做的日常时不算停。"""
+    job_id = int(getattr(_attack_local, "daily_job", 0) or 0)
+    if not job_id:
+        return False
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT status FROM daily_job WHERE id=?", (job_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return True
+    return str(row[0] or "") != "running"
+
+
+def cancel_daily_job(user_id: int, job_id: int) -> str:
+    """手动关停这一项。正在做的会在下一轮动作里停手。已经结束的不动。"""
+    user_id = int(user_id)
+    job_id = int(job_id)
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT status FROM daily_job WHERE id=? AND user_id=?",
+            (job_id, user_id)).fetchone()
+        if not row:
+            return "没有这项日常"
+        if str(row[0] or "") not in ("pending", "running"):
+            return "这项日常已经结束"
+        conn.execute(
+            "UPDATE daily_job SET status='ended', detail=?, updated_at=? "
+            "WHERE id=? AND user_id=? AND status IN ('pending','running')",
+            ("已手动关停", now_ts(), job_id, user_id))
+        conn.commit()
+        log.info("登录账号 %s 关停日常 %s", username_of(user_id), job_id)
+        return ""
     finally:
         conn.close()
 

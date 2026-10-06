@@ -142,10 +142,21 @@ def _drain_incoming() -> None:
         raise OSError("服务器关闭连接")
 
 
+class Stopped(BaseException):
+    """网页关停了正在做的这项。不继承 Exception，各项自己的异常处理接不住。"""
+
+
+def raise_if_stopped() -> None:
+    from . import citydb
+    if citydb.daily_job_stopped():
+        raise Stopped()
+
+
 def _nap(seconds: float) -> None:
     """等到点。心跳在独立线程发，这里把已经到达的包读掉。"""
     end = time.time() + max(0.0, float(seconds or 0))
     while True:
+        raise_if_stopped()
         left = end - time.time()
         if left <= 0:
             return
@@ -2395,6 +2406,7 @@ def _run(rec, sock, config, schema, on_fail=None):
     # 连接断了才停，后面的任务没有连接可发。
     for task in ordered_tasks():
         try:
+            raise_if_stopped()
             if task.key in HELD_TASKS:
                 results[task.key] = HELD_STATUS
                 log.info("[%s] %s", task.key, results[task.key])
@@ -2480,6 +2492,7 @@ def _run(rec, sock, config, schema, on_fail=None):
 
             ran = 0
             while st["done"].get(task.key, 0) < task.max_per_day:
+                raise_if_stopped()
                 done = st["done"].get(task.key, 0)
                 more = _do_once(task, sock, rec, st, results, details,
                                 field_names, resp_timeout, gap, done, schema)
@@ -2940,6 +2953,7 @@ def _await_response(sock, rec, rse_msg, since_seq, timeout, want=None,
         return None
     deadline = time.time() + timeout
     while time.time() < deadline:
+        raise_if_stopped()
         hit = _pick_recent(rec, rse_msg, since_seq, want)
         if hit is not None:
             return hit
