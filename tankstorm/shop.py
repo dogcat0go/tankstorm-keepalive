@@ -137,48 +137,53 @@ def _precheck(fields, want_price, want_num, shop_id):
                   f"buynum={want_num} 总价={want_price}功勋")
 
 
-def daily_restock(rec, sock, config):
-    """每日任务用：库存低于补货线就把支援兵补到目标库存。
+def _round_want(have, target, cap):
+    """一轮买几个：不超过单次上限，也不超过补到目标库存还差的数量。"""
+    room = int(target) - int(have)
+    if room <= 0:
+        return 0
+    return min(room, int(cap), HARD_MAX_BUY)
 
-    返回 (是否成功, 说明)，签名符合 daily.Task 的 runner 约定。
-    """
-    conf = (config.get("功勋商城", {}) or {})
-    if not conf.get("自动补支援兵", False):
-        return True, "成功：未开启自动补支援兵（默认关闭），什么都没做"
 
-    item_id = int(conf.get("支援兵物品ID", DEFAULT_ITEM_ID))
-    shop_id = int(conf.get("支援兵商品ID", DEFAULT_SHOP_ID))
-    price = int(conf.get("支援兵单价功勋", DEFAULT_UNIT_PRICE))
-    low = int(conf.get("补货线", 20))
-    target = int(conf.get("目标库存", 50))
-    cap = int(conf.get("单次最多买几个", 10))
+def _remember(rec, item_id, new_count, feats, credit):
+    """买成之后改本地缓存，避免下一轮还按买之前的库存再买一轮。"""
+    if rec is None:
+        return
+    bag = rec.latest.get(RSE_BAG)
+    if bag and isinstance(bag[1], dict):
+        items = bag[1].get("bagItem")
+        if isinstance(items, dict):
+            items = [items]
+            bag[1]["bagItem"] = items
+        if isinstance(items, list):
+            hit = False
+            for e in items:
+                if isinstance(e, dict) and e.get("field2") == item_id:
+                    e["field4"] = int(new_count)
+                    hit = True
+                    break
+            if not hit:
+                items.append({"field2": item_id, "field4": int(new_count)})
+    user = rec.latest.get(RSE_USER)
+    if user and isinstance(user[1], dict):
+        if isinstance(feats, int) and not isinstance(feats, bool):
+            user[1]["feats"] = feats
+        if isinstance(credit, int) and not isinstance(credit, bool):
+            user[1]["credit"] = credit
 
-    if price <= 0 or cap <= 0 or target <= 0:
-        return False, "配置里的单价/上限/目标库存必须是正数，什么都没做"
-    if target < low:
-        return False, f"目标库存({target}) 比补货线({low}) 还低，配置有误，不买"
 
-    # 铁律：先查询、读不到依据就不做。背包读不到 = 不知道现在有几个 = 不买。
-    slot, have = _bag_count(rec, item_id)
-    if have is None:
-        return False, f"读不到背包里物品 {item_id} 的数量，不买（读不到就不做）"
-    if have >= low:
-        return True, (f"成功：支援兵还有 {have} 个（补货线 {low}），不用补")
-
+def _purchase(rec, sock, item_id, shop_id, price, want, have):
+    """买 want 个支援兵。自检、对账都在这里。返回 (是否成功, 说明, 买到几个)。"""
     credit0, feats0 = _wallet(rec)
     if credit0 is None:
-        return False, "读不到勋章余额，没法在买完之后对账，不买"
-
-    want = min(target - have, cap, HARD_MAX_BUY)
-    if want <= 0:
-        return True, f"成功：算出来要买 {want} 个，不用补"
+        return False, "读不到勋章余额，没法在买完之后对账，不买", 0
     total = price * want
     if feats0 is not None and feats0 < total:
-        return False, (f"功勋不够：有 {feats0}，买 {want} 个要 {total}，不买")
+        return False, (f"功勋不够：有 {feats0}，买 {want} 个要 {total}，不买"), 0
 
-    log.info("[功勋商城] 支援兵 %d 个 < 补货线 %d，准备买 %d 个补到 %d"
+    log.info("[功勋商城] 支援兵现有 %d，准备买 %d 个"
              "（单价 %d 功勋，共 %d；当前勋章 %s、功勋 %s）",
-             have, low, want, have + want, price, total, credit0, feats0)
+             have, want, price, total, credit0, feats0)
 
     # 前置：照抄真客户端在购买前发过的开商店面板（不花钱、不改状态）
     before = rec.seq_mark() if rec else 0
@@ -196,7 +201,7 @@ def daily_restock(rec, sock, config):
     ok, why = _precheck(fields, total, want, shop_id)
     if not ok:
         log.error("[功勋商城] 自检不通过：%s", why)
-        return False, f"发送前自检不通过：{why}"
+        return False, f"发送前自检不通过：{why}", 0
     log.info("[功勋商城] 自检通过：%s", why)
 
     before = rec.seq_mark() if rec else 0
@@ -206,11 +211,11 @@ def daily_restock(rec, sock, config):
         sock, rec, RSE_BUY, before, 8.0,
         want=lambda d: (d.get("shopID") == shop_id and d.get("itemID") == item_id))
     if not isinstance(r, dict):
-        return False, "购买请求没有回包，停手（钱有没有花出去未知，请自行核对）"
+        return False, "购买请求没有回包，停手（钱有没有花出去未知，请自行核对）", 0
 
     err = r.get("error")
     if err not in (0, None):
-        return False, f"服务器拒绝购买 error={err}（没买成，也就没花钱）"
+        return False, f"服务器拒绝购买 error={err}（没买成，也就没花钱）", 0
 
     # 买完对账。**这一步是本模块最重要的防线**：只要勋章动了，就说明
     # credittype 的理解是错的，必须立刻停手并让用户看见。
@@ -224,14 +229,20 @@ def daily_restock(rec, sock, config):
                   "已停手，请立刻把 config 里的「自动补支援兵」关掉并核对账户",
                   credit0, credit1)
         return False, (f"危险：勋章由 {credit0} 变为 {credit1}，扣的不是功勋，"
-                       f"已停手（请关掉自动补支援兵并核对账户）")
+                       f"已停手（请关掉自动补支援兵并核对账户）"), 0
 
     got = r.get("count")
+    try:
+        got_n = int(got)
+    except (TypeError, ValueError):
+        got_n = want
     feats1 = r.get("feats")
     spent = None
+    feats_now = None
     if feats0 is not None:
         try:
-            spent = feats0 - int(feats1)
+            feats_now = int(feats1)
+            spent = feats0 - feats_now
         except (TypeError, ValueError):
             spent = None
     note = ""
@@ -240,9 +251,76 @@ def daily_restock(rec, sock, config):
         note = f"；⚠️ 实际扣了 {spent} 功勋，与预估 {total} 不符"
         log.warning("[功勋商城] 实扣功勋 %s 与预估 %s 不符", spent, total)
 
+    _remember(rec, item_id, have + got_n, feats_now, credit1)
     log.info("[功勋商城] 买到 %s 个（请求 %d 个），勋章仍为 %s，功勋 %s→%s",
              got, want, credit1, feats0, feats1)
     return True, (f"成功：买了 {got if got is not None else want} 个支援兵，"
-                  f"库存 {have}→{have + want}；花功勋 "
+                  f"库存 {have}→{have + got_n}；花功勋 "
                   f"{spent if spent is not None else total}；勋章未动（{credit0}）"
-                  f"{note}")
+                  f"{note}"), got_n
+
+
+def _shop_ids(conf):
+    item_id = int(conf.get("支援兵物品ID", DEFAULT_ITEM_ID))
+    shop_id = int(conf.get("支援兵商品ID", DEFAULT_SHOP_ID))
+    price = int(conf.get("支援兵单价功勋", DEFAULT_UNIT_PRICE))
+    return item_id, shop_id, price
+
+
+def daily_restock(rec, sock, config):
+    """每日任务用：库存低于补货线就把支援兵补到目标库存。
+
+    返回 (是否成功, 说明)，签名符合 daily.Task 的 runner 约定。
+    """
+    conf = (config.get("功勋商城", {}) or {})
+    if not conf.get("自动补支援兵", False):
+        return True, "成功：未开启自动补支援兵（默认关闭），什么都没做"
+
+    item_id, shop_id, price = _shop_ids(conf)
+    low = int(conf.get("补货线", 20))
+    target = int(conf.get("目标库存", 50))
+    cap = int(conf.get("单次最多买几个", 10))
+
+    if price <= 0 or cap <= 0 or target <= 0:
+        return False, "配置里的单价/上限/目标库存必须是正数，什么都没做"
+    if target < low:
+        return False, f"目标库存({target}) 比补货线({low}) 还低，配置有误，不买"
+
+    # 铁律：先查询、读不到依据就不做。背包读不到 = 不知道现在有几个 = 不买。
+    slot, have = _bag_count(rec, item_id)
+    if have is None:
+        return False, f"读不到背包里物品 {item_id} 的数量，不买（读不到就不做）"
+    if have >= low:
+        return True, (f"成功：支援兵还有 {have} 个（补货线 {low}），不用补")
+
+    want = _round_want(have, target, cap)
+    if want <= 0:
+        return True, f"成功：算出来要买 {want} 个，不用补"
+    log.info("[功勋商城] 支援兵 %d 个 < 补货线 %d，准备买 %d 个补到 %d",
+             have, low, want, have + want)
+    ok, why, _n = _purchase(rec, sock, item_id, shop_id, price, want, have)
+    return ok, why
+
+
+def buy_round(rec, sock, config):
+    """刷摩多召唤失败时买一轮支援兵。
+
+    一轮 = min(单次最多买几个, 目标库存 − 现有, 硬上限)。
+    不看「自动补支援兵」：那是每日任务的开关，刷摩多另走「召唤失败补一轮」。
+    库存已经不低于目标库存就不再买。返回 (是否成功, 说明, 买到几个)。
+    """
+    conf = (config.get("功勋商城", {}) or {})
+    item_id, shop_id, price = _shop_ids(conf)
+    target = int(conf.get("目标库存", 50))
+    cap = int(conf.get("单次最多买几个", 10))
+    if price <= 0 or cap <= 0 or target <= 0:
+        return False, "配置里的单价/上限/目标库存必须是正数，什么都没做", 0
+
+    _slot, have = _bag_count(rec, item_id)
+    if have is None:
+        return False, f"读不到背包里物品 {item_id} 的数量，不买（读不到就不做）", 0
+    want = _round_want(have, target, cap)
+    if want <= 0:
+        return False, (f"支援兵还有 {have} 个，已经达到目标库存 {target}，不买"), 0
+    log.info("[功勋商城] 召唤失败，补一轮：现有 %d，这一轮买 %d 个", have, want)
+    return _purchase(rec, sock, item_id, shop_id, price, want, have)
