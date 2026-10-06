@@ -133,6 +133,7 @@ def _user_out(user: dict) -> dict:
         "admin": bool(user.get("admin")),
         "auto_lock": bool(user.get("auto_lock")),
         "hold_min": int(user.get("hold_min") or 0),
+        "hold_all": bool(user.get("hold_all")),
         "card_max": int(user.get("card_max") if user.get("card_max") is not None else 100),
         "retreat_mode": user.get("retreat_mode") or "hops",
         "retreat_hops": int(user.get("retreat_hops") or 3),
@@ -475,13 +476,31 @@ def _handler(config: dict):
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "挂机保活需要中级或高级订阅"})
                         return
-                    why = citydb.set_attack_hold(user["id"], data.get("minutes"))
-                    if why:
-                        raise ValueError(why)
-                    _json(self, 200, {
-                        "ok": True,
-                        "hold_min": int(str(data.get("minutes")).strip()),
-                    })
+                    minutes = data.get("minutes", None)
+                    has_minutes = minutes is not None and str(minutes).strip() != ""
+                    has_all = "all" in data
+                    if not has_minutes and not has_all:
+                        raise ValueError("挂机保活要是分钟数")
+                    out = {"ok": True}
+                    if has_minutes:
+                        why = citydb.set_attack_hold(user["id"], minutes)
+                        if why:
+                            raise ValueError(why)
+                        out["hold_min"] = int(str(minutes).strip())
+                    if has_all:
+                        raw = data.get("all")
+                        if isinstance(raw, str):
+                            on = raw.strip().lower() in ("1", "true", "on", "开")
+                        else:
+                            on = bool(raw)
+                        why = citydb.set_hold_all(user["id"], on)
+                        if why:
+                            raise ValueError(why)
+                        out["hold_all"] = on
+                        if on:
+                            from .socket_keepalive import kick_attack_login
+                            out["login"] = kick_attack_login(config, user["id"])
+                    _json(self, 200, out)
                 elif path == "/api/lock-cards":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "锁敌恢复卡限制需要中级或高级订阅"})
@@ -724,7 +743,7 @@ def start(host="0.0.0.0", port=8765, config=None):
 
 
 def _wake_attack_orders(config) -> None:
-    """主进程：每个已绑定的攻打 QQ 各看一条线程。有日常、还在挂机，或有一单正在打、线程不在时拉起。"""
+    """主进程：每个已绑定的攻打 QQ 各看一条线程。有日常、还在挂机、开了全天候，或有一单正在打、线程不在时拉起。"""
     from .socket_keepalive import attack_worker_alive, kick_attack_login
 
     gap = threading.Event()

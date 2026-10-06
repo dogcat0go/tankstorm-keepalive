@@ -76,7 +76,7 @@ table.scan td select { min-width: 9em; }
 th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #e6e6e6; vertical-align: top; }
 th { font-size: 13px; color: #555; }
 .on { color: #0b6b2f; font-weight: 700; }
-.daily-switch {
+.el-switch.daily-switch {
   --el-switch-on-color: #0b6b2f;
   --el-switch-off-color: #c8c8c4;
   --el-color-white: #fff;
