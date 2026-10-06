@@ -309,11 +309,15 @@ def _group_brief(items) -> str:
     """已做过、成功收成一行名字。没做成的收成一行，并带上原因。"""
     done = []
     failed = []
+    held = []
     other = []
     for key, text in items:
         pieces = [part.strip() for part in re.split(r"[；;]", str(text or "")) if part.strip()]
         rest = [part for part in pieces if part not in ("已做过", "成功")]
         if not pieces:
+            continue
+        if all(part.startswith("暂不执行") for part in pieces):
+            held.append(key)
             continue
         if not rest:
             done.append(key)
@@ -343,6 +347,8 @@ def _group_brief(items) -> str:
         lines.append("已完成：" + "、".join(done))
     if failed:
         lines.append("失败：" + "；".join(failed))
+    if held:
+        lines.append("未执行：" + "、".join(held) + "。反复被拒会打断连接，先不做")
     if other:
         if done or failed or len(other) > 1:
             lines.append("其他：" + "；".join(other))
@@ -484,6 +490,11 @@ SAFE_FIELDS = {("0463", "count")}
 
 # 这些任务放到最后执行（它们领的是"前面动作累积出来的"奖励）
 ORDER_LAST = {"每日任务", "周任务"}
+
+# 军事演习会把有人的场地逐个打下去，服务器回 ret=4，最后把连接打断。
+# 矿区争夺同样不稳。先不做。开关保持关，最近执行里写明。
+HELD_TASKS = ("军事演习", "矿区争夺")
+HELD_STATUS = "暂不执行，反复被拒会打断连接"
 
 # 连续多少轮收不到响应就放弃该任务（当天）。
 # 设 3 是为了容忍偶发的网络抖动/响应慢，又不至于无限期地空发。
@@ -1534,10 +1545,13 @@ def task_board(uin: str, switches: dict) -> list:
             count = int(done.get(task.key) or 0)
         except (TypeError, ValueError):
             count = 0
+        name = task.name
+        if task.key in HELD_TASKS:
+            name = name + "（暂不执行）"
         rows.append({
             "key": task.key,
-            "name": task.name,
-            "on": bool(switches.get(task.key)),
+            "name": name,
+            "on": False if task.key in HELD_TASKS else bool(switches.get(task.key)),
             "done": count,
             "max": int(task.max_per_day or 1),
         })
@@ -2067,6 +2081,10 @@ def _run(rec, sock, config, schema, on_fail=None):
     # 连接断了才停，后面的任务没有连接可发。
     for task in ordered_tasks():
         try:
+            if task.key in HELD_TASKS:
+                results[task.key] = HELD_STATUS
+                log.info("[%s] %s", task.key, results[task.key])
+                continue
             if not switches.get(task.key, False):
                 results[task.key] = "未开启"
                 continue
