@@ -1520,7 +1520,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         out["对方剩余"] = after_n
         out["自己降低"] = drop
         out["自己剩余"] = mine_n
-        citydb.note_lock_morale(after_n)
+        citydb.note_lock_morale(after_n, confirmed=True)
         log.info("[打人] 第 %d 次%s回包 ret=%s 战功=%s 战报士气=%s 击伤=%s 自己士气=%s",
                  i, name, ret, merit, after_n, lost_n, mine_n)
         if mine_n is not None and mine_n <= 0:
