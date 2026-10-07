@@ -904,16 +904,17 @@ def _defeated(reason: str) -> bool:
 
 
 def _here_of(out) -> int:
-    """这一单走到哪座城。walk_to 没记下时用页面上的当前位置。"""
+    """这一单人在哪座城。被打回首都时，走到还是战场，以记下的位置为准。"""
     from . import citydb
 
+    noted = citydb.attack_here_id()
+    if noted > 0:
+        return noted
     try:
         here = int((out or {}).get("走到") or 0)
     except (TypeError, ValueError):
         here = 0
-    if here > 0:
-        return here
-    return citydb.attack_here_id()
+    return here if here > 0 else 0
 
 
 def _ready_for_same_city(here, city_id) -> bool:
@@ -1315,6 +1316,7 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
             elif status == "ended":
                 log.info("订单 %s 已手动关停", job["id"])
             here = _here_of(out)
+            keep = status == "done" and not why and not uid
             result = {
                 "id": job["id"], "status": status, "why": why, "here": here,
                 "done": status == "done", "failed": status == "failed",
@@ -1367,10 +1369,25 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
         if skipped and not chained:
             return result
         plan = citydb.retreat_settings() if job.get("auto") else {}
+        country = _my_country(rec, fight_config)
+        try:
+            here = int(here or result.get("here") or 0)
+        except (TypeError, ValueError):
+            here = int(result.get("here") or 0)
+        incomplete = (not any_done) or any_failed
+        at_home = bool(here and country and country_war._is_capital(here, country))
         want = (job.get("auto") and not parked and not _lock_no_retreat(
                     str(result.get("why") or why or ""),
                     str(result.get("status") or status or ""))
                 and (any_done or (any_failed and plan.get("on_fail"))))
+        if want and chained and any_failed:
+            log.info("同城索敌还有没打完的订单，不后退")
+            want = False
+        if want and incomplete and at_home:
+            name = citydb.city_name(here) or ""
+            where = f"{here} {name}".strip() if name else str(here)
+            log.info("没打完或打失败，人已在所在国首都 %s，不再后退", where)
+            want = False
         if want:
             prefix = ""
             retreat_mode = str(plan.get("mode") or "off")

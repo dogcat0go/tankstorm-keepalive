@@ -2234,13 +2234,25 @@ def _commit_move(sock, rec, city, owner, my=0):
     return None, "移动被拒 ret=30"
 
 
-def _is_capital(city) -> bool:
-    """编号第 2 位是 1 的城是首都。被别人打败一般会回到这里。"""
+def _is_capital(city, country=0) -> bool:
+    """首都：编号第二位是 1。给了国家时，第一位还要是这个国家编号。
+
+    所在国首都是「国家编号 + 第二位 1」，例如国家 2 的首都是 21xx。
+    被别人打败一般会回到这里。
+    """
     try:
         s = str(int(city or 0))
     except (TypeError, ValueError):
         return False
-    return len(s) >= 2 and s[1] == "1"
+    if len(s) < 2 or s[1] != "1":
+        return False
+    try:
+        country = int(country or 0)
+    except (TypeError, ValueError):
+        country = 0
+    if country <= 0:
+        return True
+    return s.startswith(str(country))
 
 
 def _defeated_text(loc) -> str:
