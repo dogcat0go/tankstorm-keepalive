@@ -13,6 +13,7 @@
   python3 web.py --set-expires 用户名 2026-12-31
   python3 web.py --set-tier 用户名 高级
   python3 web.py --set-admin 用户名 开
+  python3 web.py --clear-attack 用户名
 
 扫城仍用 main.py，例如 python3 main.py --watch-pages 1201:10-20。
 注册默认关闭。有效期按北京时间的日期，这一天仍然有效。
@@ -87,8 +88,23 @@ def main() -> int:
                         help="开或关：该账号能否在页面上改扫描安排，不启动网页")
     parser.add_argument("--bind-attack", nargs=2, metavar=("用户名", "QQ号"),
                         help="把攻打 QQ 绑到这个登录账号。一个账号一个 QQ，同一个 QQ 可以绑多个账号，不启动网页")
+    parser.add_argument("--clear-attack", metavar="用户名",
+                        help="解开这个登录账号的攻打 QQ，未完成的攻打记为失败。别的账号还用这个 QQ 时不删票据，不启动网页")
     args = parser.parse_args()
-    if args.add_user or args.set_expires or args.set_tier or args.set_admin or args.bind_attack:
+    if (args.add_user or args.set_expires or args.set_tier or args.set_admin
+            or args.bind_attack or args.clear_attack):
+        if args.clear_attack:
+            username = args.clear_attack.strip()
+            user_id = citydb.user_id_by_name(username)
+            if not user_id:
+                log.error("没有这个账号：%s", username)
+                return 1
+            why = citydb.clear_attack_binding(user_id)
+            if why:
+                log.error("%s", why)
+                return 1
+            log.info("已解开 %s 的攻打 QQ", username)
+            return 0
         if args.bind_attack:
             username, acct = args.bind_attack
             user_id = citydb.user_id_by_name(username)

@@ -1756,6 +1756,77 @@ def bind_attack_account(user_id: int, account: str) -> str:
     return ""
 
 
+_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "pageqr", "qrpath", "resume")
+
+
+def clear_attack_binding(user_id: int) -> str:
+    """解开这个登录账号的攻打 QQ。成功返回空字符串。
+
+    未完成的攻打订单和日常记为失败，避免下一个号接着打。
+    别的账号还绑着同一个 QQ 时，票据和那份攻打状态留着。
+    """
+    user_id = int(user_id)
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(attack_qq,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not row:
+            return "没有这个账号"
+        uin = str(row[0] or "").strip()
+        others = 0
+        if uin:
+            others = int(conn.execute(
+                "SELECT COUNT(*) FROM app_user WHERE attack_qq=? AND id!=?",
+                (uin, user_id)).fetchone()[0] or 0)
+        now = now_ts()
+        conn.execute(
+            "UPDATE app_user SET attack_qq='', attack_acct='', attack_qq_block=0 WHERE id=?",
+            (user_id,))
+        names = [f"{kind}:user:{user_id}" for kind in _ATTACK_MARKS]
+        names.append(f"pagelogin-{user_id}")
+        if uin and not others:
+            names.extend(f"{kind}:{uin}" for kind in _ATTACK_MARKS)
+        slot = ",".join("?" * len(names))
+        conn.execute(
+            f"DELETE FROM atk_signal WHERE name IN ({slot})", tuple(names))
+        conn.execute(
+            "UPDATE atk_signal SET value='0' WHERE name='login_for' AND value=?",
+            (str(user_id),))
+        conn.execute(
+            "UPDATE atk_order SET status='failed', reason=?, updated_at=? "
+            "WHERE user_id=? AND status IN ('pending','running','blocked','wait')",
+            ("已解除攻打 QQ 绑定", now, user_id))
+        conn.execute(
+            "UPDATE daily_job SET status='failed', detail=?, updated_at=? "
+            "WHERE user_id=? AND status IN ('pending','running')",
+            ("已解除攻打 QQ 绑定", now, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+    _drop_attack_files(user_id, uin if uin and not others else "")
+    log.info("登录账号 %s 的攻打 QQ 已解开%s",
+             username_of(user_id), f"，{uin}" if uin else "")
+    return ""
+
+
+def _drop_attack_files(user_id: int, uin: str) -> None:
+    """删这个账号自己的登录图。uin 有值才删这份攻打票据。"""
+    paths = [
+        user_path(f"accounts/attack-{int(user_id)}.json"),
+        user_path(f"accounts/page-login-{int(user_id)}.json"),
+    ]
+    if uin:
+        paths.append(user_path(f"accounts/qq-{uin}.json"))
+    for path in paths:
+        for extra in (path, (path[:-5] + ".qrcode.png" if path.endswith(".json") else path),
+                      path + ".lock"):
+            try:
+                Path(extra).unlink()
+            except OSError:
+                pass
+
+
 def set_retreat(user_id: int, mode, hops, city_id, on_fail=None) -> str:
     """打完后退。hops 是朝一座城退几座，city 是退进指定城。两种不能同时用。"""
     mode = str(mode or "").strip()
