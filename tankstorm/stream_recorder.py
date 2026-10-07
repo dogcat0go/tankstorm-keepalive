@@ -63,10 +63,9 @@ import threading
 import time
 from datetime import datetime
 
-from .paths import app_dir                        # noqa: E402
+from .paths import data_root                      # noqa: E402
 
 DEFAULT_DIR = "logs/streams"
-_REPO_ROOT = app_dir()                            # 录制产物属可写数据
 
 # 帧结构备忘，写进 meta.json 供离线工具参考
 FRAMING = "[u16be len][u16be op][u32be seq][body]; len 覆盖 op+seq+body"
@@ -83,7 +82,7 @@ class StreamRecorder:
                  keep_sessions: int = 10, max_bytes: int = 256 * 1024 * 1024,
                  log=None, hook=None):
         if not os.path.isabs(base_dir):
-            base_dir = os.path.join(_REPO_ROOT, base_dir)
+            base_dir = os.path.normpath(os.path.join(data_root(), base_dir))
         self.base_dir = base_dir
         self.enabled = bool(enabled)
         # hook(direction, data)：字节旁路给上层做帧级分析。

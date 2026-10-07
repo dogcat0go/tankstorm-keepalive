@@ -21,12 +21,15 @@
 
 于是把路径分成两类：
 
-  app_dir()      可写的用户数据。打包后 = **exe 所在目录**，源码运行 = 仓库根目录。
-                 cookies.json / logs/ / debug/ / config.local.json 都归这里。
+  app_dir()      程序目录。打包后 = **exe 所在目录**，源码运行 = 仓库根目录。
+                 共享的 config.json / config.local.json / protocol.json 放这里。
+  data_root()    这一次运行的可写数据。没指定账号时等于 app_dir()；
+                 环境变量 TANKSTORM_ACCOUNT 有值时等于 accounts/<名称>/，
+                 cookie、二维码、日志、每日计数、城市库各写各的。
   bundled_dir()  只读的随包数据。打包后 = PyInstaller 解压目录，源码运行 = 仓库根目录。
-                 schema.json、以及 config.json / protocol.json 的出厂默认值。
 
-`data_file()` 把两者接起来：exe 旁边有用户自己那份就用它，没有就退回随包的默认值。
+`data_file()` 只在程序目录和随包默认值之间选，不进账号目录。
+账号自己的差异写在 accounts/<名称>/config.json，由 main.py 合并。
 """
 
 import os
@@ -58,14 +61,32 @@ def bundled_dir() -> str:
     return getattr(sys, "_MEIPASS", None) or _SRC_ROOT
 
 
+def account_name() -> str:
+    """当前进程服务的账号。空字符串表示沿用单账号，数据仍在程序目录。"""
+    name = os.environ.get("TANKSTORM_ACCOUNT", "").strip()
+    if not name:
+        return ""
+    if name in (".", "..") or name.startswith("-") or any(c in name for c in '/\\:*?"<>|'):
+        raise ValueError(f"账号名称不合法: {name}")
+    return name
+
+
+def data_root() -> str:
+    """这一次运行的可写数据目录。指定了账号就落到 accounts/<名称>/。"""
+    name = account_name()
+    if not name:
+        return app_dir()
+    return os.path.join(app_dir(), "accounts", name)
+
+
 def user_path(name: str) -> str:
-    """用户数据的完整路径（不检查是否存在）。写文件一律用这个。"""
-    return os.path.join(app_dir(), name)
+    """可写数据的完整路径（不检查是否存在）。cookie、日志、状态都走这里。"""
+    return os.path.join(data_root(), name)
 
 
 def data_file(name: str) -> str:
-    """读配置/协议表用：优先 exe 旁边用户自己那份，没有才用随包默认值。"""
-    mine = user_path(name)
+    """读共享配置/协议表：优先程序目录里用户自己那份，没有才用随包默认值。"""
+    mine = os.path.join(app_dir(), name)
     if os.path.exists(mine):
         return mine
     return os.path.join(bundled_dir(), name)
@@ -79,7 +100,7 @@ def ensure_user_copy(name: str) -> bool:
     """
     if not is_frozen():
         return False
-    mine = user_path(name)
+    mine = os.path.join(app_dir(), name)
     if os.path.exists(mine):
         return False
     src = os.path.join(bundled_dir(), name)

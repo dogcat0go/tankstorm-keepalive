@@ -41,6 +41,7 @@
 import json
 import os
 import re
+import threading
 import time
 from datetime import date
 
@@ -66,6 +67,21 @@ STATE_FILE = os.path.join(LOG_DIR, "daily-state.json")
 _BEAT = None
 
 
+_STOP = threading.Event()
+
+
+def request_stop() -> None:
+    _STOP.set()
+
+
+def clear_stop() -> None:
+    _STOP.clear()
+
+
+def stopped() -> bool:
+    return _STOP.is_set()
+
+
 def _beat() -> None:
     """该发心跳就发一次；没配回调就是空操作。"""
     if _BEAT is None:
@@ -83,7 +99,7 @@ def _nap(seconds: float) -> None:
     Windows 上 settimeout 会失效，recv 能一直卡住（日志停在「冷却，等 14 秒」）。
     """
     end = time.time() + max(0.0, float(seconds or 0))
-    while True:
+    while not _STOP.is_set():
         left = end - time.time()
         if left <= 0:
             return
@@ -104,12 +120,9 @@ DANGER_FIELD = re.compile(
 # (opcode, 字段名) 白名单：抓包实证这个字段在**这一条消息里**不是花钱字段。
 # 只按消息逐条放行，绝不整体放宽 DANGER_FIELD —— 同名字段在别的消息里照样危险。
 #
-# 0463 RceCountryOpt.count：国家宝箱领取/开箱的"第几档/开几个"，跟着面板回包的
-#   boxPage.field4 走。2026-08-10 真客户端抓包实证 {type:10,count:6,costCredit:0}
-#   与 {type:11,count:1,costCredit:0} 均 ret=0，全程免费；这条消息里真正花钱的是
-#   costCredit，我们恒发 0，安全检查照旧盯着它。
-#   注意：这个误伤是修好 schema 之后才暴露的 —— 以前字段名解不出来，
-#   拿 "field2" 去匹配危险词自然不命中，等于一直在裸奔。
+# 0463 RceCountryOpt.count：这条消息里真正花钱的是 costCredit。count 在
+#   2026-08-10 的开箱包里是免费的个数，值可以不是 0，不能被危险词拦下。
+#   国家宝箱从 2026-10-04 起改走 type:26，不再发 count。
 SAFE_FIELDS = {("0463", "count")}
 
 # 这些任务放到最后执行（它们领的是"前面动作累积出来的"奖励）
@@ -519,38 +532,6 @@ def _next_daily_gift(data):
     return None if tier is None else {5: ("int32", tier)}
 
 
-def _country_fields(type_, count=0):
-    """RceCountryOpt 的整包字段（客户端 11 个字段全写，只有 type/count 有值）。"""
-    f = {1: ("int32", 0), 2: ("int32", count), 3: ("int32", 0),
-         4: ("int32", type_), 6: ("int32", 0), 7: ("int32", 0),
-         9: ("int32", 0), 13: ("int32", 0), 14: ("int32", 0),
-         15: ("int32", 0), 16: ("int32", 0)}
-    return f
-
-
-def _next_country_box(data):
-    """国家宝箱是三步，光发 type:15 什么也领不到。
-
-    8/10 抓包：
-        {type:15}            查询 → 响应 boxPage.field4 = 可领数量（实测 6）
-        {type:10, count:6}   领取 → countryData.field1 +6
-        {type:11, count:1}   开箱 → 响应带 field15（实测掉 30028/20012 两样东西）
-    按上一条响应的 type 决定下一步发什么。
-    """
-    t = data.get("type")
-    if t == 15:
-        box = data.get("boxPage")
-        if isinstance(box, list):
-            box = box[-1] if box else None
-        n = box.get("field4") if isinstance(box, dict) else None
-        if isinstance(n, int) and n > 0:
-            return _country_fields(10, n)
-        return None
-    if t == 10:
-        return _country_fields(11, 1)
-    return None
-
-
 class Gate:
     """动作前的免费次数闸门：读**前置请求的响应**，还有免费次数才发动作。
 
@@ -636,7 +617,8 @@ class Task:
     def __init__(self, key, name, opcode, msg, fields, confidence,
                  note="", max_per_day=1, gate=None, cooldown_sec=0,
                  prelude=(), followup=None, tiers=None, cooldown_until=None,
-                 report=(), runner=None, success_flag=None):
+                 report=(), runner=None, success_flag=None,
+                 counts_itself=False):
         # success_flag：动作回包里哪个布尔字段为 true 才算成功。只给那些
         # 既没有 ret 也没有 result 的消息用，别的一律走 judge() 的状态码。
         self.success_flag = success_flag
@@ -646,6 +628,8 @@ class Task:
         # 有 runner 的任务跳过前置/闸门/安全检查那一整套，由执行器自己负责，
         # 所以执行器内部必须自己守住"先查询、读到依据才做"这条铁律。
         self.runner = runner
+        # counts_itself：执行器自己记今日次数。公会捐献按捐成的次数计，不能整轮记成满次。
+        self.counts_itself = bool(counts_itself)
         # report：前置响应里值得报给用户看的字段（排名、积分、剩余挑战次数…）。
         # 闸门数据本来就读到了，顺手带进结果里，推送时就能看到"现在排第几"。
         self.report = tuple(report)
@@ -773,28 +757,15 @@ TASKS = [
     # 将领和参谋是两份独立的技能书，各领各的。原先是一个任务 max_per_day=2，
     # 但 fields 写死 ActiveType=0，跑第二次只是把将领那份又领一遍。
     # 8/10 抓包实测客户端确实发了两组：{0,0}→{1,0} 和 {0,1}→{1,1}。
-    # 8/12 抓包：英雄培养走的是通用的建筑操作 opcode，不是英雄那套。
-    #   RceBuildingModify {id:10049(英雄中心), type:75(培养),
-    #                      heroType:1122, heroupgradeIndex:0}
-    # 响应 RseBuildingModify 用的是 error 字段而不是 ret，error=0 为成功。
-    # ⚠️ heroType 是**这个号自己的英雄编号**，换号要重新抓。
-    # 该消息里 10=credit、13=usehonorcredit、17/18=itemID/itemCount 都是花钱字段，
-    # 我们一个都不发，安全检查也会拦。
-    # 这一项和别的不一样：它**本来就不是"免费次数"型**的。
-    # 培养消耗的是石油和金属 —— 会自然回复的产出资源，不是券也不是勋章，
-    # 花掉不心疼；一轮 8 小时，做完就能再做。所以没有剩余次数字段是正常的，
-    # 不是漏找了。用冷却限流即可，每 8 小时一次、一天至多 3 次。
-    #
-    # 安全性同参谋/军备：这条消息里 10=credit、13=usehonorcredit、
-    # 17/18=itemID/itemCount 才是花钱字段，付费变体要显式带上它们，
-    # 我们一个都不发，所以不可能变成花钱的那一档。
+    # 2026-10-04 抓包：type=75 的 id 是建筑类型 56 的英雄中心，不是 10049。
+    # 一次把已开的空槽都放上等级最高、没在培养、没死、没满 80 级的英雄。
+    # 开几个槽由 VIP 决定。不发勋章，也不发培养书（那是 type=78）。
     _t("英雄培养", "英雄中心·培养（8 小时一轮）", "0414", "RceBuildingModify",
-       {2: ("int32", 10049), 3: ("int32", 75),
-        15: ("int32", 1122), 16: ("int32", 0)},
-       "实测", "8/12 抓包实测。消耗石油/金属（自然回复的资源），一轮 8 小时可重复，"
-               "因此靠冷却而非免费次数限流。响应 RseBuildingModify 用 error 字段判成败。"
-               "⚠️ heroType=1122 是本账号的英雄编号，换号必须重抓",
-       max_per_day=3, cooldown_sec=8 * 3600),
+       {}, "实测",
+       "2026-10-04 抓包：先开英雄面板，再按槽发 type=75。"
+       "建筑取类型 56。金属 1 万、石油 5 千，不耗勋章。",
+       max_per_day=3,
+       runner=lambda rec, sock, config: daily_train(rec, sock, config)),
 
     # 技能书不是"一天一次"，是**每 24 小时一次**，而且以前既没闸门也没冷却，
     # 每轮都照发。2026-08-13 03:13 帧日志实测：
@@ -1008,30 +979,25 @@ TASKS = [
        followup=Followup("049a", _next_mine_to_occupy, max_rounds=1,
                          desc="占下探到的无主矿")),
 
-    # 用户说明：type:2 是"重新开始征战"，不会真的打、也拿不到战斗奖励，
-    # 但能推进每日活跃度，是快速完成日常的做法。原先写的 {type:6,bAutoTreat:true}
-    # 在 8/10 抓包里根本没出现过，撤掉。
-    _t("征战世界", "征战世界·重开征战（推进活跃度）", "045b", "RcePVEFightOpt",
-       {2: ("int32", 2)},
-       "实测", "8/10 抓包：045c{type:1} → 045b{type:5,bAutoTreat:false} → "
-               "045b{type:2} ×2，响应 result=0。注意这只推进活跃度，"
-               "不是真的去打、也没有战斗奖励",
-       max_per_day=2,
-       prelude=[("045c", {1: ("int32", 1)}),
-                ("045b", {1: ("bool", False), 2: ("int32", 5)})],
-       gate=Gate("RsePVEFightOpt", "fightdata.field2")),
+    # 2026-09-26：type=2 只是重开，不打关。真正开战是 type=7，从当前关打起。
+    _t("征战世界", "征战世界·从当前关打", "045b", "RcePVEFightOpt",
+       {}, "实测",
+       "2026-09-26 抓包：type=5 读当前关，type=7 开战。"
+       "最终关卡见 config「征战.最终关卡」，不填就打到过不去。一天一轮。",
+       max_per_day=1,
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.pve", fromlist=["daily_fight"]
+       ).daily_fight(rec, sock, config)),
 
-    # 客户端把 11 个字段全写了（除 type 外都是 0），照抄。
-    # 1=costCredit 虽然命中危险字段名，但值是 0，安全检查照样放行。
-    _t("国家宝箱", "国家·宝箱领取并开箱", "0463", "RceCountryOpt",
-       _country_fields(15),
-       "实测", "8/10 抓包三步：RceCountryOpen{} 开面板 → {type:15} 查询 → "
-               "{type:10,count:N} 领取 → {type:11,count:1} 开箱。"
-               "N 取自查询响应的 boxPage.field4（实测 6）。"
-               "此前只发了 type:15，等于只查询没领取",
-       prelude=[("0462", {})],
-       followup=Followup("0463", _next_country_box, max_rounds=3,
-                         desc="领取并开箱")),
+    # 2026-10-04 抓包：type:10/11 已经不是这条链路，接着发会 ret=13。
+    # 现在是按今日战功领 1..7 档，每档一包 type:26。形状不合流水线，走 runner。
+    _t("国家宝箱", "国家·按战功领宝箱", "0463", "RceCountryOpt",
+       {}, "实测",
+       "2026-10-04 抓包：RceCountryOpen{} → {type:15} 读今日战功和领取标记 "
+       "→ {type:26, dailyGiftId:N} 逐档领。旧的 type:10/11 会 ret=13",
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.country_war", fromlist=["daily_chest"]
+       ).daily_chest(rec, sock, config)),
 
     # 参加公会战。2026-08-30 抓包定案：**type:70 就是"参加"**，判据是回包里的
     # userGuild.field17.field1（上次参加时刻）被刷新到"刚刚"。
@@ -1074,13 +1040,17 @@ TASKS = [
                           22: ("int32", 0), 23: ("int32", 0)})],
        report=("dayHasPK", "lastBtlRank", "curSesionBtlOver", "bRankGet")),
 
+    # 2026-10-04 抓包是一键：金属石油、功勋、军令各捐到当天上限，不是只发一次。
     _t("公会捐献", "公会·捐献", "0479", "RceGuildOpt",
-       {2: ("int32", 16), 6: ("string", FromServer("RseInit", "username")),
-        12: ("int32", 1)},
-       "实测", "8/10 抓包：…→ type:14 → {type:16, tarUserName:'自己的游戏名', "
-               "contributeID:1}。名字不写死，登录时从 RseInit.username 取",
-       prelude=[("0479", {2: ("int32", 0)}), ("0479", {2: ("int32", 2)}),
-                ("0479", {2: ("int32", 14)})]),
+       {}, "实测",
+       "2026-10-04 抓包：type:0 读今日次数 → type:16 按档捐满。"
+       "金属石油一天 3 次，功勋 6 次，军令 6 次，合计 15。"
+       "界面按已经捐成的次数计。不捐勋章。",
+       max_per_day=15,
+       counts_itself=True,
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.guild", fromlist=["daily_donate"]
+       ).daily_donate(rec, sock, config)),
 
     # ---- 必须最后执行 ----
     _t("周任务", "周任务领奖", "04de", "RceWeekQuestOpt",
@@ -1316,6 +1286,198 @@ def _check_safety(task, field_names, fields=None):
     return True, ""
 
 
+# 客户端 HeroConstant.HERO_CENTER_TYPE。getBuildingByType(56) 的 id 才是培养请求的 id。
+# 2026-10-04 这号上类型 56 是 10130；10049 是类型 17，发过去 error=9。
+_HERO_CENTER = 56
+_TRAIN_METAL = 10000          # HeroBaseData.trainCostR1，表里 42 个英雄全是这个数
+_TRAIN_OIL = 5000             # trainCostR2，同样全表一个价
+_HERO_LEVEL_CAP = 80          # HERO_LEVEL_TOP_LIMIT，到了就不再培养
+
+
+def _one(v):
+    if isinstance(v, bool) or not isinstance(v, int):
+        return None
+    return v
+
+
+def _rows(v):
+    if isinstance(v, dict):
+        return [v]
+    if isinstance(v, list) and all(isinstance(x, dict) for x in v):
+        return v
+    return None
+
+
+def _open_slots(level, endtime, now):
+    """和 HeroTrainingPanel 的锁一致。过期或没有 VIP 只剩第 0 槽。
+
+    VIP 3 开第 1 槽，VIP 5 开第 2 槽，VIP 正好 7 才开第 3 槽。
+    """
+    if level <= 0 or endtime < now:
+        return 1
+    n = 1
+    if level >= 3:
+        n = 2
+    if level >= 5:
+        n = 3
+    if level == 7:
+        n = 4
+    return n
+
+
+def _train_slots(panel):
+    """upgradeherolst.field3 是槽位。field1 是英雄编号，0 或没写就是空的。
+    field3 是剩余秒数。2026-10-04 开面板时四个槽都是空的。"""
+    box = panel.get("upgradeherolst") if isinstance(panel, dict) else None
+    raw = box.get("field3") if isinstance(box, dict) else None
+    rows = _rows(raw)
+    if not rows:
+        return None
+    out = []
+    for row in rows:
+        hero = row.get("field1", 0)
+        left = row.get("field3", 0)
+        hero = 0 if hero is None else _one(hero)
+        left = 0 if left is None else _one(left)
+        if hero is None or left is None or hero < 0 or left < 0:
+            return None
+        out.append((hero, left))
+    return out
+
+
+def _ready_heroes(panel, busy):
+    """getReadyForTrainingHeroList：没死、不在槽里、没到 80 级。按等级从高到低。"""
+    rows = _rows(panel.get("hero") if isinstance(panel, dict) else None)
+    if not rows:
+        return None
+    if all(_one(row.get("field2")) is None for row in rows):
+        return None
+    ready = []
+    for row in rows:
+        hid = _one(row.get("field2"))
+        level = _one(row.get("field3"))
+        atk = row.get("field14")
+        health = _one(atk.get("field4")) if isinstance(atk, dict) else None
+        if hid is None or level is None or health is None or hid <= 0:
+            continue
+        if health <= 0 or hid in busy or level >= _HERO_LEVEL_CAP:
+            continue
+        ready.append((hid, level))
+    ready.sort(key=lambda item: (-item[1], -item[0]))
+    return ready
+
+
+def daily_train(rec, sock, config):
+    """把英雄中心已开的空槽都放上能培养的英雄。
+
+    返回 (是否记一次, 说明, 下次时刻或 None)。槽放满才给下次时刻。
+    """
+    load = (rec.latest.get("RseLoad") or (None, None))[1] if rec else None
+    if not isinstance(load, dict):
+        return False, "读不到基地数据，不培养"
+    buildings = _rows(load.get("buildingdata"))
+    bid = None
+    if buildings:
+        for b in buildings:
+            if b.get("field5") == _HERO_CENTER:
+                bid = _one(b.get("field4"))
+                break
+    if not bid or bid <= 0:
+        return False, "读不到英雄中心，不培养"
+    vip = load.get("vipData")
+    level = _one(vip.get("field1")) if isinstance(vip, dict) else None
+    endtime = _one(vip.get("field2")) if isinstance(vip, dict) else None
+    if level is None or endtime is None:
+        return False, "读不到 VIP，不培养（读不到就不做）"
+    wallet = (rec.latest.get("RseUserInfo") or (None, None))[1]
+    metal = _one(wallet.get("metal")) if isinstance(wallet, dict) else None
+    oil = _one(wallet.get("oil")) if isinstance(wallet, dict) else None
+    if metal is None or oil is None:
+        return False, "读不到金属或石油，不培养（读不到就不做）"
+
+    before = rec.seq_mark()
+    sender.send_frame(sock, "0400",
+                      encode_message({3: ("int32", 0)}, omit_zero=False),
+                      rec.rc4_c2s)
+    _nap(0.4)
+    panel = _await_response(sock, rec, "RseHeroOpen", before, 6,
+                            want=lambda d: d.get("type") == 0)
+    slots = _train_slots(panel)
+    if slots is None:
+        return False, "读不到培养槽，不培养（读不到就不做）"
+    opened = _open_slots(level, endtime, time.time())
+    opened = min(opened, len(slots))
+    busy = {hero for hero, _left in slots if hero}
+    heroes = _ready_heroes(panel, busy)
+    if heroes is None:
+        return False, "读不到英雄，不培养（读不到就不做）"
+
+    empty = [i for i in range(opened) if slots[i][0] == 0]
+    soonest = min((left for hero, left in slots[:opened] if hero and left > 0),
+                  default=0)
+
+    def wait():
+        return int(time.time() + soonest) if soonest else None
+
+    if not empty:
+        mins = max(1, soonest // 60) if soonest else 0
+        return (False,
+                f"已开的 {opened} 个槽都在培养，最早还要 {mins} 分钟，跳过",
+                wait())
+    if not heroes:
+        return False, "没有能培养的英雄，跳过"
+
+    done = []
+    for index in empty:
+        if metal < _TRAIN_METAL or oil < _TRAIN_OIL:
+            why = "金属或石油不够"
+            break
+        if not heroes:
+            why = "没有能培养的英雄"
+            break
+        hid, _level = heroes.pop(0)
+        _nap(0.4)
+        mark = rec.seq_mark()
+        sender.send_frame(
+            sock, "0414",
+            encode_message({2: ("int32", bid), 3: ("int32", 75),
+                            15: ("int32", hid), 16: ("int32", index)},
+                           omit_zero=False),
+            rec.rc4_c2s)
+        got = _await_response(sock, rec, "RseBuildingModify", mark, 6,
+                              want=lambda d: d.get("type") == 75)
+        if not isinstance(got, dict):
+            return False, f"槽 {index} 没有回包" + _trained(done)
+        err = got.get("error")
+        now = _train_slots(got)
+        placed = now[index][0] if now and index < len(now) else None
+        if err != 0 or placed != hid:
+            return False, (f"槽 {index} 服务器返回 error={err}"
+                           + _trained(done))
+        metal -= _TRAIN_METAL
+        oil -= _TRAIN_OIL
+        done.append(f"槽{index}英雄{hid}")
+        if now:
+            slots = now
+            soonest = min((left for hero, left in slots[:opened]
+                           if hero and left > 0), default=soonest)
+    else:
+        why = ""
+    text = "、".join(done)
+    if why:
+        head = f"培养了 {text}；" if text else ""
+        return False, head + why + "，跳过", wait() if not _still_empty(slots, opened) else None
+    return True, "成功：培养了 " + text, wait()
+
+
+def _trained(done):
+    return ("，已培养 " + "、".join(done)) if done else ""
+
+
+def _still_empty(slots, opened):
+    return any(slots[i][0] == 0 for i in range(min(opened, len(slots))))
+
+
 def run(rec, sock, config: dict, schema=None, beat=None) -> dict:
     """执行每日任务。rec 是 Recorder（提供 C→S 的 RC4），sock 是已登录的 socket。
 
@@ -1402,14 +1564,37 @@ def _run(rec, sock, config, schema):
         # 早先每轮只发一次，等于绝大多数次数根本没用上。
         if task.runner is not None:
             try:
-                ok, why = task.runner(rec, sock, config)
+                got = task.runner(rec, sock, config)
             except Exception as exc:
-                ok, why = False, f"执行异常：{exc}"
+                got = (False, f"执行异常：{exc}")
                 log.exception("[%s] 自定义执行器抛异常", task.key)
+            until = None
+            if isinstance(got, tuple) and len(got) == 3:
+                ok, why, until = got
+            elif isinstance(got, tuple) and len(got) == 2:
+                ok, why = got
+            else:
+                ok, why = False, "执行器没有返回结果"
             results[task.key] = why
             log.info("[%s] %s %s", task.key, "✅" if ok else "❌", why)
-            if ok:
-                st["done"][task.key] = task.max_per_day
+            # 第三个值是下次还能再做的时刻。英雄培养一轮把槽放满后要等槽空出来，
+            # 不能把当天次数直接打满，否则 8 小时后不会再放。
+            if (isinstance(until, (int, float)) and not isinstance(until, bool)
+                    and until > time.time()):
+                st.setdefault("until", {})[task.key] = int(until)
+            if getattr(task, "counts_itself", False):
+                fresh = _load_state()
+                if isinstance(fresh.get("done"), dict):
+                    st["done"] = fresh["done"]
+                if until:
+                    _save_state(st)
+            elif ok:
+                if until:
+                    st["done"][task.key] = st["done"].get(task.key, 0) + 1
+                else:
+                    st["done"][task.key] = task.max_per_day
+                _save_state(st)
+            elif until:
                 _save_state(st)
             continue
 
@@ -1437,11 +1622,6 @@ def _run(rec, sock, config, schema):
             log.info("[%s] 本轮共成功 %d 次（今日 %d/%d）", task.key, ran,
                      st["done"].get(task.key, 0), task.max_per_day)
         continue
-
-    if (config.get("征战") or {}).get("第4次"):
-        from . import pve
-        ok, why = pve.vip_restart(rec, sock)
-        results["征战第4次"] = why if ok else f"失败：{why}"
 
     log.info("=== 每日任务结束 ===")
     for k, v in results.items():
@@ -1635,10 +1815,9 @@ def _do_once(task, sock, rec, st, results, details, field_names,
             if extra:
                 results[task.key] = why + "；" + "；".join(extra)
             if fu_ok is False:
-                # 有些任务的"动作"其实只是开面板（国家宝箱的 type=15 恒回 ret=0），
-                # 真正干活的是后续步骤。后续被拒还把当天次数记满，就等于这一天
-                # 再也不会重试了 —— 国家宝箱要早上六点后才能领，凌晨那轮必然被拒，
-                # 记满之后当天就永远领不到。所以后续失败时退回这一次计数。
+                # 有些任务的"动作"其实只是开面板，真正干活的是后续步骤。
+                # 后续被拒还把当天次数记满，就等于这一天再也不会重试了。
+                # 所以后续失败时退回这一次计数。
                 st["done"][task.key] = done
                 _save_state(st)
                 log.info("[%s] 后续步骤未成，本次不计入当天次数，稍后可再试",

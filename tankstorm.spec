@@ -11,9 +11,21 @@ protocol）和协议 schema；首次运行时 main.py 会把前三份复制到�
 
 本地试打包：
     pyinstaller --clean --noconfirm tankstorm.spec
+
+试用版（QQ、公会都会加密后写进包里，并用 UPX 加壳；都不设则不限制、也不加壳）：
+    $env:TANKSTORM_LOCK_QQ="123456789"
+    $env:TANKSTORM_LOCK_GUILD="690422"
+    pyinstaller --clean --noconfirm tankstorm.spec
 """
 
+import importlib.util
 import os
+
+_bind_path = os.path.join(SPECPATH, "tools", "trial_bind.py")
+_bind_spec = importlib.util.spec_from_file_location("_trial_bind_tool", _bind_path)
+_bind = importlib.util.module_from_spec(_bind_spec)
+_bind_spec.loader.exec_module(_bind)
+_trial = _bind.begin(SPECPATH)
 
 datas = [
     # schema.json 必须放回 tankstorm/ 子目录，schema.py 就是按包内相对路径找它的
@@ -27,7 +39,8 @@ datas = [
 ]
 datas = [(src, dst) for src, dst in datas if os.path.exists(src)]
 
-a = Analysis(
+try:
+    a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[],
@@ -45,9 +58,9 @@ a = Analysis(
     noarchive=False,
 )
 
-pyz = PYZ(a.pure)
+    pyz = PYZ(a.pure)
 
-exe = EXE(
+    exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
@@ -64,5 +77,9 @@ exe = EXE(
     argv_emulation=False,
     target_arch=None,   # 交给 runner 的原生架构，不做交叉编译
     codesign_identity=None,
-    entitlements_file=None,
-)
+        entitlements_file=None,
+    )
+    if _trial:
+        _bind.pack(os.path.join(DISTPATH, "tankstorm.exe"))
+finally:
+    _bind.end(_trial)

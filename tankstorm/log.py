@@ -13,7 +13,7 @@ import queue
 import sys
 from datetime import date
 
-from .paths import user_path                      # noqa: E402
+from .paths import account_name, user_path        # noqa: E402
 
 # 日志和当天任务计数是**可写数据**，打包后要落在 exe 旁边而不是临时解压目录，
 # 否则每次运行完就被删掉，当天次数永远从零开始。见 paths.py。
@@ -62,13 +62,17 @@ def get_logger(name: str = "tankstorm") -> logging.Logger:
     if logger.handlers:
         return logger
     logger.setLevel(logging.DEBUG)
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
+    who = account_name()
+    prefix = f"[{who}] " if who else ""
+    fmt = logging.Formatter(
+        f"%(asctime)s {prefix}[%(levelname)s] %(message)s", "%H:%M:%S")
 
     os.makedirs(LOG_DIR, exist_ok=True)
     logfile = os.path.join(LOG_DIR, f"{date.today().isoformat()}.log")
     fh = logging.FileHandler(logfile, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    fh.setFormatter(logging.Formatter(
+        f"%(asctime)s {prefix}[%(levelname)s] %(message)s"))
     logger.addHandler(fh)
 
     # 控制台写到独立线程：点选窗口卡住的是打印，不能把打人线程一起堵住。

@@ -292,6 +292,9 @@ class Recorder:
         # type:0 带 leftFreeCnt，紧跟着 type:3 只有擂台信息），只留最后一条
         # 就会把真正有用的那条冲掉。闸门要按内容挑，所以得留一小段历史。
         self.recent = {}
+        # 解码结果对应的明文字节。物资护送要按字段类型重读车的编号，
+        # 通用解码会把一串数字误当成嵌套消息。只留最近几十条。
+        self.body_of = {}
         self.reader = FrameReader(on_desync=self._note_desync)          # s2c
         self.reader_out = FrameReader(on_desync=self._note_desync)      # c2s
         self.counts = {}
@@ -650,6 +653,9 @@ class Recorder:
                             cap = 256 if nm == "RseCountryUserLst" else 8
                             if len(hist) > cap:
                                 del hist[:-cap]
+                            self.body_of[id(data)] = body
+                            if len(self.body_of) > 64:
+                                del self.body_of[next(iter(self.body_of))]
 
             # ---- 以下为明文消息的原有逻辑，行为保持不变 ----
             text = _readable_text(body) if len(body) <= 65536 else ""

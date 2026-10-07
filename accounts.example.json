@@ -1,0 +1,7 @@
+{
+    "_说明": "复制成 accounts.json（不要提交，里面是你的号）。然后 python main.py --multi。每个账号一个进程，同时跑，命令写在「参数」里，和单独执行 python main.py 时一样。cookie、二维码、日志、每日计数在 accounts/<名称>/。第一次先逐个登录：python main.py --account 主号 --login。任务开关、国战国家、征战关卡若和根目录 config.json 不同，把差异写到 accounts/<名称>/config.json。同一个号不要开两份。",
+    "账号": [
+        {"名称": "主号", "参数": ["--daily"]},
+        {"名称": "小号", "参数": ["--keepalive"]}
+    ]
+}

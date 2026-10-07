@@ -140,6 +140,10 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         heart = _Beater(sock, hb, interval)
         daily._BEAT = heart
 
+        from . import guild
+        if guild.refuse(rec, sock):
+            return "公会校验未通过"
+
         if with_daily:
             try:
                 res, det = daily.run(rec, sock, config, beat=heart)
@@ -455,7 +459,7 @@ def run_route_once(qq, config: dict, city_id, country=0) -> int:
     from . import citydb, country_war
 
     def _work(rec, sock, spec, ctx, beater):
-        my = int(country or (config.get("国战") or {}).get("自己国家ID") or 0) \
+        my = int((config.get("国战") or {}).get("自己国家ID") or 0) \
             or daily.read_my_country(rec)
         if not my:
             log.error("读不到自己的国家ID，停手")
@@ -475,13 +479,49 @@ def run_route_once(qq, config: dict, city_id, country=0) -> int:
     return _connect_and(qq, config, _work)
 
 
+def run_approach_once(qq, config: dict, city_id, uid, times=1,
+                      sweep=False, country=0) -> int:
+    """走到目标城旁边，只打指定玩家。"""
+    from . import country_war
+
+    def _work(rec, sock, spec, ctx, beater):
+        out = country_war.approach_and_attack(
+            rec, sock, config, city_id, uid, times=times, sweep=sweep,
+            country=country, beat=beater)
+        who = out.get("名字") or out.get("目标") or uid
+        log.info("―― 靠近 %s 打 %s ―― 停在 %s，%s %d/%d 次",
+                 city_id, who, out.get("走到"), out.get("动作") or "攻击",
+                 out.get("成功") or 0, times)
+        if out.get("停止原因"):
+            log.info("   结束原因：%s", out["停止原因"])
+        log.info("   任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if out.get("成功") else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_own_legion_once(qq, config: dict) -> int:
+    """走到本国首都卫星城旁的摩多军团，召唤志愿兵再打。"""
+    from . import country_war
+
+    def _work(rec, sock, spec, ctx, beater):
+        out = country_war.attack_own_legion(rec, sock, config, beat=beater)
+        log.info("―― 本国摩多军团 ―― 走了 %d 步，停在 %s，召唤 %s，扫荡 %s，攻击 %s，用卡 %s",
+                 out.get("移动") or 0, out.get("走到"),
+                 out.get("召唤") or 0, out.get("扫荡") or 0,
+                 out.get("攻击") or 0, out.get("用卡") or 0)
+        if out.get("停止原因"):
+            log.info("   结束原因：%s", out["停止原因"])
+        return 0 if (out.get("扫荡") or out.get("攻击")) else 1
+
+    return _connect_and(qq, config, _work)
+
+
 def run_move_once(qq, config: dict, city_id, sweep=False, country=0) -> int:
     """连一次游戏，沿路线走到目标城，然后断开。"""
     from . import country_war
 
     def _work(rec, sock, spec, ctx, beater):
-        if country:
-            config.setdefault("国战", {})["自己国家ID"] = int(country)
         out = country_war.walk_to(
             rec, sock, config, city_id, sweep=sweep, beat=beater)
         log.info("―― 移动到 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
@@ -527,7 +567,11 @@ def _connect_and(qq, config: dict, work) -> int:
         log.error("%s", exc)
         return 2
 
-    if not qq.is_valid() and not relogin_with_push(qq, config):
+    from . import lockqq
+    if not qq.is_valid():
+        if not relogin_with_push(qq, config):
+            return 1
+    elif lockqq.refuse(qq):
         return 1
 
     ctx = get_game_context(qq)
@@ -589,6 +633,10 @@ def _connect_and(qq, config: dict, work) -> int:
             return 1
         log.info("登录态数据接收完毕，开始执行")
 
+        from . import guild
+        if guild.refuse(rec, sock):
+            return 1
+
         return work(rec, sock, spec, ctx, heart)
     except OSError as exc:
         log.error("连接中断: %s", exc)
@@ -618,30 +666,35 @@ def run_fund_once(qq, config: dict, building_id: int, times: int) -> int:
     return _connect_and(qq, config, _work)
 
 
-def run_pve_once(qq, config: dict, stages=None) -> int:
-    """连一次、按名单打征战世界、退出。stages 为空则用 config「征战.关卡」。"""
+def run_pve_once(qq, config: dict, end=None) -> int:
+    """连一次、从当前关打征战世界、退出。end 为空则用 config「征战.最终关卡」。"""
     from . import pve
 
     def _work(rec, sock, spec, ctx, beater):
         cfg = config.get("征战") or {}
-        if cfg.get("第4次"):
-            ok, why = pve.vip_restart(rec, sock)
-            log.info("[征战] %s", why)
-            if not ok:
-                return 1
-        raw = stages if stages else cfg.get("关卡")
-        if not raw:
-            if not cfg.get("第4次"):
-                log.error("[征战] 没有配置关卡")
-                return 1
-            log.info("任务执行期间共发心跳 %d 次", beater.count)
-            return 0
+        raw = end if end else cfg.get("最终关卡")
+        interval = cfg.get("间隔秒", 1)
         try:
-            ok, why = pve.fight(rec, sock, raw, cfg.get("间隔秒", 1))
+            ok, why = pve.campaign(
+                rec, sock, raw, interval,
+                third=bool(cfg.get("第3次")), fourth=bool(cfg.get("第4次")))
         except ValueError as exc:
             log.error("[征战] %s", exc)
             return 1
         log.info("[征战] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_escort_once(qq, config: dict, refreshes: int = 0) -> int:
+    """连一次。一直刷新，抢到带火炮核心的橙色车后退出。"""
+    from . import escort
+
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = escort.escort(rec, sock, refreshes)
+        log.info("[护送] %s", why)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         return 0 if ok else 1
 
@@ -670,12 +723,17 @@ def relogin_with_push(qq, config: dict) -> bool:
     # 先试静默续期：skey 只活约 24 小时，但 superkey/RK/ptcz 是长效的，
     # 能换发新 skey 而不必惊动你。成功就不用你动手了。
     if qq.silent_renew():
+        if lockqq.refuse(qq):
+            return False
         log.info("已用长效凭据静默续期，无需人工介入")
         return True
 
     # 推送登录：直接往手机QQ推确认，免去扫码。
     # 这解决了"二维码图存本地、同一台手机相册扫码"被腾讯拒（限制本地扫码登录）的问题。
-    push_uin = (config.get("登录", {}) or {}).get("推送登录QQ号") or qq.uin or None
+    from . import lockqq
+    push_uin = (lockqq.bind_uin()
+                or (config.get("登录", {}) or {}).get("推送登录QQ号")
+                or qq.uin or None)
 
     def on_qr(path, pushed=False):
         if pushed:
@@ -699,6 +757,8 @@ def relogin_with_push(qq, config: dict) -> bool:
         log.info("登录态失效，正在%s（第 %d 次尝试）",
                  f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码", attempt)
         if qq.qr_login(on_qr=on_qr, push_uin=push_uin):
+            if lockqq.refuse(qq):
+                return False
             notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
             return True
         log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
@@ -740,8 +800,12 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
     rec = Recorder(config, on_alert=on_alert)
 
     # 启动时若未登录（如服务器首次部署），也走"推送二维码"流程
+    from . import lockqq
     if not qq.is_valid():
-        relogin_with_push(qq, config)
+        if not relogin_with_push(qq, config):
+            return 1
+    elif lockqq.refuse(qq):
+        return 1
 
     log.info("保持活跃启动（Ctrl+C 停止）")
     try:
@@ -750,10 +814,13 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
                 log.info("达到设定运行时长，退出")
                 break
             if not qq.is_valid():
-                relogin_with_push(qq, config)
+                if not relogin_with_push(qq, config):
+                    return 1
 
             reason = _one_session(qq, spec, conf, config, rec,
                                   with_daily=with_daily)
+            if reason == "公会校验未通过":
+                return 1
             log.warning("本次连接结束：%s", reason)
             # 断开后退避重连
             wait = min(backoff, max_backoff)

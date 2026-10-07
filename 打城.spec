@@ -1,7 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
+# 试用版（只锁公会就不要设 TANKSTORM_LOCK_QQ）：
+#   $env:TANKSTORM_LOCK_GUILD="690422"; pyinstaller --clean --noconfirm 打城.spec
+# 授权版：锁 QQ，包里自带 10 分钟。每次打开先登录，再 POST /api/clock，
+# 正文 mono_ms 是单调计时毫秒，读响应 remaining_ms，之后本机倒计时。
+#   $env:TANKSTORM_LOCK_QQ="QQ号"
+#   $env:TANKSTORM_LICENSE_URL="https://服务器"
+#   $env:TANKSTORM_LICENSE_USER="会员名"
+#   $env:TANKSTORM_LICENSE_PASS="会员密码"
 
+import importlib.util
+import os
 
-a = Analysis(
+_bind_path = os.path.join(SPECPATH, "tools", "trial_bind.py")
+_bind_spec = importlib.util.spec_from_file_location("_trial_bind_tool", _bind_path)
+_bind = importlib.util.module_from_spec(_bind_spec)
+_bind_spec.loader.exec_module(_bind)
+_trial = _bind.begin(SPECPATH)
+
+try:
+    a = Analysis(
     ['city_gui.py'],
     pathex=[],
     binaries=[],
@@ -14,9 +31,9 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
-pyz = PYZ(a.pure)
+    pyz = PYZ(a.pure)
 
-exe = EXE(
+    exe = EXE(
     pyz,
     a.scripts,
     a.binaries,
@@ -34,5 +51,9 @@ exe = EXE(
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
-    entitlements_file=None,
-)
+        entitlements_file=None,
+    )
+    if _trial:
+        _bind.pack(os.path.join(DISTPATH, "打城.exe"))
+finally:
+    _bind.end(_trial)

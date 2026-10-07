@@ -35,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from . import lockqq
 from .log import get_logger
 from .paths import app_dir, bundled_dir, user_path
 from .qzone import get_game_context
@@ -53,7 +54,10 @@ _HJDZ = os.path.normpath(os.path.join(app_dir(), "..", "hjdz-automation"))
 
 
 def run(qq, config: dict) -> int:
-    if not qq.is_valid() and not relogin_with_push(qq, config):
+    if not qq.is_valid():
+        if not relogin_with_push(qq, config):
+            return 1
+    elif lockqq.refuse(qq):
         return 1
     ctx = get_game_context(qq)
     canvas = ctx.get("canvas_url")

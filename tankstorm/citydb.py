@@ -6,7 +6,8 @@
 # 本程序希望能有用，但不提供任何担保；甚至不含适销性或特定用途适用性的默示担保。
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
 """城市玩家 SQLite：目录表来自游戏 CDN 的 CityData / CountryName，玩家表由
-`--city-players` 翻页写入。库文件在程序目录 `city_players.db`。
+`--city-players` 翻页写入。库文件在程序目录 `city_players.db`；
+多账号时各写 `accounts/<名称>/city_players.db`。
 """
 
 import sqlite3
@@ -77,6 +78,9 @@ CREATE TABLE IF NOT EXISTS city_occupy (
 
 
 _schema_ready = False
+_near_cache = {}
+_name_cache = {}
+_near_ready = False
 
 # Windows 上 sqlite3.connect 的 timeout 拦不住文件锁，会在任务线程里卡死。
 # 写库丢到短线程里，超过这个时间就放弃，让打人继续。
@@ -156,7 +160,11 @@ def _parse_near(s):
 
 def ensure_catalog(force: bool = False) -> int:
     """把官方城市表灌进 sqlite。已有数据且不 force 就跳过下载。返回城市数。"""
-    conn = connect()
+    try:
+        conn = connect()
+    except sqlite3.OperationalError as exc:
+        log.info("读城市目录失败，跳过：%s", exc)
+        return 0
     try:
         n = conn.execute("SELECT COUNT(*) FROM city").fetchone()[0]
         near_n = conn.execute(
@@ -186,15 +194,31 @@ def ensure_catalog(force: bool = False) -> int:
         log.info("已写入城市目录 %d 座、阵营 %d 个 → %s",
                  len(rows), len(countries), DB_FILE)
         return len(rows)
+    except sqlite3.OperationalError as exc:
+        log.info("读城市目录失败，跳过：%s", exc)
+        return 0
     finally:
         conn.close()
 
 
 def city_name(city_id: int) -> str:
-    conn = connect()
+    cid = int(city_id or 0)
+    if cid in _name_cache:
+        return _name_cache[cid]
     try:
-        row = conn.execute("SELECT name FROM city WHERE id=?", (int(city_id),)).fetchone()
-        return row[0] if row else ""
+        conn = connect()
+    except sqlite3.OperationalError as exc:
+        log.info("读城市名失败，跳过：%s", exc)
+        return ""
+    try:
+        row = conn.execute("SELECT name FROM city WHERE id=?", (cid,)).fetchone()
+        name = row[0] if row else ""
+        if name:
+            _name_cache[cid] = name
+        return name
+    except sqlite3.OperationalError as exc:
+        log.info("读城市名失败，跳过：%s", exc)
+        return ""
     finally:
         conn.close()
 
@@ -234,13 +258,28 @@ def record_occupy(city_id, country_id, user_cnt=None, fetched_at=None):
 
 
 def neighbors(city_id: int) -> set:
-    """官方 CityData.nearCity。同一座城不算邻居，用 can_reach 判断能不能打。"""
-    ensure_catalog()
-    conn = connect()
+    """官方 CityData.nearCity。同一座城不算邻居，用 can_reach 判断能不能打。
+
+    路线规划读过整张图之后就用内存。打人途中磁盘出错不再把进程打掉。
+    """
+    cid = int(city_id)
+    if _near_ready:
+        return set(_near_cache.get(cid, ()))
+    try:
+        ensure_catalog()
+        conn = connect()
+    except sqlite3.OperationalError as exc:
+        log.info("读相邻城市失败，跳过：%s", exc)
+        return set()
     try:
         row = conn.execute("SELECT near_city FROM city WHERE id=?",
-                           (int(city_id),)).fetchone()
-        return set(_parse_near(row[0] if row else ""))
+                           (cid,)).fetchone()
+        got = set(_parse_near(row[0] if row else ""))
+        _near_cache[cid] = got
+        return set(got)
+    except sqlite3.OperationalError as exc:
+        log.info("读相邻城市失败，跳过：%s", exc)
+        return set()
     finally:
         conn.close()
 
@@ -262,6 +301,7 @@ def can_reach(here, there) -> bool:
 
 
 def city_map() -> dict:
+    global _near_ready
     """id → {name, owner, near}。归属优先用占领记录，没有则用原属国。边补成双向。"""
     ensure_catalog()
     conn = connect()
@@ -288,6 +328,13 @@ def city_map() -> dict:
     for cid, info in g.items():
         for n in info["near"]:
             g[n]["near"].add(cid)
+    _near_cache.clear()
+    _name_cache.clear()
+    for cid, info in g.items():
+        _near_cache[cid] = set(info["near"])
+        if info["name"]:
+            _name_cache[cid] = info["name"]
+    _near_ready = True
     return g
 
 
@@ -522,7 +569,15 @@ def list_city_targets(city_id: int, skip_failed=True, exclude_uid=""):
     return out
 
 
+_fail_cache = None
+
+
 def failed_uids() -> set:
+    """失败库只从磁盘读一次。打人途中再查人，用这份内存，避免每个目标都打开 sqlite。"""
+    global _fail_cache
+    if isinstance(_fail_cache, set):
+        return set(_fail_cache)
+
     def _read():
         conn = connect(timeout=DB_OP_TIMEOUT)
         try:
@@ -531,12 +586,14 @@ def failed_uids() -> set:
                 if r[0]}
         finally:
             conn.close()
-    got = _run_timeout(_read, default=set())
-    return got if isinstance(got, set) else set()
+
+    got = _run_timeout(_read, default=None)
+    _fail_cache = got if isinstance(got, set) else set()
+    return set(_fail_cache)
 
 
 def in_atk_fail(uid) -> bool:
-    """这个人现在算不算失败库里的。先看本轮还没落盘的队列，再查库。"""
+    """这个人现在算不算失败库里的。只看内存和本轮还没落盘的队列。"""
     uid = str(uid or "").strip()
     if not uid:
         return False
@@ -552,18 +609,9 @@ def in_atk_fail(uid) -> bool:
         return True
     if pending is False:
         return False
-
-    def _read():
-        conn = connect(readonly=True, timeout=DB_OP_TIMEOUT)
-        try:
-            row = conn.execute(
-                "SELECT 1 FROM atk_fail WHERE uid=? AND IFNULL(ret,0) NOT IN (21)",
-                (uid,)).fetchone()
-            return bool(row)
-        finally:
-            conn.close()
-
-    return bool(_run_timeout(_read, default=False))
+    if not isinstance(_fail_cache, set):
+        failed_uids()
+    return uid in (_fail_cache or ())
 
 
 # 打人热路径不能同步写库：L 盘/DB Browser 一锁，sqlite3.connect 能卡住几分钟，
@@ -572,18 +620,29 @@ _atk_q = []
 
 
 def record_atk_fail(uid, city_id=0, ret=None, reason="", name=""):
+    global _fail_cache
     uid = str(uid or "").strip()
-    if uid:
-        _atk_q.append(("record", uid, name or "", int(city_id or 0), ret, reason or ""))
+    if not uid:
+        return
+    if not isinstance(_fail_cache, set):
+        _fail_cache = set()
+    _fail_cache.add(uid)
+    _atk_q.append(("record", uid, name or "", int(city_id or 0), ret, reason or ""))
 
 
 def clear_atk_fail(uid=None):
+    global _fail_cache
     if uid is None:
+        if isinstance(_fail_cache, set):
+            _fail_cache.clear()
         _atk_q.append(("wipe",))
         return
     uid = str(uid or "").strip()
-    if uid:
-        _atk_q.append(("clear", uid))
+    if not uid:
+        return
+    if isinstance(_fail_cache, set):
+        _fail_cache.discard(uid)
+    _atk_q.append(("clear", uid))
 
 
 def flush_atk_fail():

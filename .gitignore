@@ -1,8 +1,14 @@
 # ===== 凭据 / 会话（含个人信息，绝不上传）=====
 cookies.json
+pwd_accounts.json
+pwd_browser/
+license_state.json
 qrcode.png
 state.json
 config.local.json
+# 多账号运行数据，以及含真实 QQ 号的账号清单
+accounts/
+accounts.json
 # 从浏览器搬设备记录时的中转文件（--import-device 的输入，含真 cookie）
 dev-cookie*.txt
 
@@ -49,6 +55,7 @@ files.zip
 解密.txt
 
 tools/flash_host/build/
+tools/upx/
 pktcap/
 pepflashplayer.dll
 

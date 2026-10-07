@@ -19,6 +19,9 @@
 
 常用：
   python main.py --login       扫码登录（cookie 存 cookies.json，之后自动续期）
+  python main.py --account 主号 --login
+                               这个号单独登录，cookie 写到 accounts/主号/
+  python main.py --multi       按 accounts.json 同时跑多个号，各执行各的参数
   python main.py --check       验证登录态，打印 uid/sid/level
   python main.py --keepalive   保活常驻
   python main.py --daily       跑一轮每日任务
@@ -28,24 +31,52 @@
   python main.py --city-players 2203              拉芝加哥玩家（从第 0 页）
   python main.py --city-players 2203 --city-page 232  从第 232 页继续
   python main.py --watch-cities                    常驻：按 config 城市监视每 5 分钟刷新指定城
+  python main.py --atk 7826194927704102 --move 2302
+                                       走到 2302 的相邻城，只打这个玩家
   python main.py --atk 7826194927704102           离线打人（默认普通攻击 1 次）
   python main.py --atk 7826194927704102 --sweep --atk-times 2
   python main.py --atk-city 2302 --sweep          现场翻页打城：先打再看士气，击退/打不过换人
   python main.py --list-cities        列出全部城市 ID 与中文名
   python main.py --capture            扫码后打开钩子版游戏窗口，实时抓包
-  python main.py --pve                 征战世界，关卡见 config「征战.关卡」
-  python main.py --pve 1-10,15         只打这些关（当前关必须在名单里）
+  python main.py --pve                 从当前关打征战，最终关见 config「征战.最终关卡」
+  python main.py --pve 150             从当前关打到第 150 关
 """
 
 import argparse
 import json
 import os
+import subprocess
 import sys
+import time
 from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from tankstorm import engine, notify, paths, qzone, socket_keepalive  # noqa: E402
+
+def _take_account_arg(argv: list[str]) -> None:
+    """在导入 tankstorm 之前把 --account 写进环境变量。
+
+    cookie、日志、每日计数都是模块导入时就算好的路径。等 argparse 再改就晚了。
+    """
+    name = ""
+    for i, a in enumerate(argv):
+        if a == "--account" and i + 1 < len(argv):
+            name = argv[i + 1].strip()
+            break
+        if a.startswith("--account="):
+            name = a.split("=", 1)[1].strip()
+            break
+    if not name:
+        return
+    if name in (".", "..") or name.startswith("-") or any(c in name for c in '/\\:*?"<>|'):
+        print(f"账号名称不合法: {name}", file=sys.stderr)
+        raise SystemExit(2)
+    os.environ["TANKSTORM_ACCOUNT"] = name
+
+
+_take_account_arg(sys.argv[1:])
+
+from tankstorm import engine, lockqq, notify, paths, qzone, socket_keepalive  # noqa: E402
 from tankstorm.log import get_logger                 # noqa: E402
 from tankstorm.qq_login import QQSession             # noqa: E402
 
@@ -62,7 +93,7 @@ BASE_DIR = paths.app_dir()
 CONFIG_FILE = paths.data_file("config.json")
 ENDPOINTS_FILE = paths.data_file("endpoints.json")
 # 这两个一律写在程序目录：密钥文件和运行状态都是用户数据
-LOCAL_CONFIG_FILE = paths.user_path("config.local.json")   # 放密钥，已 gitignore
+LOCAL_CONFIG_FILE = os.path.join(paths.app_dir(), "config.local.json")  # 密钥，各账号共用
 STATE_FILE = paths.user_path("state.json")
 
 
@@ -72,7 +103,7 @@ def load_json(path: str, required: bool = True) -> dict:
             log.error("缺少文件: %s", path)
             sys.exit(1)
         return {}
-    with open(path, encoding="utf-8") as f:
+    with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
 
 
@@ -89,7 +120,96 @@ def _deep_merge(base: dict, over: dict) -> dict:
 def load_config() -> dict:
     config = load_json(CONFIG_FILE)
     local = load_json(LOCAL_CONFIG_FILE, required=False)  # 本地密钥文件，不进仓库
-    return _deep_merge(config, local)
+    _deep_merge(config, local)
+    name = paths.account_name()
+    if name:
+        log.info("账号 %s，数据目录 %s", name, paths.data_root())
+        overlay = os.path.join(paths.data_root(), "config.json")
+        extra = load_json(overlay, required=False)
+        if not isinstance(extra, dict):
+            extra = {}
+        if extra:
+            _deep_merge(config, extra)
+            log.info("已合并账号配置 %s", overlay)
+        # 根配置里的 QQ 号和昵称属于单账号。没在本账号配置里写明就清掉，
+        # 避免给小号推登录时推到大号手机上，或把大号昵称当成自己。
+        if "推送登录QQ号" not in (extra.get("登录") or {}):
+            config.setdefault("登录", {})["推送登录QQ号"] = ""
+        if "我的标识" not in (extra.get("录制") or {}):
+            config.setdefault("录制", {})["我的标识"] = []
+    return config
+
+
+def _run_multi() -> int:
+    """按 accounts.json 给每个账号起一个进程，同时跑、各干各的命令。"""
+    path = os.path.join(paths.app_dir(), "accounts.json")
+    if not os.path.exists(path):
+        log.error("缺少 %s。复制 accounts.example.json 为 accounts.json 后填写", path)
+        return 1
+    rows = load_json(path).get("账号")
+    if not isinstance(rows, list) or not rows:
+        log.error("%s 的「账号」必须是非空列表", path)
+        return 1
+    seen: set[str] = set()
+    specs: list[tuple[str, list[str]]] = []
+    for row in rows:
+        name = str(row.get("名称") or "").strip() if isinstance(row, dict) else ""
+        argv = row.get("参数") if isinstance(row, dict) else None
+        bad_name = (not name or name in seen or name in (".", "..")
+                    or name.startswith("-")
+                    or any(c in name for c in '/\\:*?"<>|'))
+        bad_argv = (not isinstance(argv, list) or not argv
+                    or not all(isinstance(x, str) and x.strip() for x in argv))
+        if bad_name or bad_argv:
+            log.error("账号条目不合法（要有不重复的名称，以及非空的参数列表）")
+            return 1
+        if any(a == "--multi" or a == "--account" or a.startswith("--account=")
+               for a in argv):
+            log.error("账号 %s 的参数里不能再写 --multi 或 --account", name)
+            return 1
+        seen.add(name)
+        specs.append((name, argv))
+
+    flags: dict = {}
+    if os.name == "nt":
+        flags["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        flags["start_new_session"] = True
+    script = os.path.abspath(__file__)
+    procs = []
+    for name, argv in specs:
+        env = os.environ.copy()
+        env["TANKSTORM_ACCOUNT"] = name
+        cmd = ([sys.executable, *argv] if paths.is_frozen()
+               else [sys.executable, script, *argv])
+        log.info("启动 %s：%s", name, " ".join(argv))
+        procs.append((name, subprocess.Popen(
+            cmd, env=env, cwd=paths.app_dir(), **flags)))
+
+    code = 0
+    try:
+        pending = {name: p for name, p in procs}
+        while pending:
+            done = [n for n, p in pending.items() if p.poll() is not None]
+            for n in done:
+                rc = pending.pop(n).returncode
+                log.info("账号 %s 已退出，代码 %s", n, rc)
+                if rc:
+                    code = 1
+            if pending:
+                time.sleep(0.4)
+    except KeyboardInterrupt:
+        log.info("正在停止各账号")
+        for _, p in procs:
+            if p.poll() is None:
+                p.terminate()
+        for _, p in procs:
+            try:
+                p.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                p.kill()
+        return 130
+    return code
 
 
 def main() -> int:
@@ -99,6 +219,13 @@ def main() -> int:
                "源码：https://github.com/Dimlitter/tankstorm-keepalive",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     g1 = parser.add_argument_group("登录")
+    g1.add_argument("--account", metavar="名称",
+                    help="使用 accounts/<名称>/ 下的登录态、日志和每日计数。"
+                         "各账号先单独登录：--account 主号 --login。"
+                         "任务开关与别人不同时，写 accounts/<名称>/config.json")
+    g1.add_argument("--multi", action="store_true",
+                    help="按程序目录的 accounts.json 同时启动多个账号，"
+                         "各自执行其中的「参数」。Ctrl+C 会一起停")
     g1.add_argument("--login", action="store_true", help="强制重新扫码登录")
     g1.add_argument("--check", action="store_true", help="验证登录态并打印上下文")
     g1.add_argument("--import-device", metavar="文件",
@@ -122,8 +249,8 @@ def main() -> int:
     g5.add_argument("--city-players", type=int, metavar="城市ID", default=None,
                     help="查询指定城市内的全部玩家，写入 city_players.db")
     g5.add_argument("--city-country", type=int, metavar="国家ID", default=0,
-                    help="配合 --city-players / --atk：城市所属国家；"
-                         "拉玩家时不填则用自己的国家，打人时不填则查库")
+                    help="一般不用填。自己的国家从登录数据读，"
+                         "目标城归属国打开面板时读")
     g5.add_argument("--city-page", type=int, metavar="页码", default=0,
                     help="配合 --city-players：从第几页继续（0 起算。"
                          "上次停在第 231 页就传 232）")
@@ -144,11 +271,14 @@ def main() -> int:
                          "间隔见「间隔秒」，默认 5 分钟。走保活同一条连接")
     g5.add_argument("--list-cities", action="store_true",
                     help="列出全部城市 ID 与中文名（读官方配置表，不用登录）")
+    g5.add_argument("--mordor", action="store_true",
+                    help="走到本国首都卫星城旁的摩多军团城，召唤志愿兵再打。"
+                         "恢复卡张数用「单次最多用几张恢复卡」")
     g5.add_argument("--move", type=int, metavar="城市ID", default=None,
-                    help="沿路线走到能打到这座城的相邻城，然后扫荡这座城"
-                         "（type:19，每次 15 点行动力）。敌城有人就先扫荡")
+                    help="沿路线走到能打到这座城的相邻城。单独用时扫荡这座城。"
+                         "和 --atk 一起用时只打这个玩家，不进目标城")
     g5.add_argument("--route", type=int, metavar="城市ID", default=None,
-                    help="规划怎么打到这座城。当前城市和自己的国家从国战面板读。"
+                    help="规划怎么打到这座城。当前城市、自己的国家、沿途归属都从面板读。"
                          "同国城市直接通过，异国城市须先占领。"
                          "只打印路线，不迁城、不发攻击")
 
@@ -160,9 +290,16 @@ def main() -> int:
                     help="全部拨款的次数，默认 1。每一次都会先开 4 张金属卡和 4 张石油卡")
 
     g7 = parser.add_argument_group("征战世界")
-    g7.add_argument("--pve", nargs="?", const="", default=None, metavar="关卡",
-                    help="打征战世界后退出。不带参数用 config「征战.关卡」。"
-                         "也可写 1-10 或 3,5,8。当前关不在名单里会停，不会跳关")
+    g7.add_argument("--pve", nargs="?", const="", default=None, metavar="最终关卡",
+                    help="从当前关打征战世界后退出。不带参数用 config「征战.最终关卡」。"
+                         "写 150 表示打到第 150 关。0 或不填表示打到过不去")
+
+    g8 = parser.add_argument_group("物资护送")
+    g8.add_argument("--escort", nargs="?", const=0, type=int, default=None,
+                    metavar="刷新次数",
+                    help="一直刷新，直到橙色车里还有火炮核心，并且这辆车还能被掠夺。"
+                         "还能抢 2 次就抢 2 次，只剩 1 次就抢 1 次。"
+                         "掠夺失败就继续刷下一辆。写次数则最多刷新这么多次")
 
     g4 = parser.add_argument_group("其它")
     g4.add_argument("--capture", action="store_true",
@@ -173,15 +310,26 @@ def main() -> int:
                     help="（已废弃，保留兼容：现在 --daily 一律真实发送）")
     args = parser.parse_args()
 
+    if args.multi:
+        if paths.account_name():
+            log.error("--multi 不要和 --account 一起用")
+            return 2
+        return _run_multi()
+
     # 什么都不给就打印用法。以前默认会去跑 endpoints.json 里那套早已废弃的
     # HTTP 任务，全部失败还把退出码带成 1，看着像登录坏了。
-    if not any((args.login, args.check, args.keepalive, args.daily,
-                args.list, args.reset, args.task, args.import_device,
-                args.country_war, args.city_players is not None,
-                args.atk, args.atk_city is not None, args.watch_cities,
-                args.list_cities, args.route is not None, args.move is not None,
-                args.capture, args.fund is not None,
-                args.pve is not None)):
+    acted = any((args.login, args.check, args.keepalive, args.daily,
+                 args.list, args.reset, args.task, args.import_device,
+                 args.country_war, args.city_players is not None,
+                 args.atk, args.atk_city is not None, args.watch_cities,
+                 args.list_cities, args.route is not None, args.move is not None,
+                 args.mordor,
+                 args.capture, args.fund is not None,
+                 args.pve is not None, args.escort is not None))
+    if args.account and not acted:
+        log.error("--account 只选定账号，还要带上命令，例如 --login、--daily、--keepalive")
+        return 2
+    if not acted:
         parser.print_help()
         return 0
 
@@ -218,7 +366,9 @@ def main() -> int:
         sw = (config.get("每日任务", {}) or {}).get("任务", {})
         conf = config.get("每日任务", {}) or {}
         st = _daily._load_state()
-        print(f"\n每日任务（{'已启用' if conf.get('启用') else '未启用'}，"
+        who = paths.account_name()
+        head = f"{who} 的每日任务" if who else "每日任务"
+        print(f"\n{head}（{'已启用' if conf.get('启用') else '未启用'}，"
               f"实发模式）")
         print(f"{'执行顺序':<4} {'任务':<12} {'opcode':<8} {'消息':<22} "
               f"{'上限':<5} {'今日':<5} {'参数':<6} 开关")
@@ -287,11 +437,18 @@ def main() -> int:
     if args.country_war:
         return socket_keepalive.run_country_war_once(qq, config,
                                                      args.country_war)
+    if args.mordor:
+        return socket_keepalive.run_own_legion_once(qq, config)
 
     # 城市玩家：连一次、开指定城市面板、把列表打出来、退出
     if args.route is not None:
         return socket_keepalive.run_route_once(
             qq, config, args.route, args.city_country)
+
+    if args.atk and args.move is not None:
+        return socket_keepalive.run_approach_once(
+            qq, config, args.move, args.atk, times=args.atk_times,
+            sweep=args.sweep, country=args.city_country)
 
     if args.move is not None:
         return socket_keepalive.run_move_once(
@@ -319,6 +476,9 @@ def main() -> int:
     if args.pve is not None:
         return socket_keepalive.run_pve_once(qq, config, args.pve)
 
+    if args.escort is not None:
+        return socket_keepalive.run_escort_once(qq, config, args.escort)
+
     # 每日任务：连一次、跑一轮、退出
     if args.daily:
         config.setdefault("每日任务", {})["启用"] = True
@@ -337,10 +497,14 @@ def main() -> int:
             notify.send_qrcode(config, "坦克风暴：请扫码登录", path,
                                note="请用<b>另一台设备</b>打开本条消息再扫码。")
 
+    if lockqq.bind_uin():
+        push_uin = lockqq.bind_uin()
     if args.login:
         if not qq.qr_login(on_qr=on_qr, push_uin=push_uin):
             return 1
     elif not qq.ensure_login(on_qr=on_qr, push_uin=push_uin):
+        return 1
+    if lockqq.refuse(qq):
         return 1
 
     ctx = qzone.get_game_context(qq)
