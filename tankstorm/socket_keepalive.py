@@ -903,6 +903,90 @@ def _defeated(reason: str) -> bool:
     return "被别人打败" in text or "回到首都" in text or "出不了首都" in text
 
 
+def _here_of(out) -> int:
+    """这一单走到哪座城。walk_to 没记下时用页面上的当前位置。"""
+    from . import citydb
+
+    try:
+        here = int((out or {}).get("走到") or 0)
+    except (TypeError, ValueError):
+        here = 0
+    if here > 0:
+        return here
+    return citydb.attack_here_id()
+
+
+def _ready_for_same_city(here, city_id) -> bool:
+    """人还在目标城或相邻城，同城的索敌可以接着打。"""
+    from . import citydb
+
+    try:
+        here = int(here or 0)
+        city_id = int(city_id or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(here and city_id and citydb.can_reach(here, city_id))
+
+
+def _lock_no_retreat(why: str, status: str) -> bool:
+    """被打回首都或手动停，不要再执行后退。"""
+    if status == "ended":
+        return True
+    text = str(why or "")
+    return _defeated(text) or text == "已手动关停"
+
+
+def _lock_no_chain(why: str, status: str) -> bool:
+    """这种停手不能再连着打同城的索敌。"""
+    if _lock_no_retreat(why, status):
+        return True
+    text = str(why or "")
+    if text == "已暂停":
+        return True
+    if "连接中断" in text or "攻打中断" in text:
+        return True
+    if "行动力" in text or _cards_used_up(text) or "遣返" in text:
+        return True
+    return False
+
+
+def _auto_retreat(rec, sock, fight_config, beater, plan) -> str:
+    """打完后退走一次。返回说明；没走就是空字符串。连接断了直接抛。"""
+    from . import country_war
+
+    retreat_mode = str((plan or {}).get("mode") or "off")
+    if retreat_mode not in ("hops", "city"):
+        return ""
+    label = str((plan or {}).get("name") or "").strip()
+    if not label:
+        label = "马奇诺" if retreat_mode == "hops" else "目标城"
+    prefix = f"朝{label}后退" if retreat_mode == "hops" else f"退到{label}"
+    try:
+        back = country_war.retreat_toward(
+            rec, sock, fight_config, beat=beater, name=label,
+            city_id=int((plan or {}).get("city_id") or 0),
+            hops=int((plan or {}).get("hops") or 3), mode=retreat_mode)
+    except OSError:
+        raise
+    except Exception as exc:
+        log.info("%s失败", prefix, exc_info=True)
+        detail = _interrupt_reason(exc)
+        if detail.startswith("攻打中断："):
+            detail = detail[len("攻打中断："):]
+        return f"{prefix}时：{detail}"
+    return str((back or {}).get("说明") or "").strip()
+
+
+def _merge_reason(why: str, note: str) -> str:
+    why = str(why or "").strip()
+    note = str(note or "").strip()
+    if note and not why:
+        return note
+    if note and why and note not in why:
+        return f"{why}。{note}"
+    return why
+
+
 def _empty_city(reason: str) -> bool:
     """清城扫完这几页，一个人都没有。"""
     return str(reason or "") in ("这几页没有可打的人", "这一页没有可打的人")
@@ -1110,12 +1194,12 @@ def _order_account(user_id: int):
             citydb.set_attack_context(prev, qq)
 
 
-def _fight_claimed(rec, sock, config, beater, job) -> None:
+def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
     from . import citydb, country_war
 
     if str(job.get("kind") or "") == "modo":
         _fight_modo(rec, sock, config, beater, job)
-        return
+        return {}
     uid = str(job.get("uid") or "").strip()
     citydb.set_attack_status("running")
     citydb.set_fighting_order(job["id"])
@@ -1127,6 +1211,12 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         if uid and str(name or "").strip():
             citydb.remember_order_name(job["id"], name)
 
+    def _cut():
+        return {
+            "id": job["id"], "status": "", "why": "", "here": 0,
+            "done": False, "failed": False, "stop": True, "parked": False,
+        }
+
     tally = {"n": start_beats, "note": _beat_note}
     citydb.note_attack_beats(job["id"], start_beats)
     fight_config = config
@@ -1137,23 +1227,26 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
         fight_config["国战"] = war
         log.info("订单 %s 最多用 %d 张恢复卡", job["id"], int(job["cards"]))
     guarding = bool(job.get("auto"))
-    if guarding:
+    if guarding and not from_chain:
         citydb.begin_lock_cards()
     try:
+        skipped = False
+        out = {}
         try:
             if guarding and uid and _skip_stale_lock(
                     rec, sock, config, beater, job, tally.get("n") or 0):
-                return
-            if uid:
-                info = citydb.find_player(uid) or {}
-                citydb.note_lock_morale(info.get("morale"))
-                if info.get("name"):
-                    citydb.remember_order_name(job["id"], info.get("name"))
-            plan = citydb.clear_fight_plan() if not uid else None
-            out = country_war.walk_to(
-                rec, sock, fight_config, job["city_id"], beat=beater, uid=uid,
-                hold_if_blocked=bool(job.get("auto")), tally=tally,
-                clear_plan=plan)
+                skipped = True
+            else:
+                if uid:
+                    info = citydb.find_player(uid) or {}
+                    citydb.note_lock_morale(info.get("morale"))
+                    if info.get("name"):
+                        citydb.remember_order_name(job["id"], info.get("name"))
+                plan = citydb.clear_fight_plan() if not uid else None
+                out = country_war.walk_to(
+                    rec, sock, fight_config, job["city_id"], beat=beater, uid=uid,
+                    hold_if_blocked=bool(job.get("auto")), tally=tally,
+                    clear_plan=plan)
         except OSError:
             citydb.finish_attack_order(
                 job["id"], "failed", "连接中断", beats=int(tally.get("n") or 0))
@@ -1163,87 +1256,152 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
             log.info("订单 %s %s", job["id"], why, exc_info=True)
             citydb.finish_attack_order(
                 job["id"], "failed", why, beats=int(tally.get("n") or 0))
-            return
-        if uid:
-            log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                     uid, job["city_id"], out.get("移动") or 0, out.get("走到"),
-                     out.get("攻击") if out.get("攻击") is not None else "未打")
-        else:
-            log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
-                     job["city_id"], out.get("移动") or 0, out.get("走到"),
-                     out.get("攻击") if out.get("攻击") is not None else "未打")
-        action, status, why = _order_result(job, out)
+            return _cut()
         beats = int(tally.get("n") or 0)
-        if why:
-            log.info("   结束原因：%s", why)
-        if (not uid and not job.get("auto") and action == "finish"
-                and _clear_cycle(why, out)):
-            minutes = citydb.clear_wait_minutes()
-            stuck = _clear_stuck(why, out)
-            if minutes > 0 and citydb.schedule_empty_order(
-                    job["id"], minutes, beats=beats, stuck=stuck):
-                if stuck:
-                    log.info("订单 %s 还有打不过的人，%d 分钟后再打", job["id"], minutes)
-                else:
-                    log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], minutes)
-                return
-        if action == "defer":
-            citydb.defer_attack_order(job["id"])
-            log.info("订单 %s 已暂停，放回排队", job["id"])
-            return
-        if action == "park" and (
-                citydb.attack_hold_minutes() > 0 or citydb.attack_hold_always()):
-            citydb.park_attack_order(job["id"], why, beats=beats)
-            log.info("订单 %s 有人挡路，挂机期间继续看路径", job["id"])
-            return
-        if action == "park":
-            status = "failed"
-        if job.get("auto") and status == "failed":
-            log.info("订单 %s 是自动锁敌，没打完，跳过，等下一次触发", job["id"])
-        elif status == "ended" and why != "已手动关停":
-            log.info("订单 %s 清城时被打回首都，订单结束", job["id"])
-        elif status == "ended":
-            log.info("订单 %s 已手动关停", job["id"])
+        if skipped:
+            status, why = "failed", _LOCK_LEFT
+            here = citydb.attack_here_id()
+            if job.get("auto") and not from_chain:
+                log.info("订单 %s 是自动锁敌，人已不在，先看同城还有没有索敌", job["id"])
+            result = {
+                "id": job["id"], "status": status, "why": why, "here": here,
+                "done": False, "failed": True,
+                "stop": _lock_no_chain(why, status), "parked": False,
+            }
+            if from_chain:
+                return result
+        else:
+            if uid:
+                log.info("―― 打 UID %s 城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                         uid, job["city_id"], out.get("移动") or 0, out.get("走到"),
+                         out.get("攻击") if out.get("攻击") is not None else "未打")
+            else:
+                log.info("―― 清城 %s ―― 走了 %d 步，停在 %s，打中 %s 次",
+                         job["city_id"], out.get("移动") or 0, out.get("走到"),
+                         out.get("攻击") if out.get("攻击") is not None else "未打")
+            action, status, why = _order_result(job, out)
+            if why:
+                log.info("   结束原因：%s", why)
+            if (not uid and not job.get("auto") and action == "finish"
+                    and _clear_cycle(why, out)):
+                minutes = citydb.clear_wait_minutes()
+                stuck = _clear_stuck(why, out)
+                if minutes > 0 and citydb.schedule_empty_order(
+                        job["id"], minutes, beats=beats, stuck=stuck):
+                    if stuck:
+                        log.info("订单 %s 还有打不过的人，%d 分钟后再打", job["id"], minutes)
+                    else:
+                        log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], minutes)
+                    return _cut()
+            if action == "defer":
+                citydb.defer_attack_order(job["id"])
+                log.info("订单 %s 已暂停，放回排队", job["id"])
+                return {"id": job["id"], "status": "", "why": "已暂停",
+                        "here": _here_of(out), "done": False, "failed": False,
+                        "stop": True, "parked": True}
+            if action == "park" and (
+                    citydb.attack_hold_minutes() > 0 or citydb.attack_hold_always()):
+                citydb.park_attack_order(job["id"], why, beats=beats)
+                log.info("订单 %s 有人挡路，挂机期间继续看路径", job["id"])
+                return {"id": job["id"], "status": status, "why": why,
+                        "here": _here_of(out), "done": False, "failed": True,
+                        "stop": True, "parked": True}
+            if action == "park":
+                status = "failed"
+            if job.get("auto") and status == "failed":
+                log.info("订单 %s 是自动锁敌，没打完，跳过，等下一次触发", job["id"])
+            elif status == "ended" and why != "已手动关停":
+                log.info("订单 %s 清城时被打回首都，订单结束", job["id"])
+            elif status == "ended":
+                log.info("订单 %s 已手动关停", job["id"])
+            here = _here_of(out)
+            result = {
+                "id": job["id"], "status": status, "why": why, "here": here,
+                "done": status == "done", "failed": status == "failed",
+                "stop": _lock_no_chain(why, status), "parked": False,
+            }
+            if from_chain:
+                citydb.finish_attack_order(
+                    job["id"], status, why, beats=beats, keep_reason=keep)
+                return result
+
+        any_done = bool(result.get("done"))
+        any_failed = bool(result.get("failed"))
+        stop = bool(result.get("stop"))
+        parked = bool(result.get("parked"))
+        last_id = job["id"]
+        finished = skipped
+        chained = False
+        city_id = int(job.get("city_id") or 0)
+        if (job.get("auto") and not from_chain and not stop and not parked
+                and _ready_for_same_city(here, city_id)):
+            while _ready_for_same_city(here, city_id):
+                nxt = citydb.claim_attack_order(city_id=city_id, auto_only=True)
+                if not nxt:
+                    break
+                if not finished:
+                    keep = status == "done" and not why and not uid
+                    citydb.finish_attack_order(
+                        job["id"], status, why, beats=beats, keep_reason=keep)
+                    finished = True
+                chained = True
+                log.info("同城索敌订单 %s 生效，连着打，打完再后退", nxt["id"])
+                with _order_account(int(nxt.get("user_id") or 0)):
+                    nxt_res = _fight_claimed(
+                        rec, sock, config, beater, nxt, from_chain=True)
+                last_id = int(nxt_res.get("id") or last_id)
+                here = int(nxt_res.get("here") or here)
+                if nxt_res.get("done"):
+                    any_done = True
+                if nxt_res.get("failed"):
+                    any_failed = True
+                if nxt_res.get("parked"):
+                    parked = True
+                    stop = True
+                    break
+                if nxt_res.get("stop"):
+                    stop = True
+                    result["why"] = nxt_res.get("why") or result.get("why")
+                    result["status"] = nxt_res.get("status") or result.get("status")
+                    break
+        if skipped and not chained:
+            return result
         plan = citydb.retreat_settings() if job.get("auto") else {}
-        if job.get("auto") and (
-                status == "done" or (status == "failed" and plan.get("on_fail"))):
+        want = (job.get("auto") and not parked and not _lock_no_retreat(
+                    str(result.get("why") or why or ""),
+                    str(result.get("status") or status or ""))
+                and (any_done or (any_failed and plan.get("on_fail"))))
+        if want:
+            prefix = ""
             retreat_mode = str(plan.get("mode") or "off")
             if retreat_mode in ("hops", "city"):
                 label = str(plan.get("name") or "").strip()
                 if not label:
                     label = "马奇诺" if retreat_mode == "hops" else "目标城"
                 prefix = f"朝{label}后退" if retreat_mode == "hops" else f"退到{label}"
-                try:
-                    back = country_war.retreat_toward(
-                        rec, sock, fight_config, beat=beater, name=label,
-                        city_id=int(plan.get("city_id") or 0),
-                        hops=int(plan.get("hops") or 3), mode=retreat_mode)
-                except OSError:
-                    why = why or f"{prefix}时连接中断"
-                    log.info("订单 %s %s", job["id"], why)
-                    citydb.finish_attack_order(
-                        job["id"], status, why, beats=beats)
-                    raise
-                except Exception as exc:
-                    log.info("订单 %s %s失败", job["id"], prefix, exc_info=True)
-                    if not why:
-                        detail = _interrupt_reason(exc)
-                        if detail.startswith("攻打中断："):
-                            detail = detail[len("攻打中断："):]
-                        why = f"{prefix}时：{detail}"
+            try:
+                note = _auto_retreat(rec, sock, fight_config, beater, plan)
+            except OSError:
+                note = f"{prefix}时连接中断" if prefix else "后退时连接中断"
+                log.info("订单 %s %s", last_id, note)
+                if finished:
+                    citydb.append_order_reason(last_id, note)
                 else:
-                    note = str((back or {}).get("说明") or "").strip()
-                    if note and not why:
-                        why = note
-                    elif note and why and note not in why:
-                        why = f"{why}。{note}"
-                    if note:
-                        log.info("订单 %s %s", job["id"], note)
-        keep = status == "done" and not why and not uid
-        citydb.finish_attack_order(
-            job["id"], status, why, beats=beats, keep_reason=keep)
+                    citydb.finish_attack_order(
+                        job["id"], status, _merge_reason(why, note), beats=beats)
+                raise
+            if note:
+                log.info("订单 %s %s", last_id, note)
+                why = _merge_reason(why, note)
+                if finished:
+                    citydb.append_order_reason(last_id, note)
+        if not finished:
+            keep = status == "done" and not why and not uid
+            citydb.finish_attack_order(
+                job["id"], status, why, beats=beats, keep_reason=keep)
+        return result
     finally:
-        if guarding:
+        if guarding and not from_chain:
             citydb.end_lock_cards()
         citydb.set_fighting_order(0)
 

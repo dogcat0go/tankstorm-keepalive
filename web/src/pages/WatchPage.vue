@@ -86,7 +86,7 @@ defineProps({
         <button type="submit">保存</button>
         <span class="muted">{{ retreatNote }}</span>
       </form>
-      <p class="muted">只对自动锁敌。打完按上面的走法退。打开「没打成也后退」时，没打到人也会退一次。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
+      <p class="muted">只对自动锁敌。打完按上面的走法退。同城的索敌订单会连着打完再退。打开「没打成也后退」时，没打到人也会退一次。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
     </div>
     <p v-if="lockHint" class="muted">{{ lockHint }}</p>
     <p v-if="!items.length" class="muted">还没有订阅。</p>
