@@ -1700,14 +1700,23 @@ def confirm_attack_qq(user_id: int, uin: str) -> bool:
         blocked = int(row[1] or 0)
         who = str(row[2] or "")
         if not bound:
-            conn.execute(
-                "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
+            cur = conn.execute(
+                "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 "
+                "WHERE id=? AND IFNULL(TRIM(attack_qq),'')=''",
                 (uin, user_id))
-            for kind in ("proc", "hold", "login", "pause", "move"):
-                _move_user_mark(conn, user_id, uin, kind)
-            conn.commit()
-            log.info("登录账号 %s 第一次扫码，绑定攻打 QQ %s", who, uin)
-            return True
+            if cur.rowcount == 1:
+                for kind in ("proc", "hold", "login", "pause", "move"):
+                    _move_user_mark(conn, user_id, uin, kind)
+                conn.commit()
+                log.info("登录账号 %s 第一次扫码，绑定攻打 QQ %s", who, uin)
+                return True
+            again = conn.execute(
+                "SELECT IFNULL(attack_qq,'') FROM app_user WHERE id=?",
+                (user_id,)).fetchone()
+            bound = str(again[0] or "").strip() if again else ""
+            if not bound:
+                conn.rollback()
+                return False
         if bound == uin:
             if blocked:
                 conn.execute(
