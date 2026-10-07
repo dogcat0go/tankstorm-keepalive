@@ -2437,14 +2437,26 @@ def run_daily_once(qq, config: dict) -> int:
 
 def note_attack_qq(qq) -> bool:
     """攻打号登录之后核对一次。第一次扫上的 QQ 绑到当前登录账号。
-    对不上就暂停，返回 False。同一个 QQ 这一进程里只核对一次。"""
+    已经绑过的不能换成另一个号。对不上就清掉这次票据并暂停，返回 False。"""
     if not getattr(qq, "attack_account", False):
         return True
     from . import citydb
 
-    # 这条线程的主人优先。login_for 是旧的全进程标记，只在线程还没记下主人时用。
+    # 线程启动时的攻打 QQ 为准。打到别的登录账号的订单时，上下文会临时换人，不能拿那个人来改绑。
+    thread_qq = str(citydb.attack_context_qq() or "").strip()
     user_id = citydb.attack_context_user() or citydb.login_for()
     uin = str(getattr(qq, "uin", "") or "").strip()
+    if thread_qq.isdigit() and uin.isdigit() and thread_qq != uin:
+        owner, _name = citydb.attack_qq_owner(thread_qq)
+        target = user_id if user_id and citydb.attack_qq_of(user_id) == thread_qq else owner
+        log.error("这条攻打线程绑定的是 %s，这次登录的是 %s，不切换", thread_qq, uin)
+        if target:
+            citydb.confirm_attack_qq(target, uin)
+        qq._attack_qq_seen = (target or user_id, uin)
+        qq._attack_qq_bad = True
+        if hasattr(qq, "forget_login"):
+            qq.forget_login()
+        return False
     if not user_id or not uin.isdigit():
         return True
     seen = getattr(qq, "_attack_qq_seen", None)
@@ -2459,6 +2471,8 @@ def note_attack_qq(qq) -> bool:
     if ok:
         citydb.clear_login_for()
         citydb.set_attack_context(user_id, uin)
+    elif hasattr(qq, "forget_login"):
+        qq.forget_login()
     return ok
 
 
@@ -2470,8 +2484,10 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
     if not force_qr and qq.adopt_napcat(config):
         return True
     if not force_qr and qq.silent_renew():
-        log.info("已用长效凭据静默续期，无需人工介入")
-        return note_attack_qq(qq)
+        if note_attack_qq(qq):
+            log.info("已用长效凭据静默续期，无需人工介入")
+            return True
+        log.error("续上的 QQ 不是这个账号绑定的，改走扫码")
 
     # 推送登录：直接往手机QQ推确认，免去扫码。
     # 这解决了"二维码图存本地、同一台手机相册扫码"被腾讯拒（限制本地扫码登录）的问题。
@@ -2524,9 +2540,12 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
             log.info("登录态失效，正在%s（第 %d 次尝试）",
                      f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码", attempt)
             if qq.qr_login(on_qr=on_qr, push_uin=push_uin):
+                if not note_attack_qq(qq):
+                    log.error("这次登录的 QQ 不是绑定的那个，请改用原来的号再扫")
+                    continue
                 if not getattr(qq, "attack_account", False):
                     notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
-                return note_attack_qq(qq)
+                return True
             log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
             time.sleep(15)
     finally:

@@ -167,7 +167,7 @@ onUnmounted(() => {
           <tr><th>登录账号</th><th>攻打 QQ</th><th>状态</th><th>人在</th><th>cookie</th></tr>
         </thead>
         <tbody>
-          <tr v-for="f in fighters" :key="f.qq">
+          <tr v-for="f in fighters" :key="f.user_id">
             <td>{{ f.username }}</td>
             <td>{{ f.qq }}</td>
             <td :class="f.online ? 'on' : 'off'">{{ procText(f) }}</td>

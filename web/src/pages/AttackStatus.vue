@@ -28,7 +28,7 @@ defineProps({
         <li>扫完在手机上点「确认登录」，停在确认页才算扫上。</li>
         <li>过期后这里会自动换成新码，对着页面上最新的一张扫。</li>
       </ol>
-      <p class="muted">不要把图存进同一台手机的相册再扫，腾讯会拒绝。一个登录账号只绑一个攻打 QQ。</p>
+      <p class="muted">不要把图存进同一台手机的相册再扫，腾讯会拒绝。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。</p>
       <p v-if="bindWait && !qrSrc" class="bind-wait">二维码正在生成，请稍等。</p>
     </div>
     <p v-if="pushLoginVisible(proc)">

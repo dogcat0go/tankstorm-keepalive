@@ -754,6 +754,15 @@ class QQSession:
 
     # ---------- 扫码 / 推送登录 ----------
 
+    def forget_login(self) -> None:
+        """这次登录不能留。会话和已经写进文件的票据都丢掉，避免换成另一个 QQ。"""
+        self._clear_session_cookies()
+        self._qr_poll = None
+        try:
+            os.remove(self.cookie_file)
+        except OSError:
+            pass
+
     def _clear_session_cookies(self, keep=()) -> None:
         """清掉会话票据，但保留 keep 里的设备/长效凭据。
 
