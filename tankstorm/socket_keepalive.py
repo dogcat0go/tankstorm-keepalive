@@ -101,10 +101,20 @@ def _http_warmup(qq, ctx: dict) -> None:
         log.debug("warmup 失败(忽略): %s", exc)
 
 
+def _remember_region(qq, ctx) -> None:
+    """攻打号才记。区服在游戏链接的 region 里，扫描号不写到用户上。"""
+    if not getattr(qq, "attack_account", False):
+        return
+    from . import citydb
+    citydb.note_game_region(
+        citydb.attack_context_user() or citydb.login_for(), ctx.get("region"))
+
+
 def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                  with_daily: bool = False) -> str:
     """跑一次完整连接，直到断开。返回断开原因（字符串）。"""
     ctx = get_game_context(qq)
+    _remember_region(qq, ctx)
     host = ctx.get("server") or spec.get("default_host", "tankstorm-proxy.sincetimes.com")
     port = int(ctx.get("port") or spec.get("default_port", 8001))
     if not ctx.get("openkey"):
@@ -1018,6 +1028,8 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
     def _beat_note(n, name=""):
         who = "" if uid else str(name or "").strip()
         citydb.note_attack_beats(job["id"], n, who)
+        if uid and str(name or "").strip():
+            citydb.remember_order_name(job["id"], name)
 
     tally = {"n": start_beats, "note": _beat_note}
     citydb.note_attack_beats(job["id"], start_beats)
@@ -1039,6 +1051,8 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
             if uid:
                 info = citydb.find_player(uid) or {}
                 citydb.note_lock_morale(info.get("morale"))
+                if info.get("name"):
+                    citydb.remember_order_name(job["id"], info.get("name"))
             plan = citydb.clear_fight_plan() if not uid else None
             out = country_war.walk_to(
                 rec, sock, fight_config, job["city_id"], beat=beater, uid=uid,
@@ -2191,6 +2205,7 @@ def _connect_and(qq, config: dict, work) -> int:
         return 1
 
     ctx = get_game_context(qq)
+    _remember_region(qq, ctx)
     host = ctx.get("server") or spec.get("default_host", "tankstorm-proxy.sincetimes.com")
     port = int(ctx.get("port") or spec.get("default_port", 8001))
     if not ctx.get("openkey"):

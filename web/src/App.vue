@@ -118,6 +118,9 @@ async function refresh() {
   const data = await api("/api/subs");
   items.value = data.items || [];
   cityCounts.value = data.counts || [];
+  if (me.value && data.region != null) {
+    me.value = { ...me.value, region: Number(data.region) || 0 };
+  }
 }
 
 async function refreshDaily() {
@@ -542,6 +545,7 @@ function orderCity(it) {
 
 function orderUid(it) {
   if (it && it.kind === "modo") return "首都周边";
+  if (it && it.name) return it.name;
   return (it && it.uid) || "整座城";
 }
 

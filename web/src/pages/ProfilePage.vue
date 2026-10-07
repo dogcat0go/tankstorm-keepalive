@@ -35,6 +35,8 @@ async function submitPwd() {
     <p>
       {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
     </p>
+    <p>区服：<template v-if="me.region">{{ me.region }}区</template><template v-else>还没识别</template></p>
+    <p class="muted">攻打号登录游戏后，从游戏链接里自动识别。目前只有 1 区支持订阅敌方。</p>
     <h3>修改密码</h3>
     <form class="stack" @submit.prevent="submitPwd().catch((e) => showErr(e.message, 'pwd'))">
       <label>当前密码

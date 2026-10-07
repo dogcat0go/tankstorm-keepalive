@@ -147,6 +147,7 @@ def _user_out(user: dict) -> dict:
         "clear_scan": plan["scan_sec"],
         "clear_priority": plan["priority"],
         "modo_cards": int(user.get("modo_cards") or 0),
+        "region": int(user.get("region") or 0),
     }
 
 
@@ -245,7 +246,8 @@ def _handler(config: dict):
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                     return
-                _json(self, 200, {"items": items, "counts": counts})
+                _json(self, 200, {"items": items, "counts": counts,
+                                  "region": int(user.get("region") or 0)})
                 return
             if path == "/api/scan-plan":
                 user = self._user()
@@ -355,6 +357,9 @@ def _handler(config: dict):
                 return
             try:
                 if path == "/api/subs":
+                    region = int(user.get("region") or 0)
+                    if region and region != 1:
+                        raise ValueError("目前只有 1 区支持订阅敌方")
                     city_id, uid = _pair(data)
                     citydb.add_watch(user["id"], city_id, uid)
                     _json(self, 200, {"ok": True})

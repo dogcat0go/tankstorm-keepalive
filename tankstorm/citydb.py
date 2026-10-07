@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     daily_switch    TEXT,
     daily_at        TEXT NOT NULL DEFAULT '',
     daily_last      TEXT NOT NULL DEFAULT '',
+    region          INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -128,6 +129,7 @@ CREATE TABLE IF NOT EXISTS atk_order (
     card_max    INTEGER,
     run_at      TEXT,
     kind        TEXT NOT NULL DEFAULT '',
+    name        TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -355,6 +357,10 @@ def connect(readonly=False, timeout=15):
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN daily_last TEXT NOT NULL DEFAULT ''")
                 setup.commit()
+            if ucols and "region" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN region INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
             _forget_page_names(setup)
             _ensure_attack_qq_map(setup)
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
@@ -378,6 +384,40 @@ def connect(readonly=False, timeout=15):
             if ocols and "kind" not in ocols:
                 setup.execute(
                     "ALTER TABLE atk_order ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ocols and "name" not in ocols:
+                setup.execute(
+                    "ALTER TABLE atk_order ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+                setup.execute(
+                    "UPDATE atk_order SET name=("
+                    " SELECT p.name FROM player p"
+                    " WHERE p.uid=atk_order.uid AND p.city_id=atk_order.city_id"
+                    " AND TRIM(IFNULL(p.name,''))!='' LIMIT 1"
+                    ") WHERE TRIM(IFNULL(name,''))='' AND TRIM(IFNULL(uid,''))!=''"
+                    " AND EXISTS ("
+                    " SELECT 1 FROM player p WHERE p.uid=atk_order.uid"
+                    " AND p.city_id=atk_order.city_id AND TRIM(IFNULL(p.name,''))!=''"
+                    ")")
+                setup.execute(
+                    "UPDATE atk_order SET name=("
+                    " SELECT p.name FROM player p"
+                    " WHERE p.uid=atk_order.uid AND TRIM(IFNULL(p.name,''))!=''"
+                    " ORDER BY p.fetched_at DESC LIMIT 1"
+                    ") WHERE TRIM(IFNULL(name,''))='' AND TRIM(IFNULL(uid,''))!=''"
+                    " AND EXISTS ("
+                    " SELECT 1 FROM player p WHERE p.uid=atk_order.uid"
+                    " AND TRIM(IFNULL(p.name,''))!=''"
+                    ")")
+                setup.execute(
+                    "UPDATE atk_order SET name=("
+                    " SELECT f.name FROM atk_fail f"
+                    " WHERE f.uid=atk_order.uid AND TRIM(IFNULL(f.name,''))!=''"
+                    " ORDER BY f.at DESC LIMIT 1"
+                    ") WHERE TRIM(IFNULL(name,''))='' AND TRIM(IFNULL(uid,''))!=''"
+                    " AND EXISTS ("
+                    " SELECT 1 FROM atk_fail f WHERE f.uid=atk_order.uid"
+                    " AND TRIM(IFNULL(f.name,''))!=''"
+                    ")")
                 setup.commit()
             fcols = {r[1] for r in setup.execute("PRAGMA table_info(atk_fail)")}
             if fcols and "acct" not in fcols:
@@ -1012,7 +1052,7 @@ def user_by_token(token: str):
             "IFNULL(u.hold_min,0), IFNULL(u.hold_all,0), IFNULL(u.card_max,100), "
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
             "IFNULL(u.retreat_fail,0), "
-            "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0) "
+            "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0), IFNULL(u.region,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or account_expired(row[3]):
@@ -1027,9 +1067,32 @@ def user_by_token(token: str):
                 "retreat_city": int(row[12] or 0),
                 "retreat_fail": bool(row[13]),
                 "lock_cards": int(row[14] if row[14] is not None else 3),
-                "modo_cards": int(row[15] if row[15] is not None else 0)}
+                "modo_cards": int(row[15] if row[15] is not None else 0),
+                "region": int(row[16] or 0)}
     finally:
         conn.close()
+
+
+def note_game_region(user_id: int, region) -> None:
+    """攻打号打开游戏页后，把链接里的区服记到这个登录账号。认不出就不改。"""
+    user_id = int(user_id or 0)
+    try:
+        region = int(str(region or "").strip())
+    except (TypeError, ValueError):
+        return
+    if user_id <= 0 or region <= 0:
+        return
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET region=? WHERE id=? AND IFNULL(region,0)!=?",
+            (region, user_id, region))
+        conn.commit()
+        changed = cur.rowcount
+    finally:
+        conn.close()
+    if changed:
+        log.info("登录账号 %s 的区服是 %s", username_of(user_id), region)
 
 
 def open_session(username: str) -> str:
@@ -1080,6 +1143,34 @@ def save_push(user_id: int, qq_target: str) -> None:
         conn.close()
 
 
+def _known_player_name(conn, uid, city_id=0) -> str:
+    """这个 UID 现在能查到的名字。先看这座城，再看别的城，最后看失败库。"""
+    uid = str(uid or "").strip()
+    if not uid:
+        return ""
+    row = None
+    try:
+        city_id = int(city_id or 0)
+    except (TypeError, ValueError):
+        city_id = 0
+    if city_id > 0:
+        row = conn.execute(
+            "SELECT name FROM player WHERE uid=? AND city_id=? "
+            "AND TRIM(IFNULL(name,''))!=''",
+            (uid, city_id)).fetchone()
+    if not row:
+        row = conn.execute(
+            "SELECT name FROM player WHERE uid=? AND TRIM(IFNULL(name,''))!='' "
+            "ORDER BY fetched_at DESC LIMIT 1",
+            (uid,)).fetchone()
+    if not row:
+        row = conn.execute(
+            "SELECT name FROM atk_fail WHERE uid=? AND TRIM(IFNULL(name,''))!='' "
+            "ORDER BY at DESC LIMIT 1",
+            (uid,)).fetchone()
+    return str(row[0] or "").strip() if row else ""
+
+
 def _open_attack_count(conn, user_id: int) -> int:
     row = conn.execute(
         "SELECT COUNT(*) FROM atk_order WHERE user_id=? "
@@ -1126,9 +1217,10 @@ def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
             conn.commit()
             return "最多同时两条攻打订单"
         conn.execute(
-            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, card_max, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (user_id, city_id, uid, "pending", "", int(cards), now, now))
+            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, card_max, name, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (user_id, city_id, uid, "pending", "", int(cards),
+             _known_player_name(conn, uid, city_id), now, now))
         conn.commit()
         return ""
     finally:
@@ -2186,9 +2278,10 @@ def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
         cards = int(saved[0]) if saved else 100
         now = now_ts()
         conn.execute(
-            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, auto, card_max, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (int(user_id), int(city_id), uid, "pending", "", 1, cards, now, now))
+            "INSERT INTO atk_order(user_id, city_id, uid, status, reason, auto, card_max, name, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (int(user_id), int(city_id), uid, "pending", "", 1, cards,
+             _known_player_name(conn, uid, city_id), now, now))
         conn.commit()
         return True
     finally:
@@ -2281,7 +2374,17 @@ def _order_row(r) -> dict:
     run_at = str(r[8] or "") if len(r) > 8 else ""
     if str(r[3] or "") != "wait":
         run_at = ""
-    return {"id": r[0], "city_id": r[1], "uid": r[2], "status": r[3],
+    name = str(r[9] or "").strip() if len(r) > 9 else ""
+    uid = str(r[2] or "")
+    if not name and uid:
+        conn = connect(readonly=True)
+        try:
+            name = _known_player_name(conn, uid, r[1])
+        finally:
+            conn.close()
+        if name:
+            remember_order_name(r[0], name)
+    return {"id": r[0], "city_id": r[1], "uid": uid, "name": name, "status": r[3],
             "reason": r[4], "created_at": beijing_ts(r[5]), "beats": r[6],
             "city_name": "" if kind == "modo" else city_name(r[1]),
             "kind": kind, "run_at": run_at}
@@ -2292,7 +2395,7 @@ def list_attack_orders(user_id: int, limit: int = 3) -> list:
     limit = max(1, min(int(limit or 3), 3))
     user_id = int(user_id)
     cols = ("id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at, beats, "
-            "IFNULL(kind,''), IFNULL(run_at,'')")
+            "IFNULL(kind,''), IFNULL(run_at,''), IFNULL(name,'')")
     conn = connect(readonly=True)
     try:
         valid = conn.execute(
@@ -4164,6 +4267,32 @@ def note_lock_morale(morale, confirmed=False) -> None:
         conn.close()
 
 
+def remember_order_name(order_id: int, name: str) -> None:
+    """把这一单要打的人的名字留下。人离开城市后，订单仍显示名称。"""
+    name = str(name or "").strip()
+    if name.startswith("击退"):
+        name = name[2:].strip()
+    try:
+        order_id = int(order_id or 0)
+    except (TypeError, ValueError):
+        return
+    if order_id <= 0 or not name:
+        return
+    try:
+        conn = connect()
+    except sqlite3.Error:
+        return
+    try:
+        conn.execute(
+            "UPDATE atk_order SET name=? WHERE id=? AND IFNULL(name,'')!=?",
+            (name, order_id, name))
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+
+
 def note_attack_beats(order_id: int, n: int, name: str = "") -> None:
     """正在打的订单记下已经击退几个人。清城时说明写成「击退 玩家名」。写库失败不影响继续打。"""
     try:
@@ -4171,9 +4300,10 @@ def note_attack_beats(order_id: int, n: int, name: str = "") -> None:
     except sqlite3.Error:
         return
     try:
-        who = str(name or "").strip()
-        if who and not who.startswith("击退"):
-            who = f"击退 {who}"
+        raw = str(name or "").strip()
+        if raw.startswith("击退"):
+            raw = raw[2:].strip()
+        who = f"击退 {raw}" if raw else ""
         if who:
             conn.execute(
                 "UPDATE atk_order SET beats=?, reason=? WHERE id=? AND status='running'",
