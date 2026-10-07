@@ -29,6 +29,13 @@ span.switch { font-size: 15px; font-weight: 700; }
 .attack-bar button.login { background: #d4e9ff; color: #16375f; border: 1px solid #8ebfed; }
 .attack-bar button.login:hover { background: #c3dffb; }
 .attack-bar img.qr { display: block; margin-top: 8px; }
+.bind-guide { background: #fff; border: 1px solid #c5daf0; border-radius: 8px; padding: 12px 14px; margin: 0 0 10px; }
+.bind-guide .bind-title { margin: 0 0 6px; font-weight: 700; }
+.bind-guide ol { margin: 0 0 8px; padding-left: 1.3em; }
+.bind-guide li { margin: 2px 0; }
+.bind-guide .muted { margin: 0; }
+.bind-wait { margin: 8px 0 0; color: #16375f; font-weight: 700; }
+.bind-foot { margin: 6px 0 0; }
 .page-nav.el-menu--horizontal { position: sticky; top: 0; z-index: 5; margin: 0 0 8px; }
 .page-nav.el-menu--horizontal > .el-menu-item { flex: 1 1 0; justify-content: center; min-width: 0; padding: 0 6px; }
 form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
@@ -125,6 +132,7 @@ form.campaign-line { margin: 0 0 10px; grid-template-columns: 1fr; }
 .campaign-box > .muted { margin: 0 0 12px; }
 table.daily-jobs th,
 table.daily-jobs td { white-space: nowrap; }
+table.daily-jobs button.ghost { margin-left: 8px; padding: 4px 10px; }
 table.daily-jobs td.reason {
   white-space: pre-line;
   word-break: break-word;

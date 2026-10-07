@@ -1520,7 +1520,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         out["对方剩余"] = after_n
         out["自己降低"] = drop
         out["自己剩余"] = mine_n
-        citydb.note_lock_morale(after_n)
+        citydb.note_lock_morale(after_n, confirmed=True)
         log.info("[打人] 第 %d 次%s回包 ret=%s 战功=%s 战报士气=%s 击伤=%s 自己士气=%s",
                  i, name, ret, merit, after_n, lost_n, mine_n)
         if mine_n is not None and mine_n <= 0:
@@ -2393,6 +2393,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
     编号第 2 位是 1 或 2、又不是自己国家的城不能占领，直接暂停。
+    编号以 9 开头的马奇诺及周边城可以攻打和占领，不受第 2 位限制。
     march_only 只走路，不打目标城。max_steps 是最多走进几座城，不含起点。
     enter_target 为真时，后退要走进目标城，而不是停在相邻城。
     """

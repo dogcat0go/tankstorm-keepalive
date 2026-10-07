@@ -936,11 +936,12 @@ class QQSession:
         return None, (f"HTTP {r.status_code}，{len(body)} 字节，"
                       f"content-type={r.headers.get('Content-Type', '?')}")
 
-    def start_qr(self, push_uin=None, on_qr=None) -> dict:
+    def start_qr(self, push_uin=None, on_qr=None, announce: bool = True) -> dict:
         """取出二维码，供网页轮询或 qr_login 接着等。不自己循环。
 
         返回 {ok, pushed, why}。push_uin 为真才试推送；测试页传 False，避免
-        上次扫上的 uin 被当成推送目标。
+        上次扫上的 uin 被当成推送目标。announce 为假时先不弹图、不回调，
+        等调用方确认这张码还有效再交给页面。
         """
         s = self.session
         self._qr_poll = None
@@ -984,6 +985,10 @@ class QQSession:
         with open(self.qrcode_file, "wb") as f:
             f.write(r.content)
         qrsig = self._cookie("qrsig")
+        if qrsig:
+            # 响应里的 qrsig 有时是 host-only，或和旧的叠在一起。轮询带错这一张，
+            # 手机上刚扫就会提示过期。收成一条，钉在 .ptlogin2.qq.com 上。
+            self._set_cookie("qrsig", qrsig)
 
         if pushed:
             log.info("已向 QQ %s 推送登录确认 —— 打开手机QQ点「确认登录」即可，"
@@ -992,14 +997,14 @@ class QQSession:
             log.info("请用手机 QQ 扫码登录（二维码已保存: %s）", self.qrcode_file)
         # 只在"本机交互式使用且没有别的送达方式"时才弹图片查看器。
         # 有 on_qr（PushPlus 推送）时再弹窗没意义；推送登录更是压根不需要看图。
-        if os.name == "nt" and on_qr is None and not pushed:
+        if announce and os.name == "nt" and on_qr is None and not pushed:
             try:
                 os.startfile(self.qrcode_file)
             except OSError:
                 pass
         if not pushed:
             _print_qr_ascii(self.qrcode_file)
-        if on_qr:
+        if announce and on_qr:
             try:
                 # 带上 pushed，让调用方的文案跟实际走的路径一致
                 # （推送失败回退到扫码时，不能还提示"点确认登录"）
@@ -1017,13 +1022,15 @@ class QQSession:
         return {"ok": True, "pushed": pushed, "why": ""}
 
     def poll_qr(self) -> dict:
-        """轮询一次 ptqrlogin。返回 {code, msg, done, ok}。
+        """轮询一次 ptqrlogin。返回 {code, msg, done, ok, expired, scanned}。
 
         done 表示这次扫码结束（成功、失效或 check_sig 失败），ok 表示登录完成。
+        失效只看文案和 10009/10006。65 有时是「已扫码待确认」，不能一律换图。
         """
         state = getattr(self, "_qr_poll", None)
         if not state:
-            return {"code": "", "msg": "还没取二维码", "done": True, "ok": False}
+            return {"code": "", "msg": "还没取二维码", "done": True, "ok": False,
+                    "expired": False, "scanned": False}
         try:
             r = self.session.get("https://xui.ptlogin2.qq.com/ssl/ptqrlogin", params={
                 "u1": GAME_URL, "ptqrtoken": state["ptqrtoken"], "ptredirect": "0",
@@ -1036,11 +1043,13 @@ class QQSession:
             }, headers={"Referer": "https://xui.ptlogin2.qq.com/"},
                 timeout=15)
         except requests.RequestException as exc:
-            return {"code": "", "msg": f"请求异常 {exc}", "done": False, "ok": False}
+            return {"code": "", "msg": f"请求异常 {exc}", "done": False, "ok": False,
+                    "expired": False, "scanned": False}
         m = re.search(r"ptuiCB\('(\d+)','\d+','([^']*)','\d+','([^']*)'", r.text)
         if not m:
             log.warning("轮询响应无法解析: %s", r.text[:200])
-            return {"code": "", "msg": "轮询响应无法解析", "done": False, "ok": False}
+            return {"code": "", "msg": "轮询响应无法解析", "done": False, "ok": False,
+                    "expired": False, "scanned": False}
         code, url, msg = m.group(1), m.group(2), m.group(3)
         if code == "0":
             log.info("扫码确认成功: %s", msg)
@@ -1048,23 +1057,37 @@ class QQSession:
                 self.session.get(url, allow_redirects=True, timeout=20)
             except requests.RequestException as exc:
                 self._qr_poll = None
-                return {"code": "0", "msg": f"check_sig 失败: {exc}", "done": True, "ok": False}
+                return {"code": "0", "msg": f"check_sig 失败: {exc}", "done": True, "ok": False,
+                        "expired": False, "scanned": False}
             self._save_cookies()
             self._qr_poll = None
             if self.is_valid():
                 log.info("登录完成，uin=%s", self.uin)
                 self._save_cookies()
-                return {"code": "0", "msg": msg, "done": True, "ok": True}
+                return {"code": "0", "msg": msg, "done": True, "ok": True,
+                        "expired": False, "scanned": False}
             log.error("check_sig 后登录态仍无效")
-            return {"code": "0", "msg": "check_sig 后登录态仍无效", "done": True, "ok": False}
-        if code == "65":
-            log.error("二维码已失效，请重新运行")
+            return {"code": "0", "msg": "check_sig 后登录态仍无效", "done": True, "ok": False,
+                    "expired": False, "scanned": False}
+        text = msg or ""
+        scanned = any(k in text for k in ("已扫描", "认证中", "请在手机")) or (
+            code == "67" and "未失效" not in text and "等待" not in text)
+        if any(k in text for k in ("未失效", "已扫描", "认证中", "请在手机")):
+            expired = False
+        elif "失效" in text or "过期" in text or code in ("10009", "10006"):
+            expired = True
+        else:
+            expired = False
+        if expired:
+            log.info("二维码已失效 code=%s %s", code, text)
             self._qr_poll = None
-            return {"code": "65", "msg": "二维码已失效", "done": True, "ok": False}
-        if code == "67":
+            return {"code": code, "msg": text or "二维码已失效", "done": True, "ok": False,
+                    "expired": True, "scanned": False}
+        if scanned and not state.get("scanned"):
+            state["scanned"] = True
             log.info("已扫码，请在手机上确认…")
-            return {"code": "67", "msg": "已扫码，请在手机上确认", "done": False, "ok": False}
-        return {"code": code, "msg": msg, "done": False, "ok": False}
+        return {"code": code, "msg": text, "done": False, "ok": False,
+                "expired": False, "scanned": scanned}
 
     def password_login(self, uin: str, password: str, low_login: bool = False,
                        ticket: str = "", randstr: str = "") -> dict:
@@ -1246,30 +1269,52 @@ class QQSession:
 
         参数取自真实客户端抓包：ptqrshow?qr_push=1&qr_push_uin=<uin>&type=1
         二维码过期或这张等太久，马上换一张，页面才能跟上。
+        先轮询一次，确认还没失效再交给页面。已扫上的会话一直留到确认或真正失效。
         """
         # uin 要在清 cookie 之前取，否则就拿不到了
         if push_uin is None:
             push_uin = self.uin or None
         while True:
-            started = self.start_qr(push_uin=push_uin, on_qr=on_qr)
+            started = self.start_qr(push_uin=push_uin, on_qr=on_qr, announce=False)
             if not started.get("ok"):
                 return False
-            deadline = time.time() + timeout_sec
-            expired = False
-            while time.time() < deadline:
-                result = self.poll_qr()
-                if result.get("done"):
-                    if result.get("ok"):
-                        return True
-                    if result.get("code") == "65":
-                        log.info("二维码过期，马上换一张")
-                        expired = True
-                        break
-                    return False
-                time.sleep(3)
-            if expired:
+            result = self.poll_qr()
+            if result.get("expired"):
+                log.info("二维码过期，马上换一张")
+                time.sleep(1)
                 continue
-            log.info("这张二维码等了 %d 秒还没扫上，马上换一张", timeout_sec)
+            if result.get("done"):
+                return bool(result.get("ok"))
+            if on_qr:
+                try:
+                    on_qr(self.qrcode_file, bool(started.get("pushed")))
+                except Exception as exc:
+                    log.warning("二维码推送回调失败: %s", exc)
+            elif os.name == "nt" and not started.get("pushed"):
+                try:
+                    os.startfile(self.qrcode_file)
+                except OSError:
+                    pass
+            deadline = time.time() + timeout_sec
+            if result.get("scanned"):
+                deadline = max(deadline, time.time() + 120)
+            timed_out = True
+            while time.time() < deadline:
+                time.sleep(3)
+                result = self.poll_qr()
+                if result.get("scanned"):
+                    deadline = max(deadline, time.time() + 120)
+                if not result.get("done"):
+                    continue
+                if result.get("ok"):
+                    return True
+                if result.get("expired"):
+                    log.info("二维码过期，马上换一张")
+                    timed_out = False
+                    break
+                return False
+            if timed_out:
+                log.info("这张二维码等了 %d 秒还没扫上，马上换一张", timeout_sec)
 
     def ensure_login(self, on_qr=None, push_uin=None) -> bool:
         """保证登录可用。顺序：现成 cookie → 长效凭据静默续期 → 推送/扫码登录。

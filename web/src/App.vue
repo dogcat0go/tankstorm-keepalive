@@ -33,6 +33,7 @@ const orders = ref([]);
 const storms = ref([]);
 const proc = ref(null);
 const qrSrc = ref("");
+const bindWait = ref(false);
 const devLogin = ref(false);
 const registerOpen = ref(false);
 const autoLock = ref(false);
@@ -214,6 +215,7 @@ async function refreshAttacks() {
   const left = proc.value && proc.value.hold_left;
   holdUntil.value = left > 0 ? Date.now() + left * 1000 : 0;
   const wantQr = !!(proc.value && proc.value.qr);
+  if (proc.value && (proc.value.qq || proc.value.qr)) bindWait.value = false;
   if (!wantQr) qrSrc.value = "";
   else if (proc.value.qr_at) {
     const next = "/api/attack-qr?t=" + encodeURIComponent(proc.value.qr_at);
@@ -587,6 +589,7 @@ function holdCell(it) {
 async function pushLogin() {
   showErr("", "bar");
   const data = await api("/api/attack-login", {});
+  if (data.login === "qr" && !(proc.value && proc.value.qq)) bindWait.value = true;
   showErr(attackLoginError(data.login), "bar");
   await refreshAttacks();
 }
@@ -622,6 +625,12 @@ async function cancelOrder(it) {
   await refreshAttacks();
 }
 
+async function cancelDaily(it) {
+  showErr("", "daily");
+  await api("/api/daily/cancel", { id: it.id });
+  await refreshDaily();
+}
+
 async function savePush() {
   note.value = "";
   showErr("");
@@ -643,6 +652,7 @@ async function logout() {
   storms.value = [];
   proc.value = null;
   qrSrc.value = "";
+  bindWait.value = false;
   notice.value = null;
   showErr("");
   tab.value = "attack";
@@ -773,6 +783,7 @@ onUnmounted(() => {
         v-show="!sideOn"
         :proc="proc"
         :qr-src="qrSrc"
+        :bind-wait="bindWait"
         :err="err"
         :err-at="errAt"
         :push-login-visible="pushLoginVisible"
@@ -814,6 +825,7 @@ onUnmounted(() => {
         :err-at="errAt"
         :proc="proc"
         :run-daily="runDaily"
+        :cancel-daily="cancelDaily"
         :save-daily-at="saveDailyAt"
         :save-daily-switch="saveDailySwitch"
         :add-modo="addModo"

@@ -1413,8 +1413,6 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     kind = str(job.get("kind") or "")
     label = citydb.DAILY_KIND_LABEL.get(kind, kind)
     params = job.get("params") or {}
-    citydb.set_attack_status("daily", task=label)
-    log.info("开始做日常：%s", label)
 
     def _show(text):
         citydb.touch_daily_job(job["id"], text)
@@ -1423,13 +1421,18 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     def _show_stage(stage):
         n = daily.current_campaign_round()
         if n:
-            _show(f"第{n}次 当前第 {int(stage)} 关")
+            _show(f"征战世界：第{n}次 当前第 {int(stage)} 关")
         else:
-            _show(f"当前第 {int(stage)} 关")
+            _show(f"征战世界：当前第 {int(stage)} 关")
 
     prev_sock = daily.bind_sock(sock)
     daily.set_campaign_progress(_show_stage)
     try:
+        citydb.set_running_daily(job["id"])
+        if citydb.daily_job_stopped():
+            raise daily.Stopped()
+        citydb.set_attack_status("daily", task=label)
+        log.info("开始做日常：%s", label)
         if rec and getattr(rec, "auto_reject", False):
             class _QQ:
                 uin = citydb.attack_context_qq()
@@ -1486,9 +1489,14 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
         else:
             citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
+    except daily.Stopped:
+        log.info("日常已手动关停：%s", label)
     except OSError:
         citydb.set_attack_status("daily", task=label, note="连接中断")
-        citydb.finish_daily_job(job["id"], "failed", "连接中断")
+        if kind == "daily":
+            citydb.touch_daily_job(job["id"], "连接中断，重连后再做")
+        else:
+            citydb.finish_daily_job(job["id"], "failed", "连接中断")
         raise
     except Exception as exc:
         log.info("日常没做成", exc_info=True)
@@ -1497,6 +1505,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
     else:
         log.info("日常做完：%s", label)
     finally:
+        citydb.set_running_daily(0)
         daily.set_campaign_progress(None)
         daily.bind_sock(prev_sock)
 
@@ -1895,7 +1904,12 @@ def start_unbound_page_qr(config: dict, user_id: int) -> str:
         with _page_login_guard:
             _page_login_users.discard(user_id)
         return "qr"
-    citydb.set_page_login(user_id, qr)
+    # 新图写好之前，页面上不留上一张。
+    citydb.clear_page_login(user_id)
+    try:
+        os.remove(qr)
+    except OSError:
+        pass
     qq = QQSession(cookie, qrcode_file=qr)
     who = citydb.username_of(user_id)
 

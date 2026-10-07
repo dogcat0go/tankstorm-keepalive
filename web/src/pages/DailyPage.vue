@@ -21,6 +21,7 @@ defineProps({
   errAt: { type: String, default: "" },
   proc: { type: Object, default: null },
   runDaily: { type: Function, required: true },
+  cancelDaily: { type: Function, required: true },
   saveDailyAt: { type: Function, required: true },
   saveDailySwitch: { type: Function, required: true },
   addModo: { type: Function, required: true },
@@ -32,7 +33,7 @@ defineProps({
   <section>
     <h2>日常任务</h2>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
-    <p v-else class="muted">还没绑定攻打 QQ。先在导航栏上方扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
+    <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的每一项都用那个号做。</p>
     <p class="muted">由这个账号的攻打线程执行，不另开连接。正在打的那一单会先打完，然后做这项。后面的攻打单排在它后面。</p>
     <form class="lock-row" @submit.prevent="runDaily('daily', { stages: pveStages }).catch((e) => showErr(e.message))">
       <span class="switch">每日任务</span>
@@ -101,7 +102,7 @@ defineProps({
         <tbody>
           <tr v-for="it in dailyJobs" :key="it.id">
             <td>{{ it.label }}</td>
-            <td>{{ it.status }}</td>
+            <td>{{ it.status }}<button v-if="it.status === '排队' || it.status === '正在做'" type="button" class="ghost" @click="cancelDaily(it).catch((e) => showErr(e.message))">关停</button></td>
             <td class="reason">{{ it.detail || "—" }}</td>
             <td>{{ it.created_at || "—" }}</td>
           </tr>

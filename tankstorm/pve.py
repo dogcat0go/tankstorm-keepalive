@@ -25,7 +25,7 @@
 import re
 
 from . import sender
-from .daily import _await_response, _nap
+from .daily import _await_response, _nap, raise_if_stopped
 from .log import get_logger
 from .proto_encode import encode_message
 
@@ -406,6 +406,7 @@ def _fight_until(rec, sock, end, interval):
     interval = float(interval if interval is not None else 1)
     done = []
     for _ in range(HARD_MAX):
+        raise_if_stopped()
         if cur > end:
             break
         got = fight_once(rec, sock)
@@ -436,6 +437,7 @@ def _restart_and_refight(rec, sock, end, cur, panel, total, interval):
     rounds = []
     fought = False
     while cur >= end:
+        raise_if_stopped()
         if fought and interval > 0:
             _nap(interval)
         ok, why, total, restarted = _restart_if_room(
@@ -570,6 +572,7 @@ def fight(rec, sock, stages, interval=1.0):
     interval = float(interval if interval is not None else 1)
     done = []
     for _ in range(len(stages)):
+        raise_if_stopped()
         if cur not in want:
             break
         got = fight_once(rec, sock)
