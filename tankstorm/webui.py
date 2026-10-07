@@ -9,6 +9,9 @@
 
 进程只提供 HTTP。公网和 HTTPS 放在前面的 Caddy 或 Nginx，
 反代到这个端口即可，证书不用装进这里。
+
+本地软件授时走 POST /api/clock：带登录态，正文给出单调计时毫秒，
+按账号有效期返回还剩多少毫秒。
 """
 
 import json
@@ -63,6 +66,10 @@ def _json(handler, code, obj, cookie=None):
 
 
 def _cookie_token(handler) -> str:
+    auth = handler.headers.get("Authorization") or ""
+    scheme, _, token = auth.partition(" ")
+    if scheme.lower() == "bearer" and token.strip():
+        return token.strip()
     raw = handler.headers.get("Cookie") or ""
     for part in raw.split(";"):
         if "=" not in part:
@@ -355,6 +362,18 @@ def _handler(config: dict):
             if path == "/api/logout":
                 citydb.logout_token(_cookie_token(self))
                 _json(self, 200, {"ok": True}, cookie=_clear_cookie())
+                return
+            if path == "/api/clock":
+                user = citydb.user_by_token(_cookie_token(self), allow_expired=True)
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                try:
+                    _json(self, 200, citydb.sync_clock(user["id"], data.get("mono_ms")))
+                except ValueError as exc:
+                    _json(self, 400, {"error": str(exc)})
+                except Exception as exc:
+                    _json(self, 500, {"error": str(exc)})
                 return
             user = self._user()
             if not user:
@@ -741,6 +760,7 @@ def _announce(host, port, config):
         log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级。中级和高级可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置只要高级")
         log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
+    log.info("软件授时：登录后 POST /api/clock，正文 mono_ms 为单调计时毫秒，返回会员剩余时间")
     if _dev_login(config):
         log.warning("测试免注册已打开：POST /api/dev-login 会直接以 test 登录。正式对外前关掉「订阅.测试免注册」")
 
