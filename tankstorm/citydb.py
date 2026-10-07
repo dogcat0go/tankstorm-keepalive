@@ -894,8 +894,8 @@ def attack_tier(tier: str) -> bool:
     return (tier or "初级") in ("中级", "高级")
 
 
-def seek_tier(tier: str) -> bool:
-    """只有高级可以使用自动索敌。"""
+def high_tier(tier: str) -> bool:
+    """只有高级可以使用自动索敌、自动锁敌和清城高级配置。"""
     return (tier or "初级") == "高级"
 
 
@@ -2102,10 +2102,23 @@ def clear_settings(user_id: int = 0) -> dict:
     }
 
 
+def _stored_tier(user_id: int) -> str:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(tier,'初级') FROM app_user WHERE id=?",
+            (int(user_id or 0),)).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else "初级"
+
+
 def clear_wait_minutes(user_id: int = 0) -> int:
-    """空城后再打要等几分钟。0 表示空了就结束。"""
+    """空城后再打要等几分钟。0 表示空了就结束。中级不使用这项。"""
     if not user_id:
         user_id = attack_context_user()
+    if not high_tier(_stored_tier(user_id)):
+        return 0
     return int(clear_settings(user_id).get("wait_min") or 0)
 
 
@@ -2178,9 +2191,14 @@ def release_due_waits() -> int:
 
 
 def clear_fight_plan(user_id: int = 0) -> dict:
-    """留给空 UID 的清城。pages 是从 0 开始的页，含首尾。priority 是 UID 到优先级。"""
+    """留给空 UID 的清城。pages 是从 0 开始的页，含首尾。priority 是 UID 到优先级。
+
+    中级仍按前 5 页清城，不带优先名单，也不拉长扫页间隔。
+    """
     if not user_id:
         user_id = attack_context_user()
+    if not high_tier(_stored_tier(user_id)):
+        return {"pages": (0, 4), "priority": {}, "scan_sec": 0}
     saved = clear_settings(user_id)
     if saved["mode"] == "range":
         pages = (saved["page_from"] - 1, saved["page_to"] - 1)
@@ -2323,7 +2341,7 @@ def queue_present_locks(user_id: int) -> int:
         user = conn.execute(
             "SELECT IFNULL(tier,'初级'), IFNULL(expires_at,'') FROM app_user WHERE id=?",
             (int(user_id),)).fetchone()
-        if not user or not attack_tier(user[0]) or account_expired(user[1]):
+        if not user or not high_tier(user[0]) or account_expired(user[1]):
             return 0
         rows = conn.execute(
             "SELECT city_id, uid FROM watch_sub "
@@ -2364,7 +2382,7 @@ def queue_watch_lock(user_id: int, city_id: int, uid: str) -> str:
             (user_id, city_id, uid)).fetchone()
     finally:
         conn.close()
-    if not user or not seek_tier(user[0]):
+    if not user or not high_tier(user[0]):
         return "自动索敌需要高级订阅"
     if account_expired(user[1]):
         return "账号已过期"
@@ -4663,7 +4681,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                     (now, 0 if now == 0 else sent, user_id, city_id, uid))
             if account_expired(expires_at):
                 continue
-            armed = bool(auto_lock) and attack_tier(tier or "")
+            armed = bool(auto_lock) and high_tier(tier or "")
             if now == 1 and just:
                 changes.append({
                     "user_id": user_id, "city_id": city_id, "city_name": cname,

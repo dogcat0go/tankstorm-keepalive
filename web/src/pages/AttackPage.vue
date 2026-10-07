@@ -65,10 +65,10 @@ function dropPriority(uid) {
         <button type="submit" :disabled="!(proc && proc.keepalive)">提交攻打</button>
       </form>
       <p class="muted">打完或打不过之后，游戏连接再保持账号旁设定的挂机时间，可和自动锁敌一起用。有打不过的人挡路时，这段时间会继续看路径，通了立刻接着打原来的订单。0 表示打完就下线。继续和提交攻打都要这个号已经挂机保活。没挂上就下单，游戏也登不进去。</p>
-      <p>
+      <p v-if="me.high_tier">
         <button type="button" class="ghost" @click="attackAdvanced = !attackAdvanced">{{ attackAdvanced ? "收起" : "高级配置" }}</button>
       </p>
-      <div v-if="attackAdvanced" class="advanced">
+      <div v-if="me.high_tier && attackAdvanced" class="advanced">
         <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
           <span class="switch">清城扫页</span>
           <label class="choice"><input type="radio" value="head" v-model="clearMode" />前5页</label>

@@ -130,7 +130,7 @@ def _user_out(user: dict) -> dict:
         "expires_at": user.get("expires_at") or "",
         "tier": user.get("tier") or "初级",
         "remote_attack": citydb.attack_tier(user.get("tier") or ""),
-        "auto_seek": citydb.seek_tier(user.get("tier") or ""),
+        "high_tier": citydb.high_tier(user.get("tier") or ""),
         "admin": bool(user.get("admin")),
         "auto_lock": bool(user.get("auto_lock")),
         "hold_min": int(user.get("hold_min") or 0),
@@ -533,8 +533,8 @@ def _handler(config: dict):
                     saved = citydb.user_by_token(_cookie_token(self)) or user
                     _json(self, 200, {"ok": True, "user": _user_out(saved)})
                 elif path == "/api/clear-plan":
-                    if not citydb.attack_tier(user.get("tier") or ""):
-                        _json(self, 403, {"error": "清城高级配置需要中级或高级订阅"})
+                    if not citydb.high_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "清城高级配置需要高级订阅"})
                         return
                     why = citydb.set_clear_plan(
                         user["id"], data.get("mode"), data.get("page_from"),
@@ -556,8 +556,8 @@ def _handler(config: dict):
                     saved = citydb.user_by_token(_cookie_token(self)) or user
                     _json(self, 200, {"ok": True, "user": _user_out(saved)})
                 elif path == "/api/auto-lock":
-                    if not citydb.attack_tier(user.get("tier") or ""):
-                        _json(self, 403, {"error": "自动锁敌需要中级或高级订阅"})
+                    if not citydb.high_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "自动锁敌需要高级订阅"})
                         return
                     on = bool(data.get("on"))
                     citydb.set_auto_lock(user["id"], on)
@@ -569,7 +569,7 @@ def _handler(config: dict):
                     _json(self, 200, {"ok": True, "auto_lock": on, "queued": queued,
                                       "login": login})
                 elif path == "/api/watch-lock":
-                    if not citydb.seek_tier(user.get("tier") or ""):
+                    if not citydb.high_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "自动索敌需要高级订阅"})
                         return
                     city_id, uid = _pair(data)
@@ -738,7 +738,7 @@ def _announce(host, port, config):
         log.warning("注册口令是空的，公网上任何人都能注册。填 config「订阅.注册口令」")
     if not _register_open(config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
-        log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级。中级和高级可提交远程扫码攻打，自动索敌只要高级")
+        log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级。中级和高级可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置只要高级")
         log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
     if _dev_login(config):
