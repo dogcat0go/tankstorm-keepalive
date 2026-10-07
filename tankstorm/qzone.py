@@ -111,10 +111,14 @@ def get_game_context(qq) -> dict:
         _dump("2_iframe.html", r2.text)
         fv = parse_flashvars(r2.text)
         ctx.update(fv)
-        if fv:
+        if not str(ctx.get("region") or "").strip():
+            found = re.search(r"[?&]region=(\d+)", r2.text)
+            if found:
+                ctx["region"] = found.group(1)
+        if fv or ctx.get("region"):
             log.info("已解析 FlashVars：server=%s port=%s uid=%s sid=%s region=%s",
-                     fv.get("server"), fv.get("port"), fv.get("uid"),
-                     fv.get("sid"), fv.get("region"))
+                     ctx.get("server"), ctx.get("port"), ctx.get("uid"),
+                     ctx.get("sid"), ctx.get("region"))
         else:
             log.warning("未在 iframe 页找到 FlashVars（HTML 已存 debug/2_iframe.html）")
     except Exception as exc:

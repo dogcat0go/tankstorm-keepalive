@@ -221,6 +221,9 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
+                if not int(user.get("region") or 0):
+                    from .socket_keepalive import schedule_region_from_login
+                    schedule_region_from_login(user["id"])
                 _json(self, 200, {"user": _user_out(user), "invite": bool(invite)})
                 return
             if path == "/api/cities":
@@ -246,8 +249,12 @@ def _handler(config: dict):
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                     return
+                region = int(user.get("region") or 0)
+                if not region:
+                    from .socket_keepalive import schedule_region_from_login
+                    schedule_region_from_login(user["id"])
                 _json(self, 200, {"items": items, "counts": counts,
-                                  "region": int(user.get("region") or 0)})
+                                  "region": region})
                 return
             if path == "/api/scan-plan":
                 user = self._user()

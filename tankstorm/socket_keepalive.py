@@ -106,8 +106,81 @@ def _remember_region(qq, ctx) -> None:
     if not getattr(qq, "attack_account", False):
         return
     from . import citydb
-    citydb.note_game_region(
-        citydb.attack_context_user() or citydb.login_for(), ctx.get("region"))
+    user_id = citydb.attack_context_user() or citydb.login_for()
+    if not user_id:
+        uin = str(getattr(qq, "uin", "") or "").strip()
+        user_id, _name = citydb.attack_qq_owner(uin)
+    citydb.note_game_region(user_id, ctx.get("region"))
+
+
+_region_guard = threading.Lock()
+_region_inflight = set()
+_region_tried = {}
+
+
+def schedule_region_from_login(user_id: int) -> None:
+    """区服还是 0 时，用这个登录账号已经保存的攻打票据打开游戏页认一次。
+
+    保活连着的时候不会为了认区服重连。网页轮询只负责排队，认区服在旁边做。
+    """
+    from . import citydb
+
+    user_id = int(user_id or 0)
+    if user_id <= 0 or citydb.user_region(user_id):
+        return
+    now = time.monotonic()
+    with _region_guard:
+        if user_id in _region_inflight:
+            return
+        if now - _region_tried.get(user_id, 0) < 120:
+            return
+        _region_inflight.add(user_id)
+        _region_tried[user_id] = now
+    threading.Thread(
+        target=_region_from_login, args=(user_id,),
+        name=f"region-{user_id}", daemon=True).start()
+
+
+def _region_from_login(user_id: int) -> None:
+    import json
+    import os
+
+    from . import citydb
+    from .qq_login import QQSession
+
+    try:
+        uin = citydb.attack_qq_of(user_id)
+        if not uin.isdigit():
+            log.info("登录账号 %s 还没绑定攻打 QQ，认不出区服", citydb.username_of(user_id))
+            return
+        path = attack_cookie_file(uin)
+        if not os.path.isfile(path):
+            log.info("登录账号 %s 的攻打 QQ %s 还没有票据，认不出区服",
+                     citydb.username_of(user_id), uin)
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                jar = json.load(f)
+        except (OSError, ValueError):
+            log.info("登录账号 %s 的攻打票据读不出来，认不出区服", citydb.username_of(user_id))
+            return
+        if not any(isinstance(c, dict) and c.get("name") == "skey" and c.get("value")
+                   for c in jar):
+            log.info("登录账号 %s 的攻打票据里没有登录态，认不出区服", citydb.username_of(user_id))
+            return
+        qq = QQSession(path)
+        qq.attack_account = True
+        qq.use_napcat = False
+        ctx = get_game_context(qq)
+        region = ctx.get("region")
+        citydb.note_game_region(user_id, region)
+        if not str(region or "").strip():
+            log.info("登录账号 %s 的游戏页里没有区服", citydb.username_of(user_id))
+    except Exception:
+        log.info("从已登录的攻打号认区服没成", exc_info=True)
+    finally:
+        with _region_guard:
+            _region_inflight.discard(user_id)
 
 
 def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
