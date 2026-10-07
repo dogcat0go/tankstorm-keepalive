@@ -86,7 +86,7 @@ def main() -> int:
     parser.add_argument("--set-admin", nargs=2, metavar=("用户名", "开关"),
                         help="开或关：该账号能否在页面上改扫描安排，不启动网页")
     parser.add_argument("--bind-attack", nargs=2, metavar=("用户名", "QQ号"),
-                        help="把攻打 QQ 绑到这个登录账号。一对一，别的账号不能继续用，不启动网页")
+                        help="把攻打 QQ 绑到这个登录账号。一个账号一个 QQ，同一个 QQ 可以绑多个账号，不启动网页")
     args = parser.parse_args()
     if args.add_user or args.set_expires or args.set_tier or args.set_admin or args.bind_attack:
         if args.bind_attack:

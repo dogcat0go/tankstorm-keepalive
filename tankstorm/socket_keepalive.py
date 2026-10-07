@@ -28,6 +28,7 @@ import select
 import socket
 import threading
 import time
+from contextlib import contextmanager
 
 from . import daily, notify, protocol, sender
 from .log import get_logger
@@ -102,15 +103,20 @@ def _http_warmup(qq, ctx: dict) -> None:
 
 
 def _remember_region(qq, ctx) -> None:
-    """攻打号才记。区服在游戏链接的 region 里，扫描号不写到用户上。"""
+    """攻打号才记。区服在游戏链接的 region 里，扫描号不写到用户上。
+    同一个 QQ 绑了几个登录账号，区服都写上。"""
     if not getattr(qq, "attack_account", False):
         return
     from . import citydb
+    uin = str(getattr(qq, "uin", "") or "").strip()
+    ids = citydb.users_bound_to_qq(uin) if uin.isdigit() else []
     user_id = citydb.attack_context_user() or citydb.login_for()
-    if not user_id:
-        uin = str(getattr(qq, "uin", "") or "").strip()
+    if not user_id and not ids:
         user_id, _name = citydb.attack_qq_owner(uin)
-    citydb.note_game_region(user_id, ctx.get("region"))
+    if user_id and user_id not in ids:
+        ids = [user_id] + ids
+    for uid in ids:
+        citydb.note_game_region(uid, ctx.get("region"))
 
 
 _region_guard = threading.Lock()
@@ -1087,6 +1093,23 @@ def _skip_stale_lock(rec, sock, config, beater, job, beats=0) -> bool:
     return True
 
 
+@contextmanager
+def _order_account(user_id: int):
+    """打这一单时用下单的登录账号，打完回到这条线程原来的账号。"""
+    from . import citydb
+    prev = citydb.attack_context_user()
+    qq = citydb.attack_context_qq()
+    owner = int(user_id or 0)
+    switched = bool(owner and owner != prev)
+    if switched:
+        citydb.set_attack_context(owner, qq or citydb.attack_qq_of(owner))
+    try:
+        yield
+    finally:
+        if switched and prev:
+            citydb.set_attack_context(prev, qq)
+
+
 def _fight_claimed(rec, sock, config, beater, job) -> None:
     from . import citydb, country_war
 
@@ -1357,7 +1380,8 @@ def _watch_blocked_path(rec, sock, config, beater, path_at: float) -> float:
     if not taken:
         return time.time()
     log.info("订单 %s 路径通了，立刻接着打", taken["id"])
-    _fight_claimed(rec, sock, config, beater, taken)
+    with _order_account(int(taken.get("user_id") or 0)):
+        _fight_claimed(rec, sock, config, beater, taken)
     citydb.set_attack_status("hold")
     return time.time()
 
@@ -1609,9 +1633,11 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         daily_job = citydb.claim_daily_job()
         if daily_job:
             stated = False
-            _run_one_daily(rec, sock, config, beater, daily_job)
+            with _order_account(int(daily_job.get("user_id") or 0)):
+                _run_one_daily(rec, sock, config, beater, daily_job)
             continue
-        citydb.skip_unfinished_auto(citydb.attack_context_user())
+        for uid in citydb.attack_context_users():
+            citydb.skip_unfinished_auto(uid)
         citydb.release_due_waits()
         job = citydb.claim_attack_order()
         if job:
@@ -1619,7 +1645,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             citydb.clear_attack_hold()
             log.info("领到订单 %s，城市 %s UID %s",
                      job["id"], job["city_id"], job["uid"])
-            _fight_claimed(rec, sock, config, beater, job)
+            with _order_account(int(job.get("user_id") or 0)):
+                _fight_claimed(rec, sock, config, beater, job)
             continue
         if citydb.attack_order_open():
             citydb.set_attack_status("queue")
@@ -1679,7 +1706,7 @@ def _bind_named_account(config: dict, name: str) -> int:
 
 def run_remote_orders(qq, config: dict) -> int:
     """领取页面上中级、高级提交的城市和 UID。没登录就先把二维码发给扫码 QQ。
-    只领这个攻打号绑定的那个登录账号的订单。"""
+    这个攻打 QQ 绑了几个登录账号，就领这几个的订单。"""
     from . import citydb
 
     name = getattr(qq, "account_name", "") or ""
@@ -1693,8 +1720,8 @@ def run_remote_orders(qq, config: dict) -> int:
         time.sleep(5)
         user_id = _bind_named_account(config, name)
     citydb.set_attack_context(user_id, citydb.attack_qq_of(user_id))
-    who = citydb.username_of(user_id)
-    log.info("开始领取远程扫码攻打，攻打号「%s」只打登录账号 %s 的订单", name, who)
+    who = "、".join(citydb.username_of(i) for i in citydb.attack_context_users()) or citydb.username_of(user_id)
+    log.info("开始领取远程扫码攻打，攻打号「%s」打登录账号 %s 的订单", name, who)
     stop = _start_attack_status()
     login_checked = [0.0]
 
@@ -1735,7 +1762,9 @@ def run_remote_orders(qq, config: dict) -> int:
                 user_id = current
             if citydb.attack_paused():
                 citydb.set_attack_status("paused")
-                if citydb.attack_qq_blocked(user_id) and citydb.take_attack_login():
+                blocked = any(
+                    citydb.attack_qq_blocked(uid) for uid in citydb.attack_context_users())
+                if blocked and citydb.take_attack_login():
                     citydb.set_attack_status("login")
                     relogin_with_push(qq, config, force_qr=True)
                     continue
@@ -2064,7 +2093,7 @@ def attack_worker_alive(uin: str) -> bool:
 
 
 def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: bool) -> None:
-    """一个攻打 QQ 一条线程。只打这个登录账号的订单，状态写在这个 QQ 上。"""
+    """一个攻打 QQ 一条线程。这个 QQ 绑了几个登录账号就打这几个的订单，状态写在这个 QQ 上。"""
     import main as cli
 
     from . import citydb
@@ -2078,8 +2107,10 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 _pool.pop(uin, None)
         return
     qq.page_qr = on_page
-    who = citydb.username_of(user_id)
-    log.info("攻打 QQ %s 的线程已启动，只打登录账号 %s 的订单", uin, who)
+    who = "、".join(
+        citydb.username_of(i) for i in citydb.attack_context_users()
+    ) or citydb.username_of(user_id)
+    log.info("攻打 QQ %s 的线程已启动，打登录账号 %s 的订单", uin, who)
 
     def _owner() -> int:
         return citydb.attack_context_user() or user_id
@@ -2094,19 +2125,21 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
         citydb.resume_daily_jobs()
         if qq.is_valid():
             note_attack_qq(qq)
-        if citydb.attack_qq_blocked(_owner()) or not qq.is_valid():
+        scope_blocked = any(
+            citydb.attack_qq_blocked(uid) for uid in citydb.attack_context_users())
+        if scope_blocked or not qq.is_valid():
             citydb.set_attack_status("login")
             if on_page:
                 citydb.set_page_qr(True, user_id)
-            relogin_with_push(
-                qq, config, force_qr=citydb.attack_qq_blocked(_owner()))
+            relogin_with_push(qq, config, force_qr=scope_blocked)
             if on_page:
                 citydb.set_page_qr(False, user_id)
         while True:
             if citydb.attack_paused():
                 citydb.set_attack_status("paused")
                 if citydb.take_attack_login():
-                    if citydb.attack_qq_blocked(_owner()):
+                    if any(citydb.attack_qq_blocked(uid)
+                           for uid in citydb.attack_context_users()):
                         citydb.set_attack_status("login")
                         if on_page:
                             citydb.set_page_qr(True, user_id)

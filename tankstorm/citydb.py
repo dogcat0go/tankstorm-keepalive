@@ -1456,27 +1456,31 @@ def attack_hold_left(user_id=None):
 
 
 def attack_hold_minutes() -> int:
-    """这个攻打进程挂机多久。只看绑定的那个登录账号。"""
-    user_id = attack_context_user()
-    if not user_id:
+    """这条攻打线程挂机多久。同一个 QQ 上几个账号都设了，取最长的。"""
+    ids = attack_context_users()
+    if not ids:
         return 0
+    slot = ",".join("?" * len(ids))
     conn = connect(readonly=True)
     try:
-        row = conn.execute(
+        rows = conn.execute(
             "SELECT IFNULL(hold_min,0), IFNULL(tier,'初级'), IFNULL(expires_at,'') "
-            "FROM app_user WHERE id=?",
-            (user_id,)).fetchone()
+            f"FROM app_user WHERE id IN ({slot})",
+            tuple(ids)).fetchall()
     finally:
         conn.close()
-    if not row or not attack_tier(row[1]) or account_expired(row[2]):
-        return 0
-    return int(row[0] or 0)
+    best = 0
+    for hold_min, tier, expires in rows:
+        if attack_tier(tier) and not account_expired(expires):
+            best = max(best, int(hold_min or 0))
+    return best
 
 
 def attack_hold_always(user_id=None) -> bool:
-    """这个账号开了全天候挂机。初级和过期账号不算。"""
+    """这个账号开了全天候挂机。初级和过期账号不算。
+    没指定账号时，同一个攻打 QQ 上有一个开了就算。"""
     if user_id is None:
-        user_id = attack_context_user()
+        return any(attack_hold_always(uid) for uid in attack_context_users())
     user_id = int(user_id or 0)
     if not user_id:
         return False
@@ -1555,16 +1559,11 @@ def _forget_page_names(conn) -> None:
 
 
 def _ensure_attack_qq_map(conn) -> None:
-    """一个攻打 QQ 只记在一个登录账号上。还没绑定的空值不占这条映射。"""
-    dup = conn.execute(
-        "SELECT attack_qq FROM app_user WHERE IFNULL(attack_qq,'')!='' "
-        "GROUP BY attack_qq HAVING COUNT(*)>1 LIMIT 1").fetchone()
-    if dup:
-        log.error("攻打 QQ %s 记在了多个登录账号上，先不建唯一映射", dup[0])
-        return
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS app_user_attack_qq "
-        "ON app_user(attack_qq) WHERE IFNULL(attack_qq,'')!=''")
+    """一个登录账号只留一个攻打 QQ。同一个 QQ 可以绑在多个登录账号上。
+
+    以前建过唯一索引的库，启动时拆掉，否则第二个账号写不进去。
+    """
+    conn.execute("DROP INDEX IF EXISTS app_user_attack_qq")
 
 
 def bound_attack_qq() -> tuple:
@@ -1581,15 +1580,30 @@ def bound_attack_qq() -> tuple:
         conn.close()
 
 
+def users_bound_to_qq(uin: str) -> list:
+    """这个攻打 QQ 绑着的登录账号，按 id 排。"""
+    uin = str(uin or "").strip()
+    if not uin:
+        return []
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id FROM app_user WHERE attack_qq=? ORDER BY id",
+            (uin,)).fetchall()
+    finally:
+        conn.close()
+    return [int(row[0]) for row in rows]
+
+
 def attack_qq_owner(uin: str) -> tuple:
-    """这个攻打 QQ 记在哪个登录账号上。没有则是 (0, '')。"""
+    """这个攻打 QQ 最早绑上的登录账号。没有则是 (0, '')。线程启动用它。"""
     uin = str(uin or "").strip()
     if not uin:
         return 0, ""
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT id, username FROM app_user WHERE attack_qq=?",
+            "SELECT id, username FROM app_user WHERE attack_qq=? ORDER BY id LIMIT 1",
             (uin,)).fetchone()
         if not row:
             return 0, ""
@@ -1686,25 +1700,12 @@ def confirm_attack_qq(user_id: int, uin: str) -> bool:
         blocked = int(row[1] or 0)
         who = str(row[2] or "")
         if not bound:
-            holder = conn.execute(
-                "SELECT id, username FROM app_user WHERE attack_qq=? AND id!=?",
-                (uin, user_id)).fetchone()
-            if holder:
-                log.error("攻打 QQ %s 已经绑在登录账号 %s 上，%s 不能再记这一个",
-                          uin, holder[1], who)
-                return False
-            try:
-                conn.execute(
-                    "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
-                    (uin, user_id))
-                for kind in ("proc", "hold", "login", "pause", "move"):
-                    _move_user_mark(conn, user_id, uin, kind)
-                conn.commit()
-            except sqlite3.IntegrityError:
-                conn.rollback()
-                log.error("攻打 QQ %s 已经绑在别的登录账号上，%s 不能再记这一个",
-                          uin, who)
-                return False
+            conn.execute(
+                "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
+                (uin, user_id))
+            for kind in ("proc", "hold", "login", "pause", "move"):
+                _move_user_mark(conn, user_id, uin, kind)
+            conn.commit()
             log.info("登录账号 %s 第一次扫码，绑定攻打 QQ %s", who, uin)
             return True
         if bound == uin:
@@ -1731,18 +1732,13 @@ def confirm_attack_qq(user_id: int, uin: str) -> bool:
 
 
 def bind_attack_account(user_id: int, account: str) -> str:
-    """把攻打 QQ 绑到这个登录账号。成功返回空字符串。"""
+    """把攻打 QQ 绑到这个登录账号。一个账号只能有一个 QQ，同一个 QQ 可以绑多个账号。成功返回空字符串。"""
     account = str(account or "").strip()
     user_id = int(user_id)
     if not account.isdigit() or not 5 <= len(account) <= 12:
         return "攻打号就是 QQ 号，要写成 5 到 12 位数字"
     conn = connect()
     try:
-        other = conn.execute(
-            "SELECT username FROM app_user WHERE id!=? AND attack_qq=?",
-            (user_id, account)).fetchone()
-        if other:
-            return "这个攻打 QQ 已经绑定别的登录账号"
         mine = conn.execute(
             "SELECT IFNULL(attack_qq,'') FROM app_user WHERE id=?",
             (user_id,)).fetchone()
@@ -1751,14 +1747,10 @@ def bind_attack_account(user_id: int, account: str) -> str:
         current = str(mine[0] or "").strip()
         if current and current != account:
             return f"这个登录账号已经绑定了攻打 QQ「{current}」"
-        try:
-            conn.execute(
-                "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
-                (account, user_id))
-            conn.commit()
-        except sqlite3.IntegrityError:
-            conn.rollback()
-            return "这个攻打 QQ 已经绑定别的登录账号"
+        conn.execute(
+            "UPDATE app_user SET attack_qq=?, attack_acct='', attack_qq_block=0 WHERE id=?",
+            (account, user_id))
+        conn.commit()
     finally:
         conn.close()
     return ""
@@ -2155,36 +2147,40 @@ def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False) -
 
 
 def attack_wait_pending() -> bool:
-    """这条线程还有没到点的清城再打。"""
-    user_id = attack_context_user()
-    if not user_id:
+    """这条线程还有没到点的清城再打。同一个攻打 QQ 上的账号都算。"""
+    ids = attack_context_users()
+    if not ids:
         return False
+    slot = ",".join("?" * len(ids))
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT 1 FROM atk_order WHERE user_id=? AND status='wait' LIMIT 1",
-            (user_id,)).fetchone()
+            f"SELECT 1 FROM atk_order WHERE user_id IN ({slot}) AND status='wait' LIMIT 1",
+            tuple(ids)).fetchone()
     finally:
         conn.close()
     return bool(row)
 
 
 def release_due_waits() -> int:
-    """到点的空城订单改回排队。还没到的不动。只看这条线程的登录账号。"""
-    user_id = attack_context_user()
-    if not user_id:
+    """到点的空城订单改回排队。还没到的不动。同一个攻打 QQ 上的账号都算。"""
+    ids = attack_context_users()
+    if not ids:
         return 0
     now = now_ts()
+    slot = ",".join("?" * len(ids))
     conn = connect()
     try:
         cur = conn.execute(
             "UPDATE atk_order SET status='pending', reason='', updated_at=? "
-            "WHERE user_id=? AND status='wait' AND IFNULL(run_at,'')!='' AND run_at<=?",
-            (now, user_id, now))
+            f"WHERE user_id IN ({slot}) AND status='wait' "
+            "AND IFNULL(run_at,'')!='' AND run_at<=?",
+            (now, *ids, now))
         conn.commit()
         n = int(cur.rowcount or 0)
         if n:
-            log.info("登录账号 %s 有 %d 条空城订单到点，改回排队", username_of(user_id), n)
+            who = "、".join(username_of(i) for i in ids)
+            log.info("登录账号 %s 有 %d 条空城订单到点，改回排队", who, n)
         return n
     finally:
         conn.close()
@@ -2603,7 +2599,7 @@ def fighting_order_stopped() -> bool:
 
 
 def set_attack_context(user_id: int, account: str) -> None:
-    """这条线程只给这个登录账号、这个攻打 QQ 领订单。别的线程有自己的一份。"""
+    """这条线程打这个攻打 QQ。同一个 QQ 上的登录账号都会被领到。别的线程有自己的一份。"""
     _attack_local.user = int(user_id or 0)
     _attack_local.qq = str(account or "").strip()
     if _attack_local.qq:
@@ -2621,6 +2617,17 @@ def attack_context_user() -> int:
 
 def attack_context_qq() -> str:
     return str(getattr(_attack_local, "qq", "") or "").strip()
+
+
+def attack_context_users() -> list:
+    """这条攻打线程要照看的登录账号。同一个攻打 QQ 绑了几个，就都算上。"""
+    uin = attack_context_qq()
+    if uin:
+        ids = users_bound_to_qq(uin)
+        if ids:
+            return ids
+    uid = attack_context_user()
+    return [uid] if uid else []
 
 
 def _identity(user_id: int = 0) -> tuple:
@@ -3559,16 +3566,18 @@ def users_with_running_orders() -> list:
 
 
 def manual_orders_running(user_id: int = 0) -> bool:
-    """这个登录账号有没有还在打的手动订单。"""
-    user_id = int(user_id or attack_context_user() or 0)
-    if not user_id:
+    """这个登录账号有没有还在打的手动订单。没指定时看这条线程的攻打 QQ。"""
+    user_id = int(user_id or 0)
+    ids = [user_id] if user_id else attack_context_users()
+    if not ids:
         return False
+    slot = ",".join("?" * len(ids))
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT 1 FROM atk_order WHERE user_id=? AND status='running' "
+            "SELECT 1 FROM atk_order WHERE user_id IN (" + slot + ") AND status='running' "
             "AND IFNULL(auto,0)=0 LIMIT 1",
-            (user_id,)).fetchone()
+            tuple(ids)).fetchone()
     finally:
         conn.close()
     return row is not None
@@ -3613,9 +3622,7 @@ def users_marked_resume() -> list:
             except ValueError:
                 continue
             continue
-        owner, _who = attack_qq_owner(tail)
-        if owner:
-            ids.append(owner)
+        ids.extend(users_bound_to_qq(tail))
     return ids
 
 
@@ -3647,15 +3654,17 @@ def users_needing_attack() -> list:
 
 
 def daily_job_open() -> bool:
-    """这个攻打号还有没做完的日常。"""
-    user_id = attack_context_user()
-    if not user_id:
+    """这个攻打 QQ 上还有没做完的日常。"""
+    ids = attack_context_users()
+    if not ids:
         return False
+    slot = ",".join("?" * len(ids))
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT 1 FROM daily_job WHERE user_id=? AND status IN ('pending','running') LIMIT 1",
-            (user_id,)).fetchone()
+            "SELECT 1 FROM daily_job WHERE user_id IN (" + slot + ") "
+            "AND status IN ('pending','running') LIMIT 1",
+            tuple(ids)).fetchone()
     finally:
         conn.close()
     return bool(row)
@@ -3957,17 +3966,18 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
 
 
 def claim_daily_job():
-    """领这个登录账号最早的一条日常。没有就返回 None。"""
-    user_id = attack_context_user()
-    if not user_id:
+    """领这个攻打 QQ 上最早的一条日常。没有就返回 None。"""
+    ids = attack_context_users()
+    if not ids:
         return None
+    slot = ",".join("?" * len(ids))
     conn = connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT id, kind, params FROM daily_job "
-            "WHERE user_id=? AND status='pending' ORDER BY id LIMIT 1",
-            (user_id,)).fetchone()
+            "SELECT id, kind, params, user_id FROM daily_job "
+            "WHERE user_id IN (" + slot + ") AND status='pending' ORDER BY id LIMIT 1",
+            tuple(ids)).fetchone()
         if not row:
             conn.rollback()
             return None
@@ -3983,7 +3993,8 @@ def claim_daily_job():
         params = {}
     if not isinstance(params, dict):
         params = {}
-    return {"id": int(row[0]), "kind": str(row[1] or ""), "params": params}
+    return {"id": int(row[0]), "kind": str(row[1] or ""), "params": params,
+            "user_id": int(row[3])}
 
 
 def _job_detail(detail: str) -> str:
@@ -4069,20 +4080,21 @@ def cancel_daily_job(user_id: int, job_id: int) -> str:
 
 def resume_daily_jobs() -> None:
     """线程重新拉起。每日任务可以再做，次数闸门会挡住已经领过的。拨款和征战不自动重做。"""
-    user_id = attack_context_user()
-    if not user_id:
+    ids = attack_context_users()
+    if not ids:
         return
     now = now_ts()
+    slot = ",".join("?" * len(ids))
     conn = connect()
     try:
         conn.execute(
             "UPDATE daily_job SET status='pending', updated_at=? "
-            "WHERE user_id=? AND kind='daily' AND status='running'",
-            (now, user_id))
+            "WHERE user_id IN (" + slot + ") AND kind='daily' AND status='running'",
+            (now, *ids))
         conn.execute(
             "UPDATE daily_job SET status='failed', detail=?, updated_at=? "
-            "WHERE user_id=? AND kind!='daily' AND status='running'",
-            ("进程中断，请再点一次", now, user_id))
+            "WHERE user_id IN (" + slot + ") AND kind!='daily' AND status='running'",
+            ("进程中断，请再点一次", now, *ids))
         conn.commit()
     finally:
         conn.close()
@@ -4112,14 +4124,16 @@ def list_daily_jobs(user_id: int, limit: int = 2) -> list:
 
 
 def attack_order_open() -> bool:
-    """还有没打完的订单。攻打进程只看自己绑定的登录账号。网页没绑定时看全部，用来决定要不要拉起。"""
-    user_id = attack_context_user()
+    """还有没打完的订单。攻打进程看这个 QQ 上的登录账号。网页没绑定时看全部，用来决定要不要拉起。"""
+    ids = attack_context_users()
     conn = connect(readonly=True)
     try:
-        if user_id:
+        if ids:
+            slot = ",".join("?" * len(ids))
             row = conn.execute(
-                "SELECT 1 FROM atk_order WHERE user_id=? AND status IN ('pending','running') LIMIT 1",
-                (user_id,)).fetchone()
+                "SELECT 1 FROM atk_order WHERE user_id IN (" + slot + ") "
+                "AND status IN ('pending','running') LIMIT 1",
+                tuple(ids)).fetchone()
         else:
             row = conn.execute(
                 "SELECT 1 FROM atk_order WHERE status IN ('pending','running') LIMIT 1"
@@ -4130,16 +4144,17 @@ def attack_order_open() -> bool:
 
 
 def requeue_running_orders() -> None:
-    """拿到攻打号之后调用。标着正在打的是上一轮进程留下的，改回排队。只动这个登录账号的单。"""
-    user_id = attack_context_user()
-    if not user_id:
+    """拿到攻打号之后调用。标着正在打的是上一轮进程留下的，改回排队。同一个 QQ 上的单都改。"""
+    ids = attack_context_users()
+    if not ids:
         return
+    slot = ",".join("?" * len(ids))
     conn = connect()
     try:
         conn.execute(
             "UPDATE atk_order SET status='pending', updated_at=? "
-            "WHERE status='running' AND user_id=? AND IFNULL(auto,0)=0",
-            (now_ts(), user_id))
+            "WHERE status='running' AND user_id IN (" + slot + ") AND IFNULL(auto,0)=0",
+            (now_ts(), *ids))
         conn.commit()
     finally:
         conn.close()
@@ -4147,19 +4162,21 @@ def requeue_running_orders() -> None:
 
 def requeue_blocked_orders() -> None:
     """等通路的订单改回排队。只在挂机已经结束、线程要重新领单时用。"""
-    user_id = attack_context_user()
-    if not user_id:
+    ids = attack_context_users()
+    if not ids:
         return
+    slot = ",".join("?" * len(ids))
     conn = connect()
     try:
         cur = conn.execute(
             "UPDATE atk_order SET status='pending', updated_at=? "
-            "WHERE status='blocked' AND user_id=? AND IFNULL(auto,0)=0",
-            (now_ts(), user_id))
+            "WHERE status='blocked' AND user_id IN (" + slot + ") AND IFNULL(auto,0)=0",
+            (now_ts(), *ids))
         conn.commit()
         if cur.rowcount:
+            who = "、".join(username_of(i) for i in ids)
             log.info("登录账号 %s 的攻打线程要继续，%d 条等通路的订单改回排队",
-                     username_of(user_id), cur.rowcount)
+                     who, cur.rowcount)
     finally:
         conn.close()
 
@@ -4188,8 +4205,7 @@ def skip_unfinished_auto(user_id: int) -> int:
 
 def resume_stranded_orders() -> None:
     """线程拉起来接着干。自动锁敌没打完的跳过；手动单改回排队。"""
-    user_id = attack_context_user()
-    if user_id:
+    for user_id in attack_context_users():
         skip_unfinished_auto(user_id)
     requeue_running_orders()
     if not attack_hold_on():
@@ -4197,10 +4213,11 @@ def resume_stranded_orders() -> None:
 
 
 def claim_attack_order():
-    """领这个登录账号最新的一条排队订单。后提交的优先。没有绑定就不领别人的单。"""
-    user_id = attack_context_user()
-    if not user_id:
+    """领这个攻打 QQ 上最新的一条排队订单。后提交的优先。没绑上的账号不领。"""
+    ids = attack_context_users()
+    if not ids:
         return None
+    slot = ",".join("?" * len(ids))
     conn = connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -4211,22 +4228,27 @@ def claim_attack_order():
             "UPDATE atk_order SET status='failed', "
             "reason=CASE WHEN TRIM(IFNULL(reason,''))!='' THEN reason "
             "ELSE '没打完，等下一次索敌' END, updated_at=? "
-            "WHERE status='running' AND user_id=? AND updated_at<? AND IFNULL(auto,0)=1",
-            (now, user_id, cutoff))
+            "WHERE status='running' AND user_id IN (" + slot + ") "
+            "AND updated_at<? AND IFNULL(auto,0)=1",
+            (now, *ids, cutoff))
         conn.execute(
             "UPDATE atk_order SET status='pending', updated_at=? "
-            "WHERE status='running' AND user_id=? AND updated_at<? AND IFNULL(auto,0)=0",
-            (now, user_id, cutoff))
+            "WHERE status='running' AND user_id IN (" + slot + ") "
+            "AND updated_at<? AND IFNULL(auto,0)=0",
+            (now, *ids, cutoff))
         while True:
             row = conn.execute(
                 "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
-                "IFNULL(u.expires_at,''), IFNULL(o.auto,0), o.card_max, IFNULL(o.kind,'') "
+                "IFNULL(u.expires_at,''), IFNULL(o.auto,0), o.card_max, IFNULL(o.kind,''), "
+                "o.user_id "
                 "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
-                "WHERE o.status='pending' AND o.user_id=? ORDER BY o.id DESC LIMIT 1",
-                (user_id,)).fetchone()
+                "WHERE o.status='pending' AND o.user_id IN (" + slot + ") "
+                "ORDER BY o.id DESC LIMIT 1",
+                tuple(ids)).fetchone()
             if not row:
                 conn.commit()
                 return None
+            owner = int(row[8])
             if account_expired(row[4]) or (str(row[7] or "") != "modo" and not attack_tier(row[3])):
                 conn.execute(
                     "UPDATE atk_order SET status='failed', reason=?, updated_at=? WHERE id=?",
@@ -4234,7 +4256,7 @@ def claim_attack_order():
                 continue
             uid = str(row[2] or "").strip()
             if bool(row[5]) and uid and str(row[7] or "") != "modo":
-                if _lock_gone_on(conn, user_id, int(row[1]), uid):
+                if _lock_gone_on(conn, owner, int(row[1]), uid):
                     conn.execute(
                         "UPDATE atk_order SET status='failed', reason=?, updated_at=? "
                         "WHERE id=? AND status='pending'",
@@ -4246,7 +4268,7 @@ def claim_attack_order():
                         "OR IFNULL(lock_sent,0)!=0)",
                         (int(row[1]), uid))
                     log.info("登录账号 %s 排队的自动锁敌 UID %s 已不在城 %s，跳过",
-                             username_of(user_id), uid, row[1])
+                             username_of(owner), uid, row[1])
                     continue
             cur = conn.execute(
                 "UPDATE atk_order SET status='running', updated_at=? "
@@ -4257,7 +4279,7 @@ def claim_attack_order():
                 return None
             return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[5]),
                     "cards": None if row[6] is None else int(row[6]),
-                    "kind": str(row[7] or "")}
+                    "kind": str(row[7] or ""), "user_id": owner}
     finally:
         conn.close()
 
@@ -4396,17 +4418,19 @@ def note_blocked_reason(order_id: int, reason: str) -> None:
 
 
 def next_blocked_order():
-    """挂机时要盯的那一单。后提交的优先。不改状态。只看这个登录账号的。"""
-    user_id = attack_context_user()
-    if not user_id:
+    """挂机时要盯的那一单。后提交的优先。不改状态。同一个攻打 QQ 上的都看。"""
+    ids = attack_context_users()
+    if not ids:
         return None
+    slot = ",".join("?" * len(ids))
     conn = connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats, IFNULL(kind,'') "
-            "FROM atk_order WHERE user_id=? AND status='blocked' AND IFNULL(auto,0)=0 "
-            "ORDER BY id DESC LIMIT 1",
-            (user_id,)
+            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats, "
+            "IFNULL(kind,''), user_id "
+            "FROM atk_order WHERE user_id IN (" + slot + ") AND status='blocked' "
+            "AND IFNULL(auto,0)=0 ORDER BY id DESC LIMIT 1",
+            tuple(ids),
         ).fetchone()
     finally:
         conn.close()
@@ -4415,7 +4439,7 @@ def next_blocked_order():
     return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[3]),
             "cards": None if row[4] is None else int(row[4]),
             "beats": 0 if row[5] is None else int(row[5]),
-            "kind": str(row[6] or "")}
+            "kind": str(row[6] or ""), "user_id": int(row[7])}
 
 
 def take_blocked_order(order_id: int):
@@ -4424,7 +4448,8 @@ def take_blocked_order(order_id: int):
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats, IFNULL(kind,'') "
+            "SELECT id, city_id, IFNULL(uid,''), IFNULL(auto,0), card_max, beats, "
+            "IFNULL(kind,''), user_id "
             "FROM atk_order WHERE id=? AND status='blocked'",
             (int(order_id),)).fetchone()
         if not row:
@@ -4440,22 +4465,23 @@ def take_blocked_order(order_id: int):
         return {"id": row[0], "city_id": row[1], "uid": row[2], "auto": bool(row[3]),
                 "cards": None if row[4] is None else int(row[4]),
                 "beats": 0 if row[5] is None else int(row[5]),
-                "kind": str(row[6] or "")}
+                "kind": str(row[6] or ""), "user_id": int(row[7])}
     finally:
         conn.close()
 
 
 def fail_blocked_orders() -> None:
-    """挂机结束了。这个登录账号还在等通路的订单记为没打成，原因留着。"""
-    user_id = attack_context_user()
-    if not user_id:
+    """挂机结束了。这个攻打 QQ 上还在等通路的订单记为没打成，原因留着。"""
+    ids = attack_context_users()
+    if not ids:
         return
+    slot = ",".join("?" * len(ids))
     conn = connect()
     try:
         conn.execute(
             "UPDATE atk_order SET status='failed', updated_at=? "
-            "WHERE user_id=? AND status='blocked'",
-            (now_ts(), user_id))
+            "WHERE user_id IN (" + slot + ") AND status='blocked'",
+            (now_ts(), *ids))
         conn.commit()
     finally:
         conn.close()
