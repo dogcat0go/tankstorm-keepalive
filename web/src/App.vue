@@ -543,6 +543,7 @@ function orderCity(it) {
 
 function orderUid(it) {
   if (it && it.kind === "modo") return "首都周边";
+  if (it && it.name) return it.name;
   return (it && it.uid) || "整座城";
 }
 

@@ -127,7 +127,7 @@ function dropPriority(uid) {
     <div class="orders" v-if="orders.length">
       <table>
         <thead>
-          <tr><th>城市</th><th>UID</th><th>击退敌方数量</th><th>状态</th><th>说明</th><th>保活剩余倒计时</th><th>北京时间</th></tr>
+          <tr><th>城市</th><th>名称</th><th>击退敌方数量</th><th>状态</th><th>说明</th><th>保活剩余倒计时</th><th>北京时间</th></tr>
         </thead>
         <tbody>
           <tr v-for="it in orders" :key="it.id">
@@ -144,7 +144,7 @@ function dropPriority(uid) {
       <div class="order-cards">
         <article class="order-card" v-for="it in orders" :key="'c' + it.id">
           <p><span class="k">城市</span>{{ orderCity(it) }}</p>
-          <p><span class="k">UID</span>{{ orderUid(it) }}</p>
+          <p><span class="k">名称</span>{{ orderUid(it) }}</p>
           <p><span class="k">击退敌方数量</span>{{ beatText(it) }}</p>
           <p><span class="k">状态</span>{{ orderStatus(it.status) }}</p>
           <p class="reason"><span class="k">说明</span>{{ it.reason || "—" }}</p>

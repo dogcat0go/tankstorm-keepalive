@@ -1028,6 +1028,8 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
     def _beat_note(n, name=""):
         who = "" if uid else str(name or "").strip()
         citydb.note_attack_beats(job["id"], n, who)
+        if uid and str(name or "").strip():
+            citydb.remember_order_name(job["id"], name)
 
     tally = {"n": start_beats, "note": _beat_note}
     citydb.note_attack_beats(job["id"], start_beats)
@@ -1049,6 +1051,8 @@ def _fight_claimed(rec, sock, config, beater, job) -> None:
             if uid:
                 info = citydb.find_player(uid) or {}
                 citydb.note_lock_morale(info.get("morale"))
+                if info.get("name"):
+                    citydb.remember_order_name(job["id"], info.get("name"))
             plan = citydb.clear_fight_plan() if not uid else None
             out = country_war.walk_to(
                 rec, sock, fight_config, job["city_id"], beat=beater, uid=uid,
