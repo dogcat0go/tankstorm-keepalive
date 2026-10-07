@@ -1073,6 +1073,17 @@ def user_by_token(token: str):
         conn.close()
 
 
+def user_region(user_id: int) -> int:
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(region,0) FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+        return int(row[0] or 0) if row else 0
+    finally:
+        conn.close()
+
+
 def note_game_region(user_id: int, region) -> None:
     """攻打号打开游戏页后，把链接里的区服记到这个登录账号。认不出就不改。"""
     user_id = int(user_id or 0)
