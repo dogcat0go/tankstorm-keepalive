@@ -57,7 +57,7 @@ function dropPriority(uid) {
         <label>城市
           <select v-model="attackCity" required>
             <option value="" disabled>选择城市</option>
-            <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+            <option v-for="c in cities.filter((c) => !/魔多|摩多/.test(c.name || ''))" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
           </select>
         </label>
         <label>UID<input v-model="attackUid" inputmode="numeric" placeholder="留空则打整座城" /></label>
@@ -112,7 +112,7 @@ function dropPriority(uid) {
         <label class="choice">移动到
           <select v-model="moveCity">
             <option value="" disabled>选择城市</option>
-            <option v-for="c in cities" :key="'mv' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+            <option v-for="c in cities.filter((c) => !/魔多|摩多/.test(c.name || ''))" :key="'mv' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
           </select>
         </label>
         <button type="button" @click="moveToCity().catch((e) => showErr(e.message))">移动</button>
