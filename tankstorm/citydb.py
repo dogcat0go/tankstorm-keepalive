@@ -368,6 +368,7 @@ def connect(readonly=False, timeout=15):
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN region INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
+            _fix_region_face(setup)
             _forget_page_names(setup)
             _ensure_attack_qq_map(setup)
             ocols = {r[1] for r in setup.execute("PRAGMA table_info(atk_order)")}
@@ -1187,26 +1188,49 @@ def user_region(user_id: int) -> int:
         conn.close()
 
 
+def _fix_region_face(conn) -> None:
+    """以前把链接里的 region 原样当成区号。玩家说的区号要加 1，只改一次。"""
+    conn.execute("BEGIN IMMEDIATE")
+    row = conn.execute(
+        "SELECT 1 FROM atk_signal WHERE name='region_face'").fetchone()
+    if row:
+        conn.commit()
+        return
+    conn.execute("UPDATE app_user SET region = region + 1 WHERE region > 0")
+    conn.execute(
+        "INSERT INTO atk_signal(name, value, at) VALUES ('region_face', '1', ?)",
+        (now_ts(),))
+    conn.commit()
+
+
 def note_game_region(user_id: int, region) -> None:
-    """攻打号打开游戏页后，把链接里的区服记到这个登录账号。认不出就不改。"""
+    """攻打号打开游戏页后，把区号记到这个登录账号。
+
+    链接里的 region 从 0 起算，玩家说的区号是它加 1。1 区就是链接里的 0。
+    认不出就不改。游戏连接仍用链接里的原值，不读这里。
+    """
     user_id = int(user_id or 0)
+    text = str(region if region is not None else "").strip()
+    if user_id <= 0 or not text:
+        return
     try:
-        region = int(str(region or "").strip())
+        raw = int(text)
     except (TypeError, ValueError):
         return
-    if user_id <= 0 or region <= 0:
+    if raw < 0:
         return
+    face = raw + 1
     conn = connect()
     try:
         cur = conn.execute(
             "UPDATE app_user SET region=? WHERE id=? AND IFNULL(region,0)!=?",
-            (region, user_id, region))
+            (face, user_id, face))
         conn.commit()
         changed = cur.rowcount
     finally:
         conn.close()
     if changed:
-        log.info("登录账号 %s 的区服是 %s", username_of(user_id), region)
+        log.info("登录账号 %s 的区服是 %s", username_of(user_id), face)
 
 
 def open_session(username: str) -> str:
