@@ -60,7 +60,7 @@ defineProps({
         自动锁敌
       </label>
       <button type="button" class="ghost" @click="advanced = !advanced">{{ advanced ? "收起" : "高级配置" }}</button>
-      <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。人在城里时，这一行的索敌可以再排一条。</span>
+      <span class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。<template v-if="me.auto_seek">人在城里时，这一行的索敌可以再排一条。</template></span>
     </p>
     <div v-if="me.remote_attack && advanced && (!me.region || me.region === 1)" class="advanced">
       <form class="lock-row" @submit.prevent="saveLockCards().catch((e) => showErr(e.message))">
@@ -103,7 +103,7 @@ defineProps({
           <span class="sub-status" :class="it.present ? 'on' : 'off'">{{ statusOf(it) }}<template v-if="it.present && it.page != null"> · 第{{ it.page }}页</template></span>
           <span class="sub-time muted">{{ whenOf(it) }}</span>
           <span class="sub-actions">
-            <button v-if="me.remote_attack && it.present" type="button" class="ghost" title="给这个人排一条自动索敌" :disabled="locking === lockKey(it)" @click="lockOne(it).catch((e) => showErr(e.message, 'watch'))">索敌</button>
+            <button v-if="me.auto_seek && it.present" type="button" class="ghost" title="给这个人排一条自动索敌" :disabled="locking === lockKey(it)" @click="lockOne(it).catch((e) => showErr(e.message, 'watch'))">索敌</button>
             <button type="button" class="ghost" @click="removeSub(it)">取消</button>
           </span>
         </div>

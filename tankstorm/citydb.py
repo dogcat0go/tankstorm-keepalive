@@ -894,6 +894,11 @@ def attack_tier(tier: str) -> bool:
     return (tier or "初级") in ("中级", "高级")
 
 
+def seek_tier(tier: str) -> bool:
+    """只有高级可以使用自动索敌。"""
+    return (tier or "初级") == "高级"
+
+
 def account_expired(expires_at: str) -> bool:
     """有效期是北京时间的日期，这一天仍然有效。空表示不限期。"""
     day = (expires_at or "").strip()[:10]
@@ -2359,8 +2364,8 @@ def queue_watch_lock(user_id: int, city_id: int, uid: str) -> str:
             (user_id, city_id, uid)).fetchone()
     finally:
         conn.close()
-    if not user or not attack_tier(user[0]):
-        return "自动索敌需要中级或高级订阅"
+    if not user or not seek_tier(user[0]):
+        return "自动索敌需要高级订阅"
     if account_expired(user[1]):
         return "账号已过期"
     if not sub:
