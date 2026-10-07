@@ -171,6 +171,13 @@ CREATE TABLE IF NOT EXISTS app_session (
     user_id    INTEGER NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_clock (
+    user_id    INTEGER PRIMARY KEY,
+    delta_ms   INTEGER NOT NULL,
+    mono_ms    INTEGER NOT NULL,
+    seen_ms    INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS watch_sub (
     user_id      INTEGER NOT NULL,
     city_id      INTEGER NOT NULL,
@@ -911,6 +918,97 @@ def account_expired(expires_at: str) -> bool:
     return day < beijing_day()
 
 
+def expiry_deadline_ms(expires_at: str):
+    """有效期截止的 Unix 毫秒。空表示不限期，返回 None。写错的日期返回 0。
+
+    库存的是北京时间日期，这一天仍然有效，到次日 0 点才算过。
+    """
+    day = (expires_at or "").strip()[:10]
+    if not day:
+        return None
+    try:
+        ended = datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)
+    except ValueError:
+        return 0
+    return int(ended.replace(tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000)
+
+
+def sync_clock(user_id: int, mono_ms) -> dict:
+    """用单调计时和库里的时间差，算出这个账号的会员还剩多少毫秒。
+
+    mono_ms 是本地软件单调递增计时器的读数，单位毫秒。
+    第一次把时间差记成当时的服务器时刻减去 mono_ms。
+    之后的真实时刻是 mono_ms 加上这份时间差。
+    计时比上次小，或停在原地，就改用已经对齐过的时刻和服务器时刻中更晚的一个，
+    再按这个时刻重写时间差。
+    有效期空着表示不限期，remaining_ms 为 None。
+    """
+    if isinstance(mono_ms, bool):
+        raise ValueError("单调计时要是非负整数毫秒")
+    if isinstance(mono_ms, float):
+        if not mono_ms.is_integer():
+            raise ValueError("单调计时要是非负整数毫秒")
+        mono_ms = int(mono_ms)
+    elif isinstance(mono_ms, str):
+        text = mono_ms.strip()
+        if not text.isdigit():
+            raise ValueError("单调计时要是非负整数毫秒")
+        mono_ms = int(text)
+    if not isinstance(mono_ms, int) or mono_ms < 0 or mono_ms > 10**15:
+        raise ValueError("单调计时要是非负整数毫秒")
+    user_id = int(user_id)
+    server_ms = int(time.time() * 1000)
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        user = conn.execute(
+            "SELECT IFNULL(expires_at,''), IFNULL(tier,'初级') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not user:
+            raise ValueError("账号不存在")
+        expires_at, tier = user[0] or "", user[1] or "初级"
+        row = conn.execute(
+            "SELECT delta_ms, mono_ms, seen_ms FROM app_clock WHERE user_id=?",
+            (user_id,)).fetchone()
+        if row is None:
+            seen = server_ms
+            delta = server_ms - mono_ms
+        elif mono_ms < int(row[1]):
+            seen = max(int(row[2]), server_ms)
+            delta = seen - mono_ms
+        else:
+            seen = max(mono_ms + int(row[0]), server_ms, int(row[2]))
+            delta = seen - mono_ms
+        conn.execute(
+            "INSERT OR REPLACE INTO app_clock(user_id, delta_ms, mono_ms, seen_ms, updated_at) "
+            "VALUES (?,?,?,?,?)",
+            (user_id, int(delta), int(mono_ms), int(seen), now_ts()))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    deadline = expiry_deadline_ms(expires_at)
+    if deadline is None:
+        remaining = None
+        expired = False
+    else:
+        remaining = deadline - seen
+        if remaining < 0:
+            remaining = 0
+        expired = remaining == 0
+    return {
+        "ok": True,
+        "tier": tier,
+        "expires_at": expires_at,
+        "unlimited": deadline is None,
+        "expired": expired,
+        "remaining_ms": remaining,
+        "delta_ms": int(delta),
+    }
+
+
 def beijing_ts(ts: str) -> str:
     """库存 UTC（末尾 Z）换成北京时间，给页面显示。"""
     if not ts:
@@ -1046,7 +1144,7 @@ def change_password(user_id: int, current, new, keep_token: str = "") -> str:
     return ""
 
 
-def user_by_token(token: str):
+def user_by_token(token: str, allow_expired: bool = False):
     if not token:
         return None
     conn = connect(readonly=True)
@@ -1060,7 +1158,7 @@ def user_by_token(token: str):
             "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0), IFNULL(u.region,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
-        if not row or account_expired(row[3]):
+        if not row or (account_expired(row[3]) and not allow_expired):
             return None
         return {"id": row[0], "username": row[1], "qq_target": row[2],
                 "expires_at": row[3], "tier": row[4], "admin": bool(row[5]),
