@@ -156,6 +156,7 @@ def _user_out(user: dict) -> dict:
         "clear_priority": plan["priority"],
         "modo_cards": int(user.get("modo_cards") or 0),
         "region": int(user.get("region") or 0),
+        "off_at": user.get("off_at") or "",
     }
 
 
@@ -513,6 +514,16 @@ def _handler(config: dict):
                         _json(self, 403, {"error": why})
                         return
                     _json(self, 200, {"ok": True, "paused": bool(data.get("on"))})
+                elif path == "/api/attack-off":
+                    why = citydb.set_shutdown_at(user["id"], data.get("at"))
+                    if why:
+                        raise ValueError(why)
+                    at = citydb.shutdown_at(user["id"])
+                    _json(self, 200, {
+                        "ok": True,
+                        "off_at": at,
+                        "due": citydb.shutdown_due(user["id"]),
+                    })
                 elif path == "/api/attack-hold":
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "挂机保活需要中级或高级订阅"})
@@ -799,6 +810,7 @@ def _wake_attack_orders(config) -> None:
     noted = set()
     while not gap.wait(5):
         try:
+            citydb.shelve_due_accounts()
             citydb.enqueue_due_daily_jobs()
             users = citydb.users_needing_attack()
         except Exception:

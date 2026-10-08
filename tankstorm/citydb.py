@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     daily_switch    TEXT,
     daily_at        TEXT NOT NULL DEFAULT '',
     daily_last      TEXT NOT NULL DEFAULT '',
+    off_at          TEXT NOT NULL DEFAULT '',
     region          INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
@@ -363,6 +364,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "daily_last" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN daily_last TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "off_at" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN off_at TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             if ucols and "region" not in ucols:
                 setup.execute(
@@ -1156,7 +1161,8 @@ def user_by_token(token: str, allow_expired: bool = False):
             "IFNULL(u.hold_min,0), IFNULL(u.hold_all,0), IFNULL(u.card_max,100), "
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
             "IFNULL(u.retreat_fail,0), "
-            "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0), IFNULL(u.region,0) "
+            "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0), IFNULL(u.region,0), "
+            "IFNULL(u.off_at,'') "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or (account_expired(row[3]) and not allow_expired):
@@ -1172,7 +1178,8 @@ def user_by_token(token: str, allow_expired: bool = False):
                 "retreat_fail": bool(row[13]),
                 "lock_cards": int(row[14] if row[14] is not None else 3),
                 "modo_cards": int(row[15] if row[15] is not None else 0),
-                "region": int(row[16] or 0)}
+                "region": int(row[16] or 0),
+                "off_at": str(row[17] or "").strip()}
     finally:
         conn.close()
 
@@ -1327,6 +1334,8 @@ def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
     user_id = int(user_id)
     uid = str(uid).strip()
     city_id = int(city_id)
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
     if not attack_in_keepalive(user_id):
         return "不在保活，下了订单游戏也登不进去"
     online = proc_online(user_id)
@@ -1413,6 +1422,8 @@ def add_modo_order(user_id: int, cards) -> str:
     if n < 0 or n > 999:
         return "恢复卡数量要是 0 到 999"
     user_id = int(user_id)
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
     if not attack_in_keepalive(user_id):
         return "不在保活，下了订单游戏也登不进去"
     online = proc_online(user_id)
@@ -1522,6 +1533,122 @@ def set_hold_all(user_id: int, on) -> str:
     return ""
 
 
+def _shutdown_text(raw) -> str:
+    """北京时间，精确到分钟。空字符串表示不关。"""
+    text = str(raw or "").strip().replace("T", " ")
+    if not text:
+        return ""
+    text = text[:16]
+    try:
+        datetime.strptime(text, "%Y-%m-%d %H:%M")
+    except ValueError:
+        raise ValueError("定时关闭写成 2026-10-08 18:00 这样，留空则不关") from None
+    return text
+
+
+def shutdown_at(user_id: int) -> str:
+    """这个登录账号的定时关闭。空字符串表示没配，到点也不会关。"""
+    user_id = int(user_id or 0)
+    if not user_id:
+        return ""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(off_at,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    return str(row[0] or "").strip() if row else ""
+
+
+def set_shutdown_at(user_id: int, raw) -> str:
+    """记下这个登录账号什么时候下线。空的表示取消。成功返回空字符串。"""
+    try:
+        at = _shutdown_text(raw)
+    except ValueError as exc:
+        return str(exc)
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET off_at=? WHERE id=?",
+            (at, int(user_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    return ""
+
+
+def shutdown_due(user_id=None) -> bool:
+    """这个账号配了定时关闭，而且北京时间已经到了。没配就是假。"""
+    if user_id is None:
+        user_id = attack_context_user()
+    at = shutdown_at(user_id)
+    if not at:
+        return False
+    return at <= beijing_now().strftime("%Y-%m-%d %H:%M")
+
+
+def executable_users(ids=None) -> list:
+    """还要执行任务的登录账号。定时关闭到点的不算。"""
+    if ids is None:
+        ids = attack_context_users()
+    return [int(i) for i in ids if not shutdown_due(int(i))]
+
+
+def shutdown_covers_context() -> bool:
+    """这条攻打线程上的登录账号全都到了定时关闭。没人绑着不算。"""
+    ids = attack_context_users()
+    return bool(ids) and not executable_users(ids)
+
+
+def shelve_shutdown_work(user_ids=None) -> None:
+    """到点的账号正在做的订单和日常放回排队，先不再做。"""
+    if user_ids is None:
+        ids = [uid for uid in attack_context_users() if shutdown_due(uid)]
+    else:
+        ids = [int(i) for i in user_ids if shutdown_due(int(i))]
+    if not ids:
+        return
+    slot = ",".join("?" * len(ids))
+    now = now_ts()
+    conn = connect()
+    try:
+        running = conn.execute(
+            "SELECT DISTINCT user_id FROM atk_order "
+            "WHERE user_id IN (" + slot + ") AND status='running' AND IFNULL(auto,0)=0",
+            tuple(ids)).fetchall()
+        conn.execute(
+            "UPDATE atk_order SET status='pending', reason='', updated_at=? "
+            "WHERE user_id IN (" + slot + ") AND status='running'",
+            (now, *ids))
+        conn.execute(
+            "UPDATE daily_job SET status='pending', updated_at=? "
+            "WHERE user_id IN (" + slot + ") AND status='running'",
+            (now, *ids))
+        conn.commit()
+    finally:
+        conn.close()
+    for (uid,) in running:
+        mark_attack_resume(int(uid))
+
+
+def shelve_due_accounts() -> None:
+    """主进程巡视：已经到点的账号，把还在做的任务放回排队。"""
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id, IFNULL(off_at,'') FROM app_user "
+            "WHERE IFNULL(off_at,'')!=''").fetchall()
+    finally:
+        conn.close()
+    now = beijing_now().strftime("%Y-%m-%d %H:%M")
+    due = [int(user_id) for user_id, at in rows if str(at or "") <= now]
+    if due:
+        shelve_shutdown_work(due)
+
+
 def _hold_owner_and_text(raw: str):
     """挂机值是「登录账号|时间」。旧数据没有账号，只还给当时的攻打进程。"""
     text = str(raw or "").strip()
@@ -1559,7 +1686,7 @@ def attack_hold_left(user_id=None):
         uid = attack_context_user()
     else:
         uid = int(user_id or 0)
-    if not uid:
+    if not uid or shutdown_due(uid):
         return None
     raw = _signal_value(_mark_name("hold", uid))
     if not raw:
@@ -1579,7 +1706,7 @@ def attack_hold_left(user_id=None):
 
 def attack_hold_minutes() -> int:
     """这条攻打线程挂机多久。同一个 QQ 上几个账号都设了，取最长的。"""
-    ids = attack_context_users()
+    ids = executable_users()
     if not ids:
         return 0
     slot = ",".join("?" * len(ids))
@@ -1604,7 +1731,7 @@ def attack_hold_always(user_id=None) -> bool:
     if user_id is None:
         return any(attack_hold_always(uid) for uid in attack_context_users())
     user_id = int(user_id or 0)
-    if not user_id:
+    if not user_id or shutdown_due(user_id):
         return False
     conn = connect(readonly=True)
     try:
@@ -1620,7 +1747,11 @@ def attack_hold_always(user_id=None) -> bool:
 
 
 def attack_hold_on(user_id=None) -> bool:
-    """还要挂着：这次保活没到点，或者开了全天候。"""
+    """还要挂着：这次保活没到点，或者开了全天候。定时关闭到点的账号不再挂。"""
+    if user_id is None and shutdown_covers_context():
+        return False
+    if user_id is not None and shutdown_due(user_id):
+        return False
     if (attack_hold_left(user_id) or 0) > 0:
         return True
     return attack_hold_always(user_id)
@@ -2493,7 +2624,8 @@ def lock_target_info(city_id, uid) -> dict:
 def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
     """给这个订阅排一条自动攻打。同一人还没打完就不再排。还没打完的最多两条。没挂在游戏上就不排。"""
     uid = str(uid or "").strip()
-    if not uid or not attack_in_keepalive(user_id) or online_attack_busy(user_id, city_id, uid):
+    if (not uid or shutdown_due(user_id) or not attack_in_keepalive(user_id)
+            or online_attack_busy(user_id, city_id, uid)):
         return False
     conn = connect()
     try:
@@ -3158,6 +3290,8 @@ def request_attack_move(user_id: int, city_id) -> str:
     label = city_name(cid)
     if not label:
         return "这座城不在目录里"
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
     if not attack_qq_of(user_id):
         return "还没绑定攻打 QQ"
     status = attack_status(user_id)
@@ -3178,7 +3312,7 @@ def request_attack_move(user_id: int, city_id) -> str:
 def attack_move_pending(user_id: int = 0) -> int:
     """这条攻打线程还没开始的移动目标。没有返回 0。"""
     user_id = int(user_id or attack_context_user() or 0)
-    if not user_id:
+    if not user_id or (shutdown_due(user_id) and shutdown_covers_context()):
         return 0
     raw = _signal_value(_mark_name("move", user_id)).strip()
     try:
@@ -3436,6 +3570,11 @@ def attack_status(user_id: int) -> dict:
     mismatch = pack({"online": False, "phase": "offline", "detail": QQ_MISMATCH,
                      "seen_at": beijing_ts(seen), "qr": False, "here": "",
                      "paused": True, "hold_left": None})
+    if shutdown_due(user_id):
+        return pack({"online": False, "phase": "offline", "detail": "已定时关闭",
+                     "seen_at": "", "qr": False, "here": "",
+                     "paused": False, "hold_left": None, "shutdown": True,
+                     "keepalive": False, "need_login": False})
     if not online:
         # 进程已经停了。暂停只对还在跑的进程有意义。QQ 对不上的暂停留着。
         if not blocked and attack_paused(user_id):
@@ -3776,7 +3915,7 @@ def users_with_running_orders() -> list:
 def manual_orders_running(user_id: int = 0) -> bool:
     """这个登录账号有没有还在打的手动订单。没指定时看这条线程的攻打 QQ。"""
     user_id = int(user_id or 0)
-    ids = [user_id] if user_id else attack_context_users()
+    ids = executable_users([user_id] if user_id else None)
     if not ids:
         return False
     slot = ",".join("?" * len(ids))
@@ -3839,6 +3978,7 @@ def users_needing_attack() -> list:
 
     只是排队、还没开打的订单不拉起。没挂在游戏上就去登录，游戏那边进不去。
     服务器停前正在打的那一单还标着执行中，起来要重新登录接着打。
+    定时关闭已经到点的账号不拉起。
     """
     ids = set(users_with_daily_jobs())
     ids.update(users_with_running_orders())
@@ -3858,12 +3998,12 @@ def users_needing_attack() -> list:
     for user_id, tier, expires in rows:
         if attack_tier(tier) and not account_expired(expires):
             ids.add(int(user_id))
-    return sorted(ids)
+    return sorted(uid for uid in ids if not shutdown_due(uid))
 
 
 def daily_job_open() -> bool:
-    """这个攻打 QQ 上还有没做完的日常。"""
-    ids = attack_context_users()
+    """这个攻打 QQ 上还有没做完的日常。定时关闭到点的账号不算。"""
+    ids = executable_users()
     if not ids:
         return False
     slot = ",".join("?" * len(ids))
@@ -4039,7 +4179,8 @@ def enqueue_due_daily_jobs() -> list:
         for user_id, name, at, last, expires, qq, switch_raw in rows:
             done_day, sep, done_at = str(last or "").partition("|")
             if ((done_day == day and (not sep or done_at == at))
-                    or clock < at or account_expired(expires)):
+                    or clock < at or account_expired(expires)
+                    or shutdown_due(user_id)):
                 continue
             if not str(qq or "").strip():
                 continue
@@ -4134,6 +4275,8 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
     kind = str(kind or "").strip()
     if kind not in DAILY_KIND_LABEL:
         return "没有这项日常"
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
     if not attack_qq_of(user_id):
         return "还没绑定攻打 QQ"
     params = params if isinstance(params, dict) else {}
@@ -4174,8 +4317,8 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
 
 
 def claim_daily_job():
-    """领这个攻打 QQ 上最早的一条日常。没有就返回 None。"""
-    ids = attack_context_users()
+    """领这个攻打 QQ 上最早的一条日常。没有就返回 None。到点关闭的账号不领。"""
+    ids = executable_users()
     if not ids:
         return None
     slot = ",".join("?" * len(ids))
@@ -4333,9 +4476,12 @@ def list_daily_jobs(user_id: int, limit: int = 2) -> list:
 
 def attack_order_open() -> bool:
     """还有没打完的订单。攻打进程看这个 QQ 上的登录账号。网页没绑定时看全部，用来决定要不要拉起。"""
-    ids = attack_context_users()
+    raw = attack_context_users()
+    ids = executable_users(raw)
     conn = connect(readonly=True)
     try:
+        if raw and not ids:
+            return False
         if ids:
             slot = ",".join("?" * len(ids))
             row = conn.execute(
@@ -4425,7 +4571,7 @@ def claim_attack_order(city_id=None, auto_only=False):
 
     city_id 有值时只领这座城的。auto_only 只领自动索敌，不领摩多。
     """
-    ids = attack_context_users()
+    ids = executable_users()
     if not ids:
         return None
     try:
@@ -4643,7 +4789,7 @@ def note_blocked_reason(order_id: int, reason: str) -> None:
 
 def next_blocked_order():
     """挂机时要盯的那一单。后提交的优先。不改状态。同一个攻打 QQ 上的都看。"""
-    ids = attack_context_users()
+    ids = executable_users()
     if not ids:
         return None
     slot = ",".join("?" * len(ids))
@@ -4676,7 +4822,7 @@ def take_blocked_order(order_id: int):
             "IFNULL(kind,''), user_id "
             "FROM atk_order WHERE id=? AND status='blocked'",
             (int(order_id),)).fetchone()
-        if not row:
+        if not row or shutdown_due(int(row[7])):
             conn.commit()
             return None
         cur = conn.execute(
@@ -4961,7 +5107,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                     (now, 0 if now == 0 else sent, user_id, city_id, uid))
             if account_expired(expires_at):
                 continue
-            armed = bool(auto_lock) and high_tier(tier or "")
+            armed = bool(auto_lock) and high_tier(tier or "") and not shutdown_due(user_id)
             if now == 1 and just:
                 changes.append({
                     "user_id": user_id, "city_id": city_id, "city_name": cname,

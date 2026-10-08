@@ -41,6 +41,8 @@ const holdMin = ref("0");
 const holdAll = ref(false);
 const holdAllBusy = ref(false);
 const holdNote = ref("");
+const offAt = ref("");
+const offNote = ref("");
 const cardMax = ref("100");
 const retreatMode = ref("hops");
 const retreatHops = ref("3");
@@ -240,6 +242,7 @@ function reloadQr() {
 }
 
 function pushLoginVisible(p) {
+  if (p && p.shutdown) return false;
   if (p && p.need_login) return true;
   if (p && p.online && !p.keepalive && p.phase !== "login") return true;
   return !(p && p.online && p.phase !== "login");
@@ -247,6 +250,7 @@ function pushLoginVisible(p) {
 
 function procText(p) {
   if (!p) return "没在跑";
+  if (p.shutdown) return p.detail || "已定时关闭";
   if (!p.online) return p.paused && p.detail ? p.detail : "没在跑";
   if (p.paused && p.phase !== "login") return p.detail || "已暂停";
   return p.detail || "空闲，等订单";
@@ -323,6 +327,8 @@ function takeUser(user) {
   autoLock.value = !!user.auto_lock;
   holdMin.value = String(user.hold_min ?? 0);
   holdAll.value = !!user.hold_all;
+  offAt.value = user.off_at ? String(user.off_at).replace(" ", "T") : "";
+  offNote.value = "";
   cardMax.value = String(user.card_max ?? 100);
   const picked = user.retreat_mode;
   retreatMode.value = picked === "off" || picked === "city" || picked === "hops" ? picked : "hops";
@@ -485,6 +491,16 @@ async function saveHold() {
   holdNote.value = "已保存";
 }
 
+async function saveOffAt() {
+  showErr("", "bar");
+  offNote.value = "";
+  const data = await api("/api/attack-off", { at: offAt.value });
+  offAt.value = data.off_at ? String(data.off_at).replace(" ", "T") : "";
+  if (me.value) me.value.off_at = data.off_at || "";
+  offNote.value = data.due ? "已到点，账号下线" : (data.off_at ? "到点后下线" : "已取消");
+  await refreshAttacks();
+}
+
 async function saveHoldAll(on) {
   showErr("", "hold");
   holdNote.value = "";
@@ -604,6 +620,7 @@ function attackLoginError(login) {
   if (login === "no_account") return "服务器还没配置攻打号，二维码发不出去";
   if (login === "taken") return "这个攻打 QQ 已经绑定别的登录账号，不能接着用";
   if (login === "unbound") return "这个登录账号还没绑定攻打号";
+  if (login === "off") return "已定时关闭，不再执行任务";
   return "";
 }
 
@@ -671,6 +688,8 @@ async function logout() {
   dailyAtNote.value = "";
   dailyAtReady = false;
   holdNote.value = "";
+  offAt.value = "";
+  offNote.value = "";
   dailyNote.value = "";
   lockHint.value = "";
 }
@@ -796,6 +815,9 @@ onUnmounted(() => {
         :proc-text="procText"
         :push-login="pushLogin"
         :set-attack-pause="setAttackPause"
+        v-model:off-at="offAt"
+        :save-off-at="saveOffAt"
+        :off-note="offNote"
         :reload-qr="reloadQr"
         :show-err="showErr"
       />

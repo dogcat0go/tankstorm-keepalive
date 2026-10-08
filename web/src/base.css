@@ -43,6 +43,9 @@ form.stack { display: grid; max-width: 520px; }
 form.scan-form { max-width: none; }
 .wide { overflow-x: auto; }
 .proc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.attack-bar form.off-set { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
+.attack-bar form.off-set .muted { margin: 0; }
+input.when { width: 12.5em; }
 .here-row { margin-top: 8px; }
 .here-row select { min-width: 8em; }
 .storms { margin-top: 8px; }

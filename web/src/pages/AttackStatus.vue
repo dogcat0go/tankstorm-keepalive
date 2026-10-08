@@ -1,4 +1,6 @@
 <script setup>
+const offAt = defineModel("offAt", { type: String, required: true });
+
 defineProps({
   proc: { type: Object, default: null },
   qrSrc: { type: String, default: "" },
@@ -9,6 +11,8 @@ defineProps({
   procText: { type: Function, required: true },
   pushLogin: { type: Function, required: true },
   setAttackPause: { type: Function, required: true },
+  saveOffAt: { type: Function, required: true },
+  offNote: { type: String, default: "" },
   reloadQr: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
@@ -34,11 +38,18 @@ defineProps({
     <p v-if="pushLoginVisible(proc)">
       <button type="button" class="login" @click="pushLogin().catch((e) => showErr(e.message, 'bar'))">登录</button>
     </p>
-    <p class="proc">
+    <div class="proc">
       <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
       <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login' && proc.keepalive" type="button" class="ghost" @click="setAttackPause(false).catch((e) => showErr(e.message, 'bar'))">继续</button>
       <button v-else-if="proc && proc.online && proc.keepalive" type="button" class="ghost" @click="setAttackPause(true).catch((e) => showErr(e.message, 'bar'))">暂停</button>
-    </p>
+      <form class="off-set" @submit.prevent="saveOffAt().catch((e) => showErr(e.message, 'bar'))">
+        <label class="choice">定时关闭
+          <input v-model="offAt" type="datetime-local" class="when" step="60" />
+        </label>
+        <button type="submit">保存</button>
+        <span class="muted">{{ offNote || "北京时间，留空不关" }}</span>
+      </form>
+    </div>
     <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
     <p v-if="qrSrc && !(proc && proc.qq)" class="muted bind-foot">扫上之后，页面上的「还没绑定」会变成这个 QQ 号。</p>
     <p v-if="err && errAt === 'bar'" class="err">{{ err }}</p>

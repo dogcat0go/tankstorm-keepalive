@@ -148,7 +148,7 @@ class Stopped(BaseException):
 
 def raise_if_stopped() -> None:
     from . import citydb
-    if citydb.daily_job_stopped():
+    if citydb.shutdown_due() or citydb.daily_job_stopped():
         raise Stopped()
 
 
