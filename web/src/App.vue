@@ -192,14 +192,20 @@ function pickTab(key) {
 }
 
 function openProfile() {
-  tab.value = "profile";
+  tab.value = tab.value === "profile" && !toolsOn.value ? "attack" : "profile";
 }
 
 function openQq() {
-  tab.value = "qq";
+  tab.value = tab.value === "qq" && !toolsOn.value ? "attack" : "qq";
 }
 
 const sideOn = computed(() => tab.value === "profile" || tab.value === "qq");
+const toolsOn = computed(() => {
+  const p = proc.value;
+  if (!p || !p.online || p.need_login || p.phase === "login") return false;
+  if (!p.keepalive && String(p.detail || "").startsWith("登录")) return false;
+  return true;
+});
 
 async function refreshAttacks() {
   if (!me.value) {
@@ -793,7 +799,7 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
-      <el-menu class="page-nav" mode="horizontal" :ellipsis="false" :default-active="sideOn ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
+      <el-menu v-if="toolsOn" class="page-nav" mode="horizontal" :ellipsis="false" :default-active="sideOn ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item index="watch">监控敌人</el-menu-item>
@@ -807,7 +813,7 @@ onUnmounted(() => {
         :show-err="showErr"
       />
       <DailyPage
-        v-show="tab === 'daily'"
+        v-show="toolsOn && tab === 'daily'"
         v-model:daily-at="dailyAt"
         v-model:pve-stages="pveStages"
         v-model:fund-building="fundBuilding"
@@ -841,7 +847,7 @@ onUnmounted(() => {
         :show-err="showErr"
       />
       <WatchPage
-        v-show="tab === 'watch'"
+        v-show="toolsOn && tab === 'watch'"
         v-model:city-id="cityId"
         v-model:uid="uid"
         v-model:lock-cards="lockCards"
@@ -877,7 +883,7 @@ onUnmounted(() => {
         :show-err="showErr"
       />
       <AttackPage
-        v-show="tab === 'attack'"
+        v-show="toolsOn && tab === 'attack'"
         v-model:attack-city="attackCity"
         v-model:attack-uid="attackUid"
         v-model:card-max="cardMax"
