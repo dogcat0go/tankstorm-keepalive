@@ -2415,9 +2415,12 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
     user_id = int(user_id or 0)
     if not user_id:
         return "no_account"
-    if citydb.shutdown_due(user_id):
-        log.info("登录账号 %s 已定时关闭，不再上线", citydb.username_of(user_id))
+    if citydb.shutdown_due(user_id) and not claim:
+        log.info("登录账号 %s 已定时关闭，不再自动上线", citydb.username_of(user_id))
         return "off"
+    if claim and citydb.shutdown_due(user_id):
+        citydb.set_shutdown_at(user_id, "")
+        log.info("登录账号 %s 点了登录，定时关闭取消", citydb.username_of(user_id))
     if claim and not citydb.attack_qq_of(user_id):
         log.info("登录账号 %s 还没有攻打 QQ，二维码直接显示在网页上",
                  citydb.username_of(user_id))
