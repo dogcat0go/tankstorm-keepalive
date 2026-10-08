@@ -257,7 +257,7 @@ async function enter() {
   showErr("");
   const path = mode.value === "register" && registerOpen.value ? "/api/register" : "/api/login";
   await api(path, {
-    username: username.value,
+    username: username.value.trim(),
     password: password.value,
     invite: invite.value,
   });
@@ -749,7 +749,7 @@ onUnmounted(() => {
       {{ registerOpen ? "注册一个账号，" : "使用管理员开通的账号登录，" }}订阅某座城里有没有某个用户 UID。
     </p>
     <form v-if="!me" @submit.prevent="enter().catch((e) => showErr(e.message))">
-      <label>用户名<input v-model="username" autocomplete="username" required /></label>
+      <label>用户名<input v-model.trim="username" autocomplete="username" required /></label>
       <label>密码<input v-model="password" type="password" autocomplete="current-password" required /></label>
       <label v-if="mode === 'register'">注册口令<input v-model="invite" autocomplete="off" /></label>
       <button type="submit">{{ mode === "register" && registerOpen ? "注册" : "登录" }}</button>
