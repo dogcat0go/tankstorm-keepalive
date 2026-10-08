@@ -3091,6 +3091,12 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
     _upsert_signal(name, json.dumps(data, ensure_ascii=False))
 
 
+def attack_here_id() -> int:
+    """这个攻打 QQ 上次记下的所在城市。没读到是 0。"""
+    parsed, _seen, _online = _read_proc()
+    return _kept_here(parsed)
+
+
 def note_attack_here(city_id, power=None, morale=None) -> None:
     """记下这个攻打 QQ 当前所在城市，以及面板上的体力和士气。
 
@@ -4414,11 +4420,18 @@ def resume_stranded_orders() -> None:
         requeue_blocked_orders()
 
 
-def claim_attack_order():
-    """领这个攻打 QQ 上最新的一条排队订单。后提交的优先。没绑上的账号不领。"""
+def claim_attack_order(city_id=None, auto_only=False):
+    """领这个攻打 QQ 上最新的一条排队订单。后提交的优先。没绑上的账号不领。
+
+    city_id 有值时只领这座城的。auto_only 只领自动索敌，不领摩多。
+    """
     ids = attack_context_users()
     if not ids:
         return None
+    try:
+        want_city = int(city_id or 0)
+    except (TypeError, ValueError):
+        want_city = 0
     slot = ",".join("?" * len(ids))
     conn = connect()
     try:
@@ -4438,6 +4451,14 @@ def claim_attack_order():
             "WHERE status='running' AND user_id IN (" + slot + ") "
             "AND updated_at<? AND IFNULL(auto,0)=0",
             (now, *ids, cutoff))
+        extra = ""
+        args = list(ids)
+        if want_city > 0:
+            extra += "AND o.city_id=? "
+            args.append(want_city)
+        if auto_only:
+            extra += "AND IFNULL(o.auto,0)=1 AND IFNULL(o.kind,'')!=? "
+            args.append("modo")
         while True:
             row = conn.execute(
                 "SELECT o.id, o.city_id, IFNULL(o.uid,''), IFNULL(u.tier,'初级'), "
@@ -4445,8 +4466,9 @@ def claim_attack_order():
                 "o.user_id "
                 "FROM atk_order o JOIN app_user u ON u.id=o.user_id "
                 "WHERE o.status='pending' AND o.user_id IN (" + slot + ") "
+                + extra +
                 "ORDER BY o.id DESC LIMIT 1",
-                tuple(ids)).fetchone()
+                tuple(args)).fetchone()
             if not row:
                 conn.commit()
                 return None
@@ -4684,6 +4706,36 @@ def fail_blocked_orders() -> None:
             "UPDATE atk_order SET status='failed', updated_at=? "
             "WHERE user_id IN (" + slot + ") AND status='blocked'",
             (now_ts(), *ids))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def append_order_reason(order_id: int, extra: str) -> None:
+    """把后退说明接到已经结束的订单上。连着打完再退时，说明写在最后一单。"""
+    extra = " ".join(str(extra or "").split()).strip()
+    if not extra:
+        return
+    try:
+        order_id = int(order_id or 0)
+    except (TypeError, ValueError):
+        return
+    if order_id <= 0:
+        return
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(reason,'') FROM atk_order WHERE id=?",
+            (order_id,)).fetchone()
+        if not row:
+            return
+        prev = str(row[0] or "").strip()
+        if extra in prev:
+            return
+        text = extra if not prev else f"{prev}。{extra}"
+        conn.execute(
+            "UPDATE atk_order SET reason=?, updated_at=? WHERE id=?",
+            (text, now_ts(), order_id))
         conn.commit()
     finally:
         conn.close()
