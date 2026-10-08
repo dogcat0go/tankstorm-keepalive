@@ -20,6 +20,7 @@ from .paths import user_path                      # noqa: E402
 LOG_DIR = user_path("logs")
 
 _log_listener = None
+_login_logger = None
 
 
 def _force_utf8_console() -> None:
@@ -55,6 +56,25 @@ def _stop_log_listener() -> None:
 
 _force_utf8_console()
 atexit.register(_stop_log_listener)
+
+
+def get_login_logger() -> logging.Logger:
+    """登录过程单独一份日志，按天切分。每行前缀是登录账号名称和攻打 QQ。"""
+    global _login_logger
+    if _login_logger is not None:
+        return _login_logger
+    logger = logging.getLogger("tankstorm.login")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    os.makedirs(LOG_DIR, exist_ok=True)
+    path = os.path.join(LOG_DIR, "login.log")
+    fh = logging.handlers.TimedRotatingFileHandler(
+        path, when="midnight", backupCount=14, encoding="utf-8")
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
+    logger.addHandler(fh)
+    _login_logger = logger
+    return logger
 
 
 def get_logger(name: str = "tankstorm") -> logging.Logger:

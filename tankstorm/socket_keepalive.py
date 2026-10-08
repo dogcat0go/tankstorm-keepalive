@@ -2298,11 +2298,14 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             log.info("登录账号 %s 有订单还在打，重新登录接着做", who)
         citydb.resume_stranded_orders()
         citydb.resume_daily_jobs()
-        if qq.is_valid():
+        valid = qq.is_valid()
+        if valid:
             note_attack_qq(qq)
+            qq.note_login("攻打线程启动，票据仍有效。%s。%s",
+                          _login_context(), qq.ticket_brief())
         scope_blocked = any(
             citydb.attack_qq_blocked(uid) for uid in citydb.attack_context_users())
-        if scope_blocked or not qq.is_valid():
+        if scope_blocked or not valid:
             citydb.set_attack_status("login")
             if on_page:
                 citydb.set_page_qr(True, user_id)
@@ -2479,8 +2482,11 @@ def _connect_and(qq, config: dict, work) -> int:
             citydb.set_attack_status("login")
 
     if not qq.is_valid() and not relogin_with_push(qq, config):
+        qq.note_login("游戏连接前登录没完成。%s。%s",
+                      _login_context(), qq.ticket_brief())
         return 1
     if not note_attack_qq(qq):
+        qq.note_login("登录后的 QQ 和绑定对不上，不连接游戏。%s", qq.ticket_brief())
         return 1
     if qq.shares_blocked_uin():
         return 1
@@ -2491,6 +2497,7 @@ def _connect_and(qq, config: dict, work) -> int:
     port = int(ctx.get("port") or spec.get("default_port", 8001))
     if not ctx.get("openkey"):
         log.error("未取得 openkey，登录态可能失效")
+        qq.note_login("未取得 openkey，游戏页没签发新票据。%s", qq.ticket_brief())
         return 1
 
     rec = Recorder(config, on_alert=None)
@@ -2500,6 +2507,7 @@ def _connect_and(qq, config: dict, work) -> int:
         sock = _connect(host, port)
     except OSError as exc:
         log.error("连接失败: %s", exc)
+        qq.note_login("游戏服连接失败：%s。%s", exc, qq.ticket_brief())
         return 1
 
     heart = None
@@ -2516,6 +2524,7 @@ def _connect_and(qq, config: dict, work) -> int:
             if delay:
                 time.sleep(delay)
         log.info("已登录，uid=%s sid=%s", ctx.get("uid"), ctx.get("sid"))
+        qq.note_login("游戏连接开始。%s。%s", _login_context(), qq.ticket_brief())
 
         interval = float(config.get("保持活跃", {}).get("心跳间隔秒")
                          or protocol.heartbeat_interval(spec))
@@ -2548,6 +2557,10 @@ def _connect_and(qq, config: dict, work) -> int:
         from . import citydb
         citydb.clear_attack_link()
         citydb.flush_atk_fail()
+        try:
+            qq.note_login("游戏连接断开。%s。%s", _login_context(), qq.ticket_brief())
+        except Exception:
+            log.debug("登录日志没写上连接断开", exc_info=True)
 
 
 def run_fund_once(qq, config: dict, building_id: int, times: int) -> int:
@@ -2651,18 +2664,48 @@ def note_attack_qq(qq) -> bool:
     return ok
 
 
+def _login_context() -> str:
+    """重新登录时带上挂机配置，用来区分是计时到了，还是票据没了。"""
+    from . import citydb
+
+    ids = citydb.attack_context_users()
+    if not ids:
+        return "挂机：没有登录账号上下文"
+    bits = []
+    for uid in ids:
+        name = citydb.username_of(uid) or str(uid)
+        flag = "开" if citydb.attack_hold_always(uid) else "关"
+        bits.append(f"{name}全天候{flag}")
+    left = citydb.attack_hold_left()
+    minutes = citydb.attack_hold_minutes()
+    if left is None:
+        left_text = "这次没有挂机计时"
+    else:
+        left_text = f"这次还剩{left}秒"
+    return (f"登录账号{'、'.join(bits)}，配置挂机最长{minutes}分钟，{left_text}")
+
+
 def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
     """需要重新扫码时：生成二维码并通过 PushPlus 推送给用户，等待扫码。
     二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。
     force_qr 为真时不再用旧票据续上，必须重新扫。攻打 QQ 对不上时用这个。"""
     # 先向本机 NapCat 要当前票据。没有再试长效凭据静默续期。
+    qq.note_login("进入重新登录。强制扫码=%s。%s。%s",
+                  "是" if force_qr else "否", _login_context(), qq.ticket_brief())
     if not force_qr and qq.adopt_napcat(config):
+        qq.note_login("NapCat 已接上，不再扫码。%s", qq.ticket_brief())
         return True
     if not force_qr and qq.silent_renew():
+        qq.note_login("静默续期已接上。%s", qq.ticket_brief())
         if note_attack_qq(qq):
             log.info("已用长效凭据静默续期，无需人工介入")
             return True
         log.error("续上的 QQ 不是这个账号绑定的，改走扫码")
+        qq.note_login("续上的 QQ 不是绑定的号，改为扫码")
+    elif force_qr:
+        qq.note_login("这一次不续旧票据，直接扫码。%s", qq.ticket_brief())
+    else:
+        qq.note_login("续期没有接上，改为扫码。%s", qq.ticket_brief())
 
     # 推送登录：直接往手机QQ推确认，免去扫码。
     # 这解决了"二维码图存本地、同一台手机相册扫码"被腾讯拒（限制本地扫码登录）的问题。
@@ -2714,13 +2757,17 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
             # 推送其实失败了日志却显示"已推送"，很误导。
             log.info("登录态失效，正在%s（第 %d 次尝试）",
                      f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码", attempt)
+            qq.note_login("扫码第 %d 次。%s", attempt, _login_context())
             if qq.qr_login(on_qr=on_qr, push_uin=push_uin):
+                qq.note_login("重新登录成功。%s。%s", _login_context(), qq.ticket_brief())
                 if not note_attack_qq(qq):
                     log.error("这次登录的 QQ 不是绑定的那个，请改用原来的号再扫")
+                    qq.note_login("扫上的 QQ 不是绑定的号，继续等下一次扫码")
                     continue
                 if not getattr(qq, "attack_account", False):
                     notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
                 return True
+            qq.note_login("这一轮扫码未完成，15 秒后重试。%s", qq.ticket_brief())
             log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
             time.sleep(15)
     finally:
