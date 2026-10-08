@@ -846,6 +846,8 @@ def _wake_attack_orders(config) -> None:
 
 
 def serve(host="0.0.0.0", port=8765, config=None) -> int:
+    from .socket_keepalive import install_login_refresh
+    install_login_refresh()
     httpd = _server(host, port, config)
     _announce(host, port, config or {})
     threading.Thread(

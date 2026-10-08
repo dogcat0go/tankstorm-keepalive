@@ -69,6 +69,7 @@ import re
 import secrets
 import shutil
 import struct
+import threading
 import time
 import zlib
 
@@ -524,6 +525,10 @@ class QQSession:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = UA
         self._qr_poll = None
+        self._login_busy = False
+        # 不用可重入锁。SIGTERM 处理函数和正在进行的请求在同一条线程上，
+        # 重入会把同一次会话的两个请求叠在一起。
+        self._http_lock = threading.Lock()
         self._load_cookies()
 
     # ---------- cookie 持久化 ----------
@@ -765,7 +770,13 @@ class QQSession:
                             self.ticket_brief())
             return False
         self.note_login("开始静默续期。%s", self.ticket_brief())
+        self._login_busy = True
+        try:
+            return self._silent_renew_once()
+        finally:
+            self._login_busy = False
 
+    def _silent_renew_once(self) -> bool:
         before = {c.name: c.value for c in self.session.cookies}
         try:
             # 1) xlogin 建立 login_sig —— 快速登录的入口，会带出 pt_login_sig
@@ -809,9 +820,8 @@ class QQSession:
                 log.info("静默续期：pt_login 没有返回 ptuiCB（%s）—— "
                          "腾讯这个接口已变更，不是凭据问题。返回开头：%s",
                          "是一张 HTML 页面" if is_html else "格式不认识", head)
-                self.note_login("静默续期失败：pt_login 没有返回票据（%s）",
+                self.note_login("静默续期：pt_login 没有返回票据（%s），接着看游戏页认不认现有的票",
                                 "是一张 HTML 页面" if is_html else "格式不认识")
-                return False
         except requests.RequestException as exc:
             log.info("静默续期请求异常: %s", exc)
             self.note_login("静默续期请求异常：%s", exc)
@@ -835,29 +845,63 @@ class QQSession:
         self.note_login("静默续期未生效，需要重新扫码。%s", self.ticket_brief())
         return False
 
+    def touch_login(self, *, block: bool = True) -> bool:
+        """再访问一次游戏页，把网页票据的空闲计时往后推，并写回 cookie。
+
+        游戏 socket 活着时不会再打开这个页面。skey 没有过期时间，闲置一段时间后
+        腾讯仍会不认。版本更新把进程停掉再拉起，一检查就是 302，只能扫码。
+        block=False 用于进程退出：锁被占用就跳过，避免和正在进行的请求死等。
+        """
+        if getattr(self, "_qr_poll", None) or getattr(self, "_login_busy", False):
+            return False
+        if not self._http_lock.acquire(blocking=block):
+            return False
+        try:
+            if getattr(self, "_qr_poll", None) or getattr(self, "_login_busy", False):
+                return False
+            if not self._cookie("skey"):
+                self.note_login("网页票据保活跳过：没有 skey。%s", self.ticket_brief())
+                return False
+            try:
+                r = self.session.get(GAME_URL, allow_redirects=False, timeout=15)
+            except requests.RequestException as exc:
+                self.note_login("网页票据保活请求失败：%s", exc)
+                return False
+            if r.status_code == 200 and "ptlogin" not in (r.text or "")[:2000]:
+                self._save_cookies()
+                self.note_login("网页票据已保活。%s", self.ticket_brief())
+                return True
+            loc = r.headers.get("Location", "")
+            self.note_login("网页票据保活时游戏页已不认 status=%s 跳去登录=%s。%s",
+                            r.status_code, "ptlogin" in loc.lower(), self.ticket_brief())
+            return False
+        finally:
+            self._http_lock.release()
+
     def is_valid(self) -> bool:
         """访问游戏页：已登录返回 200 页面，未登录会 302 去 ptlogin。"""
-        try:
-            has_skey = bool(self.session.cookies.get("skey"))
-        except Exception as exc:
-            self.note_login("读取 skey 失败，当作未登录：%s", exc)
+        with self._http_lock:
+            try:
+                has_skey = bool(self.session.cookies.get("skey"))
+            except Exception as exc:
+                self.note_login("读取 skey 失败，当作未登录：%s", exc)
+                return False
+            if not has_skey:
+                self.note_login("没有 skey，登录态无效。%s", self.ticket_brief())
+                return False
+            try:
+                r = self.session.get(GAME_URL, allow_redirects=False, timeout=15)
+            except requests.RequestException as exc:
+                log.warning("登录态校验请求失败: %s", exc)
+                self.note_login("登录态校验请求失败：%s。%s", exc, self.ticket_brief())
+                return False
+            if r.status_code == 200 and "ptlogin" not in r.text[:2000]:
+                return True
+            loc = r.headers.get("Location", "")
+            log.info("登录态已失效 (status=%s, location=%s...)", r.status_code, loc[:80])
+            self.note_login("游戏页不认这张票 status=%s 跳去登录=%s。%s",
+                            r.status_code, "ptlogin" in loc.lower(), self.ticket_brief())
             return False
-        if not has_skey:
-            self.note_login("没有 skey，登录态无效。%s", self.ticket_brief())
-            return False
-        try:
-            r = self.session.get(GAME_URL, allow_redirects=False, timeout=15)
-        except requests.RequestException as exc:
-            log.warning("登录态校验请求失败: %s", exc)
-            self.note_login("登录态校验请求失败：%s。%s", exc, self.ticket_brief())
-            return False
-        if r.status_code == 200 and "ptlogin" not in r.text[:2000]:
-            return True
-        loc = r.headers.get("Location", "")
-        log.info("登录态已失效 (status=%s, location=%s...)", r.status_code, loc[:80])
-        self.note_login("游戏页不认这张票 status=%s 跳去登录=%s。%s",
-                        r.status_code, "ptlogin" in loc.lower(), self.ticket_brief())
-        return False
 
     # ---------- 扫码 / 推送登录 ----------
 
