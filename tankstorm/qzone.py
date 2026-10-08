@@ -88,6 +88,14 @@ def extract_context(outer_html: str, iframe_html: str) -> dict:
 
 def get_game_context(qq) -> dict:
     """在线版：真正发请求，返回 socket 登录所需的完整 ctx。qq 为已登录 QQSession。"""
+    lock = getattr(qq, "_http_lock", None)
+    if lock is None:
+        return _fetch_game_context(qq)
+    with lock:
+        return _fetch_game_context(qq)
+
+
+def _fetch_game_context(qq) -> dict:
     s = qq.session
     ctx = {"uin": qq.uin, "g_tk": str(qq.g_tk), "skey": s.cookies.get("skey") or ""}
 
