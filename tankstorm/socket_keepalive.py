@@ -1034,6 +1034,11 @@ def _order_result(job, out) -> tuple:
     if reason == "已手动关停":
         return "finish", "ended", reason
     if auto:
+        if (out or {}).get("遣返") or _defeated(reason):
+            why = reason or "被别人打败，已回到首都"
+            if bool((out or {}).get("击退")) or attacked:
+                return "finish", "done", why
+            return "finish", "failed", why
         if bool((out or {}).get("击退")) or (not reason and attacked):
             return "finish", "done", reason
         return "finish", "failed", reason or "没打完，等下一次索敌"
@@ -1377,7 +1382,15 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
             here = int(here or result.get("here") or 0)
         except (TypeError, ValueError):
             here = int(result.get("here") or 0)
-        incomplete = (not any_done) or any_failed
+        if country:
+            try:
+                _power, loc, _times, panel = country_war._panel(sock, rec, country)
+            except Exception:
+                loc, panel = 0, None
+            if (panel is not None and isinstance(loc, int)
+                    and not isinstance(loc, bool) and loc > 0):
+                citydb.note_attack_here(loc)
+                here = loc
         at_home = bool(here and country and country_war._is_capital(here, country))
         want = ((job.get("auto") or clear_back) and not parked and not _lock_no_retreat(
                     str(result.get("why") or why or ""),
@@ -1386,10 +1399,14 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
         if want and chained and any_failed:
             log.info("同城索敌还有没打完的订单，不后退")
             want = False
-        if want and incomplete and at_home:
+        if want and at_home:
             name = citydb.city_name(here) or ""
             where = f"{here} {name}".strip() if name else str(here)
-            log.info("没打完或打失败，人已在所在国首都 %s，不再后退", where)
+            log.info("人已在所在国首都 %s，不再后退", where)
+            note = f"人已经在所在国首都 {where}，不再后退"
+            why = _merge_reason(why, note)
+            if finished:
+                citydb.append_order_reason(last_id, note)
             want = False
         back_note = ""
         if want:

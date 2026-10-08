@@ -2368,10 +2368,10 @@ def retreat_toward(rec, sock, config, name="马奇诺", hops=3, beat=None,
         return out
     if mode == "city":
         moved = walk_to(rec, sock, config, target, beat=beat,
-                        march_only=True, enter_target=True)
+                        march_only=True, enter_target=True, leave_capital=False)
     else:
         moved = walk_to(rec, sock, config, target, beat=beat,
-                        march_only=True, max_steps=hops)
+                        march_only=True, max_steps=hops, leave_capital=False)
     landed = int(moved.get("走到") or 0)
     steps = int(moved.get("步数") or 0)
     why = str(moved.get("停止原因") or "").strip()
@@ -2402,7 +2402,7 @@ def retreat_toward(rec, sock, config, name="马奇诺", hops=3, beat=None,
 def walk_to(rec, sock, config, target, sweep=False, beat=None,
              avoid=None, replanned=False, uid="", hold_if_blocked=False,
              tally=None, avoid_why=None, march_only=False, max_steps=None,
-             enter_target=False, clear_plan=None) -> dict:
+             enter_target=False, clear_plan=None, leave_capital=True) -> dict:
     """先按最短路径走。敌城打不过就避开它重算一次；再受阻就停。
 
     本国城可以一次走到最远。敌城有人就先打，空城直接占领。
@@ -2410,6 +2410,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     编号以 9 开头的马奇诺及周边城可以攻打和占领，不受第 2 位限制。
     march_only 只走路，不打目标城。max_steps 是最多走进几座城，不含起点。
     enter_target 为真时，后退要走进目标城，而不是停在相邻城。
+    leave_capital 为假时，人在所在国首都就停，不开恢复卡出城。后退用这个。
     """
     from . import citydb
 
@@ -2427,6 +2428,11 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     out["走到"] = int(loc)
     start_here = int(loc)
     citydb.note_attack_here(loc)
+    if march_only and not leave_capital and _is_capital(start_here, my):
+        name = citydb.city_name(start_here) or ""
+        out["停止原因"] = f"人已经在所在国首都 {start_here} {name}，不再后退".strip()
+        log.info("[移动] %s", out["停止原因"])
+        return out
     if max_steps is not None:
         try:
             max_steps = int(max_steps)
@@ -2475,8 +2481,11 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             out["停止原因"] = stopped
             return out
         def _still_at_start_capital() -> bool:
-            """这一单开始时人就在首都，还没走出这步。按 --move 补士气再出城。"""
-            return (not out["移动"] and int(out["走到"]) == start_here
+            """这一单开始时人就在首都，还没走出这步。按 --move 补士气再出城。
+
+            后退不能走这里，否则会为了出城开恢复卡。
+            """
+            return (leave_capital and not out["移动"] and int(out["走到"]) == start_here
                     and _is_capital(start_here))
 
         if far_i:
@@ -2509,6 +2518,12 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 occupy_from = far_i + 1
                 log.info("[移动] 进入 %s %s，行动力 %s",
                          moved["here"], name, moved.get("power"))
+                if not leave_capital and _is_capital(moved["here"], my):
+                    home = citydb.city_name(moved["here"]) or ""
+                    out["停止原因"] = (
+                        f"人已经在所在国首都 {moved['here']} {home}，不再后退".strip())
+                    log.info("[移动] %s", out["停止原因"])
+                    return out
         for city in seq[occupy_from:]:
             stopped = _manual_stop()
             if stopped:
@@ -2518,6 +2533,12 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 out["停止原因"] = "已暂停"
                 break
             if city == target and not march_only:
+                break
+            if not leave_capital and _is_capital(out["走到"], my):
+                name = citydb.city_name(out["走到"]) or ""
+                out["停止原因"] = (
+                    f"人已经在所在国首都 {out['走到']} {name}，不再后退".strip())
+                log.info("[移动] %s", out["停止原因"])
                 break
             blocked = _halt_for_home(
                 sock, rec, config, out["走到"], my, uid,
@@ -2752,7 +2773,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                           avoid=set(avoid or ()) | {blocked_at}, replanned=True,
                           uid=uid, tally=tally, avoid_why=why,
                           march_only=march_only, max_steps=left,
-                          enter_target=enter_target, clear_plan=clear_plan)
+                          enter_target=enter_target, clear_plan=clear_plan,
+                          leave_capital=leave_capital)
             out["移动"] += nxt.get("移动") or 0
             out["步数"] = int(out.get("步数") or 0) + int(nxt.get("步数") or 0)
             if nxt.get("走到"):
@@ -2783,9 +2805,22 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                 rec, sock, config, uid, city_id=int(target), sweep=True,
                 beat=beat, until_down=True, page=page)
             out["攻击"] = hitp.get("成功") or 0
+            loc = hitp.get("当前城市")
+            try:
+                loc = int(loc or 0)
+            except (TypeError, ValueError):
+                loc = 0
+            if loc > 0:
+                out["走到"] = loc
+                citydb.note_attack_here(loc)
             if hitp.get("击退"):
                 _note_repel(out, tally, hitp.get("名字") or "")
-            if hitp.get("击退") or out["攻击"]:
+            sent_home = bool(hitp.get("遣返") or (loc and _is_capital(loc, my)))
+            if sent_home:
+                out["遣返"] = True
+                out["停止原因"] = (hitp.get("停止原因") or _defeated_text(loc)
+                                or "被别人打败，已回到首都")
+            elif hitp.get("击退") or out["攻击"]:
                 out["停止原因"] = "" if hitp.get("击退") else (hitp.get("停止原因") or "")
             else:
                 out["停止原因"] = hitp.get("停止原因") or f"没打到 UID {uid}"
