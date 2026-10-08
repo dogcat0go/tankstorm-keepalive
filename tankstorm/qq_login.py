@@ -560,17 +560,55 @@ class QQSession:
         self.note_login("cookie 已写入 %s。%s",
                         os.path.basename(self.cookie_file), self.ticket_brief())
 
+    def _attack_uin(self) -> str:
+        """攻打 QQ。cookie 里还没有时，从 qq-<号>.json 的文件名取。"""
+        raw = str(self._cookie("uin") or "").lstrip("o0")
+        if raw.isdigit():
+            return raw
+        base = os.path.basename(self.cookie_file or "")
+        if base.startswith("qq-") and base.endswith(".json"):
+            tail = base[3:-5]
+            if tail.isdigit():
+                return tail
+        return ""
+
+    def _account_names(self, uin: str) -> list:
+        """这个攻打 QQ 绑着的登录账号名称。还没绑上时用当前线程的账号。"""
+        names = []
+        try:
+            from . import citydb
+            ids = citydb.users_bound_to_qq(uin) if uin else []
+            if not ids:
+                base = os.path.basename(self.cookie_file or "")
+                if base.startswith("page-login-") and base.endswith(".json"):
+                    tail = base[len("page-login-"):-5]
+                    if tail.isdigit():
+                        ids = [int(tail)]
+            if not ids:
+                ids = citydb.attack_context_users()
+            for uid in ids:
+                name = citydb.username_of(uid)
+                if name and name not in names:
+                    names.append(name)
+        except Exception:
+            return names
+        return names
+
     def _qq_label(self) -> str:
-        """登录日志用的这一号。QQ 号加上攻打号名字；还没起名时用 cookie 文件名。"""
-        raw = self._cookie("uin") or ""
-        uin = str(raw).lstrip("o0") or "未知"
-        name = str(getattr(self, "account_name", "") or "").strip()
-        if not name:
-            base = os.path.basename(self.cookie_file or "")
-            if base.endswith(".json"):
-                base = base[:-5]
-            name = "扫描号" if base == "cookies" else (base or "未命名")
-        return f"QQ {uin}（{name}）"
+        """登录日志前缀：登录账号名称，加上攻打 QQ。扫描号单独标出来。"""
+        base = os.path.basename(self.cookie_file or "")
+        uin = self._attack_uin()
+        if base == "cookies.json":
+            return f"扫描号 QQ {uin}" if uin else "扫描号"
+        names = self._account_names(uin)
+        who = "、".join(names)
+        if who and uin:
+            return f"{who} QQ {uin}"
+        if who:
+            return who
+        if uin:
+            return f"QQ {uin}"
+        return "未知"
 
     def ticket_brief(self) -> str:
         """票据还剩多久。只写寿命，不写 cookie 值。"""
@@ -590,7 +628,7 @@ class QQSession:
         return "，".join((one("skey"), one("p_skey"), long))
 
     def note_login(self, msg, *args) -> None:
-        """写到 logs/login.log。每行带上这个 QQ 的号和名字。"""
+        """写到 logs/login.log。每行带上登录账号名称和攻打 QQ。"""
         try:
             from .log import get_login_logger
             text = msg % args if args else str(msg)

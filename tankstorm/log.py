@@ -59,7 +59,7 @@ atexit.register(_stop_log_listener)
 
 
 def get_login_logger() -> logging.Logger:
-    """登录过程单独一份日志，按天切分。正文里要自己带上 QQ 号。"""
+    """登录过程单独一份日志，按天切分。每行前缀是登录账号名称和攻打 QQ。"""
     global _login_logger
     if _login_logger is not None:
         return _login_logger
