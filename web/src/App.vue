@@ -242,7 +242,6 @@ function reloadQr() {
 }
 
 function pushLoginVisible(p) {
-  if (p && p.shutdown) return false;
   if (p && p.need_login) return true;
   if (p && p.online && !p.keepalive && p.phase !== "login") return true;
   return !(p && p.online && p.phase !== "login");
@@ -611,6 +610,11 @@ function holdCell(it) {
 async function pushLogin() {
   showErr("", "bar");
   const data = await api("/api/attack-login", {});
+  if (data.off_at != null) {
+    offAt.value = data.off_at ? String(data.off_at).replace(" ", "T") : "";
+    if (me.value) me.value.off_at = data.off_at || "";
+    offNote.value = data.off_at ? "到点后下线" : "已取消";
+  }
   if (data.login === "qr" && !(proc.value && proc.value.qq)) bindWait.value = true;
   showErr(attackLoginError(data.login), "bar");
   await refreshAttacks();
