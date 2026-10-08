@@ -58,6 +58,7 @@ const clearFrom = ref("1");
 const clearTo = ref("5");
 const clearWait = ref("0");
 const clearScan = ref("0");
+const clearRetreat = ref(false);
 const clearRows = ref([]);
 const clearNote = ref("");
 const prioUid = ref("");
@@ -335,6 +336,7 @@ function takeUser(user) {
   clearTo.value = String(user.clear_to || 5);
   clearWait.value = String(user.clear_wait ?? 0);
   clearScan.value = String(user.clear_scan ?? 0);
+  clearRetreat.value = !!user.clear_retreat;
   clearRows.value = (user.clear_priority || []).map((row) => ({
     uid: String(row.uid),
     rank: String(row.rank),
@@ -370,6 +372,7 @@ async function saveClearPlan() {
     page_to: clearTo.value,
     wait_min: clearWait.value,
     scan_sec: clearScan.value,
+    retreat: clearRetreat.value,
     priority: clearRows.value.map((row) => ({ uid: row.uid, rank: row.rank })),
   });
   if (data.user) takeUser(data.user);
@@ -893,6 +896,7 @@ onUnmounted(() => {
         v-model:clear-to="clearTo"
         v-model:clear-wait="clearWait"
         v-model:clear-scan="clearScan"
+        v-model:clear-retreat="clearRetreat"
         v-model:prio-uid="prioUid"
         v-model:prio-rank="prioRank"
         v-model:move-city="moveCity"

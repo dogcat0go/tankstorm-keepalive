@@ -8,6 +8,7 @@ const clearFrom = defineModel("clearFrom", { type: String, required: true });
 const clearTo = defineModel("clearTo", { type: String, required: true });
 const clearWait = defineModel("clearWait", { type: String, required: true });
 const clearScan = defineModel("clearScan", { type: String, required: true });
+const clearRetreat = defineModel("clearRetreat", { type: Boolean, required: true });
 const prioUid = defineModel("prioUid", { type: String, required: true });
 const prioRank = defineModel("prioRank", { type: String, required: true });
 const moveCity = defineModel("moveCity", { type: String, required: true });
@@ -84,6 +85,9 @@ function dropPriority(uid) {
           <span v-if="clearRetryText" class="muted">{{ clearRetryText }}</span>
         </form>
         <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
+          <label class="switch"><input type="checkbox" v-model="clearRetreat" />同自动锁敌后退</label>
+        </form>
+        <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
           <span class="switch">扫页冷却</span>
           <label class="choice">秒<input v-model="clearScan" class="mins" inputmode="numeric" required /></label>
         </form>
@@ -103,7 +107,7 @@ function dropPriority(uid) {
           <button type="submit">保存</button>
           <span class="muted">{{ clearNote }}</span>
         </form>
-        <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。</p>
+        <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。打开「同自动锁敌后退」后，这一轮打完按订阅页「打完后退」的走法退，判断也相同：打成了就退，没打成要看那边的「没打成也后退」，已经回到所在国首都、被打回去或手动关停时不退。空城再打会先退，再按分钟回来打同一条。</p>
       </div>
     </template>
     <p v-if="proc && proc.online" class="proc here-row">
