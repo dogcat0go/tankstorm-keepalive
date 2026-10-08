@@ -530,6 +530,7 @@ class QQSession:
 
     def _load_cookies(self) -> None:
         if not os.path.exists(self.cookie_file):
+            self.note_login("没有 cookie 文件 %s", os.path.basename(self.cookie_file))
             return
         try:
             with open(self.cookie_file, encoding="utf-8") as f:
@@ -539,8 +540,10 @@ class QQSession:
                                          domain=c["domain"], path=c["path"],
                                          expires=c.get("expires"))
             log.debug("已从 %s 载入 %d 条 cookie", self.cookie_file, len(jar))
+            self.note_login("载入 %d 条 cookie。%s", len(jar), self.ticket_brief())
         except Exception as exc:
             log.warning("cookie 文件读取失败，将重新登录: %s", exc)
+            self.note_login("cookie 文件读取失败，将重新登录：%s", exc)
 
     def _save_cookies(self) -> None:
         # 必须保存 expires：没有它就无法判断票据何时到期，只能等请求失败才发现，
@@ -554,6 +557,46 @@ class QQSession:
         with open(self.cookie_file, "w", encoding="utf-8") as f:
             json.dump(jar, f, ensure_ascii=False, indent=1)
         log.info("cookie 已保存到 %s", self.cookie_file)
+        self.note_login("cookie 已写入 %s。%s",
+                        os.path.basename(self.cookie_file), self.ticket_brief())
+
+    def _qq_label(self) -> str:
+        """登录日志用的这一号。QQ 号加上攻打号名字；还没起名时用 cookie 文件名。"""
+        raw = self._cookie("uin") or ""
+        uin = str(raw).lstrip("o0") or "未知"
+        name = str(getattr(self, "account_name", "") or "").strip()
+        if not name:
+            base = os.path.basename(self.cookie_file or "")
+            if base.endswith(".json"):
+                base = base[:-5]
+            name = "扫描号" if base == "cookies" else (base or "未命名")
+        return f"QQ {uin}（{name}）"
+
+    def ticket_brief(self) -> str:
+        """票据还剩多久。只写寿命，不写 cookie 值。"""
+        st = self.ticket_status()
+
+        def one(name):
+            if name not in st:
+                return f"{name}没有"
+            left = st.get(name)
+            if left is None:
+                return f"{name}无过期时间"
+            if left <= 0:
+                return f"{name}已过期{abs(left) / 3600:.1f}小时"
+            return f"{name}剩余{left / 3600:.1f}小时"
+
+        long = "有长效凭据" if self.has_long_term_ticket() else "没有长效凭据"
+        return "，".join((one("skey"), one("p_skey"), long))
+
+    def note_login(self, msg, *args) -> None:
+        """写到 logs/login.log。每行带上这个 QQ 的号和名字。"""
+        try:
+            from .log import get_login_logger
+            text = msg % args if args else str(msg)
+            get_login_logger().info("%s %s", self._qq_label(), text)
+        except Exception:
+            log.debug("登录日志没写上", exc_info=True)
 
     def ticket_status(self) -> dict:
         """返回各票据的剩余寿命，用于判断是否该续期。
@@ -601,6 +644,7 @@ class QQSession:
             return False
         if self.attack_account:
             log.error("攻打号不向 NapCat 要票据")
+            self.note_login("攻打号不向 NapCat 要票据")
             return False
         inner = ((config.get("登录") or {}).get("内部QQ") or {})
         api = str(inner.get("地址") or "").strip().rstrip("/")
@@ -622,9 +666,12 @@ class QQSession:
             data = r.json()
         except Exception as exc:
             log.info("向 NapCat 要票据失败: %s", exc)
+            self.note_login("向 NapCat 要票据失败：%s", exc)
             return False
         if data.get("status") != "ok" and data.get("retcode") != 0:
-            log.info("NapCat 没有交出票据: %s", data.get("message") or data.get("wording") or data.get("status"))
+            why = data.get("message") or data.get("wording") or data.get("status")
+            log.info("NapCat 没有交出票据: %s", why)
+            self.note_login("NapCat 没有交出票据：%s", why)
             return False
         raw = ((data.get("data") or {}).get("cookies") or "")
         pairs = {}
@@ -634,6 +681,7 @@ class QQSession:
                 pairs[key] = val
         if not pairs.get("skey") or not pairs.get("p_skey"):
             log.info("NapCat 票据里没有 skey 或 p_skey")
+            self.note_login("NapCat 票据里没有 skey 或 p_skey")
             return False
         qzone_names = {"p_skey", "p_uin", "pt4_token"}
         for key, val in pairs.items():
@@ -642,8 +690,10 @@ class QQSession:
         self._save_cookies()
         if not self.is_valid():
             log.info("NapCat 票据打开游戏页未通过")
+            self.note_login("NapCat 票据已写入，游戏页仍不认。%s", self.ticket_brief())
             return False
         log.info("已用 NapCat 当前登录的票据续上，uin=%s", self.uin)
+        self.note_login("已用 NapCat 票据续上。%s", self.ticket_brief())
         return True
 
     def shares_blocked_uin(self) -> bool:
@@ -673,7 +723,10 @@ class QQSession:
         """
         if not self.has_long_term_ticket():
             log.info("没有长效凭据(superkey/RK/ptcz)，无法静默续期")
+            self.note_login("没有长效凭据(superkey/RK/ptcz)，无法静默续期。%s",
+                            self.ticket_brief())
             return False
+        self.note_login("开始静默续期。%s", self.ticket_brief())
 
         before = {c.name: c.value for c in self.session.cookies}
         try:
@@ -689,6 +742,7 @@ class QQSession:
             login_sig = self._cookie("pt_login_sig") or ""
             if not login_sig:
                 log.info("静默续期：未取得 pt_login_sig，放弃")
+                self.note_login("静默续期未取得 pt_login_sig，放弃")
                 return False
 
             # 2) 快速登录：服务端凭 superkey/RK/ptcz 识别设备，直接下发新票据
@@ -705,6 +759,7 @@ class QQSession:
                 self.session.get(m.group(2), allow_redirects=True, timeout=20)
             elif m:
                 log.info("静默续期被拒(code=%s): %s", m.group(1), m.group(3)[:60])
+                self.note_login("静默续期被拒 code=%s %s", m.group(1), m.group(3)[:60])
                 return False
             else:
                 # 2026-08-13 实测：这个端点已经不返回 ptuiCB 了，直接给一张
@@ -716,9 +771,12 @@ class QQSession:
                 log.info("静默续期：pt_login 没有返回 ptuiCB（%s）—— "
                          "腾讯这个接口已变更，不是凭据问题。返回开头：%s",
                          "是一张 HTML 页面" if is_html else "格式不认识", head)
+                self.note_login("静默续期失败：pt_login 没有返回票据（%s）",
+                                "是一张 HTML 页面" if is_html else "格式不认识")
                 return False
         except requests.RequestException as exc:
             log.info("静默续期请求异常: %s", exc)
+            self.note_login("静默续期请求异常：%s", exc)
             return False
 
         if self.is_valid():
@@ -726,6 +784,7 @@ class QQSession:
             left = self.ticket_status().get("skey")
             log.info("✅ 静默续期成功，无需扫码%s",
                      f"（新 skey 剩余 {left // 3600} 小时）" if left else "")
+            self.note_login("静默续期成功。%s", self.ticket_brief())
             return True
 
         # 没成功就还原，别把原来还能用的 cookie 搞坏
@@ -735,27 +794,39 @@ class QQSession:
             except Exception:
                 pass
         log.info("静默续期未生效，需要重新扫码")
+        self.note_login("静默续期未生效，需要重新扫码。%s", self.ticket_brief())
         return False
 
     def is_valid(self) -> bool:
         """访问游戏页：已登录返回 200 页面，未登录会 302 去 ptlogin。"""
-        if not self.session.cookies.get("skey"):
+        try:
+            has_skey = bool(self.session.cookies.get("skey"))
+        except Exception as exc:
+            self.note_login("读取 skey 失败，当作未登录：%s", exc)
+            return False
+        if not has_skey:
+            self.note_login("没有 skey，登录态无效。%s", self.ticket_brief())
             return False
         try:
             r = self.session.get(GAME_URL, allow_redirects=False, timeout=15)
         except requests.RequestException as exc:
             log.warning("登录态校验请求失败: %s", exc)
+            self.note_login("登录态校验请求失败：%s。%s", exc, self.ticket_brief())
             return False
         if r.status_code == 200 and "ptlogin" not in r.text[:2000]:
             return True
         loc = r.headers.get("Location", "")
         log.info("登录态已失效 (status=%s, location=%s...)", r.status_code, loc[:80])
+        self.note_login("游戏页不认这张票 status=%s 跳去登录=%s。%s",
+                        r.status_code, "ptlogin" in loc.lower(), self.ticket_brief())
         return False
 
     # ---------- 扫码 / 推送登录 ----------
 
     def forget_login(self) -> None:
         """这次登录不能留。会话和已经写进文件的票据都丢掉，避免换成另一个 QQ。"""
+        self.note_login("这次登录的 QQ 不能留，丢掉会话并删除 cookie 文件 %s",
+                        os.path.basename(self.cookie_file or ""))
         self._clear_session_cookies()
         self._qr_poll = None
         try:
@@ -955,7 +1026,9 @@ class QQSession:
         s = self.session
         self._qr_poll = None
         # 清会话票据但**保住设备凭据** —— 推送靠 dev_mid_sig 之类识别"推给哪台设备"，
-        # 全清了就只能回 ec=313。
+        # 全清了就只能回 ec=313。磁盘上的文件要等登录成功才会重写。
+        before = self.ticket_brief()
+        self.note_login("开始取二维码，清掉内存里的会话票据。清掉前：%s", before)
         self._clear_session_cookies(keep=DEVICE_COOKIES)
         # 浏览器进登录页第一件事就是 xlogin，它建立 pt_login_sig 上下文。
         # 但它同时会**无条件重新签发 pt_guid_sig**（实测：本来就有一个也照换），
@@ -980,6 +1053,7 @@ class QQSession:
         r, why = self._ptqrshow()
         if r is None:
             log.error("二维码请求失败，无法登录：%s", why)
+            self.note_login("二维码请求失败：%s", why)
             return {"ok": False, "pushed": False, "why": why}
 
         pushed = False
@@ -1002,8 +1076,10 @@ class QQSession:
         if pushed:
             log.info("已向 QQ %s 推送登录确认 —— 打开手机QQ点「确认登录」即可，"
                      "不需要扫码（扫码图仍保存在 %s 作为备用）", push_uin, self.qrcode_file)
+            self.note_login("已向 QQ %s 推送登录确认，等待手机点确认", push_uin)
         else:
             log.info("请用手机 QQ 扫码登录（二维码已保存: %s）", self.qrcode_file)
+            self.note_login("二维码已生成，等待扫码")
         # 只在"本机交互式使用且没有别的送达方式"时才弹图片查看器。
         # 有 on_qr（PushPlus 推送）时再弹窗没意义；推送登录更是压根不需要看图。
         if announce and os.name == "nt" and on_qr is None and not pushed:
@@ -1062,10 +1138,12 @@ class QQSession:
         code, url, msg = m.group(1), m.group(2), m.group(3)
         if code == "0":
             log.info("扫码确认成功: %s", msg)
+            self.note_login("手机已确认登录")
             try:
                 self.session.get(url, allow_redirects=True, timeout=20)
             except requests.RequestException as exc:
                 self._qr_poll = None
+                self.note_login("扫码确认后 check_sig 失败：%s", exc)
                 return {"code": "0", "msg": f"check_sig 失败: {exc}", "done": True, "ok": False,
                         "expired": False, "scanned": False}
             self._save_cookies()
@@ -1073,9 +1151,11 @@ class QQSession:
             if self.is_valid():
                 log.info("登录完成，uin=%s", self.uin)
                 self._save_cookies()
+                self.note_login("扫码登录完成。%s", self.ticket_brief())
                 return {"code": "0", "msg": msg, "done": True, "ok": True,
                         "expired": False, "scanned": False}
             log.error("check_sig 后登录态仍无效")
+            self.note_login("扫码确认后游戏页仍不认。%s", self.ticket_brief())
             return {"code": "0", "msg": "check_sig 后登录态仍无效", "done": True, "ok": False,
                     "expired": False, "scanned": False}
         text = msg or ""
@@ -1089,12 +1169,14 @@ class QQSession:
             expired = False
         if expired:
             log.info("二维码已失效 code=%s %s", code, text)
+            self.note_login("二维码已失效 code=%s %s", code, text[:40])
             self._qr_poll = None
             return {"code": code, "msg": text or "二维码已失效", "done": True, "ok": False,
                     "expired": True, "scanned": False}
         if scanned and not state.get("scanned"):
             state["scanned"] = True
             log.info("已扫码，请在手机上确认…")
+            self.note_login("已扫码，等待手机确认")
         return {"code": code, "msg": text, "done": False, "ok": False,
                 "expired": False, "scanned": scanned}
 
@@ -1262,6 +1344,7 @@ class QQSession:
         self._save_cookies()
         if self.is_valid():
             log.info("密码登录完成，uin=%s low_login=%s", self.uin, low_login)
+            self.note_login("密码登录完成 low_login=%s。%s", low_login, self.ticket_brief())
             self._save_cookies()
             return {"ok": True, "captcha": False, "code": "0", "msg": msg or "登录成功"}
         log.error("密码登录 check_sig 后游戏页仍不认 uin=%s", uin)
@@ -1324,6 +1407,7 @@ class QQSession:
                 return False
             if timed_out:
                 log.info("这张二维码等了 %d 秒还没扫上，马上换一张", timeout_sec)
+                self.note_login("这张二维码等了 %d 秒还没扫上，马上换一张", timeout_sec)
 
     def ensure_login(self, on_qr=None, push_uin=None) -> bool:
         """保证登录可用。顺序：现成 cookie → 长效凭据静默续期 → 推送/扫码登录。
@@ -1335,11 +1419,15 @@ class QQSession:
             left = self.ticket_status().get("skey")
             log.info("cookie 有效，uin=%s%s", self.uin,
                      f"（skey 剩余约 %.1f 小时）" % (left / 3600) if left else "")
-            # 快到期就提前续，别等失效了才补救
+            self.note_login("现成 cookie 仍有效。%s", self.ticket_brief())
+            # 快到期就提前续，别等失效了才补救。攻打线程不走这里。
             if self.expires_within(6 * 3600) and self.has_long_term_ticket():
                 log.info("skey 即将到期，提前静默续期…")
+                self.note_login("skey 或 p_skey 将在 6 小时内到期，提前静默续期")
                 self.silent_renew()
             return True
+        self.note_login("现成 cookie 无效，先试静默续期。%s", self.ticket_brief())
         if self.silent_renew():
             return True
+        self.note_login("静默续期没接上，改为扫码")
         return self.qr_login(on_qr=on_qr, push_uin=push_uin)
