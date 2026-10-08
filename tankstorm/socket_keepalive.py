@@ -1259,6 +1259,8 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                 job["id"], "failed", why, beats=int(tally.get("n") or 0))
             return _cut()
         beats = int(tally.get("n") or 0)
+        cycle_min = 0
+        cycle_stuck = False
         if skipped:
             status, why = "failed", _LOCK_LEFT
             here = citydb.attack_here_id()
@@ -1285,15 +1287,8 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                 log.info("   结束原因：%s", why)
             if (not uid and not job.get("auto") and action == "finish"
                     and _clear_cycle(why, out)):
-                minutes = citydb.clear_wait_minutes()
-                stuck = _clear_stuck(why, out)
-                if minutes > 0 and citydb.schedule_empty_order(
-                        job["id"], minutes, beats=beats, stuck=stuck):
-                    if stuck:
-                        log.info("订单 %s 还有打不过的人，%d 分钟后再打", job["id"], minutes)
-                    else:
-                        log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], minutes)
-                    return _cut()
+                cycle_min = citydb.clear_wait_minutes()
+                cycle_stuck = _clear_stuck(why, out)
             if action == "defer":
                 citydb.defer_attack_order(job["id"])
                 log.info("订单 %s 已暂停，放回排队", job["id"])
@@ -1368,7 +1363,15 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                     break
         if skipped and not chained:
             return result
-        plan = citydb.retreat_settings() if job.get("auto") else {}
+        if job.get("auto"):
+            plan = citydb.retreat_settings()
+            clear_back = False
+        elif not uid:
+            plan = citydb.retreat_settings(clear=True)
+            clear_back = plan.get("mode") in ("hops", "city")
+        else:
+            plan = {}
+            clear_back = False
         country = _my_country(rec, fight_config)
         try:
             here = int(here or result.get("here") or 0)
@@ -1376,7 +1379,7 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
             here = int(result.get("here") or 0)
         incomplete = (not any_done) or any_failed
         at_home = bool(here and country and country_war._is_capital(here, country))
-        want = (job.get("auto") and not parked and not _lock_no_retreat(
+        want = ((job.get("auto") or clear_back) and not parked and not _lock_no_retreat(
                     str(result.get("why") or why or ""),
                     str(result.get("status") or status or ""))
                 and (any_done or (any_failed and plan.get("on_fail"))))
@@ -1388,6 +1391,7 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
             where = f"{here} {name}".strip() if name else str(here)
             log.info("没打完或打失败，人已在所在国首都 %s，不再后退", where)
             want = False
+        back_note = ""
         if want:
             prefix = ""
             retreat_mode = str(plan.get("mode") or "off")
@@ -1409,9 +1413,17 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                 raise
             if note:
                 log.info("订单 %s %s", last_id, note)
+                back_note = note
                 why = _merge_reason(why, note)
                 if finished:
                     citydb.append_order_reason(last_id, note)
+        if cycle_min > 0 and citydb.schedule_empty_order(
+                job["id"], cycle_min, beats=beats, stuck=cycle_stuck, note=back_note):
+            if cycle_stuck:
+                log.info("订单 %s 还有打不过的人，%d 分钟后再打", job["id"], cycle_min)
+            else:
+                log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], cycle_min)
+            return _cut()
         if not finished:
             keep = status == "done" and not why and not uid
             citydb.finish_attack_order(

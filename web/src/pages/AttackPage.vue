@@ -8,12 +8,16 @@ const clearFrom = defineModel("clearFrom", { type: String, required: true });
 const clearTo = defineModel("clearTo", { type: String, required: true });
 const clearWait = defineModel("clearWait", { type: String, required: true });
 const clearScan = defineModel("clearScan", { type: String, required: true });
+const clearRetreatMode = defineModel("clearRetreatMode", { type: String, required: true });
+const clearRetreatHops = defineModel("clearRetreatHops", { type: String, required: true });
+const clearRetreatCity = defineModel("clearRetreatCity", { type: String, required: true });
+const clearRetreatFail = defineModel("clearRetreatFail", { type: Boolean, required: true });
 const prioUid = defineModel("prioUid", { type: String, required: true });
 const prioRank = defineModel("prioRank", { type: String, required: true });
 const moveCity = defineModel("moveCity", { type: String, required: true });
 const clearRows = defineModel("clearRows", { type: Array, required: true });
 
-defineProps({
+const props = defineProps({
   me: { type: Object, required: true },
   proc: { type: Object, default: null },
   cities: { type: Array, required: true },
@@ -44,6 +48,12 @@ defineProps({
 
 function dropPriority(uid) {
   clearRows.value = clearRows.value.filter((item) => item.uid !== uid);
+}
+
+function pinClearRetreat() {
+  if (clearRetreatMode.value !== "hops" || String(clearRetreatCity.value) !== "0") return;
+  const hit = props.cities.find((c) => c.name === "马奇诺");
+  if (hit) clearRetreatCity.value = String(hit.id);
 }
 </script>
 
@@ -83,6 +93,21 @@ function dropPriority(uid) {
           <label class="choice">分钟<input v-model="clearWait" class="mins" inputmode="numeric" required /></label>
           <span v-if="clearRetryText" class="muted">{{ clearRetryText }}</span>
         </form>
+        <form class="lock-row retreat-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
+          <span class="switch">打完后退</span>
+          <label class="choice"><input type="radio" value="off" v-model="clearRetreatMode" />不后退</label>
+          <label class="choice"><input type="radio" value="hops" v-model="clearRetreatMode" @change="pinClearRetreat" />后退几座城</label>
+          <label class="choice"><input type="radio" value="city" v-model="clearRetreatMode" />退到指定城市</label>
+          <label v-if="clearRetreatMode === 'hops'">座数<input v-model="clearRetreatHops" class="mins" inputmode="numeric" required /></label>
+          <label v-if="clearRetreatMode !== 'off'">{{ clearRetreatMode === 'hops' ? '朝向' : '退到' }}
+            <select v-model="clearRetreatCity" :required="clearRetreatMode === 'city'">
+              <option v-if="clearRetreatMode === 'city'" value="0" disabled>选择城市</option>
+              <option v-if="clearRetreatMode === 'hops' && !cities.some((c) => c.name === '马奇诺')" value="0">马奇诺</option>
+              <option v-for="c in cities" :key="'cr' + c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+            </select>
+          </label>
+          <label class="choice"><input type="checkbox" v-model="clearRetreatFail" />没打成也后退</label>
+        </form>
         <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
           <span class="switch">扫页冷却</span>
           <label class="choice">秒<input v-model="clearScan" class="mins" inputmode="numeric" required /></label>
@@ -103,7 +128,7 @@ function dropPriority(uid) {
           <button type="submit">保存</button>
           <span class="muted">{{ clearNote }}</span>
         </form>
-        <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。</p>
+        <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。打完后退只对留空 UID 的清城，和自动锁敌各配各的。打成了按上面的走法退。没打成要打开「没打成也后退」才退。已经回到所在国首都、被打回去或手动关停时不退。空城再打会先退，再按分钟回来打同一条。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
       </div>
     </template>
     <p v-if="proc && proc.online" class="proc here-row">

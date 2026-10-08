@@ -102,6 +102,10 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_to        INTEGER NOT NULL DEFAULT 5,
     clear_wait      INTEGER NOT NULL DEFAULT 0,
     clear_scan      INTEGER NOT NULL DEFAULT 0,
+    clear_retreat_mode TEXT NOT NULL DEFAULT 'off',
+    clear_retreat_hops INTEGER NOT NULL DEFAULT 3,
+    clear_retreat_city INTEGER NOT NULL DEFAULT 0,
+    clear_retreat_fail INTEGER NOT NULL DEFAULT 0,
     modo_cards      INTEGER NOT NULL DEFAULT 0,
     daily_switch    TEXT,
     daily_at        TEXT NOT NULL DEFAULT '',
@@ -338,6 +342,22 @@ def connect(readonly=False, timeout=15):
             if ucols and "clear_scan" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN clear_scan INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "clear_retreat_mode" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_retreat_mode TEXT NOT NULL DEFAULT 'off'")
+                setup.commit()
+            if ucols and "clear_retreat_hops" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_retreat_hops INTEGER NOT NULL DEFAULT 3")
+                setup.commit()
+            if ucols and "clear_retreat_city" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_retreat_city INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "clear_retreat_fail" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_retreat_fail INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "modo_cards" not in ucols:
                 setup.execute(
@@ -1958,8 +1978,11 @@ def _drop_attack_files(user_id: int, uin: str) -> None:
                 pass
 
 
-def set_retreat(user_id: int, mode, hops, city_id, on_fail=None) -> str:
-    """打完后退。hops 是朝一座城退几座，city 是退进指定城。两种不能同时用。"""
+def set_retreat(user_id: int, mode, hops, city_id, on_fail=None, clear=False) -> str:
+    """打完后退。hops 是朝一座城退几座，city 是退进指定城。两种不能同时用。
+
+    clear 为真时写清城自己的后退，不改自动锁敌那一套。
+    """
     mode = str(mode or "").strip()
     if mode not in ("off", "hops", "city"):
         return "后退策略要选不后退、后退几座城或退到指定城市"
@@ -1983,11 +2006,16 @@ def set_retreat(user_id: int, mode, hops, city_id, on_fail=None) -> str:
         fail = 1 if on_fail.strip().lower() in ("1", "true", "on", "开") else 0
     else:
         fail = 1 if on_fail else 0
+    if clear:
+        fields = ("clear_retreat_mode", "clear_retreat_hops",
+                  "clear_retreat_city", "clear_retreat_fail")
+    else:
+        fields = ("retreat_mode", "retreat_hops", "retreat_city", "retreat_fail")
     conn = connect()
     try:
         conn.execute(
-            "UPDATE app_user SET retreat_mode=?, retreat_hops=?, retreat_city=?, "
-            "retreat_fail=? WHERE id=?",
+            "UPDATE app_user SET " + ", ".join(name + "=?" for name in fields) +
+            " WHERE id=?",
             (mode, n, cid, fail, int(user_id)))
         conn.commit()
     finally:
@@ -1995,27 +2023,38 @@ def set_retreat(user_id: int, mode, hops, city_id, on_fail=None) -> str:
     return ""
 
 
-def retreat_settings(user_id: int = 0) -> dict:
-    """这个登录账号的打完后退。没填朝向时，后退几座城默认朝马奇诺。"""
+def retreat_settings(user_id: int = 0, clear=False) -> dict:
+    """这个登录账号的打完后退。没填朝向时，后退几座城默认朝马奇诺。
+
+    clear 为真时读清城自己的后退。没配或不是高级时是不后退。
+    """
     if not user_id:
         user_id = attack_context_user()
-    mode, hops, city_id, on_fail = "hops", 3, 0, False
+    default_mode = "off" if clear else "hops"
+    mode, hops, city_id, on_fail = default_mode, 3, 0, False
+    if clear and not high_tier(_stored_tier(user_id)):
+        return {"mode": "off", "hops": hops, "city_id": 0, "name": "", "on_fail": False}
     if user_id:
         conn = connect(readonly=True)
         try:
+            if clear:
+                picked = ("IFNULL(clear_retreat_mode,'off'), IFNULL(clear_retreat_hops,3), "
+                          "IFNULL(clear_retreat_city,0), IFNULL(clear_retreat_fail,0)")
+            else:
+                picked = ("IFNULL(retreat_mode,'hops'), IFNULL(retreat_hops,3), "
+                          "IFNULL(retreat_city,0), IFNULL(retreat_fail,0)")
             row = conn.execute(
-                "SELECT IFNULL(retreat_mode,'hops'), IFNULL(retreat_hops,3), "
-                "IFNULL(retreat_city,0), IFNULL(retreat_fail,0) FROM app_user WHERE id=?",
+                "SELECT " + picked + " FROM app_user WHERE id=?",
                 (int(user_id),)).fetchone()
         finally:
             conn.close()
         if row:
-            mode = str(row[0] or "hops")
+            mode = str(row[0] or default_mode)
             hops = int(row[1] or 3)
             city_id = int(row[2] or 0)
             on_fail = bool(row[3])
     if mode not in ("off", "hops", "city"):
-        mode = "hops"
+        mode = default_mode
     if hops < 1:
         hops = 3
     name = ""
@@ -2180,11 +2219,13 @@ def list_storm_rejects(user_id: int) -> list:
 
 
 def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
-                   wait_min=0, scan_sec=0) -> str:
+                   wait_min=0, scan_sec=0, retreat_mode="off", retreat_hops=3,
+                   retreat_city=0, retreat_fail=False) -> str:
     """清城高级配置。前 5 页，或一个页码范围。优先 UID 最多 50 个。
 
     wait_min 是空城后再打的分钟。0 表示空了就结束。
-    scan_sec 是两次扫页至少隔开的秒数。0 表示每次出手冷却都扫。成功返回空字符串。
+    scan_sec 是两次扫页至少隔开的秒数。0 表示每次出手冷却都扫。
+    后退是清城自己的走法，不改自动锁敌。成功返回空字符串。
     """
     mode = str(mode or "head").strip()
     if mode not in ("head", "range"):
@@ -2237,6 +2278,10 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
             return "扫页冷却要是秒数"
     if scan < 0 or scan > 300:
         return "扫页冷却要是 0 到 300 秒"
+    why = set_retreat(
+        user_id, retreat_mode, retreat_hops, retreat_city, retreat_fail, clear=True)
+    if why:
+        return why
     conn = connect()
     try:
         conn.execute(
@@ -2256,6 +2301,7 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
 def clear_settings(user_id: int = 0) -> dict:
     """这个登录账号的清城扫页和优先 UID。名单按优先级、再按添加顺序。"""
     mode, start, end, wait, scan = "head", 1, 5, 0, 0
+    back_mode, back_hops, back_city, back_fail = "off", 3, 0, False
     rows = []
     user_id = int(user_id or 0)
     if user_id:
@@ -2263,7 +2309,10 @@ def clear_settings(user_id: int = 0) -> dict:
         try:
             saved = conn.execute(
                 "SELECT IFNULL(clear_mode,'head'), IFNULL(clear_from,1), IFNULL(clear_to,5), "
-                "IFNULL(clear_wait,0), IFNULL(clear_scan,0) FROM app_user WHERE id=?",
+                "IFNULL(clear_wait,0), IFNULL(clear_scan,0), "
+                "IFNULL(clear_retreat_mode,'off'), IFNULL(clear_retreat_hops,3), "
+                "IFNULL(clear_retreat_city,0), IFNULL(clear_retreat_fail,0) "
+                "FROM app_user WHERE id=?",
                 (user_id,)).fetchone()
             if saved:
                 mode = str(saved[0] or "head")
@@ -2271,6 +2320,10 @@ def clear_settings(user_id: int = 0) -> dict:
                 end = int(saved[2] or 5)
                 wait = int(saved[3] or 0)
                 scan = int(saved[4] or 0)
+                back_mode = str(saved[5] or "off")
+                back_hops = int(saved[6] or 3)
+                back_city = int(saved[7] or 0)
+                back_fail = bool(saved[8])
             rows = conn.execute(
                 "SELECT uid, rank FROM clear_prio WHERE user_id=? ORDER BY rank, seq, uid",
                 (user_id,)).fetchall()
@@ -2286,12 +2339,20 @@ def clear_settings(user_id: int = 0) -> dict:
         wait = 0
     if scan < 0 or scan > 300:
         scan = 0
+    if back_mode not in ("off", "hops", "city"):
+        back_mode = "off"
+    if back_hops < 1 or back_hops > 20:
+        back_hops = 3
     return {
         "mode": mode,
         "page_from": start,
         "page_to": end,
         "wait_min": wait,
         "scan_sec": scan,
+        "retreat_mode": back_mode,
+        "retreat_hops": back_hops,
+        "retreat_city": back_city,
+        "retreat_fail": back_fail,
         "priority": [{"uid": str(uid), "rank": int(rank)} for uid, rank in rows],
     }
 
@@ -2316,10 +2377,17 @@ def clear_wait_minutes(user_id: int = 0) -> int:
     return int(clear_settings(user_id).get("wait_min") or 0)
 
 
-def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False) -> bool:
+def clear_retreat_on(user_id: int = 0) -> bool:
+    """清城有没有配打完后退。不后退、以及中级，都不走。"""
+    return retreat_settings(user_id, clear=True).get("mode") in ("hops", "city")
+
+
+def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False,
+                         note="") -> bool:
     """同一条清城订单过这么多分钟再排队。已经不在打的返回 False。
 
     stuck 为真表示城里还留着打不过的人。否则是这几页没人。
+    note 是这一轮后退的说明，接到倒计时后面。
     """
     minutes = int(minutes or 0)
     if minutes <= 0:
@@ -2330,6 +2398,9 @@ def schedule_empty_order(order_id: int, minutes: int, beats=None, stuck=False) -
         reason = f"还有打不过的人，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
     else:
         reason = f"这座城是空的，{minutes} 分钟后再打 · {beijing_ts(run_at)}"
+    extra = str(note or "").strip()
+    if extra and extra not in reason:
+        reason = f"{reason}。{extra}"
     conn = connect()
     try:
         if beats is None:
