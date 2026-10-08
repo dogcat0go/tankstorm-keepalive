@@ -1363,8 +1363,15 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                     break
         if skipped and not chained:
             return result
-        clear_back = (not uid and not job.get("auto") and citydb.clear_retreat_on())
-        plan = citydb.retreat_settings() if (job.get("auto") or clear_back) else {}
+        if job.get("auto"):
+            plan = citydb.retreat_settings()
+            clear_back = False
+        elif not uid:
+            plan = citydb.retreat_settings(clear=True)
+            clear_back = plan.get("mode") in ("hops", "city")
+        else:
+            plan = {}
+            clear_back = False
         country = _my_country(rec, fight_config)
         try:
             here = int(here or result.get("here") or 0)
