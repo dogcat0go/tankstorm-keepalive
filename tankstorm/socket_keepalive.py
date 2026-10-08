@@ -942,7 +942,7 @@ def _lock_no_chain(why: str, status: str) -> bool:
     if _lock_no_retreat(why, status):
         return True
     text = str(why or "")
-    if text == "已暂停":
+    if text in ("已暂停", "已定时关闭"):
         return True
     if "连接中断" in text or "攻打中断" in text:
         return True
@@ -997,7 +997,7 @@ def _clear_hard_stop(reason: str) -> bool:
     """这种停手不能过一会儿再清。"""
     text = str(reason or "")
     return any(k in text for k in (
-        "行动力", "已暂停", "已手动关停", "被别人打败", "回到首都", "出不了首都",
+        "行动力", "已暂停", "已定时关闭", "已手动关停", "被别人打败", "回到首都", "出不了首都",
         "遣返", "不相邻", "恢复卡", "位置变了", "连接中断", "攻打中断"))
 
 
@@ -1029,8 +1029,8 @@ def _order_result(job, out) -> tuple:
     reason = str((out or {}).get("停止原因") or "")
     auto = bool((job or {}).get("auto"))
     attacked = bool((out or {}).get("攻击")) if uid else (out or {}).get("攻击") is not None
-    if reason == "已暂停":
-        return "defer", "", ""
+    if reason in ("已暂停", "已定时关闭"):
+        return "defer", "", reason
     if reason == "已手动关停":
         return "finish", "ended", reason
     if auto:
@@ -1100,9 +1100,9 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
                  int(out.get("补兵") or 0))
         if why:
             log.info("   结束原因：%s", why)
-        if why == "已暂停":
+        if why in ("已暂停", "已定时关闭"):
             citydb.defer_attack_order(job["id"])
-            log.info("订单 %s 已暂停，放回排队", job["id"])
+            log.info("订单 %s %s，放回排队", job["id"], why)
             return
         if why == "已手动关停" or why.endswith("已手动关停"):
             citydb.finish_attack_order(job["id"], "ended", "已手动关停", beats=beats)
@@ -1291,8 +1291,8 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                 cycle_stuck = _clear_stuck(why, out)
             if action == "defer":
                 citydb.defer_attack_order(job["id"])
-                log.info("订单 %s 已暂停，放回排队", job["id"])
-                return {"id": job["id"], "status": "", "why": "已暂停",
+                log.info("订单 %s %s，放回排队", job["id"], why or "已暂停")
+                return {"id": job["id"], "status": "", "why": why or "已暂停",
                         "here": _here_of(out), "done": False, "failed": False,
                         "stop": True, "parked": True}
             if action == "park" and (
@@ -1774,7 +1774,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
         else:
             citydb.finish_daily_job(job["id"], "failed", "没有这项日常")
     except daily.Stopped:
-        log.info("日常已手动关停：%s", label)
+        if citydb.shutdown_due():
+            citydb.shelve_shutdown_work()
+            log.info("定时关闭，日常停下：%s", label)
+        else:
+            log.info("日常已手动关停：%s", label)
     except OSError:
         citydb.set_attack_status("daily", task=label, note="连接中断")
         if kind == "daily":
@@ -1794,6 +1798,22 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
         daily.bind_sock(prev_sock)
 
 
+def _shutdown_stop() -> bool:
+    """定时关闭到了，这条线程上的账号都要下线。还在做的任务先放回排队。"""
+    from . import citydb
+
+    ids = citydb.attack_context_users()
+    if not ids or not any(citydb.shutdown_due(uid) for uid in ids):
+        return False
+    citydb.shelve_shutdown_work(ids)
+    if not citydb.shutdown_covers_context():
+        return False
+    citydb.clear_attack_hold()
+    citydb.set_attack_status("offline")
+    log.info("定时关闭到点，账号下线，不再执行任务")
+    return True
+
+
 def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     """同一条游戏连接上把排队的单打完。打完或打不过之后，按挂机时长继续心跳。"""
     from . import citydb
@@ -1803,6 +1823,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     here_id = 0
     path_at = 0.0
     while True:
+        if _shutdown_stop():
+            return 0
         if citydb.attack_paused():
             asked = citydb.take_attack_login()
             if asked:
@@ -1947,6 +1969,9 @@ def run_remote_orders(qq, config: dict) -> int:
             current = citydb.attack_context_user()
             if current:
                 user_id = current
+            if _shutdown_stop():
+                time.sleep(5)
+                continue
             if citydb.attack_paused():
                 citydb.set_attack_status("paused")
                 blocked = any(
@@ -2325,6 +2350,8 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             if on_page:
                 citydb.set_page_qr(False, user_id)
         while True:
+            if _shutdown_stop():
+                break
             if citydb.attack_paused():
                 citydb.set_attack_status("paused")
                 if citydb.take_attack_login():
@@ -2388,6 +2415,9 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False) -> st
     user_id = int(user_id or 0)
     if not user_id:
         return "no_account"
+    if citydb.shutdown_due(user_id):
+        log.info("登录账号 %s 已定时关闭，不再上线", citydb.username_of(user_id))
+        return "off"
     if claim and not citydb.attack_qq_of(user_id):
         log.info("登录账号 %s 还没有攻打 QQ，二维码直接显示在网页上",
                  citydb.username_of(user_id))
