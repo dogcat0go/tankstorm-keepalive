@@ -1214,7 +1214,7 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
     def _beat_note(n, name=""):
         who = "" if uid else str(name or "").strip()
         citydb.note_attack_beats(job["id"], n, who)
-        if uid and str(name or "").strip():
+        if str(name or "").strip():
             citydb.remember_order_name(job["id"], name)
 
     def _cut():
