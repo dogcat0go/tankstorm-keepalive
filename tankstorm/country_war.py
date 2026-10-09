@@ -49,6 +49,9 @@ BTL = "RseCountryBtlResult"
 # "拿服务器的拒绝当探针"在这个项目里花掉过 60 勋章。
 COST_SWEEP = 15      # type:19 扫荡
 COST_ATTACK = 5      # type:14 普通攻击
+MORALE_CAP = 1030    # 士气上限。2026-09-24 满士气、2026-10-09 补满都停在这里
+MORALE_PER_AP = 25   # type:9，1 点行动力补 25 士气
+SUPPLY_AP = 70       # 行动力大于这个数，才用行动力把士气补满
 WAIT_ATK = 3.0       # 扫荡/攻击回包超时，超时打下一次
 WAIT_BTL = 2.0       # 战报超时，超时打下一次
 
@@ -2304,13 +2307,79 @@ def _halt_for_home(sock, rec, config, loc, my, uid, allow_leave=False) -> str:
     return _ready_to_leave(sock, rec, config, loc, my)
 
 
+def _supply_city(my, loc) -> bool:
+    """补充士气只在本国首都，以及和首都相邻的城里。"""
+    from . import citydb
+
+    try:
+        loc = int(loc or 0)
+        cap = int(my or 0) * 1000 + 101
+    except (TypeError, ValueError):
+        return False
+    if not loc or cap <= 101:
+        return False
+    return loc == cap or loc in citydb.neighbors(cap)
+
+
+def _fill_morale(sock, rec, power, morale):
+    """行动力大于 70 时，发 type:9 把士气补到上限。补不了就返回 None，不拦出城。
+
+    2026-10-09 抓包：RceCountryOpt type=9，count 是要补的士气（25 的倍数），
+    countryID 和 cityID 都是 0，costCredit 是 0。260 士气发 count=775，
+    行动力 197→166，士气落到 1030。
+    """
+    if (not isinstance(power, int) or isinstance(power, bool)
+            or not isinstance(morale, int) or isinstance(morale, bool)):
+        return None
+    if power <= SUPPLY_AP or morale >= MORALE_CAP:
+        return None
+    ap = (MORALE_CAP - morale + MORALE_PER_AP - 1) // MORALE_PER_AP
+    if ap > power:
+        ap = power
+    if ap <= 0:
+        return None
+    count = ap * MORALE_PER_AP
+    fields = _fields(9)
+    fields[2] = ("int32", count)
+    before = rec.seq_mark() if rec else 0
+    sender.send_frame(sock, OPCODE,
+                      encode_message(fields, omit_zero=False), rec.rc4_c2s)
+    got = _wait(sock, rec, before, 9)
+    if not isinstance(got, dict) or got.get("ret") not in (0, None):
+        ret = got.get("ret") if isinstance(got, dict) else None
+        log.info("[移动] 补充士气没成功（ret=%s），照旧出城", ret)
+        return None
+    now = _read_path(got, F_MORALE)
+    left = _read_path(got, F_POWER)
+    log.info("[移动] 用 %d 点行动力补充士气，士气 %s→%s，行动力 %s→%s",
+             ap, morale, now, power, left)
+    if isinstance(now, int) and not isinstance(now, bool):
+        return now
+    return morale
+
+
 def _ready_to_leave(sock, rec, config, loc, my) -> str:
-    """人在首都且士气低于 100 时出不了城。用一张国战恢复卡，士气和行动力会一起回满。"""
-    s = str(int(loc or 0))
-    if len(s) < 2 or s[1] != "1":
+    """从首都出发。行动力大于 70 就先用行动力把士气补满，再走原来的移动或攻打。
+
+    只在这一步补。人已经离开首都（包括走出与首都相邻的城）时直接返回，
+    后面的敌方仍按原来的方式打。士气低于 100、行动力又不够补时，
+    仍用一张国战恢复卡才能出城。
+    """
+    try:
+        loc = int(loc or 0)
+    except (TypeError, ValueError):
         return ""
-    _, _, _, panel = _panel(sock, rec, my)
+    if not _is_capital(loc):
+        return ""
+    power, here, _, panel = _panel(sock, rec, my)
+    spot = here if isinstance(here, int) and not isinstance(here, bool) else loc
     morale = _read_path(panel, F_MORALE) if isinstance(panel, dict) else None
+    if _supply_city(my, spot):
+        filled = _fill_morale(sock, rec, power, morale)
+        if isinstance(filled, int) and not isinstance(filled, bool):
+            morale = filled
+    if not _is_capital(spot):
+        return ""
     if not isinstance(morale, int) or isinstance(morale, bool) or morale >= 100:
         return ""
     item = int((config.get("国战") or {}).get("国战恢复卡物品ID") or CARD_ITEM_ID)
