@@ -55,6 +55,27 @@ function pinClearRetreat() {
   const hit = props.cities.find((c) => c.name === "马奇诺");
   if (hit) clearRetreatCity.value = String(hit.id);
 }
+
+function fightingOrder() {
+  return props.orders.find((it) => it.status === "running") || null;
+}
+
+function fightingLine(it) {
+  if (!it) return "";
+  const city = props.orderCity(it);
+  const bits = [];
+  if (it.kind === "modo") {
+    bits.push("正在打 " + props.orderUid(it));
+  } else if (String(it.name || "").trim() || String(it.uid || "").trim()) {
+    bits.push("正在打 " + props.orderUid(it));
+    if (city) bits.push(city);
+  } else {
+    bits.push("正在清 " + (city || "整座城"));
+  }
+  const reason = String(it.reason || "").trim();
+  if (reason) bits.push(reason);
+  return bits.join(" · ");
+}
 </script>
 
 <template>
@@ -148,7 +169,10 @@ function pinClearRetreat() {
       <p class="muted">最近 1 小时拒绝的超级强攻</p>
       <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
     </div>
-    <p class="muted">每 2 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，按页面上方的步骤先扫码。点了登录，就挂机保活 180 分钟，连上之后可以接订单。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。同一个 QQ 可以绑给多个登录账号。</p>
+    <p class="muted">每 2 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条，正在打的排在最上面。还没绑定的，按页面上方的步骤先扫码。点了登录，就挂机保活 180 分钟，连上之后可以接订单。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。同一个 QQ 可以绑给多个登录账号。</p>
+    <p v-if="fightingOrder()" class="now-fighting">
+      <span class="k">正在攻打的敌人</span>{{ fightingLine(fightingOrder()) }}
+    </p>
     <div class="orders" v-if="orders.length">
       <table>
         <thead>
@@ -167,12 +191,12 @@ function pinClearRetreat() {
         </tbody>
       </table>
       <div class="order-cards">
-        <article class="order-card" v-for="it in orders" :key="'c' + it.id">
-          <p><span class="k">城市</span>{{ orderCity(it) }}</p>
+        <article class="order-card" v-for="it in orders" :key="'c' + it.id" :class="{ fighting: it.status === 'running' }">
           <p><span class="k">名称</span>{{ orderUid(it) }}</p>
-          <p><span class="k">击退敌方数量</span>{{ beatText(it) }}</p>
           <p><span class="k">状态</span>{{ orderStatus(it.status) }}</p>
           <p class="reason"><span class="k">说明</span>{{ it.reason || "—" }}</p>
+          <p><span class="k">城市</span>{{ orderCity(it) }}</p>
+          <p><span class="k">击退敌方数量</span>{{ beatText(it) }}</p>
           <p><span class="k">保活剩余倒计时</span>{{ holdCell(it) }}</p>
           <p><span class="k">北京时间</span>{{ it.created_at || "—" }}</p>
           <p v-if="orderOpen(it)"><button type="button" class="ghost" @click="cancelOrder(it).catch((e) => showErr(e.message))">关停</button></p>

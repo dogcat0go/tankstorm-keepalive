@@ -2825,8 +2825,22 @@ def _order_row(r) -> dict:
             "kind": kind, "run_at": run_at}
 
 
+_OPEN_ORDER_RANK = {
+    "running": 0,
+    "blocked": 1,
+    "wait": 2,
+    "pending": 3,
+}
+
+
+def _order_list_key(r):
+    """正在打的排最前，其余按新到旧。"""
+    rank = _OPEN_ORDER_RANK.get(str(r[3] or ""), 10)
+    return (rank, -int(r[0] or 0))
+
+
 def list_attack_orders(user_id: int, limit: int = 3) -> list:
-    """页面上的订单。还没打完的最多带上两条，总共最多三条，新的在前。"""
+    """页面上的订单。还没打完的最多带上两条，总共最多三条。正在打的排最前。"""
     limit = max(1, min(int(limit or 3), 3))
     user_id = int(user_id)
     cols = ("id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at, beats, "
@@ -2855,7 +2869,7 @@ def list_attack_orders(user_id: int, limit: int = 3) -> list:
     finally:
         conn.close()
     rows = list(valid) + list(done)
-    rows.sort(key=lambda r: int(r[0]), reverse=True)
+    rows.sort(key=_order_list_key)
     return [_order_row(r) for r in rows]
 
 
@@ -3548,6 +3562,17 @@ def attack_cookie_logged_in(user_id: int) -> bool:
     return False
 
 
+def _fighting_detail(city_id, uid="", name="", kind="") -> str:
+    """正在打的这一单，页面上优先写敌人名字。"""
+    kind = str(kind or "")
+    who = str(name or "").strip() or str(uid or "").strip()
+    if kind == "modo":
+        return "正在打摩多军团"
+    if who:
+        return f"正在打 {who}"
+    return f"正在清城市 {city_id}"
+
+
 def _queued_attack_text(row) -> str:
     """进程还写着空闲时，队列里已经有单。页面按这张单说，不再说空闲。"""
     if not row:
@@ -3557,25 +3582,23 @@ def _queued_attack_text(row) -> str:
     status = str(row[2] or "")
     kind = str(row[3] or "")
     reason = " ".join(str(row[4] or "").split())
+    who = str(row[5] or "").strip() if len(row) > 5 else ""
+    who = who or uid
     if kind == "modo":
         where = "摩多军团"
     else:
-        name = city_name(city_id)
-        where = f"{city_id} {name}".strip() if name else str(city_id)
+        city = city_name(city_id)
+        where = f"{city_id} {city}".strip() if city else str(city_id)
     if status == "running":
-        if uid:
-            return f"正在打城市 {city_id} 的 {uid}"
-        if kind == "modo":
-            return "正在打摩多军团"
-        return f"正在清城市 {city_id}"
+        return _fighting_detail(city_id, uid, who, kind)
     if status == "blocked":
         head = f"有订单在等通路：{where}"
         return f"{head}，{reason}" if reason else head
     if status == "wait":
         return f"有订单等再打：{where}"
     head = f"有订单在排队：{where}"
-    if uid:
-        return f"{head} 的 {uid}"
+    if who:
+        return f"{head} 的 {who}"
     return head
 
 
@@ -3589,7 +3612,7 @@ def attack_status(user_id: int) -> dict:
     conn = connect(readonly=True)
     try:
         own = conn.execute(
-            "SELECT city_id, IFNULL(uid,'') FROM atk_order "
+            "SELECT city_id, IFNULL(uid,''), IFNULL(name,''), IFNULL(kind,'') FROM atk_order "
             "WHERE user_id=? AND status='running' ORDER BY id DESC LIMIT 1",
             (user_id,)).fetchone()
         waiting = conn.execute(
@@ -3600,10 +3623,12 @@ def attack_status(user_id: int) -> dict:
             "WHERE user_id=? ORDER BY id DESC LIMIT 1",
             (user_id,)).fetchone()
         queued = conn.execute(
-            "SELECT city_id, IFNULL(uid,''), status, IFNULL(kind,''), IFNULL(reason,'') "
+            "SELECT city_id, IFNULL(uid,''), status, IFNULL(kind,''), IFNULL(reason,''), "
+            "IFNULL(name,'') "
             "FROM atk_order WHERE user_id=? "
             "AND status IN ('pending','running','blocked','wait') "
-            "ORDER BY id DESC LIMIT 1",
+            "ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'blocked' THEN 1 "
+            "WHEN 'wait' THEN 2 ELSE 3 END, id DESC LIMIT 1",
             (user_id,)).fetchone()
     finally:
         conn.close()
@@ -3677,10 +3702,8 @@ def attack_status(user_id: int) -> dict:
                 detail = f"{detail}，正在看路径"
         else:
             detail = hold_note("登录中")
-    elif phase == "running" and own and str(own[1] or "").strip():
-        detail = f"正在打城市 {own[0]} 的 {own[1]}"
     elif phase == "running" and own:
-        detail = f"正在清城市 {own[0]}"
+        detail = _fighting_detail(own[0], own[1], own[2], own[3])
     elif phase == "running":
         detail = "正在执行订单"
     else:
@@ -4725,15 +4748,29 @@ def claim_attack_order(city_id=None, auto_only=False):
         conn.close()
 
 
+def fighting_order_id() -> int:
+    """这条线程正在打的订单号。没有就 0。"""
+    return int(getattr(_attack_local, "order", 0) or 0)
+
+
+def note_current_enemy(name="", morale=None, confirmed=False) -> None:
+    """正在打的这一单记下当前敌人。清城、索敌都写。写库失败不影响继续打。"""
+    order_id = fighting_order_id()
+    if order_id and str(name or "").strip():
+        remember_order_name(order_id, name)
+    if morale is not None:
+        note_lock_morale(morale, confirmed=confirmed)
+
+
 def note_lock_morale(morale, confirmed=False) -> None:
-    """索敌正在打时，把敌方当前士气写进说明。清城订单不改。写库失败不影响继续打。
+    """正在打时，把敌方当前士气写进说明。清城、索敌都写。写库失败不影响继续打。
 
     没读到数字就不改。已经记下大于 0 的士气后，城市名单或库里的 0
     不算拿到了敌方士气，留着上次的数。战报里明确读到的 0 才覆盖。
     """
     if isinstance(morale, bool) or not isinstance(morale, int):
         return
-    order_id = int(getattr(_attack_local, "order", 0) or 0)
+    order_id = fighting_order_id()
     if not order_id:
         return
     morale = int(morale)
@@ -4744,8 +4781,7 @@ def note_lock_morale(morale, confirmed=False) -> None:
     try:
         if morale == 0 and not confirmed:
             row = conn.execute(
-                "SELECT reason FROM atk_order WHERE id=? AND status='running' "
-                "AND TRIM(IFNULL(uid,''))!=''",
+                "SELECT reason FROM atk_order WHERE id=? AND status='running'",
                 (order_id,)).fetchone()
             prev = str(row[0] or "") if row else ""
             head = "敌方士气 "
@@ -4754,8 +4790,7 @@ def note_lock_morale(morale, confirmed=False) -> None:
                 if tail.isdigit() and int(tail) > 0:
                     return
         conn.execute(
-            "UPDATE atk_order SET reason=? WHERE id=? AND status='running' "
-            "AND TRIM(IFNULL(uid,''))!=''",
+            "UPDATE atk_order SET reason=? WHERE id=? AND status='running'",
             (f"敌方士气 {morale}", order_id))
         conn.commit()
     except sqlite3.Error:

@@ -1295,6 +1295,8 @@ def attack_player(rec, sock, config: dict, uid, times: int = 1,
         if not out["国家"]:
             out["国家"] = int(info.get("city_country")
                             or info.get("country_id") or 0)
+    if out["名字"]:
+        citydb.note_current_enemy(out["名字"], (info or {}).get("morale"))
     if not uid:
         out["停止原因"] = "没给目标 baseid"
         return out
@@ -1361,6 +1363,8 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         return out
     start_loc = loc
     who = out["名字"] or uid
+    if out.get("名字"):
+        citydb.note_current_enemy(out["名字"])
     if until_down:
         log.info("[打人] 目标 %s uid=%s 城=%s 国=%s；自己在 %s 行动力=%s；"
                  "一直%s直到击退或打不过",
@@ -1434,7 +1438,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             out["名字"] = p["name"]
             who = p["name"]
         if p is not None:
-            citydb.note_lock_morale(p.get("morale"))
+            citydb.note_current_enemy(who or out.get("名字") or "", p.get("morale"))
         if p is None:
             if out["成功"]:
                 out["击退"] = True
@@ -1500,6 +1504,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             if nm:
                 out["名字"] = nm
                 who = nm
+                citydb.note_current_enemy(nm)
         after = defu.get("field8") if defu else None
         lost = defu.get("field14") if defu else None
         after_n = (after if isinstance(after, int) and not isinstance(after, bool)
@@ -1742,6 +1747,7 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
                     return "break"
                 return "continue"
+            citydb.note_current_enemy(p.get("name"), p.get("morale"))
             one = attack_player(
                 rec, sock, config, uid, times=0, sweep=sweep,
                 city_id=city_id,

@@ -67,6 +67,19 @@ input.when { width: 12.5em; }
 .orders td.reason { white-space: normal; min-width: 12em; max-width: 22em; }
 .orders button.ghost { margin-left: 8px; padding: 4px 10px; }
 .order-cards { display: none; }
+.now-fighting {
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 12px 0 0;
+  font-weight: 700;
+}
+.now-fighting .k {
+  display: block;
+  color: #777;
+  font-size: 12px;
+  font-weight: 400;
+}
 label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
 input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
 input.mins { width: 6em; }
@@ -155,7 +168,15 @@ img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px
   .proc-text { flex: 1 1 100%; }
   .orders table { display: none; }
   .order-cards { display: grid; gap: 10px; margin-top: 12px; }
+  .now-fighting {
+    position: sticky;
+    top: var(--el-menu-horizontal-height, 60px);
+    z-index: 4;
+    margin-top: 8px;
+    box-shadow: 0 1px 0 #eee;
+  }
   .order-card { background: #fff; border-radius: 8px; padding: 12px; }
+  .order-card.fighting { outline: 1px solid #8ebfed; }
   .order-card p { margin: 0 0 6px; }
   .order-card .k { display: block; color: #777; font-size: 12px; }
   .order-card .reason { white-space: normal; word-break: break-word; }
