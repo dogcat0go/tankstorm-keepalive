@@ -25,6 +25,7 @@
 
 import re
 import select
+import signal
 import socket
 import threading
 import time
@@ -36,6 +37,75 @@ from .qzone import get_game_context
 from .recorder import Recorder
 
 log = get_logger()
+
+# 游戏连接活着时，网页票据可能一直没人碰。闲置大约一个多小时后腾讯会不认，
+# 版本更新一重启就要扫码。这里每隔一刻钟再打开一次游戏页。
+LOGIN_TOUCH_SEC = 15 * 60
+_login_sessions = []
+_login_sessions_guard = threading.Lock()
+_login_sig_installed = False
+
+
+def install_login_refresh() -> None:
+    """主线程接住 SIGTERM，退出前再刷新一次网页票据。systemctl stop 走的是这个信号。"""
+    global _login_sig_installed
+    if _login_sig_installed or threading.current_thread() is not threading.main_thread():
+        return
+    _login_sig_installed = True
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def _on_term(signum, frame):
+        refresh_login_sessions()
+        if callable(previous) and previous not in (signal.SIG_DFL, signal.SIG_IGN):
+            previous(signum, frame)
+            return
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _on_term)
+
+
+def bind_login_session(qq) -> None:
+    """这个会话活着的时候，定期去游戏页续一下网页票据。"""
+    install_login_refresh()
+    with _login_sessions_guard:
+        if qq not in _login_sessions:
+            _login_sessions.append(qq)
+    if getattr(qq, "_touch_stop", None):
+        return
+    stop = threading.Event()
+    qq._touch_stop = stop
+
+    def loop():
+        while not stop.wait(LOGIN_TOUCH_SEC):
+            try:
+                qq.touch_login()
+            except Exception:
+                log.debug("网页票据保活没做成", exc_info=True)
+
+    threading.Thread(target=loop, name="login-touch", daemon=True).start()
+
+
+def unbind_login_session(qq) -> None:
+    """这条会话不再用了就停掉保活，避免旧线程继续往同一份 cookie 里写。"""
+    stop = getattr(qq, "_touch_stop", None)
+    if stop is not None:
+        stop.set()
+    with _login_sessions_guard:
+        try:
+            _login_sessions.remove(qq)
+        except ValueError:
+            pass
+
+
+def refresh_login_sessions() -> None:
+    """进程要退出时再写一次 cookie，让拉起来的新进程还能用这张票。"""
+    with _login_sessions_guard:
+        sessions = list(_login_sessions)
+    for qq in sessions:
+        try:
+            qq.touch_login(block=False)
+        except Exception:
+            log.info("退出前刷新网页票据没做成", exc_info=True)
 
 
 def _arm_super_storm(rec, sock, config, qq=None) -> None:
@@ -2346,6 +2416,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
 
     stop = None
     try:
+        bind_login_session(qq)
         stop = _start_attack_status()
         if citydb.manual_orders_running():
             citydb.mark_attack_resume()
@@ -2420,6 +2491,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             _stop_attack_status(stop)
         citydb.set_attack_context(0, "")
         cli.release_qq_lock(getattr(qq, "cookie_file", "") or "")
+        unbind_login_session(qq)
         with _pool_guard:
             if _pool.get(uin) is threading.current_thread():
                 _pool.pop(uin, None)
@@ -2812,6 +2884,7 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
         owner = int(citydb.attack_context_user() or 0)
         if owner:
             citydb.set_page_qr(True, owner)
+    qq._login_busy = True
     try:
         while True:
             attempt += 1
@@ -2833,6 +2906,7 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
             log.warning("本轮登录未完成（超时/过期），15 秒后重试", )
             time.sleep(15)
     finally:
+        qq._login_busy = False
         if owner:
             citydb.set_page_qr(False, owner)
 
@@ -2872,6 +2946,8 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
     rec = Recorder(config, on_alert=on_alert)
 
     # 启动时若未登录（如服务器首次部署），也走"推送二维码"流程
+    install_login_refresh()
+    bind_login_session(qq)
     if not qq.is_valid():
         relogin_with_push(qq, config)
 
@@ -2896,6 +2972,7 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
     except KeyboardInterrupt:
         log.info("手动停止保持活跃")
     finally:
+        unbind_login_session(qq)
         rec.close()
         if rec.counts:
             top = sorted(rec.counts.items(), key=lambda kv: -kv[1])[:8]

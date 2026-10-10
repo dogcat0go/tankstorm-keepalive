@@ -1109,6 +1109,81 @@ def set_user_expiry(username: str, expires_at: str) -> bool:
         conn.close()
 
 
+def list_members() -> list:
+    """全部登录账号。给管理员看页面配置，不含密码。"""
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id, username, IFNULL(qq_target,''), IFNULL(expires_at,''), "
+            "IFNULL(tier,'初级'), IFNULL(admin,0), IFNULL(auto_lock,0), "
+            "IFNULL(hold_min,0), IFNULL(hold_all,0), IFNULL(card_max,100), "
+            "IFNULL(retreat_mode,'hops'), IFNULL(retreat_hops,3), "
+            "IFNULL(retreat_city,0), IFNULL(retreat_fail,0), "
+            "IFNULL(lock_cards,3), IFNULL(modo_cards,0), IFNULL(region,0), "
+            "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,'') "
+            "FROM app_user ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    items = []
+    for row in rows:
+        items.append({
+            "id": int(row[0]),
+            "username": row[1],
+            "qq_target": row[2],
+            "expires_at": row[3],
+            "tier": row[4],
+            "admin": bool(row[5]),
+            "auto_lock": bool(row[6]),
+            "hold_min": int(row[7] or 0),
+            "hold_all": bool(row[8]),
+            "card_max": int(row[9] if row[9] is not None else 100),
+            "retreat_mode": row[10] or "hops",
+            "retreat_hops": int(row[11] or 3),
+            "retreat_city": int(row[12] or 0),
+            "retreat_fail": bool(row[13]),
+            "lock_cards": int(row[14] if row[14] is not None else 3),
+            "modo_cards": int(row[15] if row[15] is not None else 0),
+            "region": int(row[16] or 0),
+            "off_at": str(row[17] or "").strip(),
+            "attack_qq": str(row[18] or "").strip(),
+            "daily_at": str(row[19] or "").strip(),
+        })
+    return items
+
+
+def reset_member_settings(user_id: int) -> str:
+    """把这个登录账号自己改过的页面配置清回默认。
+
+    用户名、密码、档位、有效期、管理和攻打 QQ 不动。成功返回空字符串。
+    """
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET "
+            "qq_target='', feishu_webhook='', qq_api='', qq_token='', "
+            "auto_lock=0, hold_min=0, hold_all=0, card_max=100, "
+            "retreat_mode='hops', retreat_hops=3, retreat_city=0, retreat_fail=0, "
+            "lock_cards=3, "
+            "clear_mode='head', clear_from=1, clear_to=5, clear_wait=0, clear_scan=0, "
+            "clear_retreat_mode='off', clear_retreat_hops=3, clear_retreat_city=0, "
+            "clear_retreat_fail=0, modo_cards=0, daily_switch=NULL, "
+            "daily_at='', daily_last='', off_at='' "
+            "WHERE id=?",
+            (user_id,))
+        if cur.rowcount != 1:
+            conn.commit()
+            return "没有这个账号"
+        conn.execute("DELETE FROM clear_prio WHERE user_id=?", (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    log.info("已清空登录账号 %s 的页面配置", username_of(user_id))
+    return ""
+
+
 def login_user(username: str, password: str):
     """密码正确返回 session token。密码不对返回 None，账号过期返回 False。"""
     import secrets
