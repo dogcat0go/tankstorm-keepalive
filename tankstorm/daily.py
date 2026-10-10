@@ -1113,27 +1113,27 @@ TASKS = [
     # 4 领第二张（下标 1），2 领第三张（下标 2）。
     # 查询回包 threeMonthCardGetAwd 对应位为 false、剩余天数 > 0 才发。
     # 以前这项发的是 type=0，只开面板，并不领取。
-    _t("月卡领取", "月卡每日额度", "0408", "RceRedwarMonthCard",
+    _t("超值月卡", "超值月卡", "0408", "RceRedwarMonthCard",
        {1: ("int32", 1), 2: ("int32", 0)},
        "实测", "2026-10-10：{type:0,activetype:0} 查询 → "
-               "{type:1,activetype:0} 领第一张。勋章 +300，天数 75→74",
+               "{type:1,activetype:0} 领取。勋章 +300，天数 75→74",
        prelude=[("0408", {1: ("int32", 0), 2: ("int32", 0)})],
        gate=Gate("RseRedwarMonthCard", "threeMonthCardGetAwd", index=0,
                  claimed_flag=True, count_field="threeMonthCardCnt"),
        report=("threeMonthCardGetAwd", "threeMonthCardCnt")),
 
-    _t("月卡第二张", "月卡第二张", "0408", "RceRedwarMonthCard",
+    _t("VIP月卡", "VIP月卡", "0408", "RceRedwarMonthCard",
        {1: ("int32", 1), 2: ("int32", 4)},
-       "实测", "2026-10-10：{type:1,activetype:4} 领第二张。"
+       "实测", "2026-10-10：{type:1,activetype:4} 领取。"
                "道具 21633 +1，天数 15→14",
        prelude=[("0408", {1: ("int32", 0), 2: ("int32", 0)})],
        gate=Gate("RseRedwarMonthCard", "threeMonthCardGetAwd", index=1,
                  claimed_flag=True, count_field="threeMonthCardCnt"),
        report=("threeMonthCardGetAwd", "threeMonthCardCnt")),
 
-    _t("月卡第三张", "月卡第三张", "0408", "RceRedwarMonthCard",
+    _t("福利月卡", "福利月卡", "0408", "RceRedwarMonthCard",
        {1: ("int32", 1), 2: ("int32", 2)},
-       "实测", "2026-10-10：{type:1,activetype:2} 领第三张。"
+       "实测", "2026-10-10：{type:1,activetype:2} 领取。"
                "道具 10061、10095 各 +1，天数 15→14",
        prelude=[("0408", {1: ("int32", 0), 2: ("int32", 0)})],
        gate=Gate("RseRedwarMonthCard", "threeMonthCardGetAwd", index=2,
@@ -1727,6 +1727,28 @@ def _read_counts(data, path):
     return _read_path(data, path)
 
 
+def _month_card_status(data, index):
+    """这一张的剩余天数，以及今天还能不能领。读不到返回 None。"""
+    if not isinstance(data, dict):
+        return None
+    counts = _aslist(data.get("threeMonthCardCnt"))
+    flags = _aslist(data.get("threeMonthCardGetAwd"))
+    if index >= len(counts) and index >= len(flags):
+        return None
+    left = counts[index] if index < len(counts) else None
+    bit = flags[index] if index < len(flags) else None
+    if not isinstance(left, int) or isinstance(left, bool) or left <= 0:
+        return "没有剩余天数"
+    if bit is True:
+        return f"剩余 {left} 天，今日已领"
+    if bit is False:
+        return f"剩余 {left} 天，今日可领"
+    return f"剩余 {left} 天"
+
+
+_MONTH_CARDS = (("超值月卡", 0), ("VIP月卡", 1), ("福利月卡", 2))
+
+
 def _check_gate(gate, data, tiers=None):
     """判断闸门。返回 (是否放行, 说明, 免费次数是否已归零, 该打第几档)。
 
@@ -1754,12 +1776,14 @@ def _check_gate(gate, data, tiers=None):
             return (False, f"{gate.field}[{gate.index}]={bit!r} 不是领取标记，"
                            "这一轮不做", False, None)
         if gate.count_field:
-            counts = _aslist(_read_counts(data, gate.count_field))
-            left = counts[gate.index] if gate.index < len(counts) else None
-            if (not isinstance(left, int) or isinstance(left, bool) or left <= 0):
-                return (False, f"这张月卡没有剩余天数"
-                               f"（{gate.count_field}={counts}），不领",
-                        True, None)
+            text = _month_card_status(data, gate.index)
+            if not text:
+                return (False, f"{gate.field} 读不出这张月卡，这一轮不做",
+                        False, None)
+            if text.endswith("今日可领"):
+                return (True, text, False, None)
+            done_today = text.endswith("今日已领") or text == "没有剩余天数"
+            return (False, text, done_today, None)
         if bit:
             return (False, f"已经领过了（{gate.field}[{gate.index}]=True）",
                     True, None)
@@ -2675,6 +2699,15 @@ def _run(rec, sock, config, schema, on_fail=None):
         stages=_campaign_goal(config) or "",
         interval=_campaign_interval(config),
         on_fail=on_fail)
+    got = (rec.latest.get("RseRedwarMonthCard") if rec else None) or (None, None)
+    panel = got[1] if isinstance(got, tuple) and isinstance(got[1], dict) else None
+    if panel:
+        for key, index in _MONTH_CARDS:
+            if results.get(key) == "未开启":
+                text = _month_card_status(panel, index)
+                if text:
+                    results[key] = text
+
     _publish_total(results, on_fail)
 
     log.info("=== 每日任务结束 ===")
