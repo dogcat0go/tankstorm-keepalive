@@ -202,26 +202,19 @@ def _read_panel(data):
             data.get("nIntegralScore"))
 
 
-def rank_window(sock, rec, my_rank, country, timeout=6.0, behind_top=False):
-    """取可挑战名单。返回 (名单, 真人名字表)，名单是 [(名次, uid), …]。
+def _query_board(sock, rec, typ, nindex, country, timeout=6.0):
+    """发一次 RceArenaRankInfo，返回 (type 对得上的榜单, 真人名字表)。
 
-    一条请求会引来**两条**同名回包：type:2 是"名次→uid"，type:3 是
-    "uid→名字"（只含真人）。两条都要，靠 type 区分，别混。
-
-    ⚠️ 只取 field2.field3 —— 那才是可挑战的窗口（十个人都排在自己前面）。
-    同一条回包里的 field4 是**全国前十**，拿它当目标就等于去打榜首。
-    behind_top 只在自己已经是第一名时打开：前面没有人，改从第 2～10 名里挑。
+    一条请求会引来**两条**同名回包：type:1/2 是"名次→uid"，type:3 是
+    "uid→名字"（只含真人）。名字只用来写日志，拿不到不算错。
     """
     since = _send(sock, rec, OP_RANK,
-                  {1: ("int32", 2), 2: ("int32", my_rank),
+                  {1: ("int32", typ), 2: ("int32", nindex),
                    3: ("int32", country)})
-    board = _await_response(sock, rec, RSE_RANK, since, timeout,
-                            want=lambda d: d.get("type") == 2)
-    if not isinstance(board, dict):
-        return [], {}
-
-    # 名字表紧跟着来，已经到了就立刻挑得到，没到最多再等 2 秒。
-    # 拿不到不算错 —— 名字只用来写日志，判 NPC 靠的是 uid 本身。
+    board = _await_response(
+        sock, rec, RSE_RANK, since, timeout,
+        want=lambda d: d.get("type") == typ,
+        relaxed=lambda d: d.get("type") in (1, 2) and d.get("field2") is not None)
     names = {}
     tbl = _await_response(sock, rec, RSE_RANK, since, 2.0,
                           want=lambda d: d.get("type") == 3)
@@ -230,8 +223,34 @@ def rank_window(sock, rec, my_rank, country, timeout=6.0, behind_top=False):
         for e in (rows if isinstance(rows, list) else [rows]):
             if isinstance(e, dict) and isinstance(e.get("field1"), str):
                 names[e["field1"]] = e.get("field2")
+    return (board if isinstance(board, dict) else {}), names
 
-    return _parse_board(board, country, behind_top=behind_top), names
+
+def rank_window(sock, rec, my_rank, country, timeout=6.0, behind_top=False):
+    """取可挑战名单。返回 (名单, 真人名字表)，名单是 [(名次, uid), …]。
+
+    ⚠️ 平时只取 field2.field3 —— 那才是可挑战的窗口（十个人都排在自己前面）。
+    同一条回包里的 field4 是**全国前十**，拿它当目标就等于去打榜首。
+
+    自己已经是第一名时（behind_top）：前面没有人，nIndex=1 的窗口是空的。
+    改问 nIndex=11 ——「排在第 11 名前面的十个人」正好是本国第 1～10 名，
+    去掉自己之后就是要打的第 2～10 名。还取不到再退回 type:1 全服榜里
+    本国那一段。
+    """
+    nindex = 11 if behind_top else my_rank
+    board, names = _query_board(sock, rec, 2, nindex, country, timeout)
+    entries = _parse_board(board, country, behind_top=behind_top)
+    if behind_top and not any(2 <= r <= 10 for r, _ in entries):
+        log.info("[争霸战] nIndex=11 没拿到本国第 2～10 名，改问 type:1 全服榜")
+        board1, names1 = _query_board(sock, rec, 1, 1, country, timeout)
+        names.update(names1)
+        extra = _parse_board(board1, country, behind_top=True)
+        seen = set(entries)
+        for e in extra:
+            if e not in seen:
+                seen.add(e)
+                entries.append(e)
+    return entries, names
 
 
 def _entry_rows(raw):
@@ -252,27 +271,37 @@ def _entry_rows(raw):
 def _parse_board(board, country, behind_top=False):
     """从榜单回包里抽出本国的 [(名次, uid), …]。
 
-    ⚠️ 只取 field3。同一条回包里的 field4 是**全国前十**，拿它当目标就等于
-    去打榜首。唯一的例外是自己已经是第一名（behind_top）：前面没有人，
-    这时才把 field4 里的第 2～10 名并进来。
-    type:1（全服榜）是六个国家一段一段的，所以必须按国家挑对那段。
+    ⚠️ 平时只取 field3。同一条回包里的 field4 是**全国前十**，拿它当目标
+    就等于去打榜首，所以默认不用。
+    自己已经是第一名（behind_top）时：优先用 field3（nIndex=11 时就是
+    本国第 1～10 名）。field3 里没有第 2～10 名，才把 field4 / field6 /
+    field7 里落在 2～10 的并进来（type:1 全服榜本国那一段走这条）。
+    type:1 是六个国家一段一段的，所以必须按国家挑对那段。
     """
     blocks = board.get("field2") or []
     if isinstance(blocks, dict):
         blocks = [blocks]
     out, seen = [], set()
+    extras = []
     for b in blocks:
         if not isinstance(b, dict):
             continue
         if b.get("field1") not in (None, country):
             continue
-        rows = _entry_rows(b.get("field3"))
         if behind_top:
-            rows = rows + _entry_rows(b.get("field4"))
-        for rank, uid in rows:
+            extras.extend(_entry_rows(b.get("field4")))
+            extras.extend(_entry_rows(b.get("field6")))
+            extras.extend(_entry_rows(b.get("field7")))
+        for rank, uid in _entry_rows(b.get("field3")):
             if behind_top and not (2 <= rank <= 10):
                 continue
             if (rank, uid) in seen:
+                continue
+            seen.add((rank, uid))
+            out.append((rank, uid))
+    if behind_top and not out:
+        for rank, uid in extras:
+            if not (2 <= rank <= 10) or (rank, uid) in seen:
                 continue
             seen.add((rank, uid))
             out.append((rank, uid))
@@ -503,7 +532,7 @@ def _loop(rec, sock, rounds, country, gap, prefer, allow_player, out):
             break
 
         if my_rank == 1 and not told_top:
-            log.info("[争霸战] 当前已是第一名，改为挑战第 2～10 名")
+            log.info("[争霸战] 当前已是第一名，按本国第 2～10 名继续打")
             told_top = True
         entries, names = rank_window(
             sock, rec, my_rank, country, behind_top=(my_rank == 1))
