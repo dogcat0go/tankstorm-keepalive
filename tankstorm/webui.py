@@ -164,6 +164,16 @@ def _user_out(user: dict) -> dict:
     }
 
 
+def _member_views() -> list:
+    items = []
+    for user in citydb.list_members():
+        item = _user_out(user)
+        item["attack_qq"] = user.get("attack_qq") or ""
+        item["daily_at"] = user.get("daily_at") or ""
+        items.append(item)
+    return items
+
+
 def _scan_view(config: dict) -> dict:
     saved = citydb.get_scan_plan()
     stored = saved is not None
@@ -317,6 +327,16 @@ def _handler(config: dict):
                     _json(self, 403, {"error": "只有管理员能看全部攻打 QQ"})
                     return
                 _json(self, 200, {"fighters": citydb.list_attack_fighters()})
+                return
+            if path == "/api/admin/members":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看成员配置"})
+                    return
+                _json(self, 200, {"members": _member_views()})
                 return
             if path == "/api/attack-qr":
                 user = self._user()
@@ -629,6 +649,18 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, _scan_view(config))
+                elif path == "/api/admin/members/clear":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能清空成员配置"})
+                        return
+                    try:
+                        user_id = int(str(data.get("user_id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("账号编号不对") from None
+                    why = citydb.reset_member_settings(user_id)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "members": _member_views()})
                 elif path == "/api/password":
                     why = citydb.change_password(
                         user["id"], data.get("current"), data.get("password"),
@@ -779,7 +811,7 @@ def _announce(host, port, config):
     if not _register_open(config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
         log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级。中级和高级可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置只要高级")
-        log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin")
+        log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin，可看成员配置、攻打 QQ 和扫描安排")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
     log.info("软件授时：登录后 POST /api/clock，正文 mono_ms 为单调计时毫秒，返回会员剩余时间")
     if _dev_login(config):

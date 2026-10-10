@@ -7,6 +7,9 @@ const username = ref("");
 const password = ref("");
 const err = ref("");
 const cities = ref([]);
+const members = ref([]);
+const openMember = ref(0);
+const clearing = ref(0);
 const fighters = ref([]);
 const scanGap = ref("300");
 const quietStart = ref("");
@@ -95,8 +98,53 @@ async function refreshFighters() {
   fighters.value = data.fighters || [];
 }
 
+async function loadMembers() {
+  const data = await api("/api/admin/members");
+  members.value = data.members || [];
+}
+
+function cityName(id) {
+  const hit = cities.value.find((c) => String(c.id) === String(id));
+  return hit ? cityLabel(hit) : "";
+}
+
+function retreatText(mode, hops, city, fail) {
+  let text = "不后退";
+  if (mode === "hops") text = "后退 " + hops + " 座，朝向 " + (cityName(city) || "马奇诺");
+  else if (mode === "city") text = "退到 " + (cityName(city) || city || "—");
+  if ((mode === "hops" || mode === "city") && fail) text += "，没打成也退";
+  return text;
+}
+
+function clearPages(m) {
+  return m.clear_mode === "range" ? "第 " + m.clear_from + " 到 " + m.clear_to + " 页" : "前5页";
+}
+
+function prioText(m) {
+  const rows = m.clear_priority || [];
+  if (!rows.length) return "无";
+  return rows.map((row) => row.uid + "（" + row.rank + "）").join("、");
+}
+
+function toggleMember(id) {
+  openMember.value = openMember.value === id ? 0 : id;
+}
+
+async function clearMember(m) {
+  if (clearing.value) return;
+  if (!window.confirm("清空 " + m.username + " 的账号配置？档位、有效期、管理和攻打 QQ 会留下。")) return;
+  err.value = "";
+  clearing.value = m.id;
+  try {
+    const data = await api("/api/admin/members/clear", { user_id: m.id });
+    members.value = data.members || [];
+  } finally {
+    clearing.value = 0;
+  }
+}
+
 async function loadAdmin() {
-  const jobs = await Promise.allSettled([loadCities(), loadScan(), refreshFighters()]);
+  const jobs = await Promise.allSettled([loadCities(), loadMembers(), loadScan(), refreshFighters()]);
   const failed = jobs.find((job) => job.status === "rejected");
   if (failed) err.value = failed.reason.message || "有一块没加载出来";
 }
@@ -119,6 +167,8 @@ async function loadMe() {
 async function logout() {
   await api("/api/logout", {});
   me.value = null;
+  members.value = [];
+  openMember.value = 0;
   fighters.value = [];
   scanRanges.value = [];
 }
@@ -138,7 +188,7 @@ onUnmounted(() => {
   <main>
     <h1>管理</h1>
     <p class="lead" v-if="!me">
-      管理员登录后，在这里安排扫描，并查看每个攻打 QQ 的状态。
+      管理员登录后，在这里查看成员配置、安排扫描，并查看每个攻打 QQ 的状态。
       <a class="ghost" href="/">回到订阅</a>
     </p>
     <form v-if="!me" @submit.prevent="enter().catch((e) => (err = e.message))">
@@ -160,6 +210,45 @@ onUnmounted(() => {
         <a class="ghost" href="/">回到订阅</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>
+      <h2>成员账号</h2>
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理和攻打 QQ 不动。</p>
+      <div class="wide" v-if="members.length">
+        <table class="members">
+          <thead>
+            <tr><th>登录账号</th><th>档</th><th>有效期</th><th>攻打 QQ</th><th>区服</th><th></th></tr>
+          </thead>
+          <tbody>
+            <template v-for="m in members" :key="m.id">
+              <tr>
+                <td>{{ m.username }}<span v-if="m.admin" class="muted"> · 管理</span></td>
+                <td>{{ m.tier || "初级" }}</td>
+                <td>{{ m.expires_at || "不限期" }}</td>
+                <td>{{ m.attack_qq || "—" }}</td>
+                <td>{{ m.region ? m.region + "区" : "—" }}</td>
+                <td>
+                  <button type="button" class="ghost" @click="toggleMember(m.id)">{{ openMember === m.id ? "收起" : "配置" }}</button>
+                  <button type="button" class="ghost" :disabled="clearing === m.id" @click="clearMember(m).catch((e) => (err = e.message))">清空</button>
+                </td>
+              </tr>
+              <tr v-if="openMember === m.id">
+                <td colspan="6" class="member-cfg">
+                  <p>订阅 QQ：{{ m.qq_target || "—" }}</p>
+                  <p>挂机：{{ m.hold_min || 0 }} 分钟<template v-if="m.hold_all"> · 全天候</template></p>
+                  <p>定时关闭：{{ m.off_at || "未设" }}</p>
+                  <p>自动锁敌：{{ m.auto_lock ? "开" : "关" }} · 锁敌恢复卡 {{ m.lock_cards }} 张/小时</p>
+                  <p>恢复卡上限：{{ m.card_max }} · 摩多：{{ m.modo_cards || 0 }}</p>
+                  <p>打完后退：{{ retreatText(m.retreat_mode, m.retreat_hops, m.retreat_city, m.retreat_fail) }}</p>
+                  <p>清城扫页：{{ clearPages(m) }} · 空城再打 {{ m.clear_wait ? m.clear_wait + " 分钟" : "结束" }} · 扫页冷却 {{ m.clear_scan ? m.clear_scan + " 秒" : "每次出手" }}</p>
+                  <p>清城后退：{{ retreatText(m.clear_retreat_mode, m.clear_retreat_hops, m.clear_retreat_city, m.clear_retreat_fail) }}</p>
+                  <p>优先 UID：{{ prioText(m) }}</p>
+                  <p>日常定时：{{ m.daily_at || "未设" }}</p>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <p v-if="!members.length" class="muted">还没有登录账号。</p>
       <h2>攻打 QQ</h2>
       <p class="muted">每 5 秒刷新。每个攻打 QQ 一条线程，票据在对应的 cookie 文件里。</p>
       <table>
