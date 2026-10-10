@@ -1171,6 +1171,15 @@ TASKS = [
        gate=Gate("RseAdmiralOpen", "freeVisitCnt"),
        tiers=Tiers(4, [0, 1, 2])),
 
+    # 2026-10-10 抓包。type=1 只查询。type=11 是拨款，只写 type，
+    # 一次把一部分铸造兑成代币（42→20，代币 +22），拨到 0 为止。
+    _t("将领授勋", "将领·授勋拨款", "04c1", "RceMedalHonorOpt",
+       {}, "实测",
+       "2026-10-10：RceAdmiralOpen{type:0} → "
+       "{type:1,nCreditType:0,bUseItem:false} 查询 → {type:11} 拨款。"
+       "nCastNum>0 才发。不带点券、不用道具。回包看 nType 和 nResult",
+       runner=lambda rec, sock, config: daily_medal(rec, sock, config)),
+
     # 将领和参谋是两份独立的技能书，各领各的。原先是一个任务 max_per_day=2，
     # 但 fields 写死 ActiveType=0，跑第二次只是把将领那份又领一遍。
     # 8/10 抓包实测客户端确实发了两组：{0,0}→{1,0} 和 {0,1}→{1,1}。
@@ -1895,6 +1904,75 @@ def _ready_heroes(panel, busy):
         ready.append((hid, level))
     ready.sort(key=lambda item: (-item[1], -item[0]))
     return ready
+
+
+def daily_medal(rec, sock, config):
+    """将领授勋拨款。2026-10-10 抓包：开将领面板后查 nCastNum，大于 0 才发 type=11。
+
+    一次请求只兑掉一部分（实测 42→20，代币 +22），所以拨到 0 或不再减少为止。
+    拨款包只写 type。不带点券、不用道具。回包步骤是 nType，nResult=0 才算成。
+    """
+    def _num(data, key):
+        v = data.get(key) if isinstance(data, dict) else None
+        if isinstance(v, bool) or not isinstance(v, int):
+            return None
+        return v
+
+    before = rec.seq_mark() if rec else 0
+    sender.send_frame(sock, "044e",
+                      encode_message({3: ("int32", 0)}, omit_zero=False),
+                      rec.rc4_c2s)
+    _nap(0.4)
+    sender.send_frame(
+        sock, "04c1",
+        encode_message({2: ("int32", 1), 5: ("int32", 0), 6: ("bool", False)},
+                       omit_zero=False),
+        rec.rc4_c2s)
+    panel = _await_response(
+        sock, rec, "RseMedalHonorOpt", before, 6.0,
+        want=lambda d: isinstance(d, dict) and d.get("nType") == 1)
+    left = _num(panel, "nCastNum")
+    tokens = _num(panel, "nTokenNum")
+    if panel is None or left is None:
+        return False, "失败：未收到授勋面板，读不到铸造次数"
+    if left <= 0:
+        return True, "成功：没有可拨款的铸造次数"
+    start = tokens
+    rounds = 0
+    while left > 0 and rounds < 20:
+        raise_if_stopped()
+        mark = rec.seq_mark() if rec else 0
+        sender.send_frame(sock, "04c1",
+                          encode_message({2: ("int32", 11)}),
+                          rec.rc4_c2s)
+        got = _await_response(
+            sock, rec, "RseMedalHonorOpt", mark, 6.0,
+            want=lambda d: isinstance(d, dict) and d.get("nType") == 11)
+        result = _num(got, "nResult")
+        now = _num(got, "nCastNum")
+        now_tokens = _num(got, "nTokenNum")
+        if got is None or result is None:
+            if rounds:
+                break
+            return False, "失败：未收到拨款回包"
+        if result != 0:
+            if rounds:
+                break
+            return False, f"失败：拨款被拒 nResult={result}"
+        if now is None or now >= left:
+            break
+        rounds += 1
+        left = now
+        if now_tokens is not None:
+            tokens = now_tokens
+        _nap(0.4)
+    if rounds == 0:
+        return False, "失败：铸造次数没有减少"
+    gain = ""
+    if isinstance(start, int) and isinstance(tokens, int):
+        gain = f"，代币 {start}→{tokens}"
+    tail = "铸造次数已用完" if left <= 0 else f"还剩铸造 {left} 次"
+    return True, f"成功：拨款 {rounds} 次{gain}，{tail}"
 
 
 def daily_train(rec, sock, config):

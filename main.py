@@ -289,6 +289,8 @@ def main() -> int:
     g3 = parser.add_argument_group("每日任务（一次性）")
     g3.add_argument("--daily", action="store_true",
                     help="跑一轮每日任务后退出；与 --keepalive 同时给则由保活带着跑")
+    g3.add_argument("--only", metavar="任务名", default="",
+                    help="配合 --daily：这一轮只做这一项，其它开关这次不算")
     g3.add_argument("--list", action="store_true", help="列出每日任务及今日进度")
     g3.add_argument("--reset", action="store_true", help="清空今日任务计数")
 
@@ -371,6 +373,10 @@ def main() -> int:
 
     # 什么都不给就打印用法。以前默认会去跑 endpoints.json 里那套早已废弃的
     # HTTP 任务，全部失败还把退出码带成 1，看着像登录坏了。
+    if args.only and not args.daily:
+        log.error("--only 要和 --daily 一起用")
+        return 1
+
     if not any((args.login, args.check, args.keepalive, args.daily,
                 args.list, args.reset, args.task, args.import_device,
                 args.country_war, args.city_players is not None,
@@ -487,6 +493,18 @@ def main() -> int:
         log.info("已导入 %s", "、".join(got))
         log.info("设备状态：%s", qq.device_status())
         return 0
+
+    if args.only:
+        from tankstorm.daily import switch_keys
+        name = args.only.strip()
+        known = switch_keys()
+        if name not in known:
+            log.error("没有这项每日任务：%s", name)
+            return 1
+        block = config.setdefault("每日任务", {}).setdefault("任务", {})
+        for key in known:
+            block[key] = key == name
+        log.info("这一轮只做：%s", name)
 
     # 保活：常驻。--keepalive --daily 时才顺带跑一轮任务
     if args.city_page < 0 or (args.city_page_end is not None and args.city_page_end < 0):
