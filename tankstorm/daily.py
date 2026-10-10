@@ -28,8 +28,9 @@
 
 任务顺序
 --------
-"每日任务领奖"(RceDailyTask) 必须排在最后 —— 前面那些操作本身会推进每日任务
-进度，先领就漏了。TASKS 表的顺序即执行顺序，ORDER_LAST 里的排到末尾。
+"每日任务领奖"(RceDailyTask) 排在会产生进度的任务之后，先领就漏了。
+将领授勋不推进它，再排在领奖后面。TASKS 表的顺序即执行顺序，
+ORDER_LAST 里的排到末尾。
 
 参数来源
 --------
@@ -499,8 +500,9 @@ DANGER_FIELD = re.compile(
 #   国家宝箱从 2026-10-04 起改走 type:26，不再发 count。
 SAFE_FIELDS = {("0463", "count")}
 
-# 这些任务放到最后执行（它们领的是"前面动作累积出来的"奖励）
-ORDER_LAST = {"每日任务", "周任务"}
+# 周任务、每日任务领的是前面动作累积出来的奖励，所以排在后面。
+# 将领授勋不推进这两项，再排在它们之后。
+ORDER_LAST = {"每日任务", "周任务", "将领授勋"}
 
 # 军事演习会把有人的场地逐个打下去，服务器回 ret=4，最后把连接打断。
 # 矿区争夺同样不稳。先不做。开关保持关，最近执行里写明。
@@ -1503,8 +1505,9 @@ def ordered_tasks():
     """按执行顺序返回任务：普通任务在前，ORDER_LAST 里的排到最后。"""
     head = [t for t in TASKS if t.key not in ORDER_LAST]
     tail = [t for t in TASKS if t.key in ORDER_LAST]
-    # 尾部内部再排：周任务 → 每日任务（每日任务绝对最后）
-    tail.sort(key=lambda t: 0 if t.key == "周任务" else 1)
+    # 尾部内部再排：周任务 → 每日任务 → 将领授勋
+    rank = {"周任务": 0, "每日任务": 1, "将领授勋": 2}
+    tail.sort(key=lambda t: rank.get(t.key, 9))
     return head + tail
 
 

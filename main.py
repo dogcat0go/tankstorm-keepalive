@@ -448,7 +448,7 @@ def main() -> int:
                   f"{str(t.max_per_day) + cd:<5} {done:<5} {mark:<6} {on}")
         print("-" * 92)
         print("『实测』= 参数来自真实抓包，可放心开；『待确认』= 默认跳过，需先抓包核对")
-        print("周任务/每日任务由代码强制排最后（前面的操作会推进它们的进度）\n")
+        print("周任务、每日任务领奖排在后面，将领授勋再排在最后\n")
         return 0
 
     # 同日去重只对旧的 HTTP 任务有意义。每日任务自己按 logs/daily-state.json
