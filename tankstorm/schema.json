@@ -7022,7 +7022,7 @@
 "bool"
 ],
 "10": [
-"field10",
+"threeMonthCardCnt",
 "int32"
 ],
 "11": [
@@ -7030,11 +7030,11 @@
 "bool"
 ],
 "12": [
-"field12",
+"threeMonthCardEndTime",
 "int32"
 ],
 "13": [
-"field13",
+"threeMonthCardGetAwd",
 "bool"
 ]
 }

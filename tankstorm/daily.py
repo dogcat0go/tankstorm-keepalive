@@ -670,6 +670,16 @@ def judge(rse_msg: str, data, ignore_left=False, success_flag=None):
     # ——语义和 ret 正好相反。不特判的话 judge() 找不到 ret 就直接判"成功"，
     # 又是一个假成功。2026-08-10 真客户端抓包实测：领取上期排名奖励回
     # {type:3, result:1}，随后 RseArenaInfo.bLastRankGet 由 false 翻 true。
+    # 月卡回包没有 ret，成败看 nResult，0 才是领到。
+    # 2026-10-10 三张都是 nResult=0，已领标记翻 true、剩余天数减 1。
+    if rse_msg == "RseRedwarMonthCard":
+        r = data.get("nResult")
+        if not isinstance(r, int) or isinstance(r, bool):
+            return False, "响应里没有 nResult，认不出成败", False
+        if r != 0:
+            return False, f"服务器返回 nResult={r}", True
+        return True, "成功：nResult=0", False
+
     if rse_msg in RESULT_IS_STATUS:
         r = data.get("result")
         if not isinstance(r, int) or isinstance(r, bool):
@@ -947,12 +957,13 @@ class Gate:
     """
 
     def __init__(self, rse_msg, field, index=0, timeout=6.0,
-                 claimed_flag=False):
+                 claimed_flag=False, count_field=None):
         self.rse_msg = rse_msg
         self.field = field
         self.index = index
         self.timeout = timeout
         self.claimed_flag = claimed_flag
+        self.count_field = count_field
 
 
 class Tiers:
@@ -1097,9 +1108,37 @@ TASKS = [
     _t("战功排名", "战功榜奖励", "04a2", "RceZhanGongRank",
        {1: ("int32", 0)}, "待确认", "需实测"),
 
+    # 2026-10-10 00:42 抓包。三张都走 0408，type=0 只查询，type=1 才领取。
+    # activetype 不是数组下标：0 领第一张（下标 0，勋章 +300），
+    # 4 领第二张（下标 1），2 领第三张（下标 2）。
+    # 查询回包 threeMonthCardGetAwd 对应位为 false、剩余天数 > 0 才发。
+    # 以前这项发的是 type=0，只开面板，并不领取。
     _t("月卡领取", "月卡每日额度", "0408", "RceRedwarMonthCard",
-       {1: ("int32", 0), 2: ("int32", 0)},
-       "待确认", "未开通月卡则无意义，config 里默认关闭"),
+       {1: ("int32", 1), 2: ("int32", 0)},
+       "实测", "2026-10-10：{type:0,activetype:0} 查询 → "
+               "{type:1,activetype:0} 领第一张。勋章 +300，天数 75→74",
+       prelude=[("0408", {1: ("int32", 0), 2: ("int32", 0)})],
+       gate=Gate("RseRedwarMonthCard", "threeMonthCardGetAwd", index=0,
+                 claimed_flag=True, count_field="threeMonthCardCnt"),
+       report=("threeMonthCardGetAwd", "threeMonthCardCnt")),
+
+    _t("月卡第二张", "月卡第二张", "0408", "RceRedwarMonthCard",
+       {1: ("int32", 1), 2: ("int32", 4)},
+       "实测", "2026-10-10：{type:1,activetype:4} 领第二张。"
+               "道具 21633 +1，天数 15→14",
+       prelude=[("0408", {1: ("int32", 0), 2: ("int32", 0)})],
+       gate=Gate("RseRedwarMonthCard", "threeMonthCardGetAwd", index=1,
+                 claimed_flag=True, count_field="threeMonthCardCnt"),
+       report=("threeMonthCardGetAwd", "threeMonthCardCnt")),
+
+    _t("月卡第三张", "月卡第三张", "0408", "RceRedwarMonthCard",
+       {1: ("int32", 1), 2: ("int32", 2)},
+       "实测", "2026-10-10：{type:1,activetype:2} 领第三张。"
+               "道具 10061、10095 各 +1，天数 15→14",
+       prelude=[("0408", {1: ("int32", 0), 2: ("int32", 0)})],
+       gate=Gate("RseRedwarMonthCard", "threeMonthCardGetAwd", index=2,
+                 claimed_flag=True, count_field="threeMonthCardCnt"),
+       report=("threeMonthCardGetAwd", "threeMonthCardCnt")),
 
     # ---- 有免费次数的：必须带 guard，免费用完就停 ----
     #
@@ -1694,6 +1733,29 @@ def _check_gate(gate, data, tiers=None):
         return (False, f"{gate.rse_msg} 里没有 {gate.field}，这一轮不做",
                 False, None)
     whole = raw
+
+    if gate.claimed_flag and isinstance(raw, (list, tuple)):
+        # 月卡 threeMonthCardGetAwd 是三张各自的已领标记。布尔进下面的次数
+        # 分支会被当成 0，三张都会被拦下。
+        if gate.index >= len(raw):
+            return (False, f"{gate.field}={list(raw)} 没有第 {gate.index} 张，"
+                           "这一轮不做", False, None)
+        bit = raw[gate.index]
+        if not isinstance(bit, bool):
+            return (False, f"{gate.field}[{gate.index}]={bit!r} 不是领取标记，"
+                           "这一轮不做", False, None)
+        if gate.count_field:
+            counts = _aslist(_read_counts(data, gate.count_field))
+            left = counts[gate.index] if gate.index < len(counts) else None
+            if (not isinstance(left, int) or isinstance(left, bool) or left <= 0):
+                return (False, f"这张月卡没有剩余天数"
+                               f"（{gate.count_field}={counts}），不领",
+                        True, None)
+        if bit:
+            return (False, f"已经领过了（{gate.field}[{gate.index}]=True）",
+                    True, None)
+        return (True, f"还没领（{gate.field}[{gate.index}]=False）",
+                False, None)
 
     if isinstance(raw, (list, tuple)):
         nums = [x if isinstance(x, int) and not isinstance(x, bool) else 0

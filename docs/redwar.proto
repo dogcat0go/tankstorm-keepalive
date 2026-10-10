@@ -7365,10 +7365,10 @@ message RseRedwarMonthCard {
   optional int32      endtime = 7;
   optional int32      activetype = 8;
   optional bool       hasGetDayfree = 9;
-  optional int32      field10 = 10;
+  repeated int32      threeMonthCardCnt = 10;
   optional bool       isGetAll = 11;
-  optional int32      field12 = 12;
-  optional bool       field13 = 13;
+  repeated int32      threeMonthCardEndTime = 12;
+  repeated bool       threeMonthCardGetAwd = 13;
 }
 
 // com.sincetimes.redwar.game.comnunicate.protocol:_-1gl   opcode 0x02a6
