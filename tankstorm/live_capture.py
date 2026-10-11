@@ -52,7 +52,7 @@ SWF_URL_RE = re.compile(
 _HJDZ = os.path.normpath(os.path.join(app_dir(), "..", "hjdz-automation"))
 
 
-def run(qq, config: dict) -> int:
+def run(qq, config: dict, tank_range: int = 0) -> int:
     if not qq.is_valid() and not relogin_with_push(qq, config):
         return 1
     ctx = get_game_context(qq)
@@ -79,7 +79,7 @@ def run(qq, config: dict) -> int:
     sink = {"fh": open(log_path, "a", encoding="utf-8"), "n": 0}
 
     httpd = _pkt_server(lambda rec: _on_pkt(rec, ignore, sink), canvas)
-    proxy = _CdnProxy(crt, key, pkt_dir)
+    proxy = _CdnProxy(crt, key, pkt_dir, tank_range)
     proxy.start()
     time.sleep(0.3)
     if not proxy.ok:
@@ -460,15 +460,45 @@ def _spki(openssl, crt) -> str:
 def _find_openssl() -> str:
     for p in (os.environ.get("OPENSSL") or "",
               r"D:\strawberry-perl-5.42.0.1-64bit-portable\c\bin\openssl.exe",
+              # Git for Windows 自带一份，克隆了仓库的机器基本都有
+              r"C:\Program Files\Git\usr\bin\openssl.exe",
+              os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                           r"Programs\Git\usr\bin\openssl.exe"),
               shutil.which("openssl") or ""):
         if p and os.path.isfile(p):
             return p
     return ""
 
 
+def _patch_tank_range(swf: bytes, rng: int) -> bytes:
+    """把坦克表里的射程 375 改成 rng。
+
+    armyData 表以 DefineBinaryData 内嵌在主体 SWF（RedWar 把它列在 securityList，
+    CDN 上的同名外部配置会被内嵌版覆盖，所以只能改 SWF）。Unit._attackRange 就是从
+    这张表的 attackRange 列按等级取的；armyPacker 上报给服务端的 range 也是它。
+    表是 GBK、\\r\\n 分行、\\t 分列，第 0 行列类型、第 1 行表头「中文(英文键)」。
+    """
+    from tools.swfparse import replace_binary_data
+
+    def fix(tsv: bytes) -> bytes:
+        rows = tsv.decode("gbk").split("\r\n")
+        keys = [(re.search(r"\((\w+)\)", h) or [h, h])[1] for h in rows[1].split("\t")]
+        gi, ri = keys.index("group"), keys.index("attackRange")
+        for i, row in enumerate(rows):
+            c = row.split("\t")
+            if i >= 2 and len(c) > ri and c[gi] == "2":
+                c[ri] = re.sub(r"(?<!\d)375(?!\d)", str(rng), c[ri])
+                rows[i] = "\t".join(c)
+        return "\r\n".join(rows).encode("gbk")
+
+    return replace_binary_data(
+        swf, "com.sincetimes.redwar.game.RedWar_armyData_zh_CN", fix)
+
+
 class _CdnProxy:
-    def __init__(self, crt, key, pkt_dir):
+    def __init__(self, crt, key, pkt_dir, tank_range=0):
         self.pkt_dir = pkt_dir
+        self.tank_range = tank_range
         self.ok = False
         self._stop = threading.Event()
         self._hook_lock = threading.Lock()
@@ -602,6 +632,12 @@ class _CdnProxy:
                     _hook_swf(self.pkt_dir, asked, f"https://{CDN_HOST}{url_path}")
             if os.path.isfile(dest) and os.path.getsize(dest) > 1_000_000:
                 data = open(dest, "rb").read()
+                if self.tank_range > 0:
+                    try:
+                        data = _patch_tank_range(data, self.tank_range)
+                        log.info("坦克射程 375 -> %d", self.tank_range)
+                    except Exception as exc:
+                        log.warning("改射程失败，按原样投递：%s", exc)
                 _write_http(b, 200, {
                     b"Content-Type": b"application/x-shockwave-flash",
                     b"Cache-Control": b"no-store",

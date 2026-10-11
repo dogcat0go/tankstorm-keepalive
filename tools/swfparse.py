@@ -61,6 +61,33 @@ def iter_tags(body: bytes):
             break
 
 
+def replace_binary_data(raw: bytes, class_name: str, fn) -> bytes:
+    """把 SymbolClass 里叫 class_name 的那块 DefineBinaryData(87) 换成 fn(旧内容)，返回重新压缩的 SWF。
+
+    RedWar 的配置表（armyData 等）就是这样 [Embed] 进主体 SWF 的，改表不用碰字节码。
+    """
+    body, _, ver, _ = uncompress(raw)
+    tags = list(iter_tags(body))
+    cid = None
+    for code, payload, _ in tags:
+        if code == 76:               # SymbolClass: u16 count, (u16 id, cstring name)*
+            p = 2
+            for _ in range(struct.unpack_from('<H', payload)[0]):
+                e = payload.index(b'\0', p + 2)
+                if payload[p + 2:e] == class_name.encode():
+                    cid = struct.unpack_from('<H', payload, p)[0]
+                p = e + 1
+    if cid is None:
+        raise KeyError(class_name)
+    out = bytearray(body[:_rect_len(body) + 4])
+    for code, payload, _ in tags:
+        if code == 87 and struct.unpack_from('<H', payload)[0] == cid:
+            payload = payload[:6] + fn(payload[6:])
+        # 长头对任意 tag 都合法，统一用长头就不必区分原来是哪种
+        out += struct.pack('<HI', (code << 6) | 0x3F, len(payload)) + payload
+    return b'CWS' + bytes([ver]) + struct.pack('<I', 8 + len(out)) + zlib.compress(bytes(out), 9)
+
+
 if __name__ == '__main__':
     import sys
     raw = open(sys.argv[1], 'rb').read()
