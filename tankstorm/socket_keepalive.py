@@ -28,6 +28,7 @@ import select
 import signal
 import socket
 import sqlite3
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -999,6 +1000,51 @@ def _person_blocking(reason: str) -> bool:
     return "这条路就不通" in text
 
 
+def _travel_problem(reason: str) -> str:
+    """这次攻打或移动要留在「目前在」下面的问题。正常打完、顺利后退都返回空。"""
+    text = " ".join(str(reason or "").split()).strip()
+    if not text:
+        return ""
+    if text in (
+            "这座城打完了", "这一页没有可打的人", "这几页没有可打的人",
+            "已打满设定次数", "已手动关停", "已暂停", "已定时关闭"):
+        return ""
+    if text.endswith("已手动关停") or "不用再退" in text:
+        return ""
+    if text.startswith(("已退到 ", "已移动到 ")):
+        return ""
+    if (text.startswith("朝") and "退了" in text
+            and "停下" not in text and "时：" not in text):
+        return ""
+    return text
+
+
+def _city_where(city_id) -> str:
+    from . import citydb
+
+    try:
+        cid = int(city_id or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    if cid <= 0:
+        return ""
+    return f"{cid} {citydb.city_name(cid) or ''}".strip()
+
+
+def _publish_travel_note(prefix: str, reason: str) -> None:
+    """刷新「目前在」下面那一行。没遇到问题就清空。已经排了移动时，先留着那句提示。"""
+    from . import citydb
+
+    if citydb.attack_move_pending():
+        return
+    problem = _travel_problem(reason)
+    if problem:
+        text = f"{prefix}：{problem}" if prefix else problem
+    else:
+        text = ""
+    citydb.note_attack_move_text(text)
+
+
 def _defeated(reason: str) -> bool:
     """自己被别人打败。一般是人回到了首都。"""
     text = str(reason or "")
@@ -1183,25 +1229,29 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
 
     tally = {"n": start_beats, "note": _beat_note}
     citydb.note_attack_beats(job["id"], start_beats)
+    travel = ""
+    _publish_travel_note("", "")
     try:
         try:
             out = country_war.farm_modo_order(
                 rec, sock, config, int(job.get("cards") or 0),
                 beat=beater, tally=tally)
         except OSError:
+            travel = "连接中断"
             citydb.finish_attack_order(
                 job["id"], "failed", "连接中断", beats=int(tally.get("n") or 0))
             raise
         except Exception as exc:
-            why = _interrupt_reason(exc)
-            log.info("订单 %s %s", job["id"], why, exc_info=True)
+            travel = _interrupt_reason(exc)
+            log.info("订单 %s %s", job["id"], travel, exc_info=True)
             citydb.finish_attack_order(
-                job["id"], "failed", why, beats=int(tally.get("n") or 0))
+                job["id"], "failed", travel, beats=int(tally.get("n") or 0))
             return
         why = str(out.get("停止原因") or "")
         note = str(out.get("说明") or "").strip()
         hits = int(out.get("攻击") or 0)
         beats = int(tally.get("n") or 0)
+        travel = why if why or hits > 0 else "未打成"
         log.info("―― 摩多军团 ―― 打 %d 次，召唤 %d 次，用卡 %d 张，补支援兵 %d 个",
                  hits, int(out.get("召唤") or 0), int(out.get("用卡") or 0),
                  int(out.get("补兵") or 0))
@@ -1233,6 +1283,7 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
         citydb.finish_attack_order(
             job["id"], "failed", show or why or "未打成", beats=beats)
     finally:
+        _publish_travel_note("刷摩多军团时停下", travel)
         citydb.set_fighting_order(0)
 
 
@@ -1337,7 +1388,11 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
     guarding = bool(job.get("auto"))
     if guarding and not from_chain:
         citydb.begin_lock_cards()
+    spot = _city_where(job.get("city_id"))
+    travel = None
     try:
+        travel = ""
+        _publish_travel_note("", "")
         skipped = False
         out = {}
         try:
@@ -1356,20 +1411,25 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                     hold_if_blocked=bool(job.get("auto")), tally=tally,
                     clear_plan=plan)
         except OSError:
+            travel = "连接中断"
             citydb.finish_attack_order(
                 job["id"], "failed", "连接中断", beats=int(tally.get("n") or 0))
             raise
         except Exception as exc:
             why = _interrupt_reason(exc)
+            travel = why
             log.info("订单 %s %s", job["id"], why, exc_info=True)
             citydb.finish_attack_order(
                 job["id"], "failed", why, beats=int(tally.get("n") or 0))
-            return _cut()
+            cut = _cut()
+            cut["why"] = why
+            return cut
         beats = int(tally.get("n") or 0)
         cycle_min = 0
         cycle_stuck = False
         if skipped:
             status, why = "failed", _LOCK_LEFT
+            travel = why
             here = citydb.attack_here_id()
             if job.get("auto") and not from_chain:
                 log.info("订单 %s 是自动锁敌，人已不在，先看同城还有没有索敌", job["id"])
@@ -1390,6 +1450,7 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                          job["city_id"], out.get("移动") or 0, out.get("走到"),
                          out.get("攻击") if out.get("攻击") is not None else "未打")
             action, status, why = _order_result(job, out)
+            travel = why
             if why:
                 log.info("   结束原因：%s", why)
             if (not uid and not job.get("auto") and action == "finish"
@@ -1450,9 +1511,14 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                     finished = True
                 chained = True
                 log.info("同城索敌订单 %s 生效，连着打，打完再后退", nxt["id"])
-                with _order_account(int(nxt.get("user_id") or 0)):
-                    nxt_res = _fight_claimed(
-                        rec, sock, config, beater, nxt, from_chain=True)
+                try:
+                    with _order_account(int(nxt.get("user_id") or 0)):
+                        nxt_res = _fight_claimed(
+                            rec, sock, config, beater, nxt, from_chain=True)
+                except OSError:
+                    travel = "连接中断"
+                    raise
+                travel = str(nxt_res.get("why") or "")
                 last_id = int(nxt_res.get("id") or last_id)
                 here = int(nxt_res.get("here") or here)
                 if nxt_res.get("done"):
@@ -1507,6 +1573,7 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
             log.info("人已在所在国首都 %s，不再后退", where)
             note = f"人已经在所在国首都 {where}，不再后退"
             why = _merge_reason(why, note)
+            travel = _merge_reason(travel or "", note)
             if finished:
                 citydb.append_order_reason(last_id, note)
             want = False
@@ -1523,6 +1590,7 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                 note = _auto_retreat(rec, sock, fight_config, beater, plan)
             except OSError:
                 note = f"{prefix}时连接中断" if prefix else "后退时连接中断"
+                travel = _merge_reason(travel or "", note)
                 log.info("订单 %s %s", last_id, note)
                 if finished:
                     citydb.append_order_reason(last_id, note)
@@ -1534,6 +1602,7 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                 log.info("订单 %s %s", last_id, note)
                 back_note = note
                 why = _merge_reason(why, note)
+                travel = _merge_reason(travel or "", note)
                 if finished:
                     citydb.append_order_reason(last_id, note)
         if cycle_min > 0 and citydb.schedule_empty_order(
@@ -1549,6 +1618,9 @@ def _fight_claimed(rec, sock, config, beater, job, from_chain=False) -> dict:
                 job["id"], status, why, beats=beats, keep_reason=keep)
         return result
     finally:
+        if travel is not None and (sys.exc_info()[0] is None or _travel_problem(travel)):
+            _publish_travel_note(
+                f"攻打 {spot} 时停下" if spot else "攻打时停下", travel)
         if guarding and not from_chain:
             citydb.end_lock_cards()
         citydb.set_fighting_order(0)
@@ -1677,6 +1749,8 @@ def _watch_blocked_path(rec, sock, config, beater, path_at: float) -> float:
         return time.time()
     if not open_path:
         citydb.note_blocked_reason(job["id"], why)
+        where = _city_where(job.get("city_id"))
+        _publish_travel_note(f"攻打 {where} 时停下" if where else "攻打时停下", why)
         log.info("订单 %s 路径还不通：%s", job["id"], why)
         return time.time()
     if citydb.attack_order_open():
@@ -1718,13 +1792,9 @@ def _run_requested_move(rec, sock, config, beater) -> bool:
     why = str((out or {}).get("停止原因") or "").strip()
     landed = int((out or {}).get("走到") or 0)
     if why:
-        citydb.note_attack_move_text(f"移动到 {label} 时停下：{why}")
+        _publish_travel_note(f"移动到 {label} 时停下", why)
     elif landed == city:
-        steps = int((out or {}).get("步数") or 0)
-        if steps <= 0:
-            citydb.note_attack_move_text(f"人已经在 {label}")
-        else:
-            citydb.note_attack_move_text(f"已移动到 {label}")
+        _publish_travel_note("", "")
     else:
         landed_name = citydb.city_name(landed) or str(landed or "")
         citydb.note_attack_move_text(
