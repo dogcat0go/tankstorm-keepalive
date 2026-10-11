@@ -94,10 +94,28 @@ function regionText(row) {
   return n ? n + "区" : "—";
 }
 
-function onlineOf(row) {
-  if (row.online) return true;
-  const f = fighterOf(row.id || row.user_id);
-  return !!(f && f.online);
+function procOf(row) {
+  return row.user_id ? row : fighterOf(row.id);
+}
+
+function inGame(p) {
+  if (!p || !p.online) return false;
+  if (p.need_login || p.phase === "login") return false;
+  const d = String(p.detail || "");
+  if (d.startsWith("登录中") || d.startsWith("登录已失效")) return false;
+  return true;
+}
+
+function statusKind(row) {
+  const p = procOf(row);
+  if (inGame(p)) return "on";
+  if (p && p.online && (p.phase === "login" || String(p.detail || "").startsWith("登录中"))) return "login";
+  return "off";
+}
+
+function statusText(row) {
+  const k = statusKind(row);
+  return k === "on" ? "在线" : k === "login" ? "登录中" : "没在跑";
 }
 
 function sortHint(col, key, dir) {
@@ -127,9 +145,9 @@ function hitRegion(sel, region) {
   return String(Number(region) || 0) === sel;
 }
 
-function hitOnline(sel, on) {
+function hitStatus(sel, row) {
   if (!sel) return true;
-  return sel === "on" ? !!on : !on;
+  return statusKind(row) === sel;
 }
 
 function cmpVal(a, b, dir) {
@@ -146,7 +164,10 @@ function memberKey(m, col) {
   if (col === "expires") return (m.expires_at || "").trim() || "9999-99-99";
   if (col === "qq") return m.attack_qq || "";
   if (col === "region") return regionOf(m) || 9999;
-  if (col === "online") return onlineOf(m) ? 1 : 0;
+  if (col === "online") {
+    const k = statusKind(m);
+    return k === "on" ? 2 : k === "login" ? 1 : 0;
+  }
   return m.id;
 }
 
@@ -154,7 +175,10 @@ function fighterKey(f, col) {
   if (col === "username") return f.username || "";
   if (col === "qq") return String(f.qq || "");
   if (col === "region") return regionOf(f) || 9999;
-  if (col === "online") return f.online ? 1 : 0;
+  if (col === "online") {
+    const k = statusKind(f);
+    return k === "on" ? 2 : k === "login" ? 1 : 0;
+  }
   if (col === "here") return f.here || "";
   return f.user_id;
 }
@@ -163,7 +187,7 @@ const shownMembers = computed(() => {
   const rows = members.value.filter((m) =>
     hitQuery(memberQ.value, m.username, m.attack_qq, m.qq_target)
     && hitRegion(memberRegion.value, m.region)
-    && hitOnline(memberOnline.value, onlineOf(m))
+    && hitStatus(memberOnline.value, m)
     && (!memberTier.value || (m.tier || "初级") === memberTier.value));
   const col = memberSort.value;
   const dir = memberDir.value;
@@ -175,7 +199,7 @@ const shownFighters = computed(() => {
   const rows = fighters.value.filter((f) =>
     hitQuery(fighterQ.value, f.username, f.qq)
     && hitRegion(fighterRegion.value, regionOf(f))
-    && hitOnline(fighterOnline.value, f.online));
+    && hitStatus(fighterOnline.value, f));
   const col = fighterSort.value;
   const dir = fighterDir.value;
   rows.sort((a, b) => cmpVal(fighterKey(a, col), fighterKey(b, col), dir) || a.user_id - b.user_id);
@@ -383,6 +407,7 @@ onUnmounted(() => {
           <select v-model="memberOnline">
             <option value="">全部</option>
             <option value="on">在线</option>
+            <option value="login">登录中</option>
             <option value="off">没在跑</option>
           </select>
         </label>
@@ -418,7 +443,7 @@ onUnmounted(() => {
                 <td>{{ m.expires_at || "不限期" }}</td>
                 <td>{{ m.attack_qq || "—" }}</td>
                 <td>{{ regionText(m) }}</td>
-                <td :class="onlineOf(m) ? 'on' : 'off'">{{ onlineOf(m) ? "在线" : "没在跑" }}</td>
+                <td :class="statusKind(m) === 'on' ? 'on' : 'off'">{{ statusText(m) }}</td>
                 <td>
                   <button type="button" class="ghost" @click="toggleMember(m.id)">{{ openMember === m.id ? "收起" : "配置" }}</button>
                   <button type="button" class="ghost" :disabled="clearing === m.id" @click="clearMember(m).catch((e) => (err = e.message))">清空</button>
@@ -459,6 +484,7 @@ onUnmounted(() => {
           <select v-model="fighterOnline">
             <option value="">全部</option>
             <option value="on">在线</option>
+            <option value="login">登录中</option>
             <option value="off">没在跑</option>
           </select>
         </label>
@@ -482,7 +508,7 @@ onUnmounted(() => {
               <td>{{ f.username }}</td>
               <td>{{ f.qq }}</td>
               <td>{{ regionText(f) }}</td>
-              <td :class="f.online ? 'on' : 'off'">{{ procText(f) }}</td>
+              <td :class="inGame(f) ? 'on' : 'off'">{{ procText(f) }}</td>
               <td>{{ f.here || "—" }}</td>
               <td><code>{{ f.cookie }}</code></td>
             </tr>

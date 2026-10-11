@@ -3825,6 +3825,8 @@ def list_attack_fighters() -> list:
             "detail": status.get("detail"),
             "here": status.get("here") or "",
             "paused": status.get("paused"),
+            "keepalive": status.get("keepalive"),
+            "need_login": status.get("need_login"),
             "region": user_region(user_id),
         })
     return rows
