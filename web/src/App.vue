@@ -830,7 +830,14 @@ onUnmounted(() => {
 
 <template>
   <main>
-    <h1>坦克风暴AI助手</h1>
+    <header class="mast">
+      <div class="insignia" aria-hidden="true"><span></span></div>
+      <div class="mast-copy">
+        <p class="kicker">红色警戒 · 战地指挥所</p>
+        <h1>坦克风暴AI助手</h1>
+      </div>
+      <p class="mast-code" aria-hidden="true">HQ-1942</p>
+    </header>
     <p class="lead" v-if="!me">
       {{ registerOpen ? "注册一个账号，" : "使用管理员开通的账号登录，" }}订阅某座城里有没有某个用户 UID。
     </p>
