@@ -137,6 +137,18 @@ CREATE TABLE IF NOT EXISTS atk_order (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS atk_sched (
+    id          INTEGER PRIMARY KEY,
+    user_id     INTEGER NOT NULL,
+    city_id     INTEGER NOT NULL,
+    uid         TEXT NOT NULL DEFAULT '',
+    card_max    INTEGER NOT NULL DEFAULT 100,
+    run_at      TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    reason      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS daily_job (
     id          INTEGER PRIMARY KEY,
     user_id     INTEGER NOT NULL,
@@ -4865,6 +4877,270 @@ def cancel_attack_order(user_id: int, order_id: int) -> str:
         return ""
     finally:
         conn.close()
+
+
+def _schedule_run_at(raw):
+    """北京时间「YYYY-MM-DD HH:MM」换成库存 UTC。不对时返回错误说明。"""
+    text = " ".join(str(raw or "").split())
+    local = None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            local = datetime.strptime(text, fmt)
+            break
+        except ValueError:
+            continue
+    if local is None:
+        return "", "开启时间要写成北京时间"
+    due = local.replace(tzinfo=timezone(timedelta(hours=8))).astimezone(timezone.utc)
+    now = datetime.now(timezone.utc)
+    if due < now - timedelta(seconds=20):
+        return "", "开启时间要晚于现在"
+    if due > now + timedelta(days=30):
+        return "", "最多定时 30 天"
+    return due.strftime("%Y-%m-%dT%H:%M:%SZ"), ""
+
+
+def add_attack_schedule(user_id: int, city_id, uid: str, cards, at) -> str:
+    """记下一条到点再提交的攻打。成功返回空字符串。不改账号上保存的恢复卡。"""
+    try:
+        city_id = int(str(city_id).strip())
+    except (TypeError, ValueError, AttributeError):
+        return "城市 ID 要是数字"
+    if city_id <= 0:
+        return "城市 ID 要大于 0"
+    uid = str(uid or "").strip()
+    if uid and (not uid.isdigit() or len(uid) > 32):
+        return "UID 要是数字"
+    try:
+        n = int(str(cards).strip())
+    except (TypeError, ValueError, AttributeError):
+        return "恢复卡数量要是数字"
+    if n < 0 or n > 999:
+        return "恢复卡数量要是 0 到 999"
+    run_at, why = _schedule_run_at(at)
+    if why:
+        return why
+    user_id = int(user_id)
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        who = conn.execute(
+            "SELECT IFNULL(tier,'初级'), IFNULL(expires_at,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+        if not who:
+            conn.commit()
+            return "没有这个登录账号"
+        if account_expired(who[1]):
+            conn.commit()
+            return "账号已过期"
+        if not high_tier(who[0]):
+            conn.commit()
+            return "定时开启需要高级订阅"
+        count = conn.execute(
+            "SELECT COUNT(*) FROM atk_sched WHERE user_id=? "
+            "AND status IN ('scheduled','firing')",
+            (user_id,)).fetchone()
+        if int(count[0] or 0) >= 10:
+            conn.commit()
+            return "定时订单最多 10 条"
+        now = now_ts()
+        cur = conn.execute(
+            "INSERT INTO atk_sched(user_id, city_id, uid, card_max, run_at, status, "
+            "reason, created_at, updated_at) VALUES (?,?,?,?,?,'scheduled','',?,?)",
+            (user_id, city_id, uid, n, run_at, now, now))
+        conn.commit()
+        sched_id = int(cur.lastrowid)
+    finally:
+        conn.close()
+    log.info("登录账号 %s 加入定时订单 %s，城市 %s UID %s，北京时间 %s",
+             username_of(user_id), sched_id, city_id, uid or "整座城", beijing_ts(run_at))
+    return ""
+
+
+def list_attack_schedules(user_id: int) -> list:
+    """这个账号还没提交的定时订单。快到的排在前面。"""
+    user_id = int(user_id)
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id, city_id, IFNULL(uid,''), IFNULL(card_max,0), IFNULL(run_at,''), "
+            "status, IFNULL(reason,'') FROM atk_sched "
+            "WHERE user_id=? AND status IN ('scheduled','firing') ORDER BY run_at, id",
+            (user_id,)).fetchall()
+        out = []
+        for r in rows:
+            uid = str(r[2] or "")
+            reason = "正在提交" if str(r[5] or "") == "firing" else str(r[6] or "")
+            out.append({
+                "id": int(r[0]), "city_id": int(r[1]), "uid": uid,
+                "name": _known_player_name(conn, uid, r[1]) if uid else "",
+                "cards": int(r[3] or 0), "run_at": str(r[4] or ""),
+                "at": beijing_ts(r[4]), "status": str(r[5] or ""),
+                "reason": reason, "city_name": "",
+            })
+    finally:
+        conn.close()
+    for item in out:
+        item["city_name"] = city_name(item["city_id"])
+    return out
+
+
+def cancel_attack_schedule(user_id: int, sched_id: int) -> str:
+    """取消还没提交的定时。正在写进攻打队列的这一下取消不掉。"""
+    user_id = int(user_id)
+    try:
+        sched_id = int(sched_id)
+    except (TypeError, ValueError):
+        return "订单编号不对"
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT status FROM atk_sched WHERE id=? AND user_id=?",
+            (sched_id, user_id)).fetchone()
+        if not row:
+            return "没有这条定时订单"
+        if str(row[0] or "") == "firing":
+            return "正在提交"
+        if str(row[0] or "") != "scheduled":
+            return "没有这条定时订单"
+        cur = conn.execute(
+            "DELETE FROM atk_sched WHERE id=? AND user_id=? AND status='scheduled'",
+            (sched_id, user_id))
+        conn.commit()
+        if not cur.rowcount:
+            return "正在提交"
+    finally:
+        conn.close()
+    log.info("登录账号 %s 取消定时订单 %s", username_of(user_id), sched_id)
+    return ""
+
+
+def _schedule_back(sched_id: int, reason: str, prev: str) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE atk_sched SET status='scheduled', reason=?, updated_at=? "
+            "WHERE id=? AND status='firing'",
+            (reason, now_ts(), int(sched_id)))
+        conn.commit()
+    finally:
+        conn.close()
+    if reason != str(prev or ""):
+        log.info("定时订单 %s 先留着：%s", int(sched_id), reason)
+
+
+def _schedule_drop(sched_id: int) -> None:
+    conn = connect()
+    try:
+        conn.execute(
+            "DELETE FROM atk_sched WHERE id=? AND status='firing'",
+            (int(sched_id),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _same_open_ids(user_id: int, city_id: int, uid: str) -> set:
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT id FROM atk_order WHERE user_id=? AND city_id=? AND IFNULL(uid,'')=? "
+            "AND status IN ('pending','running','blocked','wait')",
+            (int(user_id), int(city_id), str(uid or ""))).fetchall()
+        return {int(r[0]) for r in rows}
+    finally:
+        conn.close()
+
+
+def _finish_due_schedule(row) -> bool:
+    """把一条已经领走的定时提交进攻打队列。提交不了就改回定时。"""
+    sched_id, user_id, city_id, uid, cards, prev = row
+    sched_id = int(sched_id)
+    user_id = int(user_id)
+    city_id = int(city_id)
+    uid = str(uid or "")
+    prev = str(prev or "")
+    conn = connect(readonly=True)
+    try:
+        who = conn.execute(
+            "SELECT IFNULL(tier,'初级'), IFNULL(expires_at,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not who:
+        _schedule_drop(sched_id)
+        log.info("定时订单 %s 的登录账号已经没有了，去掉", sched_id)
+        return False
+    if account_expired(who[1]):
+        _schedule_back(sched_id, "账号已过期", prev)
+        return False
+    if not high_tier(who[0]):
+        _schedule_back(sched_id, "定时开启需要高级订阅", prev)
+        return False
+    before = _same_open_ids(user_id, city_id, uid)
+    if before:
+        _schedule_back(sched_id, "这一城这一人还在打，打完再提交", prev)
+        return False
+    why = add_attack_order(user_id, city_id, uid, cards=int(cards))
+    if why:
+        held = {
+            "不在保活，下了订单游戏也登不进去": "不在保活，挂上后再提交",
+            "最多同时两条攻打订单": "还没打完的已有两条，空出来再提交",
+        }.get(why, why)
+        _schedule_back(sched_id, held, prev)
+        return False
+    if not (_same_open_ids(user_id, city_id, uid) - before):
+        _schedule_back(sched_id, "这一城这一人还在打，打完再提交", prev)
+        return False
+    if (attack_paused(user_id) and not attack_qq_blocked(user_id)
+            and attack_in_keepalive(user_id)):
+        set_attack_paused(False, user_id)
+    _schedule_drop(sched_id)
+    log.info("登录账号 %s 的定时订单 %s 已提交攻打，城市 %s UID %s",
+             username_of(user_id), sched_id, city_id, uid or "整座城")
+    return True
+
+
+def release_due_schedules() -> int:
+    """到点的定时订单提交进攻打队列。提交不了就留在定时里，下一轮再试。
+
+    先把到期的改成正在提交，再在这次写锁外面调用攻打订单。两条路一起进来也不会交两遍。
+    """
+    now = now_ts()
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=60)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE atk_sched SET status='scheduled', updated_at=? "
+            "WHERE status='firing' AND IFNULL(updated_at,'')<?",
+            (now, stale))
+        rows = conn.execute(
+            "SELECT id, user_id, city_id, IFNULL(uid,''), IFNULL(card_max,0), "
+            "IFNULL(reason,'') FROM atk_sched WHERE status='scheduled' AND run_at<=? "
+            "ORDER BY run_at, id",
+            (now,)).fetchall()
+        for row in rows:
+            conn.execute(
+                "UPDATE atk_sched SET status='firing', updated_at=? "
+                "WHERE id=? AND status='scheduled'",
+                (now, int(row[0])))
+        conn.commit()
+    finally:
+        conn.close()
+    done = 0
+    for row in rows:
+        try:
+            if _finish_due_schedule(row):
+                done += 1
+        except Exception:
+            log.info("定时订单 %s 提交没成", int(row[0]), exc_info=True)
+            try:
+                _schedule_back(int(row[0]), "提交没成，过一会儿再试", str(row[5] or ""))
+            except Exception:
+                log.info("定时订单 %s 没能改回等待", int(row[0]), exc_info=True)
+    return done
 
 
 def add_watch(user_id: int, city_id: int, uid: str) -> None:

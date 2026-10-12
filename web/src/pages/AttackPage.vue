@@ -1,4 +1,6 @@
 <script setup>
+import { ref } from "vue";
+
 const attackCity = defineModel("attackCity", { type: String, required: true });
 const attackUid = defineModel("attackUid", { type: String, required: true });
 const cardMax = defineModel("cardMax", { type: String, required: true });
@@ -22,6 +24,7 @@ const props = defineProps({
   proc: { type: Object, default: null },
   cities: { type: Array, required: true },
   orders: { type: Array, required: true },
+  schedules: { type: Array, required: true },
   storms: { type: Array, required: true },
   cityCounts: { type: Array, required: true },
   err: { type: String, default: "" },
@@ -33,18 +36,33 @@ const props = defineProps({
   hereText: { type: Function, required: true },
   cityText: { type: Function, required: true },
   addOrder: { type: Function, required: true },
+  addSchedule: { type: Function, required: true },
   saveClearPlan: { type: Function, required: true },
   addPriority: { type: Function, required: true },
   moveToCity: { type: Function, required: true },
   cancelOrder: { type: Function, required: true },
+  cancelSchedule: { type: Function, required: true },
   beatText: { type: Function, required: true },
   orderCity: { type: Function, required: true },
   orderUid: { type: Function, required: true },
   orderStatus: { type: Function, required: true },
   orderOpen: { type: Function, required: true },
   holdCell: { type: Function, required: true },
+  schedClock: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
+
+const schedDate = ref("");
+const schedTime = ref("");
+
+function submitSchedule() {
+  const at = (String(schedDate.value || "").trim() + " " + String(schedTime.value || "").trim()).trim();
+  return Promise.resolve(props.addSchedule(at)).then((ok) => {
+    if (!ok) return;
+    schedDate.value = "";
+    schedTime.value = "";
+  });
+}
 
 function dropPriority(uid) {
   clearRows.value = clearRows.value.filter((item) => item.uid !== uid);
@@ -129,6 +147,13 @@ function pinClearRetreat() {
           <span class="muted">{{ clearNote }}</span>
         </form>
         <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。打完后退只对留空 UID 的清城，和自动锁敌各配各的。打成了按上面的走法退。没打成要打开「没打成也后退」才退。已经回到所在国首都、被打回去或手动关停时不退。空城再打会先退，再按分钟回来打同一条。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
+        <form class="lock-row" @submit.prevent="submitSchedule()">
+          <span class="switch">定时开启</span>
+          <label>日期<input v-model="schedDate" type="date" required /></label>
+          <label>北京时间<input v-model="schedTime" class="clock" type="time" required /></label>
+          <button type="submit">加入定时</button>
+        </form>
+        <p class="muted">按上面的城市、UID 和恢复卡，到这个北京时间再提交一条攻打。还没挂上，或已经有两条没打完，就留在定时订单里，空出来再提交。取消只去掉定时，不关停已经提交的攻打。最多 10 条。</p>
       </div>
     </template>
     <p v-if="proc && proc.online" class="proc here-row">
@@ -147,6 +172,39 @@ function pinClearRetreat() {
     <div v-if="storms.length" class="storms">
       <p class="muted">最近 1 小时拒绝的超级强攻</p>
       <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
+    </div>
+    <div class="orders" v-if="me.high_tier || schedules.length">
+      <h2>定时订单</h2>
+      <p v-if="!schedules.length" class="muted">还没有定时订单。</p>
+      <template v-else>
+        <table>
+          <thead>
+            <tr><th>城市</th><th>名称</th><th>恢复卡</th><th>开启时间</th><th>倒计时</th><th>说明</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="it in schedules" :key="'s' + it.id">
+              <td>{{ orderCity(it) }}</td>
+              <td>{{ orderUid(it) }}</td>
+              <td>{{ it.cards }}</td>
+              <td>{{ it.at || "—" }}</td>
+              <td>{{ schedClock(it) || "—" }}</td>
+              <td class="reason">{{ it.reason || "—" }}</td>
+              <td><button type="button" class="ghost" @click="cancelSchedule(it).catch((e) => showErr(e.message))">取消</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="order-cards">
+          <article class="order-card" v-for="it in schedules" :key="'sc' + it.id">
+            <p><span class="k">城市</span>{{ orderCity(it) }}</p>
+            <p><span class="k">名称</span>{{ orderUid(it) }}</p>
+            <p><span class="k">恢复卡</span>{{ it.cards }}</p>
+            <p><span class="k">开启时间</span>{{ it.at || "—" }}</p>
+            <p><span class="k">倒计时</span>{{ schedClock(it) || "—" }}</p>
+            <p class="reason"><span class="k">说明</span>{{ it.reason || "—" }}</p>
+            <p><button type="button" class="ghost" @click="cancelSchedule(it).catch((e) => showErr(e.message))">取消</button></p>
+          </article>
+        </div>
+      </template>
     </div>
     <p class="muted">每 2 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条。还没绑定的，按页面上方的步骤先扫码。点了登录，就挂机保活 180 分钟，连上之后可以接订单。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。同一个 QQ 可以绑给多个登录账号。</p>
     <div class="orders" v-if="orders.length">

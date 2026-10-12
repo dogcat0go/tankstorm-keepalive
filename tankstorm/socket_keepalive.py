@@ -1825,6 +1825,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             continue
         for uid in citydb.attack_context_users():
             citydb.skip_unfinished_auto(uid)
+        citydb.release_due_schedules()
         citydb.release_due_waits()
         job = citydb.claim_attack_order()
         if job:

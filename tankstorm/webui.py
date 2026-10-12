@@ -285,6 +285,7 @@ def _handler(config: dict):
                     return
                 _json(self, 200, {
                     "items": citydb.list_attack_orders(user["id"]),
+                    "schedules": citydb.list_attack_schedules(user["id"]),
                     "process": citydb.attack_status(user["id"]),
                     "storms": citydb.list_storm_rejects(user["id"]),
                 })
@@ -495,6 +496,25 @@ def _handler(config: dict):
                     except (TypeError, ValueError):
                         raise ValueError("订单编号不对") from None
                     why = citydb.cancel_attack_order(user["id"], order_id)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True})
+                elif path == "/api/attacks/schedule":
+                    if not citydb.high_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "定时开启需要高级订阅"})
+                        return
+                    why = citydb.add_attack_schedule(
+                        user["id"], data.get("city_id"), data.get("uid"),
+                        data.get("cards"), data.get("at"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True})
+                elif path == "/api/attacks/schedule/cancel":
+                    try:
+                        sched_id = int(str(data.get("id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("订单编号不对") from None
+                    why = citydb.cancel_attack_schedule(user["id"], sched_id)
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True})
@@ -806,6 +826,7 @@ def _wake_attack_orders(config) -> None:
     while not gap.wait(5):
         try:
             citydb.enqueue_due_daily_jobs()
+            citydb.release_due_schedules()
             users = citydb.users_needing_attack()
         except Exception:
             log.info("自动拉起攻打没成", exc_info=True)

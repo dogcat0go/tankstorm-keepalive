@@ -30,6 +30,7 @@ const note = ref("");
 const attackCity = ref("");
 const attackUid = ref("");
 const orders = ref([]);
+const schedules = ref([]);
 const storms = ref([]);
 const proc = ref(null);
 const qrSrc = ref("");
@@ -214,12 +215,14 @@ const toolsOn = computed(() => {
 async function refreshAttacks() {
   if (!me.value) {
     orders.value = [];
+    schedules.value = [];
     storms.value = [];
     proc.value = null;
     return;
   }
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
+  schedules.value = atk.schedules || [];
   storms.value = atk.storms || [];
   proc.value = atk.process || null;
   const left = proc.value && proc.value.hold_left;
@@ -594,6 +597,14 @@ function waitClock(it) {
   return formatClock(sec);
 }
 
+function schedClock(it) {
+  if (!it || !it.run_at) return "";
+  const due = Date.parse(it.run_at);
+  if (!Number.isFinite(due)) return "";
+  const sec = Math.max(0, Math.round((due - clock.value) / 1000));
+  return formatClock(sec);
+}
+
 const clearRetryText = computed(() => {
   const row = orders.value.find((it) => it.status === "wait" && it.run_at);
   if (!row) return "";
@@ -642,9 +653,50 @@ function orderOpen(it) {
   return !!it && (it.status === "pending" || it.status === "running" || it.status === "blocked" || it.status === "wait");
 }
 
+async function addSchedule(at) {
+  showErr("");
+  const city = cities.value.find((c) => String(c.id) === String(attackCity.value));
+  const where = city ? cityLabel(city) : String(attackCity.value || "");
+  const who = String(attackUid.value || "").trim() || "整座城";
+  if (!String(attackCity.value || "").trim()) {
+    showErr("先选城市");
+    notice.value = { ok: false, title: "定时没加上", text: "先选城市" };
+    return false;
+  }
+  try {
+    await api("/api/attacks/schedule", {
+      city_id: attackCity.value,
+      uid: attackUid.value,
+      cards: cardMax.value,
+      at,
+    });
+    notice.value = {
+      ok: true,
+      title: "已加入定时",
+      text: "到 " + at + " 提交 " + where + "，" + who + "。",
+    };
+  } catch (e) {
+    showErr(e.message);
+    notice.value = { ok: false, title: "定时没加上", text: e.message || "请求失败" };
+    return false;
+  }
+  try {
+    await refreshAttacks();
+  } catch (e) {
+    showErr(e.message || err.value);
+  }
+  return true;
+}
+
 async function cancelOrder(it) {
   showErr("");
   await api("/api/attacks/cancel", { id: it.id });
+  await refreshAttacks();
+}
+
+async function cancelSchedule(it) {
+  showErr("");
+  await api("/api/attacks/schedule/cancel", { id: it.id });
   await refreshAttacks();
 }
 
@@ -672,6 +724,7 @@ async function logout() {
   items.value = [];
   cityCounts.value = [];
   orders.value = [];
+  schedules.value = [];
   storms.value = [];
   proc.value = null;
   qrSrc.value = "";
@@ -922,6 +975,7 @@ onUnmounted(() => {
         :proc="proc"
         :cities="cities"
         :orders="orders"
+        :schedules="schedules"
         :storms="storms"
         :city-counts="cityCounts"
         :err="err"
@@ -933,16 +987,19 @@ onUnmounted(() => {
         :here-text="hereText"
         :city-text="cityText"
         :add-order="addOrder"
+        :add-schedule="addSchedule"
         :save-clear-plan="saveClearPlan"
         :add-priority="addPriority"
         :move-to-city="moveToCity"
         :cancel-order="cancelOrder"
+        :cancel-schedule="cancelSchedule"
         :beat-text="beatText"
         :order-city="orderCity"
         :order-uid="orderUid"
         :order-status="orderStatus"
         :order-open="orderOpen"
         :hold-cell="holdCell"
+        :sched-clock="schedClock"
         :show-err="showErr"
       />
     </template>
