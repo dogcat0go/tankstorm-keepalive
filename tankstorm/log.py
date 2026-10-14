@@ -116,6 +116,45 @@ def task_log(qq: str, task: str, msg: str) -> None:
     logger.info("%s %s %s", who, title, " ".join(str(msg or "").split()))
 
 
+class DailyFileHandler(logging.FileHandler):
+    """主日志按本地日期写 logs/YYYY-MM-DD.log。过了 24 点，下一条日志换到新文件。"""
+
+    def __init__(self):
+        day = date.today().isoformat()
+        os.makedirs(LOG_DIR, exist_ok=True)
+        self._day = day
+        super().__init__(os.path.join(LOG_DIR, f"{day}.log"), encoding="utf-8")
+
+    def emit(self, record):
+        try:
+            day = date.fromtimestamp(record.created).isoformat()
+        except (TypeError, ValueError, OverflowError, OSError):
+            day = date.today().isoformat()
+        if day != self._day:
+            try:
+                self._switch(day)
+            except Exception:
+                self.handleError(record)
+        super().emit(record)
+
+    def _switch(self, day: str) -> None:
+        stream = self.stream
+        if stream:
+            try:
+                self.flush()
+            except Exception:
+                pass
+            self.stream = None
+            try:
+                stream.close()
+            except OSError:
+                pass
+        self._day = day
+        os.makedirs(LOG_DIR, exist_ok=True)
+        self.baseFilename = os.path.abspath(os.path.join(LOG_DIR, f"{day}.log"))
+        self.stream = self._open()
+
+
 def get_logger(name: str = "tankstorm") -> logging.Logger:
     logger = logging.getLogger(name)
     if logger.handlers:
@@ -123,9 +162,7 @@ def get_logger(name: str = "tankstorm") -> logging.Logger:
     logger.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
 
-    os.makedirs(LOG_DIR, exist_ok=True)
-    logfile = os.path.join(LOG_DIR, f"{date.today().isoformat()}.log")
-    fh = logging.FileHandler(logfile, encoding="utf-8")
+    fh = DailyFileHandler()
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logger.addHandler(fh)
