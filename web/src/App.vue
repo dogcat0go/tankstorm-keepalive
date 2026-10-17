@@ -62,6 +62,7 @@ const clearFrom = ref("1");
 const clearTo = ref("5");
 const clearWait = ref("0");
 const clearScan = ref("0");
+const cardMorale = ref("0");
 const clearRetreatMode = ref("off");
 const clearRetreatHops = ref("3");
 const clearRetreatCity = ref("0");
@@ -526,6 +527,7 @@ function takeUser(user) {
   clearTo.value = String(user.clear_to || 5);
   clearWait.value = String(user.clear_wait ?? 0);
   clearScan.value = String(user.clear_scan ?? 0);
+  cardMorale.value = String(user.card_morale ?? 0);
   const clearPicked = user.clear_retreat_mode;
   clearRetreatMode.value = clearPicked === "hops" || clearPicked === "city" || clearPicked === "off" ? clearPicked : "off";
   clearRetreatHops.value = String(user.clear_retreat_hops ?? 3);
@@ -569,6 +571,7 @@ async function saveClearPlan() {
     page_to: clearTo.value,
     wait_min: clearWait.value,
     scan_sec: clearScan.value,
+    card_morale: cardMorale.value,
     retreat_mode: clearRetreatMode.value,
     retreat_hops: clearRetreatHops.value,
     retreat_city: clearRetreatCity.value,
@@ -1119,6 +1122,7 @@ onUnmounted(() => {
         v-model:clear-to="clearTo"
         v-model:clear-wait="clearWait"
         v-model:clear-scan="clearScan"
+        v-model:card-morale="cardMorale"
         v-model:clear-retreat-mode="clearRetreatMode"
         v-model:clear-retreat-hops="clearRetreatHops"
         v-model:clear-retreat-city="clearRetreatCity"

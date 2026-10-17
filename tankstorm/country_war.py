@@ -228,6 +228,22 @@ def _use_recovery_card(sock, rec, item_id):
     return True, f"已用掉 1 张国战恢复卡（用前背包有 {count} 张）"
 
 
+def _below_morale(panel, floor):
+    """自己士气低于设定值时返回当前士气。没设定、读不到、已经是 0，都返回 0。"""
+    try:
+        floor = int(floor or 0)
+    except (TypeError, ValueError):
+        return 0
+    if floor <= 0 or not isinstance(panel, dict):
+        return 0
+    morale = _read_path(panel, F_MORALE)
+    if isinstance(morale, bool) or not isinstance(morale, int):
+        return 0
+    if morale <= 0 or morale >= floor:
+        return 0
+    return morale
+
+
 def _fields(type_, country=0, city=0, atk=None, check=False, page=0):
     """照抓包的字段集构造请求。
 
@@ -584,6 +600,8 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
 
     from . import citydb
 
+    morale_floor = citydb.card_morale_floor()
+    morale_skip = False
     for i in range(1, rounds + 1):
         stopped = _manual_stop()
         if stopped:
@@ -611,6 +629,26 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
                 break
             log.info("[国战] %s；当前所在城市 %s", why, city)
             located = True
+
+        morale_now = 0 if morale_skip else _below_morale(panel, morale_floor)
+        if morale_now and use_card:
+            if cards_used >= card_limit:
+                log.info("[国战] 士气 %s 低于 %s，本次已用掉 %d 张恢复卡，不再为士气开卡",
+                         morale_now, morale_floor, cards_used)
+                morale_skip = True
+            else:
+                sent, msg = _use_recovery_card(sock, rec, card_item)
+                log.info("[国战] 士气 %s 低于 %s，%s", morale_now, morale_floor, msg)
+                if not sent:
+                    morale_skip = True
+                else:
+                    cards_used += 1
+                    out["用卡"] = cards_used
+                    _nap(2.0)
+                    power, city, atk_times, panel = _panel(sock, rec, country)
+                    if power is None:
+                        out["停止原因"] = "用了恢复卡但读不到行动力，停手"
+                        break
 
         if power < COST_ATTACK:
             if not use_card or cards_used >= card_limit:
@@ -1362,6 +1400,8 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         return out
     start_loc = loc
     who = out["名字"] or uid
+    morale_floor = citydb.card_morale_floor()
+    morale_skip = False
     if out.get("名字"):
         citydb.note_current_enemy(out["名字"])
     if until_down:
@@ -1398,17 +1438,27 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             out["遣返"] = True
             log.info("[打人] %s", out["停止原因"])
             break
-        if power < 15:
+        morale_now = 0 if morale_skip else _below_morale(panel, morale_floor)
+        if power < 15 or morale_now:
             used = card_used + out.get("用卡", 0)
             if used >= card_limit:
                 if power < cost:
                     out["停止原因"] = (f"行动力只剩 {power}，{name}要 {cost}；"
                                       f"本次已用 {used}/{card_limit} 张恢复卡")
                     break
+                if morale_now:
+                    log.info("[打人] 士气 %s 低于 %s，本次已用 %d/%d 张恢复卡，不再为士气开卡",
+                             morale_now, morale_floor, used, card_limit)
+                    morale_skip = True
             else:
                 sent, msg = _use_recovery_card(sock, rec, card_item)
-                log.info("[打人] 行动力 %s < 15，%s（%d/%d）",
-                         power, msg, used + (1 if sent else 0), card_limit)
+                if morale_now and power >= 15:
+                    log.info("[打人] 士气 %s 低于 %s，%s（%d/%d）",
+                             morale_now, morale_floor, msg,
+                             used + (1 if sent else 0), card_limit)
+                else:
+                    log.info("[打人] 行动力 %s < 15，%s（%d/%d）",
+                             power, msg, used + (1 if sent else 0), card_limit)
                 if sent:
                     out["用卡"] = out.get("用卡", 0) + 1
                     _nap(2.0)
@@ -1416,6 +1466,8 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
                 elif power < cost:
                     out["停止原因"] = f"行动力只剩 {power}，{name}要 {cost}；{msg}"
                     break
+                elif morale_now:
+                    morale_skip = True
         if power is None:
             log.info("[打人] 用卡后读不到行动力（超时），打下一次")
             continue

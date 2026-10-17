@@ -10,6 +10,7 @@ const clearFrom = defineModel("clearFrom", { type: String, required: true });
 const clearTo = defineModel("clearTo", { type: String, required: true });
 const clearWait = defineModel("clearWait", { type: String, required: true });
 const clearScan = defineModel("clearScan", { type: String, required: true });
+const cardMorale = defineModel("cardMorale", { type: String, required: true });
 const clearRetreatMode = defineModel("clearRetreatMode", { type: String, required: true });
 const clearRetreatHops = defineModel("clearRetreatHops", { type: String, required: true });
 const clearRetreatCity = defineModel("clearRetreatCity", { type: String, required: true });
@@ -142,6 +143,10 @@ function fightingLine(it) {
           <span class="switch">扫页冷却</span>
           <label class="choice">秒<input v-model="clearScan" class="mins" inputmode="numeric" required /></label>
         </form>
+        <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
+          <span class="switch">士气低于</span>
+          <label class="choice"><input v-model="cardMorale" class="mins" inputmode="numeric" required />自动开恢复卡</label>
+        </form>
         <form class="lock-row" @submit.prevent="addPriority().catch((e) => showErr(e.message))">
           <span class="switch">优先 UID</span>
           <label>UID<input v-model="prioUid" inputmode="numeric" /></label>
@@ -159,6 +164,7 @@ function fightingLine(it) {
           <span class="muted">{{ clearNote }}</span>
         </form>
         <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示空了或清不完就结束。打完后退只对留空 UID 的清城，和自动锁敌各配各的。打成了按上面的走法退。没打成要打开「没打成也后退」才退。已经回到所在国首都、被打回去或手动关停时不退，也不会为了后退去开恢复卡。空城再打会先退，再按分钟回来打同一条。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
+        <p class="muted">士气低于这个数就开一张恢复卡，把士气和行动力补满。打人、清城、刷摩多和自动锁敌都看这一项。开掉的卡仍算进这一单的最多恢复卡，自动锁敌还算进每小时上限。填 0 表示不按士气开卡。开不了就继续打，士气到 0 仍会停。上限 1030。</p>
       </div>
     </template>
     <p v-if="proc && proc.online" class="proc here-row">

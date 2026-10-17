@@ -466,6 +466,7 @@ onUnmounted(() => {
                   <p>恢复卡上限：{{ m.card_max }} · 摩多：{{ m.modo_cards || 0 }}</p>
                   <p>打完后退：{{ retreatText(m.retreat_mode, m.retreat_hops, m.retreat_city, m.retreat_fail) }}</p>
                   <p>清城扫页：{{ clearPages(m) }} · 空城再打 {{ m.clear_wait ? m.clear_wait + " 分钟" : "结束" }} · 扫页冷却 {{ m.clear_scan ? m.clear_scan + " 秒" : "每次出手" }}</p>
+                  <p>士气开卡：{{ m.card_morale ? "低于 " + m.card_morale : "关" }}</p>
                   <p>清城后退：{{ retreatText(m.clear_retreat_mode, m.clear_retreat_hops, m.clear_retreat_city, m.clear_retreat_fail) }}</p>
                   <p>优先 UID：{{ prioText(m) }}</p>
                   <p>日常定时：{{ m.daily_at || "未设" }}</p>
