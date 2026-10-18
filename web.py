@@ -29,7 +29,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from tankstorm.log import get_logger
 from tankstorm.paths import data_file, ensure_user_copy, user_path
@@ -69,6 +69,55 @@ def _date(text: str) -> str:
     return text
 
 
+def _tail_match(paths, needles, limit, words=()):
+    hits = []
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    text = line.rstrip()
+                    if not any(n and n in text for n in needles):
+                        continue
+                    if words and not any(w in text for w in words):
+                        continue
+                    hits.append(text)
+        except OSError:
+            continue
+    return hits[-limit:]
+
+
+def _print_status_logs(username: str, qq: str) -> None:
+    """登录日志记票据寿命和续期结果。运行日志记暂停、恢复和扫码。各取最近几条。"""
+    folder = user_path("logs")
+    needles = [username]
+    if qq:
+        needles.append(f"QQ {qq}")
+    login_files = []
+    if os.path.isdir(folder):
+        names = [n for n in os.listdir(folder)
+                 if n == "login.log" or n.startswith("login.log.")]
+        names.sort(key=lambda n: (n == "login.log", n))
+        login_files = [os.path.join(folder, n) for n in names[-3:]]
+    days = []
+    now = datetime.now()
+    for back in (1, 0):
+        path = os.path.join(
+            folder, (now - timedelta(days=back)).strftime("%Y-%m-%d") + ".log")
+        if os.path.isfile(path):
+            days.append(path)
+    login_hits = _tail_match(login_files, needles, 8)
+    run_hits = _tail_match(
+        days, needles, 8, ("暂停", "登录", "扫码", "票据", "续期"))
+    if login_hits:
+        print("登录日志：")
+        print("\n".join(login_hits))
+    else:
+        print("登录日志里没有这个账号")
+    if run_hits:
+        print("运行日志：")
+        print("\n".join(run_hits))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="坦克风暴订阅页面（不连游戏）")
@@ -92,7 +141,7 @@ def main() -> int:
     parser.add_argument("--clear-attack", metavar="用户名",
                         help="解开这个登录账号的攻打 QQ，未完成的攻打记为失败。别的账号还用这个 QQ 时不删票据，不启动网页")
     parser.add_argument("--status", metavar="用户名",
-                        help="查看这个登录账号的攻打 QQ 登录和暂停，不启动网页")
+                        help="查看这个登录账号的攻打 QQ 登录和暂停，并带上最近日志，不启动网页")
     args = parser.parse_args()
     if (args.add_user or args.set_expires or args.set_tier or args.set_admin
             or args.bind_attack or args.clear_attack or args.status):
@@ -123,8 +172,8 @@ def main() -> int:
             else:
                 pause = "未暂停"
             running = "进程在跑" if online else "进程没在跑"
-            log.info("%s：攻打 QQ %s，%s，%s，%s",
-                     username, qq or "无", login, pause, running)
+            print(f"{username}：攻打 QQ {qq or '无'}，{login}，{pause}，{running}")
+            _print_status_logs(username, qq)
             return 0
         if args.clear_attack:
             username = args.clear_attack.strip()
