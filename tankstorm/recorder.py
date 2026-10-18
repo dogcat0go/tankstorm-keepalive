@@ -75,7 +75,7 @@ KNOWN_OPCODES = {
     "021c", "021e", "0221", "0222", "0223", "0225", "0228", "022c", "022e",
     "0231", "0232", "0234", "0236", "0240", "0241", "0243", "0247", "024e",
     "024f", "0255", "0257", "025a", "0271", "0275", "0277", "027b", "027f",
-    "0283", "0287", "028e", "0296", "029a", "029d", "029e", "02a0", "02a1",
+    "0268", "0269", "0283", "0287", "028e", "0296", "029a", "029d", "029e", "02a0", "02a1",
     "02a2", "02a9", "02aa", "02b7", "02bc", "02c4", "02cb", "02cc", "02d8",
     "02e6", "0303", "0307", "0312", "031a", "0326", "0329", "0331",
 }
@@ -99,14 +99,26 @@ EVENT_SIGNATURES = {
     # 超级强攻有 027c 这个专属信号，字段里直接带攻防双方，不需要 0268 来佐证。
 }
 
-# 高频/大体积消息：只计数不存 body，避免日志爆炸（0283 是玩家列表，单条可达数 KB）
+# 高频/大体积消息：正文不落盘，每 50 条留一条不含正文的摘要。
+# 0283 世界广播单条可达数 KB。
 BULK_OPCODES = {"0283", "0215", "0213", "0217", "0234", "0287"}
+
+# 扫城和心跳：玩家列表已经入库，心跳和开面板没有需要事后看的正文。
+# 不写 frames。异常事件、关键词、没见过的类型仍然完整留下。
+QUIET_OPCODES = {
+    "0269",  # RseCountryUserLst 城市玩家列表
+    "0268",  # RseCountryOpt 开面板回包，扫城时每页一条
+    "0463",  # RceCountryOpt 开面板请求
+    "040e",  # RceHeartbeat 心跳
+}
 
 # 世界广播类消息：正文里塞满**其他玩家的自定义昵称**，关键词必然误报。
 # 实测 0283 里出现过昵称叫「在线包强攻，强攻令2270」「强攻宝贝」的玩家，
 # 广播一刷就触发"强攻"告警，但跟本人毫无关系。
 # 因此这类消息只有在**提到我自己**（uid/昵称）时才允许关键词告警。
 BROADCAST_OPCODES = {"0283"}
+# 这些包的正文里也是别人的昵称。昵称撞上「强攻」不能把整页玩家写进 frames。
+NICKNAME_OPCODES = BROADCAST_OPCODES | {"0269", "0268"}
 
 # 命中即告警的关键词（UTF-8 出现在 protobuf 字符串字段里）
 ALERT_KEYWORDS = [
@@ -617,7 +629,12 @@ class Recorder:
                     rec["enc"]["entropy"] = round(ent, 3)
 
                 if plain is None:
-                    # 没开实时解密或自检没过：留密文取证，不做文本分析
+                    # 没开实时解密或自检没过：留密文取证，不做文本分析。
+                    # 扫城列表和心跳除外，解不开也不把整包 hex 写进 frames。
+                    fresh = (not outgoing and op not in KNOWN_OPCODES
+                             and op not in self.learned)
+                    if op in QUIET_OPCODES and op not in EVENT_SIGNATURES and not fresh:
+                        continue
                     rec["sha256"] = hashlib.sha256(body).hexdigest()
                     rec["hex"] = body.hex()
                     if op in EVENT_SIGNATURES or (
@@ -669,7 +686,7 @@ class Recorder:
 
             # 广播消息里全是别人的昵称，只有提到我自己时关键词才算数
             suppressed = []
-            if hit_kw and op in BROADCAST_OPCODES and not self._about_me(text):
+            if hit_kw and op in NICKNAME_OPCODES and not self._about_me(text):
                 suppressed, hit_kw = hit_kw, []
 
             if signature:
@@ -685,11 +702,15 @@ class Recorder:
             if image:
                 rec["image"] = image
 
-            # 高频大包只记摘要；其余（尤其未知/命中关键词/带图片的）记完整 body
+            # 高频大包只记摘要；其余（尤其未知/命中关键词/带图片的）记完整 body。
+            # 摘要不能带 data：城市列表解出来就是整页玩家，50 条里留 1 条也有几 MB。
             important = unknown or hit_kw or image or signature
+            if op in QUIET_OPCODES and not important:
+                continue
             if op in BULK_OPCODES and not important:
                 if counts[op] % 50 != 1:      # 每 50 条留 1 条摘要即可
                     continue
+                rec.pop("data", None)
                 rec["note"] = "bulk-sampled"
                 rec["text"] = text[:120]
             else:
