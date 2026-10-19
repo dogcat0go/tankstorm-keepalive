@@ -31,6 +31,7 @@ const fighterOnline = ref("");
 const fighterSort = ref("id");
 const fighterDir = ref("asc");
 const sheet = ref("members");
+const showExpired = ref(false);
 const memberPage = ref(1);
 const fighterPage = ref(1);
 const PAGE = 20;
@@ -138,6 +139,37 @@ function hitOnline(sel, on) {
   return sel === "on" ? !!on : !on;
 }
 
+function beijingDay() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+function accountExpired(expiresAt) {
+  const day = String(expiresAt || "").trim().slice(0, 10);
+  if (!day) return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return true;
+  const [y, mo, d] = day.split("-").map((n) => Number(n));
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return true;
+  return day < beijingDay();
+}
+
+function memberExpired(m) {
+  return accountExpired(m && m.expires_at);
+}
+
+function fighterExpired(f) {
+  return memberExpired(memberMap.value[f.user_id]);
+}
+
+function keepAccount(expired) {
+  return showExpired.value || !expired;
+}
+
 function cmpVal(a, b, dir) {
   let n = 0;
   if (typeof a === "string" || typeof b === "string") n = String(a).localeCompare(String(b), "zh");
@@ -165,12 +197,21 @@ function fighterKey(f, col) {
   return f.user_id;
 }
 
-const shownMembers = computed(() => {
-  const rows = members.value.filter((m) =>
-    hitQuery(memberQ.value, m.username, m.attack_qq, m.qq_target)
+function memberPasses(m) {
+  return hitQuery(memberQ.value, m.username, m.attack_qq, m.qq_target)
     && hitRegion(memberRegion.value, m.region)
     && hitOnline(memberOnline.value, onlineOf(m))
-    && (!memberTier.value || (m.tier || "初级") === memberTier.value));
+    && (!memberTier.value || (m.tier || "初级") === memberTier.value);
+}
+
+function fighterPasses(f) {
+  return hitQuery(fighterQ.value, f.username, f.qq)
+    && hitRegion(fighterRegion.value, regionOf(f))
+    && hitOnline(fighterOnline.value, f.online);
+}
+
+const shownMembers = computed(() => {
+  const rows = members.value.filter((m) => memberPasses(m) && keepAccount(memberExpired(m)));
   const col = memberSort.value;
   const dir = memberDir.value;
   rows.sort((a, b) => cmpVal(memberKey(a, col), memberKey(b, col), dir) || a.id - b.id);
@@ -178,15 +219,20 @@ const shownMembers = computed(() => {
 });
 
 const shownFighters = computed(() => {
-  const rows = fighters.value.filter((f) =>
-    hitQuery(fighterQ.value, f.username, f.qq)
-    && hitRegion(fighterRegion.value, regionOf(f))
-    && hitOnline(fighterOnline.value, f.online));
+  const rows = fighters.value.filter((f) => fighterPasses(f) && keepAccount(fighterExpired(f)));
   const col = fighterSort.value;
   const dir = fighterDir.value;
   rows.sort((a, b) => cmpVal(fighterKey(a, col), fighterKey(b, col), dir) || a.user_id - b.user_id);
   return rows;
 });
+
+const hiddenExpiredMembers = computed(() => (
+  showExpired.value ? 0 : members.value.filter((m) => memberPasses(m) && memberExpired(m)).length
+));
+
+const hiddenExpiredFighters = computed(() => (
+  showExpired.value ? 0 : fighters.value.filter((f) => fighterPasses(f) && fighterExpired(f)).length
+));
 
 function pageOf(rows, page) {
   const pages = Math.max(1, Math.ceil(rows.length / PAGE));
@@ -204,10 +250,10 @@ function pageOf(rows, page) {
 const memberView = computed(() => pageOf(shownMembers.value, memberPage.value));
 const fighterView = computed(() => pageOf(shownFighters.value, fighterPage.value));
 
-watch([memberQ, memberRegion, memberOnline, memberTier, memberSort, memberDir], () => {
+watch([memberQ, memberRegion, memberOnline, memberTier, memberSort, memberDir, showExpired], () => {
   memberPage.value = 1;
 });
-watch([fighterQ, fighterRegion, fighterOnline, fighterSort, fighterDir], () => {
+watch([fighterQ, fighterRegion, fighterOnline, fighterSort, fighterDir, showExpired], () => {
   fighterPage.value = 1;
 });
 
@@ -221,12 +267,14 @@ function clearMemberFilters() {
   memberRegion.value = "";
   memberOnline.value = "";
   memberTier.value = "";
+  showExpired.value = false;
 }
 
 function clearFighterFilters() {
   fighterQ.value = "";
   fighterRegion.value = "";
   fighterOnline.value = "";
+  showExpired.value = false;
 }
 
 async function loadCities() {
@@ -436,7 +484,7 @@ onUnmounted(() => {
         <button type="button" role="tab" :aria-selected="sheet === 'fighters'" :class="{ ghost: sheet !== 'fighters' }" @click="sheet = 'fighters'">攻打 QQ</button>
       </div>
       <template v-if="sheet === 'members'">
-      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。每页 20 个，点表头可以排序。</p>
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。</p>
       <form class="filters" @submit.prevent>
         <label>搜索<input v-model="memberQ" placeholder="账号或 QQ" /></label>
         <label>区服
@@ -461,10 +509,14 @@ onUnmounted(() => {
             <option>高级</option>
           </select>
         </label>
+        <label class="choice" title="有效期按北京时间。到期当天仍显示，没填有效期的一直显示。">
+          <input type="checkbox" v-model="showExpired" />
+          显示过期
+        </label>
         <button v-if="memberFilterOn" type="button" class="ghost" @click="clearMemberFilters">清除筛选</button>
       </form>
       <p class="muted pager" v-if="members.length">
-        显示 {{ memberView.from }}–{{ memberView.to }} / {{ shownMembers.length }} 个<template v-if="shownMembers.length !== members.length">，共 {{ members.length }} 个</template>
+        显示 {{ memberView.from }}–{{ memberView.to }} / {{ shownMembers.length }} 个<template v-if="shownMembers.length !== members.length">，共 {{ members.length }} 个</template><template v-if="hiddenExpiredMembers">，已隐藏 {{ hiddenExpiredMembers }} 个过期</template>
         <template v-if="memberView.pages > 1">
           <button type="button" class="ghost" :disabled="memberView.page <= 1" @click="memberPage = memberView.page - 1">上一页</button>
           第 {{ memberView.page }} / {{ memberView.pages }} 页
@@ -489,7 +541,7 @@ onUnmounted(() => {
               <tr>
                 <td>{{ m.username }}<span v-if="m.admin" class="muted"> · 管理</span></td>
                 <td>{{ m.tier || "初级" }}</td>
-                <td>{{ m.expires_at || "不限期" }}</td>
+                <td>{{ m.expires_at || "不限期" }}<span v-if="memberExpired(m)" class="off"> 已过期</span></td>
                 <td>{{ m.attack_qq || "—" }}</td>
                 <td>{{ regionText(m) }}</td>
                 <td :class="onlineOf(m) ? 'on' : 'off'">{{ onlineOf(m) ? "在线" : "没在跑" }}</td>
@@ -531,10 +583,10 @@ onUnmounted(() => {
         </table>
       </div>
       <p v-if="!members.length" class="muted">还没有登录账号。</p>
-      <p v-else-if="!shownMembers.length" class="muted">没有符合筛选的账号。</p>
+      <p v-else-if="!shownMembers.length" class="muted">{{ hiddenExpiredMembers && !memberFilterOn ? "过期账号已隐藏。" : "没有符合筛选的账号。" }}</p>
       </template>
       <template v-else>
-      <p class="muted">每 5 秒刷新。每个攻打 QQ 一条线程，票据在对应的 cookie 文件里。每页 20 个，点表头可以排序。</p>
+      <p class="muted">每 5 秒刷新。每个攻打 QQ 一条线程，票据在对应的 cookie 文件里。登录账号过期后，这条默认也不显示。每页 20 个，点表头可以排序。</p>
       <form class="filters" @submit.prevent>
         <label>搜索<input v-model="fighterQ" placeholder="账号或 QQ" /></label>
         <label>区服
@@ -551,10 +603,14 @@ onUnmounted(() => {
             <option value="off">没在跑</option>
           </select>
         </label>
+        <label class="choice" title="跟成员账号用同一个开关。登录账号过期后，这条攻打 QQ 默认不显示。">
+          <input type="checkbox" v-model="showExpired" />
+          显示过期
+        </label>
         <button v-if="fighterFilterOn" type="button" class="ghost" @click="clearFighterFilters">清除筛选</button>
       </form>
       <p class="muted pager" v-if="fighters.length">
-        显示 {{ fighterView.from }}–{{ fighterView.to }} / {{ shownFighters.length }} 个<template v-if="shownFighters.length !== fighters.length">，共 {{ fighters.length }} 个</template>
+        显示 {{ fighterView.from }}–{{ fighterView.to }} / {{ shownFighters.length }} 个<template v-if="shownFighters.length !== fighters.length">，共 {{ fighters.length }} 个</template><template v-if="hiddenExpiredFighters">，已隐藏 {{ hiddenExpiredFighters }} 个过期</template>
         <template v-if="fighterView.pages > 1">
           <button type="button" class="ghost" :disabled="fighterView.page <= 1" @click="fighterPage = fighterView.page - 1">上一页</button>
           第 {{ fighterView.page }} / {{ fighterView.pages }} 页
@@ -575,7 +631,7 @@ onUnmounted(() => {
           </thead>
           <tbody>
             <tr v-for="f in fighterView.rows" :key="f.user_id">
-              <td>{{ f.username }}</td>
+              <td>{{ f.username }}<span v-if="fighterExpired(f)" class="off"> · 已过期</span></td>
               <td>{{ f.qq }}</td>
               <td>{{ regionText(f) }}</td>
               <td :class="f.online ? 'on' : 'off'">{{ procText(f) }}</td>
@@ -586,7 +642,7 @@ onUnmounted(() => {
         </table>
       </div>
       <p v-if="!fighters.length" class="muted">还没有绑定攻打 QQ。</p>
-      <p v-else-if="!shownFighters.length" class="muted">没有符合筛选的攻打 QQ。</p>
+      <p v-else-if="!shownFighters.length" class="muted">{{ hiddenExpiredFighters && !fighterFilterOn ? "过期账号的攻打 QQ 已隐藏。" : "没有符合筛选的攻打 QQ。" }}</p>
       </template>
       <h2>扫描安排</h2>
       <form class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
