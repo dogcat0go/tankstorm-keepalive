@@ -71,12 +71,10 @@ function fightingOrder() {
 
 function fightingLine(it) {
   if (!it) return "";
-  const live = props.proc && String(props.proc.here || "").trim();
-  const city = live || (it.kind === "modo" ? "" : props.orderCity(it));
+  const city = props.orderCity(it);
   const bits = [];
   if (it.kind === "modo") {
     bits.push("正在打 " + props.orderUid(it));
-    if (city) bits.push(city);
   } else if (String(it.name || "").trim() || String(it.uid || "").trim()) {
     bits.push("正在打 " + props.orderUid(it));
     if (city) bits.push(city);
