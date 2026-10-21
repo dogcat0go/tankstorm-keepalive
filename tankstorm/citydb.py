@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_retreat_city INTEGER NOT NULL DEFAULT 0,
     clear_retreat_fail INTEGER NOT NULL DEFAULT 0,
     modo_cards      INTEGER NOT NULL DEFAULT 0,
+    away_morale     INTEGER NOT NULL DEFAULT 100,
     daily_switch    TEXT,
     daily_at        TEXT NOT NULL DEFAULT '',
     daily_last      TEXT NOT NULL DEFAULT '',
@@ -368,6 +369,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "modo_cards" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN modo_cards INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "away_morale" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN away_morale INTEGER NOT NULL DEFAULT 100")
                 setup.commit()
             if ucols and "attack_acct" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
@@ -1231,7 +1236,7 @@ def reset_member_settings(user_id: int) -> str:
             "lock_cards=3, "
             "clear_mode='head', clear_from=1, clear_to=5, clear_wait=0, clear_scan=0, "
             "clear_retreat_mode='off', clear_retreat_hops=3, clear_retreat_city=0, "
-            "clear_retreat_fail=0, modo_cards=0, daily_switch=NULL, "
+            "clear_retreat_fail=0, modo_cards=0, away_morale=100, daily_switch=NULL, "
             "daily_at='', daily_last='', modo_at='', modo_last='', off_at='' "
             "WHERE id=?",
             (user_id,))
@@ -2640,9 +2645,22 @@ def storm_rejects_day(user_id: int) -> int:
     return int(row[0] or 0) if row else 0
 
 
+def _parse_away_morale(value):
+    """城外士气低于这个数就开一张恢复卡。0 表示不补。"""
+    if value is None or str(value).strip() == "":
+        return None, "城外补士气要填士气"
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError, AttributeError):
+        return None, "城外补士气要是数字"
+    if n < 0 or n > 1030:
+        return None, "城外补士气要是 0 到 1030"
+    return n, ""
+
+
 def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
                    wait_min=0, scan_sec=0, retreat_mode="off", retreat_hops=3,
-                   retreat_city=0, retreat_fail=False) -> str:
+                   retreat_city=0, retreat_fail=False, away_morale=100) -> str:
     """清城高级配置。前 5 页，或一个页码范围。优先 UID 最多 50 个。
 
     wait_min 是空城后再打的分钟。0 表示空了就结束。
@@ -2700,6 +2718,9 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
             return "扫页冷却要是秒数"
     if scan < 0 or scan > 300:
         return "扫页冷却要是 0 到 300 秒"
+    line, why = _parse_away_morale(away_morale)
+    if why:
+        return why
     why = set_retreat(
         user_id, retreat_mode, retreat_hops, retreat_city, retreat_fail, clear=True)
     if why:
@@ -2708,8 +2729,8 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
     try:
         conn.execute(
             "UPDATE app_user SET clear_mode=?, clear_from=?, clear_to=?, "
-            "clear_wait=?, clear_scan=? WHERE id=?",
-            (mode, start, end, wait, scan, int(user_id)))
+            "clear_wait=?, clear_scan=?, away_morale=? WHERE id=?",
+            (mode, start, end, wait, scan, line, int(user_id)))
         conn.execute("DELETE FROM clear_prio WHERE user_id=?", (int(user_id),))
         conn.executemany(
             "INSERT INTO clear_prio(user_id, uid, rank, seq) VALUES (?,?,?,?)",
@@ -2722,7 +2743,7 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
 
 def clear_settings(user_id: int = 0) -> dict:
     """这个登录账号的清城扫页和优先 UID。名单按优先级、再按添加顺序。"""
-    mode, start, end, wait, scan = "head", 1, 5, 0, 0
+    mode, start, end, wait, scan, away = "head", 1, 5, 0, 0, 100
     back_mode, back_hops, back_city, back_fail = "off", 3, 0, False
     rows = []
     user_id = int(user_id or 0)
@@ -2733,7 +2754,8 @@ def clear_settings(user_id: int = 0) -> dict:
                 "SELECT IFNULL(clear_mode,'head'), IFNULL(clear_from,1), IFNULL(clear_to,5), "
                 "IFNULL(clear_wait,0), IFNULL(clear_scan,0), "
                 "IFNULL(clear_retreat_mode,'off'), IFNULL(clear_retreat_hops,3), "
-                "IFNULL(clear_retreat_city,0), IFNULL(clear_retreat_fail,0) "
+                "IFNULL(clear_retreat_city,0), IFNULL(clear_retreat_fail,0), "
+                "IFNULL(away_morale,100) "
                 "FROM app_user WHERE id=?",
                 (user_id,)).fetchone()
             if saved:
@@ -2746,6 +2768,7 @@ def clear_settings(user_id: int = 0) -> dict:
                 back_hops = int(saved[6] or 3)
                 back_city = int(saved[7] or 0)
                 back_fail = bool(saved[8])
+                away = int(saved[9] if saved[9] is not None else 100)
             rows = conn.execute(
                 "SELECT uid, rank FROM clear_prio WHERE user_id=? ORDER BY rank, seq, uid",
                 (user_id,)).fetchall()
@@ -2761,6 +2784,8 @@ def clear_settings(user_id: int = 0) -> dict:
         wait = 0
     if scan < 0 or scan > 300:
         scan = 0
+    if away < 0 or away > 1030:
+        away = 100
     if back_mode not in ("off", "hops", "city"):
         back_mode = "off"
     if back_hops < 1 or back_hops > 20:
@@ -2775,8 +2800,35 @@ def clear_settings(user_id: int = 0) -> dict:
         "retreat_hops": back_hops,
         "retreat_city": back_city,
         "retreat_fail": back_fail,
+        "away_morale": away,
         "priority": [{"uid": str(uid), "rank": int(rank)} for uid, rank in rows],
     }
+
+
+def away_card_line(user_id: int = 0) -> int:
+    """城外士气低于这个数就开一张恢复卡。0 表示不补。
+
+    这项在高级配置里改。不是高级时用 100。读库失败也用 100。
+    """
+    if not user_id:
+        user_id = attack_context_user()
+    user_id = int(user_id or 0)
+    if not user_id or not high_tier(_stored_tier(user_id)):
+        return 100
+    try:
+        conn = connect(readonly=True)
+        try:
+            row = conn.execute(
+                "SELECT IFNULL(away_morale,100) FROM app_user WHERE id=?",
+                (user_id,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 100
+    n = int(row[0] if row and row[0] is not None else 100)
+    if n < 0 or n > 1030:
+        return 100
+    return n
 
 
 def _stored_tier(user_id: int) -> str:

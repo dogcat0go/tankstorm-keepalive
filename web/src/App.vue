@@ -66,6 +66,7 @@ const clearRetreatMode = ref("off");
 const clearRetreatHops = ref("3");
 const clearRetreatCity = ref("0");
 const clearRetreatFail = ref(false);
+const awayMorale = ref("100");
 const clearRows = ref([]);
 const clearNote = ref("");
 const prioUid = ref("");
@@ -578,6 +579,7 @@ function takeUser(user) {
   clearRetreatHops.value = String(user.clear_retreat_hops ?? 3);
   clearRetreatCity.value = String(user.clear_retreat_city || 0);
   clearRetreatFail.value = !!user.clear_retreat_fail;
+  awayMorale.value = String(user.away_morale ?? 100);
   clearRows.value = (user.clear_priority || []).map((row) => ({
     uid: String(row.uid),
     rank: String(row.rank),
@@ -620,6 +622,7 @@ async function saveClearPlan() {
     retreat_hops: clearRetreatHops.value,
     retreat_city: clearRetreatCity.value,
     retreat_fail: clearRetreatFail.value,
+    away_morale: awayMorale.value,
     priority: clearRows.value.map((row) => ({ uid: row.uid, rank: row.rank })),
   });
   if (data.user) takeUser(data.user);
@@ -1190,6 +1193,7 @@ onUnmounted(() => {
         v-model:clear-retreat-hops="clearRetreatHops"
         v-model:clear-retreat-city="clearRetreatCity"
         v-model:clear-retreat-fail="clearRetreatFail"
+        v-model:away-morale="awayMorale"
         v-model:prio-uid="prioUid"
         v-model:prio-rank="prioRank"
         v-model:move-city="moveCity"

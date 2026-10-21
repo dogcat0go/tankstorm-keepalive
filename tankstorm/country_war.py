@@ -52,7 +52,6 @@ COST_ATTACK = 5      # type:14 普通攻击
 MORALE_CAP = 1030    # 士气上限。2026-09-24 满士气、2026-10-09 补满都停在这里
 MORALE_PER_AP = 25   # type:9，1 点行动力补 25 士气
 SUPPLY_AP = 70       # 行动力大于这个数，才用行动力把士气补满
-AWAY_CARD_MORALE = 100  # 不在本国首都及相邻城时，低于这个数开一张恢复卡
 WAIT_ATK = 3.0       # 扫荡/攻击回包超时，超时打下一次
 WAIT_BTL = 2.0       # 战报超时，超时打下一次
 
@@ -2422,12 +2421,16 @@ def _halt_for_home(sock, rec, config, loc, my, uid, allow_leave=False) -> str:
 def guard_low_morale(sock, rec, config) -> None:
     """国战订单开始时看一次当前士气和所在城市，决定要不要开一张恢复卡。
 
-    人不在本国首都，也不在和这座首都相邻的城里，士气低于 100，就开一张。
-    首都和相邻城里用行动力补士气是另一条策略，这里不补，也不开卡。
+    人不在本国首都，也不在和这座首都相邻的城里，士气低于高级配置里的数，就开一张。
+    填 0 不补。首都和相邻城里用行动力补士气是另一条策略，这里不补，也不开卡。
     读不到城市或士气就跳过。背包没有卡也不拦这一单。
     """
     from . import citydb
 
+    line = citydb.away_card_line()
+    if line <= 0:
+        log.info("[国战] 城外补士气设成 0，这次不开恢复卡")
+        return
     conf = (config or {}).get("国战") or {}
     my = int(conf.get("自己国家ID") or 0) or _daily.read_my_country(rec)
     if not my:
@@ -2459,14 +2462,15 @@ def guard_low_morale(sock, rec, config) -> None:
         except Exception:
             log.info("[国战] 看不清首都旁边的城，这次不开恢复卡", exc_info=True)
             return
-    if home or morale >= AWAY_CARD_MORALE:
+    if home or morale >= line:
         where = "本国首都或相邻城" if home else "城外"
-        log.info("[国战] 人在 %s（%s），士气 %s，不开恢复卡", spot, where, morale)
+        log.info("[国战] 人在 %s（%s），士气 %s，低于 %d 才开恢复卡",
+                 spot, where, morale, line)
         return
     item = int(conf.get("国战恢复卡物品ID") or CARD_ITEM_ID)
     sent, msg = _use_recovery_card(sock, rec, item, lock_meter=False)
     log.info("[国战] 人在 %s，不在本国首都及相邻城，士气 %s < %d，%s",
-             spot, morale, AWAY_CARD_MORALE, msg)
+             spot, morale, line, msg)
     if not sent:
         return
     _nap(2.0)

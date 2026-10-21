@@ -14,6 +14,7 @@ const clearRetreatMode = defineModel("clearRetreatMode", { type: String, require
 const clearRetreatHops = defineModel("clearRetreatHops", { type: String, required: true });
 const clearRetreatCity = defineModel("clearRetreatCity", { type: String, required: true });
 const clearRetreatFail = defineModel("clearRetreatFail", { type: Boolean, required: true });
+const awayMorale = defineModel("awayMorale", { type: String, required: true });
 const prioUid = defineModel("prioUid", { type: String, required: true });
 const prioRank = defineModel("prioRank", { type: String, required: true });
 const moveCity = defineModel("moveCity", { type: String, required: true });
@@ -112,6 +113,11 @@ function fightingLine(it) {
       </p>
       <div v-if="me.high_tier && attackAdvanced" class="advanced">
         <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
+          <span class="switch">城外补士气</span>
+          <label>士气低于<input v-model="awayMorale" class="mins" inputmode="numeric" required /></label>
+        </form>
+        <p class="muted">有国战订单时先看一次当前士气和所在城市。人不在本国首都，也不在和首都相邻的城里，士气低于这个数，就开一张恢复卡。填 0 不补。本国首都和相邻城里不走这一条，仍只用行动力补士气。保存和下面的清城配置一起生效。</p>
+        <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
           <span class="switch">清城扫页</span>
           <label class="choice"><input type="radio" value="head" v-model="clearMode" />前5页</label>
           <label class="choice"><input type="radio" value="range" v-model="clearMode" />指定范围</label>
@@ -181,7 +187,6 @@ function fightingLine(it) {
       <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
     </div>
     <p class="muted">每 2 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条，正在打的排在最上面。还没绑定的，按页面上方的步骤先扫码。点了登录，就挂机保活 180 分钟，连上之后可以接订单。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。同一个 QQ 可以绑给多个登录账号。</p>
-    <p class="muted">有国战订单时先看一次当前士气和所在城市。人不在本国首都，也不在和首都相邻的城里，士气低于 100，就开一张恢复卡。本国首都和相邻城里不走这一条，仍只用行动力补士气。</p>
     <p v-if="fightingOrder()" class="now-fighting">
       <span class="k">正在攻打的敌人</span>{{ fightingLine(fightingOrder()) }}
     </p>

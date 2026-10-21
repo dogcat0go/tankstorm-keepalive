@@ -557,6 +557,7 @@ onUnmounted(() => {
                   <p>定时关闭：{{ m.off_at || "未设" }}</p>
                   <p>自动锁敌：{{ m.auto_lock ? "开" : "关" }} · 锁敌恢复卡 {{ m.lock_cards }} 张/小时</p>
                   <p>恢复卡上限：{{ m.card_max }} · 摩多：{{ m.modo_cards || 0 }}</p>
+                  <p>城外补士气：{{ m.away_morale ? "士气低于 " + m.away_morale : "不补" }}</p>
                   <p>打完后退：{{ retreatText(m.retreat_mode, m.retreat_hops, m.retreat_city, m.retreat_fail) }}</p>
                   <p>清城扫页：{{ clearPages(m) }} · 空城再打 {{ m.clear_wait ? m.clear_wait + " 分钟" : "结束" }} · 扫页冷却 {{ m.clear_scan ? m.clear_scan + " 秒" : "每次出手" }}</p>
                   <p>清城后退：{{ retreatText(m.clear_retreat_mode, m.clear_retreat_hops, m.clear_retreat_city, m.clear_retreat_fail) }}</p>

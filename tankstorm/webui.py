@@ -159,6 +159,7 @@ def _user_out(user: dict) -> dict:
         "clear_retreat_city": int(plan.get("retreat_city") or 0),
         "clear_retreat_fail": bool(plan.get("retreat_fail")),
         "clear_priority": plan["priority"],
+        "away_morale": int(plan.get("away_morale") if plan.get("away_morale") is not None else 100),
         "modo_cards": int(user.get("modo_cards") or 0),
         "region": int(user.get("region") or 0),
         "off_at": user.get("off_at") or "",
@@ -671,7 +672,7 @@ def _handler(config: dict):
                         data.get("page_to"), data.get("priority"), data.get("wait_min"),
                         data.get("scan_sec"), data.get("retreat_mode"),
                         data.get("retreat_hops"), data.get("retreat_city"),
-                        data.get("retreat_fail"))
+                        data.get("retreat_fail"), data.get("away_morale"))
                     if why:
                         raise ValueError(why)
                     saved = citydb.user_by_token(_cookie_token(self)) or user
