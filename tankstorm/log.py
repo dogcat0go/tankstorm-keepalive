@@ -90,6 +90,61 @@ def get_login_logger() -> logging.Logger:
 
 _task_loggers = {}
 _task_log_lock = threading.Lock()
+_mirror_local = threading.local()
+_WAR_HEADS = ("[国战]", "[移动]", "[打人]", "[路线]", "[索敌]", "[魔多]",
+              "―― 国战", "―― 摩多", "―― 移动")
+PINNED_TASKS = ("拒绝超级强攻", "国战助手")
+
+
+def bind_account_log(qq: str) -> str:
+    """这条线程接下来的强攻拒绝和国战日志记到这个攻打 QQ。返回之前的号。"""
+    prev = str(getattr(_mirror_local, "qq", "") or "")
+    _mirror_local.qq = "".join(ch for ch in str(qq or "") if ch.isdigit())
+    return prev
+
+
+def _account_log_qq() -> str:
+    qq = str(getattr(_mirror_local, "qq", "") or "")
+    if qq:
+        return qq
+    try:
+        from .citydb import attack_context_qq
+    except Exception:
+        return ""
+    return "".join(ch for ch in str(attack_context_qq() or "") if ch.isdigit())
+
+
+def _account_log_task(msg: str) -> str:
+    """运行日志里这两类单独抄一份，管理页按攻打 QQ 能打开。"""
+    text = str(msg or "").strip()
+    if not text:
+        return ""
+    if "超级强攻" in text:
+        return "拒绝超级强攻"
+    if text.startswith(_WAR_HEADS):
+        return "国战助手"
+    return ""
+
+
+class _AccountTaskMirror(logging.Filter):
+    def filter(self, record):
+        if record.levelno < logging.INFO or getattr(_mirror_local, "busy", False):
+            return True
+        try:
+            title = _account_log_task(record.getMessage())
+            qq = _account_log_qq() if title else ""
+        except Exception:
+            return True
+        if not title or not qq:
+            return True
+        _mirror_local.busy = True
+        try:
+            task_log(qq, title, record.getMessage())
+        except Exception:
+            return True
+        finally:
+            _mirror_local.busy = False
+        return True
 
 
 def task_log(qq: str, task: str, msg: str) -> None:
@@ -130,6 +185,7 @@ def get_logger(name: str = "tankstorm") -> logging.Logger:
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logger.addHandler(fh)
+    logger.addFilter(_AccountTaskMirror())
 
     # 控制台写到独立线程：点选窗口卡住的是打印，不能把打人线程一起堵住。
     global _console_handler
@@ -293,8 +349,12 @@ def qq_log_lines(usernames, order_ids, qq: str, days: int, limit: int = 800) -> 
     return kept, cut
 
 
-def qq_task_logs(qq: str, days: int, per_file: int = 160, max_tasks: int = 12) -> list:
-    """logs/task/攻打QQ/ 里近几天的任务日志。每个任务一份，只留末尾。"""
+def qq_task_logs(qq: str, days: int, per_file: int = 160, max_tasks: int = 12,
+                 pin=PINNED_TASKS) -> list:
+    """logs/task/攻打QQ/ 里近几天的任务日志。每个任务一份，只留末尾。
+
+    pin 里的任务始终带回，不占 max_tasks 的名额。
+    """
     qq = "".join(ch for ch in str(qq or "") if ch.isdigit())
     if not qq:
         return []
@@ -334,12 +394,14 @@ def qq_task_logs(qq: str, days: int, per_file: int = 160, max_tasks: int = 12) -
             key = match.group(2)
         groups.setdefault(task, []).append((key, path))
     ordered = sorted(groups)
-    extra = len(ordered) > max_tasks
+    pinned = [task for task in pin if task in groups]
+    rest = [task for task in ordered if task not in pinned]
+    extra = len(rest) > max_tasks
     per_file = max(1, min(int(per_file or 160), 200))
     out = []
-    for task in ordered[:max_tasks]:
+    for task in pinned + rest[:max_tasks]:
         lines = []
-        cut = extra
+        cut = extra and task not in pinned
         for _key, path in sorted(groups[task]):
             try:
                 size = os.path.getsize(path)

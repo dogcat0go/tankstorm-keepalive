@@ -33,7 +33,7 @@ import time
 from contextlib import contextmanager
 
 from . import daily, notify, protocol, sender
-from .log import get_logger, task_log
+from .log import bind_account_log, get_logger, task_log
 from .qzone import get_game_context
 from .recorder import Recorder
 
@@ -253,32 +253,36 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
         if not who:
             who = str(snapshot.get("atkUid") or "").strip()
         uin_now = _uin_now()
-        user_id = citydb.storm_subject(bound_user, uin_now)
-        day = citydb.beijing_day()
-        why = citydb.reserve_storm_reject(user_id, day, uin_now)
-        if why:
-            log.info("%s（进攻方 %s）", why, who or "未知玩家")
-            return
-        rc4 = rec.rc4_c2s
-        if rc4 is None:
-            citydb.release_storm_reject(user_id, day)
-            log.warning("自动拒绝超级强攻失败：RC4 C→S 实例不可用"
-                        "（实时解密未启用或密钥自检失败）")
-            return
-        ok = sender.send_reject_super_storm(sock, rc4, snapshot)
-        if not ok:
-            citydb.release_storm_reject(user_id, day)
-            return
+        prev_qq = bind_account_log(uin_now)
         try:
-            citydb.note_storm_reject(who, user_id=user_id, qq=uin_now)
-        except Exception:
-            log.info("超级强攻拒绝没记上页面", exc_info=True)
-        notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
-                    f"进攻方：{snapshot.get('atkName', '?')}（{snapshot.get('atkUid', '?')}）\n"
-                    f"防守方：{snapshot.get('deftName', '?')}（{snapshot.get('deftUid', '?')}）\n\n"
-                    f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
-                    f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
-                    f"请立刻打开游戏确认。")
+            user_id = citydb.storm_subject(bound_user, uin_now)
+            day = citydb.beijing_day()
+            why = citydb.reserve_storm_reject(user_id, day, uin_now)
+            if why:
+                log.info("%s（进攻方 %s）", why, who or "未知玩家")
+                return
+            rc4 = rec.rc4_c2s
+            if rc4 is None:
+                citydb.release_storm_reject(user_id, day)
+                log.warning("自动拒绝超级强攻失败：RC4 C→S 实例不可用"
+                            "（实时解密未启用或密钥自检失败）")
+                return
+            ok = sender.send_reject_super_storm(sock, rc4, snapshot)
+            if not ok:
+                citydb.release_storm_reject(user_id, day)
+                return
+            try:
+                citydb.note_storm_reject(who, user_id=user_id, qq=uin_now)
+            except Exception:
+                log.info("超级强攻拒绝没记上页面", exc_info=True)
+            notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
+                        f"进攻方：{snapshot.get('atkName', '?')}（{snapshot.get('atkUid', '?')}）\n"
+                        f"防守方：{snapshot.get('deftName', '?')}（{snapshot.get('deftUid', '?')}）\n\n"
+                        f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
+                        f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
+                        f"请立刻打开游戏确认。")
+        finally:
+            bind_account_log(prev_qq)
 
     def _on_super_storm(data):
         threading.Thread(

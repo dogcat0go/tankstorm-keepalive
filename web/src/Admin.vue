@@ -383,6 +383,19 @@ function clearWaitLine(accounts) {
   }).join("，");
 }
 
+const ACCOUNT_LOGS = ["拒绝超级强攻", "国战助手"];
+
+function accountLogs(tasks) {
+  const rows = tasks || [];
+  return ACCOUNT_LOGS.map((name) => rows.find((task) => task.name === name) || {
+    name, lines: [], cut: false,
+  });
+}
+
+function otherTasks(tasks) {
+  return (tasks || []).filter((task) => ACCOUNT_LOGS.indexOf(task.name) < 0);
+}
+
 async function loadQqLog() {
   if (!logQq.value) return;
   logBusy.value = true;
@@ -791,9 +804,16 @@ onUnmounted(() => {
           <p v-if="logView.lines_cut" class="muted">行数比较多，这里只留最近的一部分。</p>
           <pre v-if="logView.lines.length" class="qq-log">{{ logView.lines.join("\n") }}</pre>
           <p v-else class="muted">这几天的运行日志里没有对得上的行。</p>
+          <h3>拒绝超级强攻、国战助手</h3>
+          <p class="muted">按这个攻打 QQ 分开记。拒绝发出去、没拒绝成，以及国战里的移动、打人和清城，写在这里。</p>
+          <details v-for="task in accountLogs(logView.tasks)" :key="'side-' + task.name" class="qq-task-file" open>
+            <summary>{{ task.name }}<span v-if="task.cut" class="muted"> · 只留末尾</span></summary>
+            <pre v-if="task.lines.length" class="qq-task">{{ task.lines.join("\n") }}</pre>
+            <p v-else class="muted">这几天没有新行。</p>
+          </details>
           <h3>任务日志</h3>
-          <p v-if="!(logView.tasks || []).length" class="muted">没有按任务分开的日志。</p>
-          <details v-for="task in logView.tasks" :key="task.name" class="qq-task-file" open>
+          <p v-if="!otherTasks(logView.tasks).length" class="muted">没有按任务分开的日志。</p>
+          <details v-for="task in otherTasks(logView.tasks)" :key="task.name" class="qq-task-file" open>
             <summary>{{ task.name }}<span v-if="task.cut" class="muted"> · 只留末尾</span></summary>
             <pre v-if="task.lines.length" class="qq-task">{{ task.lines.join("\n") }}</pre>
             <p v-else class="muted">这个任务这几天没有新行。</p>
