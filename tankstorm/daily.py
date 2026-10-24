@@ -1639,25 +1639,6 @@ TASKS = [
            "tankstorm.guild", fromlist=["daily_join"]
        ).daily_join(rec, sock, config)),
 
-    # 顺序按抓包来。抓包里每个 RceGuildOpt 都带着这一串 0，照抄。
-    # 这一项只打开战报面板（type:14 回包是 userGuild + log），不参战、不领奖。
-    _t("公会战", "公会战·看战报", "0479", "RceGuildOpt",
-       {2: ("int32", 14), 4: ("int32", 0), 13: ("int32", 0), 17: ("int32", 0),
-        18: ("int32", 0), 22: ("int32", 0), 23: ("int32", 0)},
-       "实测", "8/10 抓包：type:0 → type:2 → type:73 → type:14。"
-               "type:73 的回包带 dayHasPK＝今天有没有公会战活动。"
-               "这一项只是看战报；「参加」是单独的『公会战参加』任务（type:70）",
-       prelude=[("0479", {2: ("int32", 0), 4: ("int32", 0), 13: ("int32", 0),
-                          17: ("int32", 0), 18: ("int32", 0),
-                          22: ("int32", 0), 23: ("int32", 0)}),
-                ("0479", {2: ("int32", 2), 4: ("int32", 0), 13: ("int32", 0),
-                          17: ("int32", 0), 18: ("int32", 0),
-                          22: ("int32", 0), 23: ("int32", 0)}),
-                ("0479", {2: ("int32", 73), 4: ("int32", 0), 13: ("int32", 0),
-                          17: ("int32", 0), 18: ("int32", 0),
-                          22: ("int32", 0), 23: ("int32", 0)})],
-       report=("dayHasPK", "lastBtlRank", "curSesionBtlOver", "bRankGet")),
-
     # 2026-10-04 抓包是一键：金属石油、功勋、军令各捐到当天上限，不是只发一次。
     _t("公会捐献", "公会·捐献", "0479", "RceGuildOpt",
        {}, "实测",
@@ -4511,7 +4492,7 @@ def _do_once(task, sock, rec, st, results, details, field_names,
                     panel_note = " ".join(bits)
                     log.info("[%s] 面板：%s", task.key, panel_note)
 
-        # 没有闸门的任务也要能报面板（公会战就靠它把 dayHasPK 读出来）。
+        # 没有闸门的任务也要能报面板。
         # 闸门那条路已经顺手取过了，这里只补没闸门的情形。
         if task.report and not panel_note and task.prelude:
             pop, pfields = task.prelude[-1]
