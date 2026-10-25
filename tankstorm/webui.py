@@ -1056,7 +1056,7 @@ def _announce(host, port, config):
         log.warning("注册口令是空的，公网上任何人都能注册。填 config「订阅.注册口令」")
     if not _register_open(config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
-        log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级|高级pro。中级及以上可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置要高级或高级pro。基地战只要高级pro")
+        log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级|高级pro。中级及以上可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置要高级或高级pro。活动助手和基地战只要高级pro")
         log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin，可看成员配置、攻打 QQ 和扫描安排")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
     log.info("软件授时：登录后 POST /api/clock，正文 mono_ms 为单调计时毫秒，返回会员剩余时间")
