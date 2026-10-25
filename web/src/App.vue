@@ -123,6 +123,7 @@ const guildLevel = ref("");
 const guildLevelNote = ref("");
 const guildThew = ref(null);
 const guildScore = ref(null);
+const strikeLeft = ref(null);
 let guildLevelReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
@@ -231,6 +232,7 @@ async function refreshDaily() {
     guildLevelReady = false;
     guildThew.value = null;
     guildScore.value = null;
+    strikeLeft.value = null;
     fundNote.value = "";
     return;
   }
@@ -259,6 +261,7 @@ async function refreshDaily() {
   }
   guildThew.value = data.guild_thew == null ? null : data.guild_thew;
   guildScore.value = data.guild_score == null ? null : data.guild_score;
+  strikeLeft.value = data.strike_left == null ? null : data.strike_left;
 }
 
 async function saveGuildLevel() {
@@ -535,6 +538,17 @@ async function runGuildCamp() {
   await refreshDaily();
   await refreshAttacks();
 }
+async function runStrike() {
+  showErr("", "activity");
+  guildLevelNote.value = "";
+  const ok = await confirmUse("按当前剩余次数执行精准打击，打到没有次数或被拒绝就停。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "strike" });
+  guildLevelNote.value = "精准打击已交给绑定的攻打号";
+  await refreshDaily();
+  await refreshAttacks();
+}
+
 async function runFund(building, times) {
   showErr("", "activity");
   fundNote.value = "";
@@ -1331,6 +1345,8 @@ onUnmounted(() => {
         :note="guildLevelNote"
         :thew="guildThew"
         :score="guildScore"
+        :strike-left="strikeLeft"
+        :run-strike="runStrike"
         :fund-buildings="fundBuildings"
         :fund-note="fundNote"
         :err="err"

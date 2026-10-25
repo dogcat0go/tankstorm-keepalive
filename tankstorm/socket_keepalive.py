@@ -2189,6 +2189,19 @@ def _refresh_camp_live(rec, sock) -> None:
         raise
 
 
+def _refresh_strike_live(rec, sock) -> None:
+    """页面刚进入活动助手。读一次精准打击剩余次数，不打击。"""
+    from . import citydb, daily, strike
+
+    try:
+        with daily.lane_hold():
+            if not citydb.take_strike_live():
+                return
+            strike.peek_strike(rec, sock)
+    except OSError:
+        raise
+
+
 def _run_requested_move(rec, sock, config, beater) -> bool:
     """页面点了移动到指定城。走进那座城，不打它。没有请求返回 False。"""
     from . import citydb, country_war
@@ -2434,6 +2447,14 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 ok, why = guild.daily_campaign(rec, sock, cfg)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "strike":
+                from . import strike
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
+                    return
+                ok, why = strike.run_strike(rec, sock, on_progress=_show)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_claim":
                 from . import guild
                 ok, why = guild.claim_guild_rewards(rec, sock)
@@ -2596,13 +2617,13 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     hold_closed = False
     side_kinds = (
         "blast", "factory",
-        "daily", "pve", "fund", "guild_camp", "guild_claim", "chest", "cards", "clean",
+        "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "chest", "cards", "clean",
         "haoyin", "admiral", "admiral10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
 
     def _lane_for(kind):
-        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "chest"):
+        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "chest"):
             return "daily"
         if kind == "blast":
             return "blast"
@@ -2678,6 +2699,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     _refresh_asked_here(rec, sock, config)
                     _refresh_equip_bag(rec, sock)
                     _refresh_camp_live(rec, sock)
+                    _refresh_strike_live(rec, sock)
                     if not _wait_socket(sock, spec, ctx):
                         raise OSError("服务器关闭连接")
                     continue
@@ -2694,6 +2716,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     continue
                 _refresh_equip_bag(rec, sock)
                 _refresh_camp_live(rec, sock)
+                _refresh_strike_live(rec, sock)
                 for uid in citydb.attack_context_users():
                     citydb.skip_unfinished_auto(uid)
                 citydb.release_due_waits()

@@ -2288,7 +2288,7 @@ def bind_attack_account(user_id: int, account: str) -> str:
     return ""
 
 
-_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "campask", "pageqr", "qrpath", "resume")
+_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "campask", "strikeask", "pageqr", "qrpath", "resume")
 
 
 def clear_attack_binding(user_id: int) -> str:
@@ -3980,7 +3980,7 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
         if here:
             data["here"] = here
         for key in ("morale", "power", "blast", "pop", "metal", "oil", "credit",
-                    "camp_thew", "camp_score"):
+                    "camp_thew", "camp_score", "strike_left"):
             val = _kept_int(prev, key)
             if val is not None:
                 data[key] = val
@@ -4326,6 +4326,33 @@ def take_attack_here() -> bool:
     return True
 
 
+def note_strike(left) -> bool:
+    """记下精准打击剩余次数。可以是 0。"""
+    if isinstance(left, bool) or not isinstance(left, int) or left < 0:
+        return False
+    if not attack_context_user() and not attack_context_qq():
+        return False
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return False
+            if data.get("strike_left") == left:
+                return True
+            data["strike_left"] = left
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+            return True
+        except sqlite3.Error:
+            return False
+
+
+def strike_live(user_id: int):
+    """页面上的精准打击剩余次数。还没读到是 None。"""
+    parsed, _seen, _online = _read_user_proc(int(user_id))
+    return _kept_int(parsed, "strike_left")
+
+
 def request_camp_live(user_id: int) -> str:
     """进活动助手时读一次公会战役体力和当前积分。成功返回空字符串。"""
     user_id = int(user_id or 0)
@@ -4341,6 +4368,7 @@ def request_camp_live(user_id: int) -> str:
     if status.get("phase") == "login" or status.get("need_login"):
         return "还在登录，连上后再看体力和积分"
     _upsert_signal(_mark_name("campask", user_id), "1")
+    _upsert_signal(_mark_name("strikeask", user_id), "1")
     return ""
 
 
@@ -4352,6 +4380,17 @@ def take_camp_live() -> bool:
     if _signal_value(_mark_name("campask", user_id)).strip() != "1":
         return False
     _delete_signal(_mark_name("campask", user_id))
+    return True
+
+
+def take_strike_live() -> bool:
+    """领走这一次查看精准打击。领过就不再读第二次。"""
+    user_id = attack_context_user()
+    if not user_id or (shutdown_due(user_id) and shutdown_covers_context()):
+        return False
+    if _signal_value(_mark_name("strikeask", user_id)).strip() != "1":
+        return False
+    _delete_signal(_mark_name("strikeask", user_id))
     return True
 
 
@@ -5121,6 +5160,7 @@ DAILY_KIND_LABEL = {
     "chest": "国家宝箱",
     "guild_camp": "公会战役",
     "guild_claim": "公会任务领奖",
+    "strike": "精准打击",
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "clean", "haoyin", "admiral", "admiral10",
@@ -5529,7 +5569,7 @@ def enqueue_due_daily_jobs(guild_defaults=None) -> list:
                 continue
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job "
-                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp','guild_claim') "
+                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike') "
                 "AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
             if int(waiting or 0) >= 3:
@@ -6076,7 +6116,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         else:
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
-                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim') AND status IN ('pending','running')",
+                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike') AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
             return "还有没做完的，先等这几项"

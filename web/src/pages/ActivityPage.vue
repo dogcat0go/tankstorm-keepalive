@@ -15,6 +15,7 @@ const props = defineProps({
   note: { type: String, default: "" },
   thew: { default: null },
   score: { default: null },
+  strikeLeft: { default: null },
   fundBuildings: { type: Array, required: true },
   fundNote: { type: String, default: "" },
   err: { type: String, default: "" },
@@ -23,11 +24,13 @@ const props = defineProps({
   saveDailySwitch: { type: Function, required: true },
   runFund: { type: Function, required: true },
   runGuildCamp: { type: Function, required: true },
+  runStrike: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
 
 const guildTask = computed(() => props.tasks.find((it) => it.key === "公会战役") || null);
 const campJob = computed(() => props.jobs.find((it) => it.kind === "guild_camp") || null);
+const strikeJob = computed(() => props.jobs.find((it) => it.kind === "strike") || null);
 
 function liveText(n) {
   if (n === null || n === undefined || n === "") return "还没读到";
@@ -72,6 +75,16 @@ function liveText(n) {
       <p v-if="campJob">{{ campJob.status }} {{ campJob.detail }}</p>
       <p>体力 {{ liveText(thew) }} · 当前积分 {{ liveText(score) }}</p>
       <p class="muted">进入这个页面会读一次体力和当前积分。只在周五 10:00 到周六 22:00（本机时间）进攻。点进攻就按体力打这一轮，不用等整轮日常。同一等级一直打，直到体力不够、体力不再下降或被拒绝。不领奖。等级记在这个登录账号上，没改过就用配置里的等级。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>精准打击</summary>
+      <form class="lock-row" @submit.prevent="runStrike().catch((e) => showErr(e.message))">
+        <span class="switch">精准打击</span>
+        <button type="submit">打击</button>
+      </form>
+      <p v-if="strikeJob">{{ strikeJob.status }} {{ strikeJob.detail }}</p>
+      <p>剩余次数 {{ liveText(strikeLeft) }}</p>
+      <p class="muted">进入这个页面会读一次剩余次数。这次打开回包里没有活动起止时间，有次数就打，打到 0 或次数不再下降或被拒绝就停。不领圈数奖励。</p>
     </details>
     <details class="campaign-box">
       <summary>成就拨款</summary>
