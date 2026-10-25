@@ -84,7 +84,7 @@ function liveText(n) {
       </form>
       <p v-if="strikeJob">{{ strikeJob.status }} {{ strikeJob.detail }}</p>
       <p>剩余次数 {{ liveText(strikeLeft) }}</p>
-      <p class="muted">进入这个页面会读一次剩余次数。这次打开回包里没有活动起止时间，有次数就打，打到 0 或次数不再下降或被拒绝就停。不领圈数奖励。</p>
+      <p class="muted">进入这个页面会读一次剩余次数。点下去会一直打，直到服务器上的剩余次数变成 0。次数没有下降不算打中。这次打开回包里没有活动起止时间。不领圈数奖励。</p>
     </details>
     <details class="campaign-box">
       <summary>成就拨款</summary>

@@ -37,8 +37,19 @@ def peek_strike(rec, sock):
     return got
 
 
+def _landed(before_left, before_circle, data):
+    """次数下降，或圈数增加，才算这一下打中。"""
+    now = _one(data.get("nCurEnergy")) if isinstance(data, dict) else None
+    circle = _one(data.get("nCurCircle")) if isinstance(data, dict) else None
+    if now is not None and before_left is not None and now < before_left:
+        return True, now, circle
+    if (circle is not None and before_circle is not None and circle > before_circle):
+        return True, now if now is not None else before_left, circle
+    return False, now if now is not None else before_left, circle
+
+
 def run_strike(rec, sock, on_progress=None):
-    """先读剩余次数，再打到次数下降为 0 或不再下降。"""
+    """有剩余次数就一直打，打到服务器上的次数变成 0。"""
     panel = peek_strike(rec, sock)
     if not isinstance(panel, dict):
         return False, "失败：没打开精准打击"
@@ -50,36 +61,51 @@ def run_strike(rec, sock, on_progress=None):
         return True, "成功：没有剩余次数"
     done = 0
     rolls = []
-    before = left
-    while done < left and done < 99:
+    misses = 0
+    while left > 0 and done < 99 and misses < 5:
         raise_if_stopped()
         got = _send(rec, sock, 1)
         if not isinstance(got, dict):
             head = f"已打 {done} 次。" if done else ""
             return False, head + "打击没有回包"
-        now = _one(got.get("nCurEnergy"))
         ret = _one(got.get("nRet"))
-        if now is None or now >= before:
-            if ret not in (0, None):
-                head = f"已打 {done} 次。" if done else ""
-                return False, head + f"被拒 nRet={ret}"
-            break
+        if ret not in (0, None):
+            head = f"已打 {done} 次。" if done else ""
+            return False, head + f"被拒 nRet={ret}，剩余 {left}"
+        hit, now, now_circle = _landed(left, circle, got)
+        if not hit:
+            fresh = _send(rec, sock, 0)
+            hit, now, now_circle = _landed(left, circle, fresh)
+            if isinstance(fresh, dict) and _one(fresh.get("nCurEnergy")) is not None:
+                now = _one(fresh.get("nCurEnergy"))
+        if not hit:
+            misses += 1
+            if now is not None:
+                left = now
+                citydb.note_strike(left)
+            _nap(1.0)
+            continue
+        misses = 0
         done += 1
-        before = now
+        if now is not None:
+            left = now
+        if now_circle is not None:
+            circle = now_circle
         rolled = _one(got.get("nRandNum"))
         if rolled:
             rolls.append(rolled)
-        now_circle = _one(got.get("nCurCircle"))
-        if now_circle is not None:
-            circle = now_circle
-        citydb.note_strike(now)
+        citydb.note_strike(left)
         if on_progress:
-            on_progress(f"{done}/{left}，剩余 {now}")
-        log.info("[精准打击] 第 %d 次，剩余 %d，抽出 %s", done, now, rolled)
-        if now <= 0:
+            on_progress(f"已打 {done} 次，剩余 {left}")
+        log.info("[精准打击] 第 %d 次，剩余 %d，圈数 %s，抽出 %s",
+                 done, left, circle, rolled)
+        if left <= 0:
             break
         _nap(0.35)
     tail = f"，抽出 {'、'.join(str(n) for n in rolls)}" if rolls else ""
     if circle is not None:
         tail += f"，圈数 {circle}"
-    return True, f"成功：精准打击 {done} 次，剩余 {before}{tail}"
+    if left > 0:
+        head = f"已打 {done} 次。" if done else ""
+        return False, head + f"剩余 {left} 次没有下降" + tail
+    return True, f"成功：精准打击 {done} 次，剩余 {left}{tail}"
