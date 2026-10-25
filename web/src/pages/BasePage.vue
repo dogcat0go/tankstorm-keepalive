@@ -230,7 +230,7 @@ function resText(n) {
             <button type="submit" class="ghost">保存</button>
             <span v-if="cleanNote" class="muted">{{ cleanNote }}</span>
           </form>
-          <p class="muted">勾上的按背包数量整叠使用。战略自选宝箱平均分成 10064、10065、10066、10067，坦克研究宝箱平均分成 10088、10087，余数给前面的选项。先开宝箱，再使用开出来的加成卡。背包里没有的跳过。保存后下次进来还是这份。</p>
+          <p class="muted">勾上的按背包数量整叠使用。战略自选宝箱平均分成 10064、10065、10066、10067，坦克研究宝箱平均分成 10088、10087，余数给前面的选项。先开宝箱，再使用开出来的军魂卡。背包里没有的跳过。保存后下次进来还是这份。</p>
         </FoldPart>
         <FoldPart title="抽卡">
           <form class="lock-row" @submit.prevent="runDraw('haoyin', drinkCount).catch((e) => showErr(e.message))">
