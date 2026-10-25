@@ -14,6 +14,12 @@ const expiryDraft = ref({});
 const expiryBusy = ref(0);
 const expiryErr = ref({});
 const expiryNote = ref({});
+const openTier = ref(0);
+const tierDraft = ref({});
+const tierBusy = ref(0);
+const tierErr = ref({});
+const tierNote = ref({});
+const TIERS = ["初级", "中级", "高级", "高级pro"];
 const clearing = ref(0);
 const stormNotes = ref({});
 const stormErr = ref({});
@@ -46,7 +52,7 @@ const logBusy = ref(false);
 const logErr = ref("");
 const PAGE = 20;
 let fighterTimer = 0;
-const TIER_RANK = { 初级: 1, 中级: 2, 高级: 3 };
+const TIER_RANK = { 初级: 1, 中级: 2, 高级: 3, 高级pro: 4 };
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -491,6 +497,38 @@ function toggleMember(id) {
   openMember.value = openMember.value === id ? 0 : id;
 }
 
+function toggleTier(m) {
+  if (openTier.value === m.id) {
+    openTier.value = 0;
+    return;
+  }
+  openTier.value = m.id;
+  tierDraft.value = { ...tierDraft.value, [m.id]: m.tier || "初级" };
+}
+
+async function saveTier(m) {
+  if (tierBusy.value) return;
+  const tier = String(tierDraft.value[m.id] || "").trim();
+  tierErr.value = { ...tierErr.value, [m.id]: "" };
+  if (!TIERS.includes(tier)) {
+    tierErr.value = { ...tierErr.value, [m.id]: "请选一个会员等级" };
+    return;
+  }
+  err.value = "";
+  tierBusy.value = m.id;
+  try {
+    const data = await api("/api/admin/members/tier", { user_id: m.id, tier });
+    paintMembers(data.members);
+    tierNote.value = { ...tierNote.value, [m.id]: "会员等级已改成 " + tier };
+  } catch (e) {
+    const message = e.message || "请求失败";
+    err.value = message;
+    tierErr.value = { ...tierErr.value, [m.id]: message };
+  } finally {
+    tierBusy.value = 0;
+  }
+}
+
 function toggleExpiry(m) {
   if (openExpiry.value === m.id) {
     openExpiry.value = 0;
@@ -581,6 +619,7 @@ async function logout() {
   members.value = [];
   openMember.value = 0;
   openExpiry.value = 0;
+  openTier.value = 0;
   fighters.value = [];
   scanRanges.value = [];
   clearMemberFilters();
@@ -632,7 +671,7 @@ onUnmounted(() => {
         <button type="button" role="tab" :aria-selected="sheet === 'fighters'" :class="{ ghost: sheet !== 'fighters' }" @click="sheet = 'fighters'">攻打 QQ</button>
       </div>
       <template v-if="sheet === 'members'">
-      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「有效期」可以设为过期、延长一个月，或改成指定日期。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。</p>
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。</p>
       <form class="filters" @submit.prevent>
         <label>搜索<input v-model="memberQ" placeholder="账号或 QQ" /></label>
         <label>区服
@@ -652,9 +691,7 @@ onUnmounted(() => {
         <label>档
           <select v-model="memberTier">
             <option value="">全部</option>
-            <option>初级</option>
-            <option>中级</option>
-            <option>高级</option>
+            <option v-for="t in TIERS" :key="'ft' + t">{{ t }}</option>
           </select>
         </label>
         <label class="choice" title="有效期按北京时间。到期当天仍显示，没填有效期的一直显示。">
@@ -696,7 +733,23 @@ onUnmounted(() => {
                 <td class="member-ops">
                   <button type="button" class="ghost" @click="toggleMember(m.id)">{{ openMember === m.id ? "收起" : "配置" }}</button>
                   <button type="button" class="ghost" :disabled="clearing === m.id" @click="clearMember(m).catch((e) => (err = e.message))">清空</button>
+                  <button type="button" class="ghost" :class="{ here: openTier === m.id }" :aria-expanded="openTier === m.id" @click="toggleTier(m)">{{ openTier === m.id ? "收起" : "会员等级" }}</button>
                   <button type="button" class="ghost" :class="{ here: openExpiry === m.id }" :aria-expanded="openExpiry === m.id" @click="toggleExpiry(m)">{{ openExpiry === m.id ? "收起" : "有效期" }}</button>
+                </td>
+              </tr>
+              <tr v-if="openTier === m.id">
+                <td colspan="7" class="member-cfg member-expiry">
+                  <p>当前：{{ m.tier || "初级" }}。中级起可以远程扫码攻打。高级再加上自动索敌、自动锁敌和清城高级配置。高级pro再加上基地战。</p>
+                  <form class="expiry-actions" @submit.prevent="saveTier(m)">
+                    <label>会员等级
+                      <select v-model="tierDraft[m.id]">
+                        <option v-for="t in TIERS" :key="m.id + t" :value="t">{{ t }}</option>
+                      </select>
+                    </label>
+                    <button type="submit" :disabled="tierBusy === m.id">保存</button>
+                  </form>
+                  <p v-if="tierErr[m.id]" class="err">{{ tierErr[m.id] }}</p>
+                  <p v-else-if="tierNote[m.id]" class="muted">{{ tierNote[m.id] }}</p>
                 </td>
               </tr>
               <tr v-if="openExpiry === m.id">

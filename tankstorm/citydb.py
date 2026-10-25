@@ -1167,7 +1167,7 @@ def set_user_admin(username: str, on: bool) -> bool:
 
 
 def set_user_tier(username: str, tier: str) -> bool:
-    """把账号标成初级、中级或高级。没有这个用户返回 False。"""
+    """把账号标成初级、中级、高级或高级pro。没有这个用户返回 False。"""
     conn = connect()
     try:
         cur = conn.execute(
@@ -1176,6 +1176,27 @@ def set_user_tier(username: str, tier: str) -> bool:
         return cur.rowcount > 0
     finally:
         conn.close()
+
+
+def set_member_tier(user_id: int, tier: str) -> str:
+    """改这个登录账号的会员等级。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    tier = str(tier or "").strip()
+    if tier not in TIERS:
+        return "会员等级只能是初级、中级、高级、高级pro"
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET tier=? WHERE id=?", (tier, user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    log.info("登录账号 %s 的会员等级改为 %s", username_of(user_id), tier)
+    return ""
 
 
 def set_user_expiry(username: str, expires_at: str) -> bool:
