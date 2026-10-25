@@ -714,8 +714,8 @@ PushPlus 的 token 填在 `config.local.json`：
 日志在 `logs/`：
 
 - `logs/YYYY-MM-DD.log` —— 运行日志
-- `logs/frames-YYYY-MM-DD.jsonl` —— 收发的每一帧（含解码结果），排错主力
-- `logs/streams/<会话>/` —— 原始字节流，供事后离线解密
+- `logs/login.log` —— 登录状态和网页票据
+- `logs/streams/<会话>/` —— 仅当「录制.落盘」为 true 时的原始字节流
 
 > `logs/` 里有真凭据（uid/sid/openkey），已 gitignore，发出去前想清楚。
 

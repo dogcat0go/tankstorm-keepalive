@@ -54,9 +54,9 @@
 
        python tools/capture_daily.py c2s.bin.decrypted/frames.jsonl
 
-也可以直接读守护进程自己的日志（只含守护进程发的包，用于核对脚本行为）：
+守护进程不再写 frames 日志。要看旧文件或解密结果，把路径传进来：
 
-       python tools/capture_daily.py                 # 默认读 logs/frames-*.jsonl
+       python tools/capture_daily.py logs/frames-2026-08-01.jsonl
        python tools/capture_daily.py --op 04a4       # 只看某个 opcode
        python tools/capture_daily.py --since 14:30   # 只看某时刻之后
 

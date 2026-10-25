@@ -66,7 +66,7 @@ def main():
 
     paths = args.files or sorted(glob.glob(os.path.join(LOG_DIR, "frames-*.jsonl")))
     if not paths:
-        print(f"没有找到录制日志。保活运行后会生成在 {LOG_DIR}/frames-日期.jsonl")
+        print(f"没有找到 frames jsonl。守护进程已不再写 {LOG_DIR}/frames-日期.jsonl，请传入文件路径")
         return 1
     today = os.path.join(LOG_DIR, f"frames-{date.today().isoformat()}.jsonl")
     if not args.files and today in paths:
