@@ -995,7 +995,7 @@ def high_tier(tier: str) -> bool:
 
 
 def base_tier(tier: str) -> bool:
-    """只有高级pro可以看到和使用基地战。"""
+    """只有高级pro可以看到和使用活动助手、基地战。"""
     return (tier or "") == "高级pro"
 
 

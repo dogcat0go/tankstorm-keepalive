@@ -739,7 +739,7 @@ onUnmounted(() => {
               </tr>
               <tr v-if="openTier === m.id">
                 <td colspan="7" class="member-cfg member-expiry">
-                  <p>当前：{{ m.tier || "初级" }}。中级起可以远程扫码攻打。高级再加上自动索敌、自动锁敌和清城高级配置。高级pro再加上基地战。</p>
+                  <p>当前：{{ m.tier || "初级" }}。中级起可以远程扫码攻打。高级再加上自动索敌、自动锁敌和清城高级配置。高级pro再加上活动助手和基地战。</p>
                   <form class="expiry-actions" @submit.prevent="saveTier(m)">
                     <label>会员等级
                       <select v-model="tierDraft[m.id]">
