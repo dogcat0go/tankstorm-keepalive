@@ -2692,6 +2692,9 @@ def daily_blast(rec, sock, config, count=1, on_progress=None, *,
                 unit=unit, label=label, track=track)
         except Later as later:
             later.done = done
+            head = f"{unit} {done}/{count}"
+            if head not in str(later.text or ""):
+                later.text = f"{head}，{later.text}" if later.text else head
             raise
         if not ok:
             head = f"完成 {done}/{count}。" if done else ""
