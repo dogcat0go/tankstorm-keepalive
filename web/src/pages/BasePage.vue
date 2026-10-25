@@ -29,6 +29,8 @@ const props = defineProps({
   cards: { type: Object, default: () => ({}) },
   resourceCatalog: { type: Array, default: () => [] },
   resourceCards: { default: null },
+  cleanCatalog: { type: Array, default: () => [] },
+  cleanItems: { default: null },
   note: { type: String, default: "" },
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
@@ -36,6 +38,8 @@ const props = defineProps({
   runFactory: { type: Function, required: true },
   runCards: { type: Function, required: true },
   saveResourceCards: { type: Function, required: true },
+  runClean: { type: Function, required: true },
+  saveClean: { type: Function, required: true },
   runDraw: { type: Function, required: true },
   runBox: { type: Function, required: true },
   runPick: { type: Function, required: true },
@@ -48,7 +52,11 @@ const props = defineProps({
 const picked = ref([]);
 const cardNote = ref("");
 const catalog = computed(() => props.resourceCatalog || []);
+const cleanPicked = ref([]);
+const cleanNote = ref("");
+const cleanList = computed(() => props.cleanCatalog || []);
 let appliedCards = null;
+let appliedClean = null;
 
 watch(
   [() => (props.resourceCards == null ? null : props.resourceCards.map((id) => Number(id)).join(",")),
@@ -65,8 +73,43 @@ watch(
   { immediate: true },
 );
 
+watch(
+  [() => (props.cleanItems == null ? null : props.cleanItems.map((id) => Number(id)).join(",")),
+    () => cleanList.value.map((item) => item.id).join(",")],
+  ([sig]) => {
+    if (sig == null) {
+      if (!cleanPicked.value.length) cleanPicked.value = cleanList.value.map((item) => item.id);
+      return;
+    }
+    if (sig === appliedClean) return;
+    appliedClean = sig;
+    cleanPicked.value = sig ? sig.split(",").map((id) => Number(id)) : [];
+  },
+  { immediate: true },
+);
+
 function cardOn(id) {
   return picked.value.includes(id);
+}
+
+function cleanOn(id) {
+  return cleanPicked.value.includes(id);
+}
+
+function toggleClean(id, on) {
+  cleanNote.value = "";
+  const set = new Set(cleanPicked.value);
+  if (on) set.add(id);
+  else set.delete(id);
+  cleanPicked.value = cleanList.value.filter((item) => set.has(item.id)).map((item) => item.id);
+}
+
+async function saveCleanItems() {
+  cleanNote.value = "";
+  if (!cleanPicked.value.length) throw new Error("至少选一种物品");
+  const saved = await props.saveClean(cleanPicked.value.slice());
+  if (Array.isArray(saved)) cleanPicked.value = saved.map((id) => Number(id));
+  cleanNote.value = "已保存。清理时按这个名单使用。";
 }
 
 function toggleCard(id, on) {
@@ -144,7 +187,7 @@ function resText(n) {
     <h2>基地战</h2>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的制造用那个号做。</p>
-    <p class="muted">由这个账号的攻打线程执行，不另开连接。兵营和战车工厂按剩余时间排下一次快速制造，免费线默认 600 秒。开资源卡也在这条线程上做。</p>
+    <p class="muted">由这个账号的攻打线程执行，不另开连接。兵营和战车工厂按剩余时间排下一次快速制造，免费线默认 600 秒。开资源卡和清理背包也在这条线程上做。</p>
     <h2>基地内资源</h2>
     <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
     <p>勋章 {{ resText(credit) }} · 人口 {{ resText(pop) }}</p>
@@ -170,7 +213,24 @@ function resText(n) {
             <button type="submit" class="ghost">保存</button>
             <span v-if="cardNote" class="muted">{{ cardNote }}</span>
           </form>
-          <p class="muted">一次只开 1 张，按面额从小到大。勾上的才会开，1000 万也在名单里。某种没有，或者这一张没开成，这种就停，换下一种。保存后下次进来还是这份。</p>
+          <p class="muted">资源箱整叠打开，每张变成金属卡和石油卡各 1 张，然后再按面额从小到大开勾上的资源卡。一次只开 1 张资源卡。某种没有，或者这一张没开成，这种就停，换下一种。保存后下次进来还是这份。</p>
+        </FoldPart>
+        <FoldPart title="清理背包">
+          <form class="lock-row" @submit.prevent="runClean(cleanPicked.slice()).catch((e) => showErr(e.message))">
+            <span class="switch">清理勾选的物品</span>
+            <button type="submit">清理</button>
+          </form>
+          <div class="card-picks">
+            <label v-for="item in cleanList" :key="item.id" class="choice">
+              <input type="checkbox" :checked="cleanOn(item.id)" @change="toggleClean(item.id, $event.target.checked)" />
+              {{ item.name }}
+            </label>
+          </div>
+          <form class="lock-row" @submit.prevent="saveCleanItems().catch((e) => showErr(e.message))">
+            <button type="submit" class="ghost">保存</button>
+            <span v-if="cleanNote" class="muted">{{ cleanNote }}</span>
+          </form>
+          <p class="muted">勾上的按背包数量整叠使用。战略自选宝箱平均分成 10064、10065、10066、10067，坦克研究宝箱平均分成 10088、10087，余数给前面的选项。先开宝箱，再使用开出来的加成卡。背包里没有的跳过。保存后下次进来还是这份。</p>
         </FoldPart>
         <FoldPart title="抽卡">
           <form class="lock-row" @submit.prevent="runDraw('haoyin', drinkCount).catch((e) => showErr(e.message))">

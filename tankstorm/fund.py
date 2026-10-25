@@ -24,7 +24,10 @@
 """
 
 from . import sender
-from .daily import _await_response, _nap, _pick_recent, note_bag_cards, raise_if_stopped
+from .daily import (
+    _await_response, _nap, _pick_recent, latest_card, note_bag_cards,
+    raise_if_stopped,
+)
 from .log import get_logger
 from .proto_encode import encode_message
 
@@ -61,6 +64,14 @@ RESOURCE_CARDS = (
 )
 _CARD_ORDER = {item: i for i, (item, _wan, _name) in enumerate(RESOURCE_CARDS)}
 BASE_CARDS = tuple((item, name) for item, _wan, name in RESOURCE_CARDS)
+# 2026-10-25 15:49–15:50。整叠打开，每张同时得到金属卡和石油卡各 1 张。
+# 20377 → 20051、20050。20835 → 20116、20117。然后再按面额开这些卡。
+RESOURCE_BOXES = (
+    (20377, "50万资源箱"),
+    (20835, "500万资源箱"),
+)
+_BOX_ORDER = {item: i for i, (item, _name) in enumerate(RESOURCE_BOXES)}
+_BOX_NAMES = {item: name for item, name in RESOURCE_BOXES}
 
 HARD_MAX_TIMES = 999
 # 空仓库每种资源最多吃下 4 张 1000 万卡。一次只开 1 张，开满或被拒就停。
@@ -150,13 +161,22 @@ def _fund_value(got):
 
 
 def default_resource_ids():
-    """没配过时要开的资源卡，已经按面额从小到大。"""
-    return [item for item, _wan, _name in RESOURCE_CARDS]
+    """没配过时先开资源箱，再按面额从小到大开资源卡。"""
+    return ([item for item, _name in RESOURCE_BOXES]
+            + [item for item, _wan, _name in RESOURCE_CARDS])
 
 
 def resource_catalog():
-    """给页面勾选。顺序就是开卡顺序。"""
-    return [{"id": item, "wan": wan, "name": name} for item, wan, name in RESOURCE_CARDS]
+    """给页面勾选。资源箱在前，后面按面额从小到大。"""
+    boxes = [
+        {"id": item, "wan": 0, "name": name, "box": True}
+        for item, name in RESOURCE_BOXES
+    ]
+    cards = [
+        {"id": item, "wan": wan, "name": name, "box": False}
+        for item, wan, name in RESOURCE_CARDS
+    ]
+    return boxes + cards
 
 
 def normalize_resource_ids(raw):
@@ -172,7 +192,7 @@ def normalize_resource_ids(raw):
             item_id = int(str(item).strip())
         except (TypeError, ValueError):
             return None, "资源卡编号不对"
-        if item_id not in _CARD_ORDER:
+        if item_id not in _CARD_ORDER and item_id not in _BOX_ORDER:
             return None, "没有这张资源卡"
         if item_id in seen:
             continue
@@ -180,7 +200,8 @@ def normalize_resource_ids(raw):
         chosen.append(item_id)
     if not chosen:
         return None, "至少选一种资源卡"
-    chosen.sort(key=lambda item_id: _CARD_ORDER[item_id])
+    chosen.sort(key=lambda item_id: (
+        (0, _BOX_ORDER[item_id]) if item_id in _BOX_ORDER else (1, _CARD_ORDER[item_id])))
     return chosen, ""
 
 
@@ -250,17 +271,45 @@ def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡",
 
 
 def open_base_cards(rec, sock, on_progress=None, card_ids=None):
-    """基地战开资源卡。一次一张，按面额从小到大。card_ids 空着就全开，含 1000 万。"""
-    from . import citydb
+    """基地战开资源卡。先整叠打开勾选的资源箱，再一次一张按面额开卡。
+
+    card_ids 空着就全开，含资源箱和 1000 万。
+    """
+    from . import bag_clean, citydb
     if "cards" in citydb.LOCKED_DAILY_KINDS:
         return False, citydb.RECOVERING_TEXT
     if card_ids is None:
-        cards = BASE_CARDS
+        ids = default_resource_ids()
     else:
         ids, why = normalize_resource_ids(card_ids)
         if why:
             return False, why
-        cards = resource_card_rows(ids)
+    box_bits = []
+    for item_id in ids:
+        if item_id not in _BOX_ORDER:
+            continue
+        raise_if_stopped()
+        name = _BOX_NAMES[item_id]
+        found = latest_card(rec, item_id)
+        have = 0 if not found else found[0]
+        if have <= 0:
+            if found is None:
+                return False, "登录包里没有背包，没有开卡"
+            log.info("[开卡] 背包没有%s", name)
+            box_bits.append(f"没有{name}")
+            continue
+        ok, reason = bag_clean.use_item(rec, sock, item_id, have)
+        if not ok:
+            box_bits.append(f"{name}没开成（{reason}）")
+            continue
+        box_bits.append(f"{name}开了 {have} 张")
+        if on_progress:
+            on_progress(f"{name} {have}")
+        _nap(0.35)
+    cards = resource_card_rows([item for item in ids if item in _CARD_ORDER])
+    if not cards:
+        note_bag_cards(rec)
+        return True, "成功：" + "，".join(box_bits)
     _bag, rows = open_resource_cards(
         rec, sock, on_progress=on_progress, label="开卡", cards=cards)
     if any(why == "没有背包" for _name, _opened, why in rows):
@@ -275,7 +324,7 @@ def open_base_cards(rec, sock, on_progress=None, card_ids=None):
             bits.append(f"{name}开了 {opened} 张")
     note_bag_cards(rec)
     metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
-    text = "，".join(bits)
+    text = "，".join(box_bits + bits)
     if isinstance(metal, int) or isinstance(oil, int):
         from . import citydb
         citydb.note_attack_wallet(

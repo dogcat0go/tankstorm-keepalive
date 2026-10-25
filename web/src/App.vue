@@ -105,6 +105,8 @@ const emptyCards = () => ({
 });
 const baseCards = ref(emptyCards());
 const resourceCatalog = ref([]);
+const cleanCatalog = ref([]);
+const cleanItems = ref(null);
 const resourceCards = ref(null);
 const ask = ref("");
 let askDone = null;
@@ -315,6 +317,8 @@ async function refreshBase() {
     basePop.value = null;
     baseCards.value = emptyCards();
     resourceCatalog.value = [];
+    cleanCatalog.value = [];
+    cleanItems.value = null;
     resourceCards.value = null;
     return;
   }
@@ -329,6 +333,8 @@ async function refreshBase() {
   baseCards.value = data.cards || emptyCards();
   resourceCatalog.value = data.resource_catalog || [];
   resourceCards.value = data.resource_cards || null;
+  cleanCatalog.value = data.clean_catalog || [];
+  cleanItems.value = data.clean_items || null;
   applyEquipNote(data.equip_note || "", baseCards.value);
 }
 
@@ -365,15 +371,44 @@ async function saveResourceCards(ids) {
   return resourceCards.value;
 }
 
+async function saveCleanItems(ids) {
+  showErr("", "base");
+  const data = await api("/api/base/clean-items", { ids });
+  cleanItems.value = data.clean_items || ids;
+  return cleanItems.value;
+}
+
+async function runClean(ids) {
+  showErr("", "base");
+  baseNote.value = "";
+  const wanted = new Set(ids || []);
+  const chosen = cleanCatalog.value.filter((item) => wanted.has(item.id));
+  if (!chosen.length) throw new Error("至少选一种物品");
+  const ok = await confirmUse(
+    "清理：" + chosen.map((item) => item.name).join("、")
+      + "。按背包里的数量整叠使用。自选宝箱按选项平均分。背包里没有的跳过。"
+  );
+  if (!ok) return;
+  await api("/api/base", { kind: "clean", ids: chosen.map((item) => item.id) });
+  cleanItems.value = chosen.map((item) => item.id);
+  baseNote.value = "清理背包已交给绑定的攻打号";
+  await refreshBase();
+  await refreshAttacks();
+}
+
 async function runCards(ids) {
   showErr("", "base");
   baseNote.value = "";
   const wanted = new Set(ids || []);
   const chosen = resourceCatalog.value.filter((card) => wanted.has(card.id));
   if (!chosen.length) throw new Error("至少选一种资源卡");
+  const boxes = chosen.filter((card) => card.box);
+  const cards = chosen.filter((card) => !card.box);
+  const parts = [];
+  if (boxes.length) parts.push("先整叠打开" + boxes.map((card) => card.name).join("、") + "，变成对应的资源卡");
+  if (cards.length) parts.push("再按从小到大开" + cards.map((card) => card.name).join("、") + "，一次一张");
   const ok = await confirmUse(
-    "按从小到大开：" + chosen.map((card) => card.name).join("、")
-      + "。一次一张。某种没有，或这一张没开成，这种就停，换下一种。"
+    parts.join("。") + "。某种没有，或这一张没开成，这种就停，换下一种。"
   );
   if (!ok) return;
   await api("/api/base", { kind: "cards", ids: chosen.map((card) => card.id) });
@@ -1454,6 +1489,8 @@ onUnmounted(() => {
         :cards="baseCards"
         :resource-catalog="resourceCatalog"
         :resource-cards="resourceCards"
+        :clean-catalog="cleanCatalog"
+        :clean-items="cleanItems"
         :note="baseNote"
         :err="err"
         :err-at="errAt"
@@ -1462,6 +1499,8 @@ onUnmounted(() => {
         :run-factory="runFactory"
         :run-cards="runCards"
         :save-resource-cards="saveResourceCards"
+        :run-clean="runClean"
+        :save-clean="saveCleanItems"
         :run-draw="runDraw"
         :run-box="runBox"
         :run-pick="runPick"

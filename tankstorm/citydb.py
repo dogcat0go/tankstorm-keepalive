@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     storm_used      INTEGER NOT NULL DEFAULT 0,
     storm_day       TEXT NOT NULL DEFAULT '',
     open_cards      TEXT NOT NULL DEFAULT '',
+    clean_items     TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -440,6 +441,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "open_cards" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN open_cards TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "clean_items" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clean_items TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -1326,7 +1331,7 @@ def reset_member_settings(user_id: int) -> str:
             "clear_retreat_mode='off', clear_retreat_hops=3, clear_retreat_city=0, "
             "clear_retreat_fail=0, modo_cards=0, away_morale=100, daily_switch=NULL, "
             "daily_at='', daily_last='', modo_at='', modo_last='', off_at='', "
-            "open_cards='' "
+            "open_cards='', clean_items='' "
             "WHERE id=?",
             (user_id,))
         if cur.rowcount != 1:
@@ -5101,6 +5106,7 @@ DAILY_KIND_LABEL = {
     "blast": "爆破兵",
     "factory": "战车工厂",
     "cards": "开资源卡",
+    "clean": "清理背包",
     "haoyin": "英雄豪饮",
     "admiral": "高级将领单抽",
     "admiral10": "高级将领十连",
@@ -5117,7 +5123,7 @@ DAILY_KIND_LABEL = {
     "guild_claim": "公会任务领奖",
 }
 _BASE_LANE = (
-    "blast", "factory", "cards", "haoyin", "admiral", "admiral10",
+    "blast", "factory", "cards", "clean", "haoyin", "admiral", "admiral10",
     "box_mid", "box_high",
     "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
 )
@@ -5868,6 +5874,45 @@ def open_cards_of(user_id: int):
     return data if isinstance(data, list) else None
 
 
+def clean_items_of(user_id: int):
+    """这个账号勾选的清理物品。没存过返回 None，调用方用默认全选。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(clean_items,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    text = str(row[0] or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def set_clean_items(user_id: int, ids) -> str:
+    """记下要清理的物品。没有这个账号返回原因。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET clean_items=? WHERE id=?",
+            (json.dumps(list(ids), ensure_ascii=False), user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    return ""
+
+
 def set_open_cards(user_id: int, ids) -> str:
     """记下要开的资源卡。ids 已按面额排好。没有这个账号返回原因。"""
     user_id = int(user_id or 0)
@@ -5991,6 +6036,20 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         if why:
             return why
         why = set_open_cards(user_id, ids)
+        if why:
+            return why
+        clean["ids"] = ids
+    elif kind == "clean":
+        from . import bag_clean
+        raw = params.get("ids")
+        if raw is None:
+            raw = clean_items_of(user_id)
+        if raw is None:
+            raw = bag_clean.default_ids()
+        ids, why = bag_clean.normalize_ids(raw)
+        if why:
+            return why
+        why = set_clean_items(user_id, ids)
         if why:
             return why
         clean["ids"] = ids

@@ -180,6 +180,17 @@ def _member_views() -> list:
     return items
 
 
+def _clean_items_of(user_id: int) -> list:
+    """这个账号要清理的物品。没存过就按目录全选。"""
+    from . import bag_clean
+    saved = citydb.clean_items_of(user_id)
+    raw = saved if saved is not None else bag_clean.default_ids()
+    ids, why = bag_clean.normalize_ids(raw)
+    if why:
+        return bag_clean.default_ids()
+    return ids
+
+
 def _resource_cards_of(user_id: int) -> list:
     """这个账号要开的资源卡。没存过就按面额从小到大全开，含 1000 万。"""
     from . import fund
@@ -338,7 +349,7 @@ def _handler(config: dict):
                 if not citydb.base_tier(user.get("tier") or ""):
                     _json(self, 403, {"error": "基地战需要高级pro订阅"})
                     return
-                from . import fund
+                from . import bag_clean, fund
                 wallet = citydb.attack_wallet(user["id"])
                 _json(self, 200, {
                     "qq": citydb.attack_qq_of(user["id"]),
@@ -352,6 +363,8 @@ def _handler(config: dict):
                     "jobs": citydb.list_daily_jobs(user["id"], limit=6, kind="base"),
                     "resource_catalog": fund.resource_catalog(),
                     "resource_cards": _resource_cards_of(user["id"]),
+                    "clean_catalog": bag_clean.catalog(),
+                    "clean_items": _clean_items_of(user["id"]),
                 })
                 return
             if path == "/api/daily":
@@ -609,6 +622,19 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "resource_cards": ids})
+                elif path == "/api/base/clean-items":
+                    if citydb.account_expired(user.get("expires_at") or ""):
+                        raise ValueError("账号已过期")
+                    if not citydb.base_tier(user.get("tier") or ""):
+                        raise ValueError("基地战需要高级pro订阅")
+                    from . import bag_clean
+                    ids, why = bag_clean.normalize_ids(data.get("ids"))
+                    if why:
+                        raise ValueError(why)
+                    why = citydb.set_clean_items(user["id"], ids)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "clean_items": ids})
                 elif path == "/api/base":
                     if citydb.account_expired(user.get("expires_at") or ""):
                         raise ValueError("账号已过期")
@@ -616,11 +642,11 @@ def _handler(config: dict):
                         raise ValueError("基地战需要高级pro订阅")
                     kind = str(data.get("kind") or data.get("unit") or "blast").strip()
                     if kind not in (
-                            "blast", "spread", "factory", "cards", "haoyin", "admiral", "admiral10",
+                            "blast", "spread", "factory", "cards", "clean", "haoyin", "admiral", "admiral10",
                             "box_mid", "box_high",
                             "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"):
                         raise ValueError("没有这项")
-                    if kind == "cards":
+                    if kind in ("cards", "clean"):
                         params = {"ids": data.get("ids")} if "ids" in data else {}
                     elif kind == "spread":
                         params = {k: data.get(k) for k in ("x1", "y1", "x2", "y2")}
