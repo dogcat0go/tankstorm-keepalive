@@ -1862,6 +1862,22 @@ def set_shutdown_at(user_id: int, raw) -> str:
     return ""
 
 
+def close_attack_now(user_id: int) -> str:
+    """马上按定时关闭下线。更新后也不会再拉起。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    if not attack_qq_of(user_id):
+        return "这个登录账号还没有攻打 QQ"
+    at = beijing_now().strftime("%Y-%m-%d %H:%M")
+    why = set_shutdown_at(user_id, at)
+    if why:
+        return why
+    shelve_shutdown_work([user_id])
+    log.info("登录账号 %s 关闭攻打号，等同定时关闭 %s", username_of(user_id), at)
+    return ""
+
+
 def shutdown_due(user_id=None, conn=None) -> bool:
     """这个账号配了定时关闭，而且北京时间已经到了。没配就是假。"""
     if user_id is None:

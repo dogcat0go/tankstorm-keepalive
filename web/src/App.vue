@@ -46,6 +46,7 @@ const holdAllBusy = ref(false);
 const holdNote = ref("");
 const offAt = ref("");
 const offNote = ref("");
+const closeBusy = ref(false);
 const cardMax = ref("100");
 const retreatMode = ref("hops");
 const retreatHops = ref("3");
@@ -958,6 +959,24 @@ async function saveHold() {
   holdNote.value = "已保存";
 }
 
+async function closeAttack() {
+  if (!window.confirm("关闭这个攻打号？和定时关闭到点一样，不再执行任务。更新之后也不会再拉起。要再上线得点登录。")) return;
+  showErr("", "bar");
+  offNote.value = "";
+  closeBusy.value = true;
+  try {
+    const data = await api("/api/attack-off", { now: true });
+    offAt.value = data.off_at ? String(data.off_at).replace(" ", "T") : "";
+    if (me.value) me.value.off_at = data.off_at || "";
+    offNote.value = data.due ? "已到点，账号下线" : (data.off_at ? "到点后下线" : "已取消");
+    await refreshAttacks();
+  } catch (e) {
+    showErr(e.message, "bar");
+  } finally {
+    closeBusy.value = false;
+  }
+}
+
 async function saveOffAt() {
   showErr("", "bar");
   offNote.value = "";
@@ -1309,6 +1328,8 @@ onUnmounted(() => {
         :push-login="pushLogin"
         :login-plat-default="loginPlatDefault"
         :set-attack-pause="setAttackPause"
+        :close-attack="closeAttack"
+        :close-busy="closeBusy"
         v-model:off-at="offAt"
         :save-off-at="saveOffAt"
         :off-note="offNote"

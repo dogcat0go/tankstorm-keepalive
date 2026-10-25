@@ -13,6 +13,8 @@ const props = defineProps({
   procText: { type: Function, required: true },
   pushLogin: { type: Function, required: true },
   setAttackPause: { type: Function, required: true },
+  closeAttack: { type: Function, required: true },
+  closeBusy: { type: Boolean, default: false },
   saveOffAt: { type: Function, required: true },
   offNote: { type: String, default: "" },
   reloadQr: { type: Function, required: true },
@@ -70,6 +72,7 @@ watch(() => props.loginPlatDefault, (value) => {
       <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
       <button v-if="proc && proc.online && proc.paused && proc.phase !== 'login' && proc.keepalive" type="button" class="ghost" @click="setAttackPause(false).catch((e) => showErr(e.message, 'bar'))">继续</button>
       <button v-else-if="proc && proc.online && proc.keepalive" type="button" class="ghost" @click="setAttackPause(true).catch((e) => showErr(e.message, 'bar'))">暂停</button>
+      <button v-if="proc && proc.qq && !proc.shutdown" type="button" class="ghost" :disabled="closeBusy" @click="closeAttack().catch((e) => showErr(e.message, 'bar'))">关闭</button>
       <form class="off-set" @submit.prevent="saveOffAt().catch((e) => showErr(e.message, 'bar'))">
         <label class="choice">定时关闭
           <input v-model="offAt" type="datetime-local" class="when" step="60" />
