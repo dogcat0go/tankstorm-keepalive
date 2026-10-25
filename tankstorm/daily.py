@@ -2452,26 +2452,22 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
     bid, (army, making, left), _typ = barracks
     snap = (getattr(rec, "latest_at", {}) or {}).get("RseLoad") if rec else None
     snap_name = "登录包"
-    if assume_idle:
+    recent = _blast_recent(rec, bid, army_type)
+    if recent and recent[0] == "other":
+        return False, f"{place}正在造别的兵（{recent[2] or recent[1]}），不打断"
+    if recent and recent[0] == "ours" and recent[3] > 0:
+        army, making, left = recent[1], recent[2], recent[3]
+        snap = recent[4]
+        snap_name = "上一包"
+        say(f"{place} {bid} 已经在造{unit}，剩余 {left} 秒，直接快速制造")
+    elif assume_idle:
         army, making, left = 0, 0, 0
         snap = None
-    else:
-        recent = _blast_recent(rec, bid, army_type)
-        if recent and recent[0] == "other":
-            return False, f"{place}正在造别的兵（{recent[2] or recent[1]}），不打断"
-        if recent and recent[0] == "ours":
-            load_at = snap
-            mod_at = recent[4]
-            if left <= 0 or load_at is None or (mod_at is not None and mod_at >= load_at):
-                army, making, left = recent[1], recent[2], recent[3]
-                snap = mod_at
-                snap_name = "上一包"
-                say(f"{place} {bid} 上一包还在造{unit}，剩余 {left} 秒，不重新开工")
-        elif left > 0 and making not in (0, army_type) and army not in (0, army_type):
-            return False, f"{place}正在造别的兵（{making or army}），不打断"
+    elif left > 0 and making not in (0, army_type) and army not in (0, army_type):
+        return False, f"{place}正在造别的兵（{making or army}），不打断"
 
     seen_left, seen_at = left, time.monotonic()
-    if not assume_idle and left > 0:
+    if left > 0 and snap is not None:
         passed = _passed(snap)
         aged = left if passed is None else max(0, left - passed)
         say(
@@ -2563,11 +2559,31 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
         return False, f"剩余 {left} 秒，加速要 {cost} 勋章，不加速"
     if left < 1:
         left = 1
-    say(
-        f"快速制造 {place} {bid} time={left} 勋章花费={cost} "
-        f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue} 当前勋章={wallet}")
-    got = send(37, {2: ("int32", bid), 3: ("int32", 37),
-                    10: ("int32", 0), 11: ("int32", left)})
+    def speedup(send_left):
+        say(
+            f"快速制造 {place} {bid} time={send_left} 勋章花费=0 "
+            f"大厅={qq_hall} 黄钻={yellow} 蓝钻={blue} 当前勋章={wallet}")
+        got = send(37, {2: ("int32", bid), 3: ("int32", 37),
+                        10: ("int32", 0), 11: ("int32", send_left)})
+        return got
+
+    got = speedup(left)
+    if isinstance(got, dict) and got.get("error") == 27:
+        building = got.get("building")
+        queue = _blast_queue(building) if isinstance(building, dict) else None
+        fresh = queue[2] if queue else None
+        if isinstance(fresh, int) and fresh > 0 and fresh != left:
+            fresh_cost = _blast_medal(fresh, qq_hall, yellow, blue)
+            if fresh_cost == 0:
+                say(f"{place} {bid} 剩余时间对不上，改用服务器的 {fresh} 秒再加速")
+                left = fresh
+                got = speedup(fresh)
+            else:
+                delay = max(1, fresh - cap)
+                say(f"{place} {bid} 服务器剩余 {fresh} 秒，要 {fresh_cost} 勋章，"
+                    f"{delay} 秒后再加速")
+                raise Later(
+                    delay, f"剩余 {fresh} 秒，{delay} 秒后降到 {cap} 秒再加速")
     if not isinstance(got, dict):
         say(f"快速制造没有回包 {place} {bid} time={left}")
         return False, "快速制造没有回包"
