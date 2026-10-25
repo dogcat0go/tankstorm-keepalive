@@ -5135,7 +5135,7 @@ RECOVERING_TEXT = "功能尚在恢复中..."
 LOCKED_DAILY_KINDS = frozenset()
 LOCKED_DAILY_TASKS = frozenset({
     "修复坦克", "战功排名", "英雄开采",
-    "技能书将领", "技能书参谋",
+    "技能书参谋",
     "周任务",
 })
 
