@@ -246,9 +246,10 @@ form.campaign-line { margin: 0 0 10px; grid-template-columns: 1fr; }
   list-style: none;
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 6px 12px;
 }
+.guild-fold > summary > button { font-size: 15px; font-weight: 400; }
 .guild-fold > summary::-webkit-details-marker { display: none; }
 .guild-fold > summary::marker { content: ""; }
 .guild-fold > summary::before { content: "▸"; color: #777; font-weight: 400; }
