@@ -737,7 +737,10 @@ def _handler(config: dict):
                         return
                     _json(self, 200, {"ok": True, "paused": bool(data.get("on"))})
                 elif path == "/api/attack-off":
-                    why = citydb.set_shutdown_at(user["id"], data.get("at"))
+                    if data.get("now"):
+                        why = citydb.close_attack_now(user["id"])
+                    else:
+                        why = citydb.set_shutdown_at(user["id"], data.get("at"))
                     if why:
                         raise ValueError(why)
                     at = citydb.shutdown_at(user["id"])
