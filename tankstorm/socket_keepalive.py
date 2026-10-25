@@ -2393,7 +2393,9 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 citydb.finish_daily_job(job["id"], "done", text)
             elif kind == "chest":
                 from . import country_war
-                ok, why = country_war.daily_chest(rec, sock, config)
+                path = daily.state_path_for_qq(citydb.attack_context_qq())
+                with daily.using_state(path):
+                    ok, why = country_war.daily_chest(rec, sock, config)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "pve":

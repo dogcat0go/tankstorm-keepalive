@@ -341,11 +341,24 @@ def _send_chest_gift(sock, rec, gift_id):
     return before
 
 
+def _note_chest(flag):
+    """按 7 档领取标记写今日进度。没领满也记，下一轮接着领。"""
+    if isinstance(flag, bool) or not isinstance(flag, int):
+        return None
+    n = sum(1 for gid in _CHEST_NEED if flag & (1 << gid))
+    st = _daily._load_state()
+    done = st.setdefault("done", {})
+    if done.get("国家宝箱") != n:
+        done["国家宝箱"] = n
+        _daily._save_state(st)
+    return n
+
+
 def daily_chest(rec, sock, config):
     """每日任务：按今日战功领取国家宝箱各档。
 
     返回 (是否成功, 说明)。还有档位因为战功不够没领时返回 False，
-    好让下一轮再试；当天次数只在全部领完时才记满。
+    好让下一轮再试。今日进度按已经置上的档数计，不是全部领完才变成 1。
     """
     sender.send_frame(sock, _CHEST_OPEN, encode_message({}), rec.rc4_c2s)
     _nap(0.4)
@@ -356,6 +369,7 @@ def daily_chest(rec, sock, config):
     gain, flag = _chest_progress(panel)
     if gain is None:
         return False, "读不到今日战功或领取标记，不领（读不到就不做）"
+    _note_chest(flag)
 
     claimed = []
     for gid, need in _CHEST_NEED.items():
@@ -375,15 +389,18 @@ def daily_chest(rec, sock, config):
         if gain is None or not (flag & (1 << gid)):
             return False, f"第 {gid} 档回包没有置上领取标记" + _chest_done(claimed)
         claimed.append(gid)
+        _note_chest(flag)
 
     pending = [gid for gid in _CHEST_NEED if not (flag & (1 << gid))]
+    noted = _note_chest(flag)
+    mark = "" if noted is None else f"（今日{noted}/{len(_CHEST_NEED)}）"
     if not pending:
         if claimed:
-            return True, "成功：领了第 " + "、".join(str(g) for g in claimed) + " 档"
-        return True, "成功：今日各档都已领过"
+            return True, "成功：领了第 " + "、".join(str(g) for g in claimed) + " 档" + mark
+        return True, "成功：今日各档都已领过" + mark
     gid = min(pending, key=_CHEST_NEED.get)
     head = ("已领第 " + "、".join(str(g) for g in claimed) + " 档，") if claimed else ""
-    return False, f"{head}今日战功 {gain}，第 {gid} 档需要 {_CHEST_NEED[gid]}，跳过"
+    return False, f"{head}今日战功 {gain}，第 {gid} 档需要 {_CHEST_NEED[gid]}，跳过" + mark
 
 
 def _chest_done(claimed):
