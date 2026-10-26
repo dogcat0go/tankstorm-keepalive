@@ -233,8 +233,8 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
             live = str(getattr(qq, "uin", "") or uin or "").strip()
         return live
 
-    def _reject_later(data):
-        """收到强攻时人还在 recv 里，连接锁没放开。就地发送会和这把锁死等。"""
+    def _reject_now(data):
+        """收发锁已经放开，但调用方还没开始等下一条。拒绝包在这里发出去。"""
         snapshot = dict(data or {})
         who = str(snapshot.get("atkName") or "").strip()
         if not who:
@@ -260,17 +260,24 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
             citydb.note_storm_reject(who, user_id=user_id, qq=uin_now)
         except Exception:
             log.info("超级强攻拒绝没记上页面", exc_info=True)
-        notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
-                    f"进攻方：{snapshot.get('atkName', '?')}（{snapshot.get('atkUid', '?')}）\n"
-                    f"防守方：{snapshot.get('deftName', '?')}（{snapshot.get('deftUid', '?')}）\n\n"
-                    f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
-                    f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
-                    f"请立刻打开游戏确认。")
+        log.info("超级强攻已拒绝，连接保持，不进入等待窗口")
+
+        def _tell():
+            notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
+                        f"进攻方：{snapshot.get('atkName', '?')}（{snapshot.get('atkUid', '?')}）\n"
+                        f"防守方：{snapshot.get('deftName', '?')}（{snapshot.get('deftUid', '?')}）\n\n"
+                        f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
+                        f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
+                        f"请立刻打开游戏确认。")
+
+        threading.Thread(target=_tell, name="storm-notify", daemon=True).start()
 
     def _on_super_storm(data):
-        threading.Thread(
-            target=_reject_later, args=(data,), name="storm-reject",
-            daemon=True).start()
+        queued = getattr(sock, "queue_after_recv", None)
+        if queued is None:
+            _reject_now(data)
+            return
+        queued(lambda: _reject_now(data))
 
     rec.on_super_storm = _on_super_storm
     log.info("超级强攻自动拒绝已就绪")
@@ -664,6 +671,8 @@ class _LockedSock:
     def __init__(self, sock):
         self._sock = sock
         self._lock = threading.Lock()
+        self._after_lock = threading.Lock()
+        self._after = []
 
     def sendall(self, data, *a, **kw):
         with self._lock:
@@ -673,9 +682,30 @@ class _LockedSock:
         with self._lock:
             return self._sock.send(data, *a, **kw)
 
+    def queue_after_recv(self, fn) -> None:
+        """这次 recv 还拿着收发锁。先排上，锁放开后再做。
+
+        超级强攻的拒绝包必须在回到「再等下一条」之前发出去。另开线程去等这把锁，
+        接收线程又占着锁等服务器，服务器却在等拒绝包，会一直卡到强攻窗口结束。
+        """
+        with self._after_lock:
+            self._after.append(fn)
+
+    def _run_after_recv(self) -> None:
+        with self._after_lock:
+            fns = self._after
+            self._after = []
+        for fn in fns:
+            try:
+                fn()
+            except Exception:
+                log.info("收完包后的发送没做成", exc_info=True)
+
     def recv(self, n, *a, **kw):
         with self._lock:
-            return self._sock.recv(n, *a, **kw)
+            data = self._sock.recv(n, *a, **kw)
+        self._run_after_recv()
+        return data
 
     def settimeout(self, t):
         with self._lock:
