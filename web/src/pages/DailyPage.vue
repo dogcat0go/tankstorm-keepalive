@@ -97,11 +97,11 @@ const guildClaimable = computed(() =>
         公会任务
         <span class="muted">功能尚在完善</span>
         <span v-if="!guildBoard" class="muted">还没读到</span>
-        <span v-else class="muted">已领过 {{ guildBoard.finish }}/{{ guildBoard.cap }} · {{ guildClaimable ? "身上 " + guildClaimable + " 条可以领" : "现在不能领奖" }}</span>
+        <span v-else class="muted">今日参与 {{ guildBoard.finish }}/{{ guildBoard.cap }} · {{ guildClaimable ? "身上 " + guildClaimable + " 条可以领" : "现在不能领奖" }}</span>
       </summary>
       <p v-if="!guildBoard" class="muted">还没读到公会任务</p>
       <template v-else>
-        <p class="muted">已领过是今天领走的次数。可领奖是整队都完成，游戏里按钮是领取。自己做完、队友还没齐是等队友，游戏里是强制完成，这里不强制完成。更早领走的任务服务器不再发回来，所以这里只留次数，不列名字。<span v-if="guildBoard.read_at"> {{ guildBoard.read_at }} 读到的。</span></p>
+        <p class="muted">今日参与是游戏里的参与次数。参加一次加一，身上这些任务已经算进去了，不再另加。领奖不加次数。活跃任务是另一项，不进这 5 个。可领奖是整队都完成，游戏里按钮是领取。自己做完、队友还没齐是等队友，游戏里是强制完成，这里不强制完成。<span v-if="guildBoard.read_at"> {{ guildBoard.read_at }} 读到的。</span></p>
         <p v-if="!guildBoard.tasks.length" class="muted">身上没有任务。</p>
         <div v-else class="wide">
           <table>
@@ -155,7 +155,7 @@ const guildClaimable = computed(() =>
           <tr v-for="it in progressTasks" :key="it.key">
             <td>
               <div>{{ it.name }}</div>
-              <div v-if="it.key === '公会任务'" class="muted">{{ it.hint || "开着时每小时看一次。还没领满 5 个就去领任务。已经领满，能领奖才去领，没有可领的就不动。" }}</div>
+              <div v-if="it.key === '公会任务'" class="muted">{{ it.hint || "开着时每小时看一次。今日参与还没到 5 个就去领任务。到了 5 个，能领奖才去领，没有可领的就不动。身上的任务已经算进这个次数。活跃任务另算。" }}</div>
             </td>
             <td>
               <el-switch
@@ -172,7 +172,7 @@ const guildClaimable = computed(() =>
               <span v-if="it.locked" class="muted">功能尚在恢复中...</span>
               <span v-else-if="it.key === '公会任务'" class="muted">功能尚在完善</span>
             </td>
-            <td>{{ it.done }}/{{ it.max }}</td>
+            <td>{{ it.key === "公会任务" && guildBoard ? guildBoard.finish : it.done }}/{{ it.max }}</td>
           </tr>
         </tbody>
       </table>
