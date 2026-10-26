@@ -3463,9 +3463,8 @@ def daily_wipe_generals(rec, sock, config):
 
     2026-10-25 11:18 抓包：先打开界面，再 RceAdviserDaily。
     noptType=1 取列表，4 进攻，5 刷新，2 合成。nid 是位置，从 1 起。
-    打开和进攻都会先推一长段战场。列表还没到齐就打，回包会被战场拖过等待，
-    看起来像「进攻没有回包」。所以先等战场停，用到齐的列表再打；
-    进攻回包若被战场盖住，就再取一次列表，看次数或这一格变了没有。
+    进攻发出后只等这条剿灭将领回包。连接上别的推送还在来，也不把等待拉长。
+    回包一到就看剩余次数或这一格变了没有。迟迟没有这条回包，再短短取一次列表。
     打中后这一格的编号可能还在，不能照原编号再打一次。
     刷新回包的剩余次数是 0，不代表次数用完。末两位小于 50 的不打。不发 nbuycnt。
     """
@@ -3498,6 +3497,39 @@ def daily_wipe_generals(rec, sock, config):
         if got and got[0] > since and isinstance(got[1], dict) and pred(got[1]):
             return got[1]
         return None
+
+    def _wait_adviser(since, limit, before, npc, slot):
+        """只看剿灭将领回包。次数少了或这一格换了就返回，不等别的推送停。
+
+        回包到齐后大约再留 1 秒，免得列表还没写完就拿去比。整个等待不超过 limit 秒。
+        """
+        end = time.time() + limit
+        seen = None
+        seen_seq = since
+        changed = None
+        while time.time() < end:
+            raise_if_stopped()
+            _drain_incoming()
+            hist = getattr(rec, "recent", {}).get("RseAdviserDaily") if rec else None
+            if hist:
+                for seq, data in hist:
+                    if seq <= seen_seq or not isinstance(data, dict):
+                        continue
+                    seen = data
+                    seen_seq = seq
+                    changed = time.time()
+            elif rec and getattr(rec, "latest", None):
+                got = rec.latest.get("RseAdviserDaily")
+                if got and got[0] > seen_seq and isinstance(got[1], dict):
+                    seen = got[1]
+                    seen_seq = got[0]
+                    changed = time.time()
+            if _wipe_landed(before, npc, seen, slot):
+                return seen
+            if changed is not None and time.time() - changed >= 1.0:
+                return seen
+            time.sleep(0.2)
+        return seen
 
     def send(opt, slot=None, timeout=6.0):
         fields = {1: ("int32", opt)}
@@ -3556,18 +3588,29 @@ def daily_wipe_generals(rec, sock, config):
         slot, npc = targets[0]
         before = free
         mark = rec.seq_mark() if rec else 0
+        log.info("剿灭将领进攻位置 %d，编号 %d", slot + 1, npc)
         sender.send_frame(
             sock, "04dc",
             encode_message({1: ("int32", 4), 2: ("int32", slot + 1)}),
             rec.rc4_c2s)
-        _quiet(18)
-        got = _latest(mark, lambda d: d.get("noptType") == 4)
+        got = _wait_adviser(mark, 8.0, before, npc, slot)
+        if isinstance(got, dict):
+            log.info("剿灭将领进攻回包 noptType=%s，剩余次数=%s",
+                     got.get("noptType"), got.get("nfreeTimes"))
+        else:
+            log.info("剿灭将领进攻没有等到回包，再取一次列表")
         if not _wipe_landed(before, npc, got, slot):
-            opened = send(1, timeout=8)
-            _quiet(4)
+            opened = send(1, timeout=4)
             fresh = _latest(
-                mark, lambda d: d.get("noptType") == 1 and _adviser_ids(d, "field4") is not None)
-            got = fresh or (opened if isinstance(opened, dict) else None)
+                mark, lambda d: isinstance(d, dict) and _adviser_ids(d, "field4") is not None)
+            if _wipe_landed(before, npc, fresh, slot):
+                got = fresh
+            elif _wipe_landed(before, npc, opened if isinstance(opened, dict) else None, slot):
+                got = opened
+            elif isinstance(fresh, dict):
+                got = fresh
+            elif isinstance(opened, dict):
+                got = opened
         if not isinstance(got, dict):
             return False, "失败：进攻 %d 没有回包" % npc
         if not _wipe_landed(before, npc, got, slot):
