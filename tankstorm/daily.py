@@ -1475,12 +1475,11 @@ TASKS = [
        gate=Gate("RseAdmiralOpen", "freeVisitCnt"),
        tiers=Tiers(4, [0, 1, 2])),
 
-    # 2026-10-26 抓包。RedWar_2026102601 起 opcode 从 04dc 换成 04f6，
-    # noptType 从字段 1 挪到 2，nid 从字段 2 挪到 3。
-    _t("剿灭将领", "剿灭将领", "04f6", "RceAdviserDaily",
+    # 代码里用本项目编号 04dc、字段 1/2。发出去时 wiremap 换成线上的 04f6、字段 2/3。
+    # 不要在这里直接写线上编号，否则会再被翻译一次。
+    _t("剿灭将领", "剿灭将领", "04dc", "RceAdviserDaily",
        {}, "实测",
-       "2026-10-26：opcode 04f6。noptType 是字段 2，nid 是字段 3。"
-       "1 先取可攻击列表，4 再按列表里的位置进攻，"
+       "2026-10-26：noptType 1 先取可攻击列表，4 再按列表里的位置进攻，"
        "5 刷新，2 合成。每天 9 次。场上没有中高级才刷新。"
        "编号末两位 50 及以上才打。"
        "不发 nbuycnt，不买次数",
@@ -1547,12 +1546,11 @@ TASKS = [
        gate=Gate("RseBookCollection", "field4[field1=1].field2"),
        cooldown_until="field4[field1=1].field3"),
 
-    # 2026-10-26 抓包。opcode 从 04d0 换成 0456。
-    # nType 改到字段 3，nTaskID 改到字段 1。不发 nRewardID。
-    _t("每日激战", "每日激战·领取", "0456", "RceFierceFightingOpt",
+    # 代码里用本项目编号 04d0、字段 1/2。发出去时 wiremap 换成线上的 0456。
+    # nType=0 查询。nType=1、nTaskID=任务号 领取。不发 nRewardID。
+    _t("每日激战", "每日激战·领取", "04d0", "RceFierceFightingOpt",
        {}, "实测",
-       "2026-10-26：查询 nType=0 在字段 3。领取 nType=1、nTaskID 在字段 1。"
-       "摧毁基地次数领 1–3，国战进攻次数领 4–10。"
+       "2026-10-26：先查次数。摧毁基地够了领任务 1–3，国战进攻够了领任务 4–10。"
        "对应位已经置上的不领。次数还没够就留到下一轮。十个都领过才记完成。不换积分奖励",
        counts_itself=True,
        runner=lambda rec, sock, config: daily_fierce(rec, sock, config)),
@@ -3463,7 +3461,7 @@ def _wipe_landed(before_free, before_npc, panel, slot):
 def daily_wipe_generals(rec, sock, config):
     """剿灭将领。先取可攻击列表，再按列表打，一天最多 9 次，然后合成。
 
-    2026-10-26：opcode 04f6。noptType 写字段 2，nid 写字段 3。
+    编号用本项目的 04dc：noptType 写字段 1，nid 写字段 2。
     1 取列表，4 进攻，5 刷新，2 合成。nid 是位置，从 1 起。
     打开和进攻都会先推一长段战场。列表还没到齐就打，回包会被战场拖过等待，
     看起来像「进攻没有回包」。所以先等战场停，用到齐的列表再打；
@@ -3502,11 +3500,11 @@ def daily_wipe_generals(rec, sock, config):
         return None
 
     def send(opt, slot=None, timeout=6.0):
-        fields = {2: ("int32", opt)}
+        fields = {1: ("int32", opt)}
         if slot is not None:
-            fields[3] = ("int32", slot)
+            fields[2] = ("int32", slot)
         mark = rec.seq_mark() if rec else 0
-        sender.send_frame(sock, "04f6", encode_message(fields), rec.rc4_c2s)
+        sender.send_frame(sock, "04dc", encode_message(fields), rec.rc4_c2s)
         got = _await_response(
             sock, rec, "RseAdviserDaily", mark, timeout,
             want=lambda d: isinstance(d, dict) and d.get("noptType") == opt)
@@ -3534,6 +3532,7 @@ def daily_wipe_generals(rec, sock, config):
     if refresh_left is None or not 0 <= refresh_left <= 5:
         refresh_left = 3
     attacked, refreshed = [], 0
+    stuck = None
     bag = _adviser_ids(panel, "field3") or []
     while free > 0 and len(attacked) < _WIPE_DAY:
         raise_if_stopped()
@@ -3557,23 +3556,41 @@ def daily_wipe_generals(rec, sock, config):
             continue
         slot, npc = targets[0]
         before = free
-        mark = rec.seq_mark() if rec else 0
-        sender.send_frame(
-            sock, "04f6",
-            encode_message({2: ("int32", 4), 3: ("int32", slot + 1)}),
-            rec.rc4_c2s)
-        _quiet(18)
-        got = _latest(mark, lambda d: d.get("noptType") == 4)
-        if not _wipe_landed(before, npc, got, slot):
-            opened = send(1, timeout=8)
-            _quiet(4)
-            fresh = _latest(
-                mark, lambda d: d.get("noptType") == 1 and _adviser_ids(d, "field4") is not None)
-            got = fresh or (opened if isinstance(opened, dict) else None)
+        got = None
+        for attempt in (1, 2):
+            mark = rec.seq_mark() if rec else 0
+            sent_at = time.time()
+            sender.send_frame(
+                sock, "04dc",
+                encode_message({1: ("int32", 4), 2: ("int32", slot + 1)}),
+                rec.rc4_c2s)
+            # 两下进攻至少隔 10 秒，这一下最多再等 20 秒。
+            _quiet(20)
+            left = 10 - (time.time() - sent_at)
+            if left > 0:
+                _nap(left)
+            got = _latest(mark, lambda d: d.get("noptType") == 4)
+            if not _wipe_landed(before, npc, got, slot):
+                opened = send(1, timeout=8)
+                _quiet(3)
+                fresh = _latest(
+                    mark, lambda d: d.get("noptType") == 1 and _adviser_ids(d, "field4") is not None)
+                got = fresh or (opened if isinstance(opened, dict) else None)
+            if _wipe_landed(before, npc, got, slot):
+                break
+            log.info("[剿灭将领] 进攻 %s 第 %d 次后列表没变，场上 %s，次数 %s",
+                     npc, attempt,
+                     _adviser_ids(got, "field4") if isinstance(got, dict) else None,
+                     _one(got.get("nfreeTimes")) if isinstance(got, dict) else None)
+            if attempt == 1:
+                continue
+            if not attacked:
+                return False, "失败：进攻 %d 后列表没变" % npc
+            stuck = npc
+            got = None
+            break
         if not isinstance(got, dict):
-            return False, "失败：进攻 %d 没有回包" % npc
-        if not _wipe_landed(before, npc, got, slot):
-            return False, "失败：进攻 %d 后列表没变" % npc
+            break
         attacked.append(npc)
         now = _one(got.get("nfreeTimes"))
         if now is not None and now < before:
@@ -3597,10 +3614,11 @@ def daily_wipe_generals(rec, sock, config):
         if not isinstance(got, dict):
             return False, "失败：合成没有回包（已进攻 %d 次）" % len(attacked)
     lows = [x for x in board if x and x % 100 < 50]
-    return True, "成功：进攻 %d 次（%s），刷新 %d 次%s，还剩 %d 次%s" % (
+    return True, "成功：进攻 %d 次（%s），刷新 %d 次%s，还剩 %d 次%s%s" % (
         len(attacked), ",".join(str(x) for x in attacked) or "无",
         refreshed, "，已合成" if made else "",
-        free, ("，场上还剩低级 " + ",".join(str(x) for x in lows)) if lows else "")
+        free, ("，%d 再打列表没变" % stuck) if stuck else "",
+        ("，场上还剩低级 " + ",".join(str(x) for x in lows)) if lows else "")
 
 
 # FierceFightingTask.dat。type 1 看摧毁基地次数，type 2 看国战进攻次数。
@@ -3614,12 +3632,12 @@ _FIERCE_TASKS = (
 def daily_fierce(rec, sock, config):
     """每日激战。查询后把次数已经够、还没领的任务领掉。"""
     def send(ntype, task_id=0):
-        fields = {3: ("int32", ntype)}
+        fields = {1: ("int32", ntype)}
         if task_id:
-            fields[1] = ("int32", task_id)
+            fields[2] = ("int32", task_id)
         mark = rec.seq_mark() if rec else 0
         sender.send_frame(
-            sock, "0456", encode_message(fields, omit_zero=False), rec.rc4_c2s)
+            sock, "04d0", encode_message(fields, omit_zero=False), rec.rc4_c2s)
         return _await_response(
             sock, rec, "RseFierceFightingOpt", mark, 6.0,
             want=lambda d: isinstance(d, dict) and d.get("nType") == ntype)

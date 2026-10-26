@@ -90,8 +90,7 @@ INTERESTING = {
     "043d": "RceDailyTask 每日任务",
     "0402": "RceHeroVisit 英雄抽奖",
     "0450": "RceAdmiralVisit 将领抽奖",
-    "04f6": "RceAdviserDaily 剿灭将领",
-    "0456": "RceFierceFightingOpt 每日激战",
+    "04dc": "RceAdviserDaily 剿灭将领",
     "04a5": "RceWarCollegeOpt 战争学院",
 }
 
