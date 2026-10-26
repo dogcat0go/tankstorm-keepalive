@@ -1480,8 +1480,9 @@ TASKS = [
     _t("剿灭将领", "剿灭将领", "04f6", "RceAdviserDaily",
        {}, "实测",
        "2026-10-26：opcode 04f6。noptType 是字段 2，nid 是字段 3。"
-       "1 开面板，4 进攻（nid 是从 1 起的位置），5 刷新，2 合成。"
-       "场上没有中高级才刷新。编号末两位 50 及以上才打。"
+       "1 先取可攻击列表，4 再按列表里的位置进攻，"
+       "5 刷新，2 合成。每天 9 次。场上没有中高级才刷新。"
+       "编号末两位 50 及以上才打。"
        "不发 nbuycnt，不买次数",
        runner=lambda rec, sock, config: daily_wipe_generals(rec, sock, config)),
 
@@ -3432,13 +3433,41 @@ def _adviser_ids(data, key):
     return None
 
 
+_WIPE_DAY = 9
+
+
+def _wipe_targets(board):
+    """可打的格子。编号末两位 50 及以上才打。返回 (下标, 编号)。"""
+    out = []
+    for i, npc in enumerate(board or []):
+        if isinstance(npc, bool) or not isinstance(npc, int) or npc <= 0:
+            continue
+        if npc % 100 >= 50:
+            out.append((i, npc))
+    return out
+
+
+def _wipe_landed(before_free, before_npc, panel, slot):
+    """次数少了，或这一格已经换人，才算打进去。"""
+    if not isinstance(panel, dict):
+        return False
+    now = _one(panel.get("nfreeTimes"))
+    if now is not None and before_free is not None and now < before_free:
+        return True
+    board = _adviser_ids(panel, "field4")
+    if board is None or slot < 0 or slot >= len(board):
+        return False
+    return board[slot] != before_npc
+
+
 def daily_wipe_generals(rec, sock, config):
-    """剿灭将领。先打场上的中高级，没有才刷新，次数用完再合成。
+    """剿灭将领。先取可攻击列表，再按列表打，一天最多 9 次，然后合成。
 
     2026-10-26：opcode 04f6。noptType 写字段 2，nid 写字段 3。
-    1 开面板，4 进攻，5 刷新，2 合成。nid 是位置，从 1 起。
-    打开后会先推一长段战场，接着才是面板。面板一到就进攻，这场还在收，
-    进攻回包会被拖过等待时间，看起来像「进攻没有回包」。
+    1 取列表，4 进攻，5 刷新，2 合成。nid 是位置，从 1 起。
+    打开和进攻都会先推一长段战场。列表还没到齐就打，回包会被战场拖过等待，
+    看起来像「进攻没有回包」。所以先等战场停，用到齐的列表再打；
+    进攻回包若被战场盖住，就再取一次列表，看次数或这一格变了没有。
     打中后这一格的编号可能还在，不能照原编号再打一次。
     刷新回包的剩余次数是 0，不代表次数用完。末两位小于 50 的不打。不发 nbuycnt。
     """
@@ -3458,6 +3487,20 @@ def daily_wipe_generals(rec, sock, config):
                 return
             time.sleep(0.2)
 
+    def _latest(since, pred):
+        hist = getattr(rec, "recent", {}).get("RseAdviserDaily") if rec else None
+        found = None
+        if hist:
+            for seq, data in hist:
+                if seq <= since or not isinstance(data, dict) or not pred(data):
+                    continue
+                found = data
+            return found
+        got = rec.latest.get("RseAdviserDaily") if rec and getattr(rec, "latest", None) else None
+        if got and got[0] > since and isinstance(got[1], dict) and pred(got[1]):
+            return got[1]
+        return None
+
     def send(opt, slot=None, timeout=6.0):
         fields = {2: ("int32", opt)}
         if slot is not None:
@@ -3469,14 +3512,20 @@ def daily_wipe_generals(rec, sock, config):
             want=lambda d: isinstance(d, dict) and d.get("noptType") == opt)
         return got
 
+    open_mark = rec.seq_mark() if rec else 0
     panel = send(1)
     if not isinstance(panel, dict):
         return False, "失败：没收到剿灭将领面板"
-    _quiet()
+    _quiet(10)
+    later = _latest(open_mark, lambda d: _adviser_ids(d, "field4") is not None)
+    if later:
+        panel = later
     free = _one(panel.get("nfreeTimes"))
     board = _adviser_ids(panel, "field4")
     if free is None or board is None:
         return False, "失败：面板里读不到剩余次数或将领"
+    if free > _WIPE_DAY:
+        free = _WIPE_DAY
     if free <= 0:
         bag = [x for x in (_adviser_ids(panel, "field3") or []) if x]
         if not bag:
@@ -3486,10 +3535,10 @@ def daily_wipe_generals(rec, sock, config):
         refresh_left = 3
     attacked, refreshed = [], 0
     bag = _adviser_ids(panel, "field3") or []
-    while free > 0 and len(attacked) < 12:
+    while free > 0 and len(attacked) < _WIPE_DAY:
         raise_if_stopped()
-        slot = next((i for i, npc in enumerate(board) if npc % 100 >= 50), None)
-        if slot is None:
+        targets = _wipe_targets(board)
+        if not targets:
             if refresh_left <= 0:
                 break
             got = send(5)
@@ -3500,21 +3549,40 @@ def daily_wipe_generals(rec, sock, config):
             nxt = _adviser_ids(got, "field4")
             if not nxt or nxt == board:
                 break
-            board = nxt
+            board = list(nxt)
             held = _adviser_ids(got, "field3")
             if held is not None:
                 bag = held
             _quiet(3.0)
             continue
-        npc = board[slot]
-        got = send(4, slot + 1, timeout=12.0)
+        slot, npc = targets[0]
+        before = free
+        mark = rec.seq_mark() if rec else 0
+        sender.send_frame(
+            sock, "04f6",
+            encode_message({2: ("int32", 4), 3: ("int32", slot + 1)}),
+            rec.rc4_c2s)
+        _quiet(18)
+        got = _latest(mark, lambda d: d.get("noptType") == 4)
+        if not _wipe_landed(before, npc, got, slot):
+            opened = send(1, timeout=8)
+            _quiet(4)
+            fresh = _latest(
+                mark, lambda d: d.get("noptType") == 1 and _adviser_ids(d, "field4") is not None)
+            got = fresh or (opened if isinstance(opened, dict) else None)
         if not isinstance(got, dict):
             return False, "失败：进攻 %d 没有回包" % npc
-        now = _one(got.get("nfreeTimes"))
-        if now is None or now >= free:
-            break
+        if not _wipe_landed(before, npc, got, slot):
+            return False, "失败：进攻 %d 后列表没变" % npc
         attacked.append(npc)
-        free = now
+        now = _one(got.get("nfreeTimes"))
+        if now is not None and now < before:
+            free = now
+        else:
+            free = before - 1
+        left = _WIPE_DAY - len(attacked)
+        if free > left:
+            free = left
         nxt = _adviser_ids(got, "field4")
         if nxt:
             board = list(nxt)
@@ -3523,7 +3591,6 @@ def daily_wipe_generals(rec, sock, config):
         held = _adviser_ids(got, "field3")
         if held is not None:
             bag = held
-        _quiet()
     made = bool(attacked or any(bag))
     if made:
         got = send(2)
