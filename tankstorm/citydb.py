@@ -4330,6 +4330,19 @@ def take_attack_move() -> int:
     return cid
 
 
+def restore_attack_move(city_id: int) -> None:
+    """移动走到一半被超级强攻打断。把目标放回去，重新登录后再走。"""
+    user_id = int(attack_context_user() or 0)
+    try:
+        cid = int(city_id or 0)
+    except (TypeError, ValueError):
+        return
+    if not user_id or cid <= 0:
+        return
+    _upsert_signal(_mark_name("move", user_id), str(cid))
+    mark_attack_resume(user_id)
+
+
 def request_attack_here(user_id: int) -> str:
     """让这条攻打线程读一次当前城市、士气和体力。成功返回空字符串。"""
     user_id = int(user_id or 0)
@@ -6462,6 +6475,56 @@ def resume_stranded_orders() -> None:
     requeue_running_orders()
     if not attack_hold_on():
         requeue_blocked_orders()
+
+
+def reopen_interrupted_order(order_id: int) -> None:
+    """被超级强攻打断的这一单放回排队。已经打完或手动停的不动。"""
+    order_id = int(order_id or 0)
+    if not order_id:
+        return
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT user_id, status FROM atk_order WHERE id=?",
+            (order_id,)).fetchone()
+        if not row or str(row[1] or "") not in ("running", "failed"):
+            return
+        conn.execute(
+            "UPDATE atk_order SET status='pending', reason=?, updated_at=? "
+            "WHERE id=? AND status IN ('running','failed')",
+            ("被超级强攻打断，重新登录后再打", now_ts(), order_id))
+        conn.commit()
+        user_id = int(row[0] or 0)
+    finally:
+        conn.close()
+    if user_id:
+        mark_attack_resume(user_id)
+        log.info("订单 %s 被超级强攻打断，放回排队，重新登录后再打", order_id)
+
+
+def reopen_interrupted_daily(job_id: int) -> None:
+    """被超级强攻打断的这项日常放回排队。已经做完的不动。"""
+    job_id = int(job_id or 0)
+    if not job_id:
+        return
+    conn = connect()
+    try:
+        row = conn.execute(
+            "SELECT user_id, status FROM daily_job WHERE id=?",
+            (job_id,)).fetchone()
+        if not row or str(row[1] or "") not in ("running", "failed"):
+            return
+        conn.execute(
+            "UPDATE daily_job SET status='pending', ready_at='', detail=?, "
+            "updated_at=? WHERE id=? AND status IN ('running','failed')",
+            ("被超级强攻打断，重新登录后再做", now_ts(), job_id))
+        conn.commit()
+        user_id = int(row[0] or 0)
+    finally:
+        conn.close()
+    if user_id:
+        mark_attack_resume(user_id)
+        log.info("日常 %s 被超级强攻打断，放回排队，重新登录后再做", job_id)
 
 
 def claim_attack_order(city_id=None, auto_only=False):

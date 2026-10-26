@@ -24,6 +24,8 @@
 
 import struct
 import threading
+import time
+import random
 from . import crypto
 from .log import get_logger
 from .proto_encode import build_rce_super_storm_opt
@@ -145,8 +147,7 @@ def send_reject_super_storm(sock, rc4_c2s, rse_data: dict) -> bool:
              "(body %d 字节)", atk_uid, atk_name, deft_uid, deft_name, len(body))
 
     try:
-        # 立刻发。先睡几秒再发时，接收线程已经重新占住连接锁等下一条，
-        # 服务器又在等这包拒绝，账号会卡在强攻窗口里直到被踢。
+        time.sleep(random.uniform(5, 15))
         send_frame(sock, OPCODE_RCE_SUPER_STORM_OPT, body, rc4_c2s)
         log.info("✅ 已发送拒绝超级强攻（RceSuperStormOpt type=2, opcode %s）",
                  OPCODE_RCE_SUPER_STORM_OPT)
