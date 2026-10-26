@@ -516,6 +516,9 @@ def _spend(kind, cost, metal, oil, feats, items):
 # ntype=7 参加已经发布的团队任务（大编号）。今日参与次数加 1，公会积分不变。
 # ntype=9 领取整队已完成的奖励（大编号）。公会积分加 10，参与次数不变。
 # 领过的自己那一份 field6（bGetReward）为 true。接着会推一条 ntype=102，不用发。
+# nFinishNum 就是游戏里「今日参与任务次数」。参加一次加一，领奖不加。
+# 身上 field22 的任务已经算在这个数里，再加一遍会把 3 个算成 5 个。
+# 公会活跃（type=350/351）是另一项，不写这个数。
 # 星级不在协议里。4 星和 5 星的 nTaskType 来自 BaseGuildTask 的 LEVEL。
 # 一天最多 5 个。付费刷新不发。
 _BUILD_OP = "04f3"
@@ -679,17 +682,17 @@ def guild_reward_ready(panel):
                for row in _task_rows(panel, "field22"))
 
 
-def guild_hour_plan(finish_num, held, reward_ready, cap=_TASK_CAP):
+def guild_hour_plan(finish_num, reward_ready, cap=_TASK_CAP):
     """这一小时走哪一支。
 
-    finish_num 是面板上的 nFinishNum。held 是身上还没计入完成的任务。
-    加起来不到一天 5 个，去领任务。已经满了，有做完的才领奖，没有就不发。
+    finish_num 是面板上的 nFinishNum，游戏里叫今日参与任务次数。
+    参加一次就加一，身上还在的任务已经算在里面，不再相加。领奖不加。
+    活跃任务是另一项，不进这个数。不到 5 个就去领任务。
+    已经满了，有做完的才领奖，没有就不发。
     """
     finish = _as_count(finish_num)
-    holding = _as_count(held)
     limit = _as_count(cap) or _TASK_CAP
-    full = finish >= limit or finish + holding >= limit
-    if not full:
+    if finish < limit:
         return "accept"
     if reward_ready:
         return "reward"
@@ -845,25 +848,24 @@ def _guild_tasks(sock, rec):
         return False, "失败：没收到公会任务面板"
     _remember_guild_panel(panel)
     finish = _finish_num(panel)
-    mine_rows = _task_rows(panel, "field22")
-    plan = guild_hour_plan(finish, len(mine_rows), guild_reward_ready(panel))
-    # 领满之后不再参加、不再刷新。能领奖才发 ntype=7，没有可领的就不发。
+    plan = guild_hour_plan(finish, guild_reward_ready(panel))
+    # 今日参与已经到 5，不再参加、不再刷新。能领奖才发 ntype=9。
     if plan != "accept":
         if plan == "idle":
-            _note_guild_claims(0)
-            return True, "成功：今日已领满 %d/%d，没有可领的奖" % (_TASK_CAP, _TASK_CAP)
+            noted = _note_guild_joined(panel, finish)
+            return True, "成功：今日参与 %d/%d，没有可领的奖" % (noted, _TASK_CAP)
         panel, claimed = _claim_tasks(sock, rec, panel)
-        noted = _note_guild_claims(len(claimed))
+        noted = _note_guild_joined(panel, finish)
         if panel is None:
-            return False, "失败：领取已完成任务没有成功（已领奖 %d/%d）" % (noted, _TASK_CAP)
+            return False, "失败：领取已完成任务没有成功（今日参与 %d/%d）" % (noted, _TASK_CAP)
         _remember_guild_panel(panel, claimed)
         if not claimed:
-            return True, "成功：今日已领满 %d/%d，没有可领的奖" % (_TASK_CAP, _TASK_CAP)
-        return True, "成功：今日已领满，领奖 %d 个（已领奖 %d/%d）" % (
-            len(claimed), noted, _TASK_CAP)
-    # 没领满：原来的领任务。身上已经有的占名额，这一轮只补到 5 个。
-    # 接上的任务如果这一轮已经做完，顺手领掉，完成数才会涨。
-    room = _TASK_CAP - finish - len(mine_rows)
+            return True, "成功：今日参与 %d/%d，没有可领的奖" % (noted, _TASK_CAP)
+        return True, "成功：今日参与 %d/%d，领奖 %d 个" % (
+            noted, _TASK_CAP, len(claimed))
+    # 参与次数就是名额。身上的任务已经算进 nFinishNum，不再扣一遍。
+    # 接上的任务如果这一轮整队做完，顺手领掉。领奖不增加参与次数。
+    room = _TASK_CAP - finish
     if room < 0:
         room = 0
     joined = []
@@ -921,9 +923,9 @@ def _guild_tasks(sock, rec):
         _remember_guild_panel(panel)
         _nap(0.35)
     panel, claimed = _claim_tasks(sock, rec, panel)
-    noted = _note_guild_claims(len(claimed))
+    noted = _note_guild_joined(panel, finish + len(joined) + len(taken))
     if panel is None:
-        return False, "失败：领取已完成任务没有成功（已领奖 %d/%d）" % (noted, _TASK_CAP)
+        return False, "失败：领取已完成任务没有成功（今日参与 %d/%d）" % (noted, _TASK_CAP)
     _remember_guild_panel(panel, claimed)
     bits = []
     if joined:
@@ -932,20 +934,30 @@ def _guild_tasks(sock, rec):
         bits.append("承接 %d 个" % len(taken))
     if claimed:
         bits.append("领奖 %d 个" % len(claimed))
-    head = "已领奖 %d/%d" % (noted, _TASK_CAP)
+    head = "今日参与 %d/%d" % (noted, _TASK_CAP)
     if not bits:
         return True, "成功：%s，没有可参加或可承接的 4 星、5 星，刷新 %d 次" % (head, refreshes)
     return True, "成功：%s，" % head + "，".join(bits) + "，刷新 %d 次" % refreshes
 
 
-def _note_guild_claims(n):
-    """领奖才计入今日完成。没领奖不记，下次接着看。"""
+def _note_guild_joined(panel, fallback):
+    """今日次数记面板上的参与次数，不把身上的任务再加一遍，也不记活跃任务。
+
+    回包里有 nFinishNum 就用它。没有就用这一轮算出来的次数，避免把上次的数清掉。
+    """
     from .daily import _load_state, _save_state
+    if isinstance(panel, dict) and "nFinishNum" in panel:
+        total = _finish_num(panel)
+    elif isinstance(fallback, int) and not isinstance(fallback, bool) and fallback >= 0:
+        total = fallback
+    else:
+        total = 0
+    if total > _TASK_CAP:
+        total = _TASK_CAP
     st = _load_state()
     prev = st.get("done", {}).get("公会任务", 0)
     if not isinstance(prev, int) or isinstance(prev, bool) or prev < 0:
         prev = 0
-    total = prev if n <= 0 else min(_TASK_CAP, prev + n)
     if total != prev:
         st.setdefault("done", {})["公会任务"] = total
         _save_state(st)
@@ -1017,18 +1029,19 @@ def claim_guild_rewards(rec, sock):
     if not isinstance(panel, dict):
         return False, "失败：没收到公会任务面板"
     _remember_guild_panel(panel)
+    finish = _finish_num(panel)
     panel, claimed = _claim_tasks(sock, rec, panel)
-    noted = _note_guild_claims(len(claimed))
+    noted = _note_guild_joined(panel, finish)
     if panel is None:
-        return False, "失败：领取已完成任务没有成功（已领奖 %d/%d）" % (noted, _TASK_CAP)
+        return False, "失败：领取已完成任务没有成功（今日参与 %d/%d）" % (noted, _TASK_CAP)
     _remember_guild_panel(panel, claimed)
     if not claimed:
-        return True, "成功：没有可领的奖（已领奖 %d/%d）" % (noted, _TASK_CAP)
-    return True, "成功：领奖 %d 个（已领奖 %d/%d）" % (len(claimed), noted, _TASK_CAP)
+        return True, "成功：没有可领的奖（今日参与 %d/%d）" % (noted, _TASK_CAP)
+    return True, "成功：领奖 %d 个（今日参与 %d/%d）" % (len(claimed), noted, _TASK_CAP)
 
 
 def daily_guild_task(rec, sock, config):
-    """没领满就领 4 星、5 星任务。领满了，能领奖才领。并领取公会活跃。"""
+    """参与没到 5 个就领 4 星、5 星任务。到了 5 个，能领奖才领。公会活跃另领，不计入这 5 个。"""
     ok, why = _guild_tasks(sock, rec)
     if ok:
         _touch_guild_hour()
