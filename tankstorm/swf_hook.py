@@ -418,12 +418,18 @@ def _recv_site(abc: ABC, cls_mn: int, meth_mn: int):
     for i, cur in enumerate(ins):
         if cur["name"] != "callpropvoid" or abc.name_of(cur["mn"]) != "readExternal":
             continue
-        window = ins[i - 4:i]
-        if [p["text"] for p in window] != [
-                "getscopeobject 1", "getslot 5", "getscopeobject 1", "getslot 6"]:
+        # 紧挨调用的是「getslot 消息 / getscopeobject 1 / getslot 字节数组」。
+        # 2026102601 起混淆把消息对象的 getscopeobject 和 getslot 拆开了，
+        # 前面那条 getscopeobject 1 不再贴着 getslot。
+        window = ins[i - 3:i]
+        if len(window) != 3:
+            continue
+        msg, base, arg = window
+        if (msg["name"] != "getslot" or base["text"] != "getscopeobject 1"
+                or arg["name"] != "getslot"):
             continue
         blob = (bytes([0x60]) + _u30b(cls_mn)
-                + bytes([0x65, 0x01, 0x6C]) + _u30b(5)
+                + bytes([0x65, 0x01, 0x6C]) + _u30b(int(msg["ops"][0]))
                 + bytes([0x4F]) + _u30b(meth_mn) + _u30b(1))
         return mi, cur["end"], blob
     raise ValueError("收包方法里找不到 readExternal 之后的插入点")

@@ -1475,12 +1475,13 @@ TASKS = [
        gate=Gate("RseAdmiralOpen", "freeVisitCnt"),
        tiers=Tiers(4, [0, 1, 2])),
 
-    # 2026-10-23 22:43 抓包。消息是 RceAdviserDaily，不是剿灭将领旧协议。
-    _t("剿灭将领", "剿灭将领", "04dc", "RceAdviserDaily",
+    # 2026-10-26 抓包。RedWar_2026102601 起 opcode 从 04dc 换成 04f6，
+    # noptType 从字段 1 挪到 2，nid 从字段 2 挪到 3。
+    _t("剿灭将领", "剿灭将领", "04f6", "RceAdviserDaily",
        {}, "实测",
-       "2026-10-23：noptType 1 开面板，4 进攻（nid 是从 1 起的位置），"
-       "5 刷新，2 合成。场上没有中高级才刷新。"
-       "编号末两位 50 及以上才打（3205x、3207x），3203x 不打。"
+       "2026-10-26：opcode 04f6。noptType 是字段 2，nid 是字段 3。"
+       "1 开面板，4 进攻（nid 是从 1 起的位置），5 刷新，2 合成。"
+       "场上没有中高级才刷新。编号末两位 50 及以上才打。"
        "不发 nbuycnt，不买次数",
        runner=lambda rec, sock, config: daily_wipe_generals(rec, sock, config)),
 
@@ -1545,12 +1546,12 @@ TASKS = [
        gate=Gate("RseBookCollection", "field4[field1=1].field2"),
        cooldown_until="field4[field1=1].field3"),
 
-    # 2026-10-25 11:28 抓包。FierceFightingTask.dat。
-    # nType=0 查询。nType=1、nTaskID=任务号 领取。不发 nRewardID。
-    _t("每日激战", "每日激战·领取", "04d0", "RceFierceFightingOpt",
+    # 2026-10-26 抓包。opcode 从 04d0 换成 0456。
+    # nType 改到字段 3，nTaskID 改到字段 1。不发 nRewardID。
+    _t("每日激战", "每日激战·领取", "0456", "RceFierceFightingOpt",
        {}, "实测",
-       "2026-10-25：积分 450、标记 0 时，一键领取发 nType=1、nTaskID=4，"
-       "积分变成 550，标记变成 16。摧毁基地次数领 1–3，国战进攻次数领 4–10。"
+       "2026-10-26：查询 nType=0 在字段 3。领取 nType=1、nTaskID 在字段 1。"
+       "摧毁基地次数领 1–3，国战进攻次数领 4–10。"
        "对应位已经置上的不领。次数还没够就留到下一轮。十个都领过才记完成。不换积分奖励",
        counts_itself=True,
        runner=lambda rec, sock, config: daily_fierce(rec, sock, config)),
@@ -3434,8 +3435,8 @@ def _adviser_ids(data, key):
 def daily_wipe_generals(rec, sock, config):
     """剿灭将领。先打场上的中高级，没有才刷新，次数用完再合成。
 
-    2026-10-25 11:18 抓包：先打开界面，再 RceAdviserDaily。
-    noptType=1 开面板，4 进攻，5 刷新，2 合成。nid 是位置，从 1 起。
+    2026-10-26：opcode 04f6。noptType 写字段 2，nid 写字段 3。
+    1 开面板，4 进攻，5 刷新，2 合成。nid 是位置，从 1 起。
     打开后会先推一长段战场，接着才是面板。面板一到就进攻，这场还在收，
     进攻回包会被拖过等待时间，看起来像「进攻没有回包」。
     打中后这一格的编号可能还在，不能照原编号再打一次。
@@ -3458,11 +3459,11 @@ def daily_wipe_generals(rec, sock, config):
             time.sleep(0.2)
 
     def send(opt, slot=None, timeout=6.0):
-        fields = {1: ("int32", opt)}
+        fields = {2: ("int32", opt)}
         if slot is not None:
-            fields[2] = ("int32", slot)
+            fields[3] = ("int32", slot)
         mark = rec.seq_mark() if rec else 0
-        sender.send_frame(sock, "04dc", encode_message(fields), rec.rc4_c2s)
+        sender.send_frame(sock, "04f6", encode_message(fields), rec.rc4_c2s)
         got = _await_response(
             sock, rec, "RseAdviserDaily", mark, timeout,
             want=lambda d: isinstance(d, dict) and d.get("noptType") == opt)
@@ -3546,12 +3547,12 @@ _FIERCE_TASKS = (
 def daily_fierce(rec, sock, config):
     """每日激战。查询后把次数已经够、还没领的任务领掉。"""
     def send(ntype, task_id=0):
-        fields = {1: ("int32", ntype)}
+        fields = {3: ("int32", ntype)}
         if task_id:
-            fields[2] = ("int32", task_id)
+            fields[1] = ("int32", task_id)
         mark = rec.seq_mark() if rec else 0
         sender.send_frame(
-            sock, "04d0", encode_message(fields, omit_zero=False), rec.rc4_c2s)
+            sock, "0456", encode_message(fields, omit_zero=False), rec.rc4_c2s)
         return _await_response(
             sock, rec, "RseFierceFightingOpt", mark, 6.0,
             want=lambda d: isinstance(d, dict) and d.get("nType") == ntype)

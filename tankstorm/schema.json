@@ -2121,36 +2121,68 @@
 }
 },
 "022d": {
-"name": "RseDefenseActivity",
-"cls": "_-0DR",
+"name": "RseAdviserDaily",
+"cls": "_-5Om",
 "fields": {
 "1": [
-"msgtype",
+"nfreshTimes",
 "int32"
 ],
 "2": [
-"activitydata",
-"message"
+"field3",
+"int32"
 ],
 "3": [
-"questresult",
+"field4",
 "int32"
 ],
 "4": [
-"customCunt",
+"nResetTime",
 "int32"
 ],
 "5": [
-"nGetOil",
+"field5",
 "int32"
 ],
 "6": [
-"nGetMetal",
+"nfreeTimes",
 "int32"
 ],
 "7": [
-"field7",
-"message"
+"nExp",
+"int32"
+],
+"8": [
+"nret",
+"int32"
+],
+"9": [
+"field9",
+"int32"
+],
+"10": [
+"field10",
+"int32"
+],
+"11": [
+"nDayBuyTimes",
+"int32"
+],
+"12": [
+"nDefeatMax",
+"int32"
+],
+"13": [
+"nCoolDown",
+"int32"
+],
+"14": [
+"noptType",
+"int32"
+],
+"15": [
+"field15",
+"bool"
 ]
 }
 },
@@ -5630,55 +5662,39 @@
 }
 },
 "0294": {
-"name": "RseSevenDays",
-"cls": "_-79w",
+"name": "RseFierceFightingOpt",
+"cls": "_-0xF",
 "fields": {
 "1": [
-"type",
+"nCountryAtkCnt",
 "int32"
 ],
 "2": [
-"logonDays",
+"nGetPoint",
 "int32"
 ],
 "3": [
-"field3",
-"bool"
-],
-"4": [
-"success",
+"nDestroyBaseCnt",
 "int32"
 ],
+"4": [
+"rewardList",
+"message"
+],
 "5": [
-"field5",
+"nType",
 "int32"
 ],
 "6": [
-"hasbuyOne",
-"bool"
-],
-"7": [
-"hasbuyTwo",
-"bool"
-],
-"8": [
-"field8",
-"bool"
-],
-"9": [
-"field9",
-"bool"
-],
-"10": [
-"nQpointID",
+"nTotalPoint",
 "int32"
 ],
-"11": [
-"field11",
-"message"
+"7": [
+"nTaskFlag",
+"int32"
 ],
-"12": [
-"getallbuycnt",
+"8": [
+"nRet",
 "int32"
 ]
 }
@@ -9203,8 +9219,8 @@
 }
 },
 "0307": {
-"name": "RseFierceFightingOpt",
-"cls": "_-70-",
+"name": "RseBlackShopOpt",
+"cls": "_-3DZ",
 "fields": {
 "1": [
 "nType",
@@ -9873,8 +9889,8 @@
 }
 },
 "0314": {
-"name": "RseAdviserDaily",
-"cls": "_-0xw",
+"name": "RseCallBackAct",
+"cls": "_-04O",
 "fields": {
 "1": [
 "nret",
@@ -13782,12 +13798,20 @@
 }
 },
 "0456": {
-"name": "RceAdmiralRank",
-"cls": "_-7QD",
+"name": "RceFierceFightingOpt",
+"cls": "_-5vW",
 "fields": {
 "1": [
-"id",
-"string"
+"nTaskID",
+"int32"
+],
+"2": [
+"nRewardID",
+"int32"
+],
+"3": [
+"nType",
+"int32"
 ]
 }
 },
@@ -16074,8 +16098,8 @@
 }
 },
 "04d0": {
-"name": "RceFierceFightingOpt",
-"cls": "_-2y",
+"name": "RcePingTu",
+"cls": "_-2yD",
 "fields": {
 "1": [
 "nType",
@@ -16374,8 +16398,8 @@
 }
 },
 "04dc": {
-"name": "RceAdviserDaily",
-"cls": "_-1W5",
+"name": "RceHappyCard",
+"cls": "_-Vw",
 "fields": {
 "1": [
 "noptType",
@@ -16898,19 +16922,19 @@
 }
 },
 "04f6": {
-"name": "RceSpecialStore",
-"cls": "_-2u6",
+"name": "RceAdviserDaily",
+"cls": "_-11N",
 "fields": {
 "1": [
-"type",
+"nbuycnt",
 "int32"
 ],
 "2": [
-"buyid",
+"noptType",
 "int32"
 ],
 "3": [
-"buynum",
+"nid",
 "int32"
 ]
 }
