@@ -44,6 +44,9 @@ log = get_logger()
 LOGIN_TOUCH_SEC = 15 * 60
 # 页面停在登录中时，这条线程最多再等这么久。到点关掉，等人再点登录。
 LOGIN_WAIT_SEC = 10 * 60
+# 被超级强攻踢下线后，隔这么久再登录一次。登录上再把被打断的任务拉起来。
+STORM_RETRY_SEC = 30
+_storm_local = threading.local()
 _login_limits = {}
 _login_gen = {}
 _login_limits_guard = threading.Lock()
@@ -148,6 +151,33 @@ def _abandon_login(key: str, user_id: int = 0) -> bool:
     return True
 
 
+def _mark_storm_drop() -> None:
+    _storm_local.dropped = True
+
+
+def _storm_interrupted() -> bool:
+    return bool(getattr(_storm_local, "dropped", False))
+
+
+def _take_storm_drop() -> bool:
+    dropped = _storm_interrupted()
+    _storm_local.dropped = False
+    return dropped
+
+
+def _mark_game_online(on: bool) -> None:
+    _storm_local.online = bool(on)
+
+
+def _game_online() -> bool:
+    return bool(getattr(_storm_local, "online", False))
+
+
+def _keep_storm_retry(dropped, retrying, online) -> bool:
+    """这一轮是被超级打断的，或者上一轮还没登录上。隔 30 秒再登一次。"""
+    return bool(dropped or (retrying and not online))
+
+
 def _give_up_login(uin: str = "") -> bool:
     key = str(uin or "").strip() or _limit_key()
     if not _abandon_login(key):
@@ -217,6 +247,8 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
     """
     if not rec or not getattr(rec, "auto_reject", False):
         return
+    if getattr(rec, "on_storm_drop", None):
+        return
     uin = str(getattr(qq, "uin", "") or "")
     from . import citydb
     bound_user = citydb.attack_context_user()
@@ -274,6 +306,21 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
 
     rec.on_super_storm = _on_super_storm
     log.info("超级强攻自动拒绝已就绪")
+
+
+def _arm_storm_relogin(rec, sock) -> None:
+    """被超级强攻就断开。不发拒绝包。外层隔 30 秒再登录，并把任务拉起来。"""
+    if not rec:
+        return
+
+    def _drop(_data):
+        if _storm_interrupted():
+            return
+        _mark_storm_drop()
+        log.info("被超级强攻，断开当前连接，稍后重新登录并继续任务")
+        _force_close_socket(sock)
+
+    rec.on_storm_drop = _drop
 
 
 def _connect(host: str, port: int, timeout: float = 15) -> socket.socket:
@@ -398,6 +445,7 @@ def _region_from_login(user_id: int) -> None:
 def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                  with_daily: bool = False) -> str:
     """跑一次完整连接，直到断开。返回断开原因（字符串）。"""
+    _mark_game_online(False)
     ctx = get_game_context(qq)
     _remember_region(qq, ctx)
     host = ctx.get("server") or spec.get("default_host", "tankstorm-proxy.sincetimes.com")
@@ -436,6 +484,8 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
 
     sock = _LockedSock(sock)
 
+    _arm_storm_relogin(rec, sock)
+    _mark_game_online(False)
     _arm_super_storm(rec, sock, config, qq)
 
     heart = None
@@ -449,6 +499,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                 time.sleep(delay)
         log.info("已完成登录握手（%d 步），uid=%s secret=%s",
                  len(steps), ctx.get("uid"), ctx.get("secret"))
+        _mark_game_online(True)
         if rec:
             # sid 是加密载荷分析时的头号候选密钥材料，记进会话元信息
             rec.note("login_ok", sid=ctx.get("sid"), uid=ctx.get("uid"))
@@ -1620,6 +1671,8 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
         citydb.finish_attack_order(
             job["id"], "failed", show or why or "未打成", beats=beats)
     finally:
+        if _storm_interrupted() and not citydb.attack_paused() and not citydb.shutdown_due():
+            citydb.reopen_interrupted_order(job["id"])
         citydb.set_fighting_order(0)
 
 
@@ -1994,6 +2047,8 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
     finally:
         if guarding and not from_chain:
             citydb.end_lock_cards()
+        if _storm_interrupted() and not citydb.attack_paused() and not citydb.shutdown_due():
+            citydb.reopen_interrupted_order(job["id"])
         citydb.set_fighting_order(0)
 
 
@@ -2217,7 +2272,11 @@ def _run_requested_move(rec, sock, config, beater) -> bool:
                 rec, sock, config, city, beat=beater,
                 march_only=True, enter_target=True)
     except OSError:
-        citydb.note_attack_move_text(f"移动到 {label} 时连接中断")
+        if _storm_interrupted():
+            citydb.restore_attack_move(city)
+            citydb.note_attack_move_text(f"被超级强攻打断，重新登录后再移动到 {label}")
+        else:
+            citydb.note_attack_move_text(f"移动到 {label} 时连接中断")
         raise
     except Exception as exc:
         log.info("移动到 %s 失败", label, exc_info=True)
@@ -2228,6 +2287,10 @@ def _run_requested_move(rec, sock, config, beater) -> bool:
         return True
     why = str((out or {}).get("停止原因") or "").strip()
     landed = int((out or {}).get("走到") or 0)
+    if _storm_interrupted() and landed != city:
+        citydb.restore_attack_move(city)
+        citydb.note_attack_move_text(f"被超级强攻打断，重新登录后再移动到 {label}")
+        return True
     if why:
         citydb.note_attack_move_text(f"移动到 {label} 时停下：{why}")
     elif landed == city:
@@ -2580,6 +2643,9 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
         task_log(citydb.attack_context_qq(), label, "这一项结束")
         log.info("日常做完：%s", label)
     finally:
+        if (_storm_interrupted() and not citydb.daily_job_stopped()
+                and not citydb.shutdown_due()):
+            citydb.reopen_interrupted_daily(job["id"])
         citydb.set_running_daily(0)
         daily.set_campaign_progress(None)
         daily.bind_rec(prev_rec)
@@ -2833,6 +2899,7 @@ def run_remote_orders(qq, config: dict) -> int:
     name = getattr(qq, "account_name", "") or ""
     user_id = _bind_named_account(config, name)
     told = False
+    storm_retry = False
     while not user_id:
         if not told:
             log.error("攻打号「%s」还没绑定登录账号，不领订单。扫码后会记下 QQ，或执行：python3 web.py --bind-attack 用户名 QQ号",
@@ -2937,6 +3004,15 @@ def run_remote_orders(qq, config: dict) -> int:
                 time.sleep(5)
                 continue
             _connect_attack_orders(qq, config)
+            dropped = _take_storm_drop()
+            if _keep_storm_retry(dropped, storm_retry, _game_online()):
+                storm_retry = True
+                citydb.set_attack_status("login")
+                log.info("被超级强攻打断，%d 秒后重新登录并继续任务",
+                         STORM_RETRY_SEC)
+                time.sleep(STORM_RETRY_SEC)
+                continue
+            storm_retry = False
             if resumed:
                 citydb.clear_attack_resume()
             if not citydb.attack_hold_on():
@@ -3320,6 +3396,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
         scope_blocked = any(
             citydb.attack_qq_blocked(uid) for uid in citydb.attack_context_users())
         just_scanned = False
+        storm_retry = False
         if scope_blocked or not valid:
             citydb.set_attack_status("login")
             _arm_login_limit()
@@ -3385,14 +3462,24 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     break
                 if just_scanned:
                     just_scanned = False
-                elif citydb.attack_in_keepalive(_owner()):
+                elif storm_retry or citydb.attack_in_keepalive(_owner()):
                     # 已经挂上游戏的，按原来的挂机时间走，不套这 10 分钟。
+                    # 被超级打断后的重登也不套，服务器窗口里会连续失败一阵。
                     _clear_login_limit()
                 else:
                     _arm_login_limit()
                     if _login_limit_hit() and _give_up_login(uin):
                         break
                 _connect_attack_orders(qq, config)
+                dropped = _take_storm_drop()
+                if _keep_storm_retry(dropped, storm_retry, _game_online()):
+                    storm_retry = True
+                    citydb.set_attack_status("login")
+                    log.info("被超级强攻打断，%d 秒后重新登录并继续任务",
+                             STORM_RETRY_SEC)
+                    time.sleep(STORM_RETRY_SEC)
+                    continue
+                storm_retry = False
                 if (not citydb.attack_in_keepalive(_owner())
                         and _login_limit_hit() and _give_up_login(uin)):
                     break
@@ -3555,6 +3642,7 @@ def _connect_and(qq, config: dict, work) -> int:
     实时解密、等服务端把登录后的状态推完，一步都不能少。
     work(rec, sock, spec, ctx, beater) 返回进程退出码。心跳在独立线程里发。
     """
+    _mark_game_online(False)
     try:
         spec = protocol.load_spec()
     except protocol.ProtocolNotConfigured as exc:
@@ -3609,6 +3697,8 @@ def _connect_and(qq, config: dict, work) -> int:
         rec.enable_crypto(ctx)
         sock = _LockedSock(sock)
         _register_live_sock(sock)
+        _arm_storm_relogin(rec, sock)
+        _mark_game_online(False)
         _arm_super_storm(rec, sock, config, qq)
         for data, delay in protocol.build_login_sequence(spec, ctx):
             sock.sendall(data)
@@ -3630,6 +3720,7 @@ def _connect_and(qq, config: dict, work) -> int:
                       got)
             return 1
         log.info("登录态数据接收完毕，开始执行")
+        _mark_game_online(True)
         citydb.note_attack_link(interval)
         if citydb.attack_context_user() or citydb.attack_context_qq():
             _clear_login_limit()
@@ -3943,6 +4034,7 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
     max_backoff = float(conf.get("重连最大秒", 120))
     started = time.time()
     backoff = min_backoff
+    storm_retry = False
 
     # 录制服务器消息；发现异常事件（如超级强攻的验证码通知）立刻推送到手机
     def on_alert(op, seq, body, text, reason):
@@ -3974,11 +4066,19 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
             reason = _one_session(qq, spec, conf, config, rec,
                                   with_daily=with_daily)
             log.warning("本次连接结束：%s", reason)
-            # 断开后退避重连
-            wait = min(backoff, max_backoff)
+            dropped = _take_storm_drop()
+            if _keep_storm_retry(dropped, storm_retry, _game_online()):
+                storm_retry = True
+                wait = STORM_RETRY_SEC
+                log.info("被超级强攻断开，%d 秒后重新登录", wait)
+            else:
+                storm_retry = False
+                wait = min(backoff, max_backoff)
+                backoff = min(backoff * 2, max_backoff)
+                if _game_online():
+                    backoff = min_backoff
             log.info("%.0f 秒后重连…", wait)
             time.sleep(wait)
-            backoff = min(backoff * 2, max_backoff)
             # 若刚成功跑过一段，重置退避
     except KeyboardInterrupt:
         log.info("手动停止保持活跃")
