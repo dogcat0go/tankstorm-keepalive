@@ -2452,9 +2452,48 @@ def _blast_recent(rec, bid, army_type=_BLAST_ARMY):
     return "ours", army, making, left, mark
 
 
+def _spawned_id(got):
+    """快速制造回包里新兵的编号。没有这个编号就不算造成。"""
+    if not isinstance(got, dict):
+        return 0
+    direct = _one(got.get("armyID"))
+    if direct and direct > 0:
+        return direct
+    made = got.get("army")
+    rows = made if isinstance(made, list) else ([made] if isinstance(made, dict) else [])
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        nid = _one(row.get("field2"))
+        if not nid:
+            nid = _one(row.get("id"))
+        if nid and nid > 0:
+            return nid
+    return 0
+
+
+def _known_army_ids(rec):
+    """这一轮开始前兵册里已经有的编号。回包再给出这些编号，不算新造的。"""
+    if rec is None:
+        return set()
+    from . import repair
+    ids = set()
+    for row in repair._loaded(rec):
+        if not isinstance(row, dict):
+            continue
+        nid = row.get("field2")
+        if isinstance(nid, int) and not isinstance(nid, bool) and nid > 0:
+            ids.add(nid)
+    remembered = getattr(rec, "_blast_made", None)
+    if isinstance(remembered, set):
+        ids.update(n for n in remembered if isinstance(n, int) and n > 0)
+    return ids
+
+
 def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
                 building_type=_BLAST_BUILDING, army_type=_BLAST_ARMY,
-                place="兵营", unit="爆破兵", label="爆破兵", track=True):
+                place="兵营", unit="爆破兵", label="爆破兵", track=True,
+                known_ids=None):
     """造一个单位。快速制造只在勋章花费为 0 时发，credit 固定写 0。
 
     assume_idle：上一只刚造完。登录包里的队列还是旧的，按空闲开工。
@@ -2505,16 +2544,18 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
     snap = (getattr(rec, "latest_at", {}) or {}).get("RseLoad") if rec else None
     snap_name = "登录包"
     recent = _blast_recent(rec, bid, army_type)
-    if recent and recent[0] == "other":
+    # 上一只已经造成时，旧的建筑包还停在「正在造」。先按空闲开工，
+    # 否则同一条过期队列会被反复算成造完，数量却不变。
+    if assume_idle:
+        army, making, left = 0, 0, 0
+        snap = None
+    elif recent and recent[0] == "other":
         return False, f"{place}正在造别的兵（{recent[2] or recent[1]}），不打断"
-    if recent and recent[0] == "ours" and recent[3] > 0:
+    elif recent and recent[0] == "ours" and recent[3] > 0:
         army, making, left = recent[1], recent[2], recent[3]
         snap = recent[4]
         snap_name = "上一包"
         say(f"{place} {bid} 已经在造{unit}，剩余 {left} 秒，直接快速制造")
-    elif assume_idle:
-        army, making, left = 0, 0, 0
-        snap = None
     elif left > 0 and making not in (0, army_type) and army not in (0, army_type):
         return False, f"{place}正在造别的兵（{making or army}），不打断"
 
@@ -2526,9 +2567,13 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
             f"{place} {bid} {snap_name}剩余 {left} 秒，这份数据已过 "
             f"{'未知' if passed is None else passed} 秒，按 {aged} 秒算")
         if passed is not None and aged <= 0:
-            say(f"{place} {bid} 里那一只剩余时间已经走完，算进数量")
-            return True, f"{place} {bid} 里那一只剩余时间已经走完，算进数量"
-        seen_left, seen_at = aged, time.monotonic()
+            # 快照里的剩余时间已经走完。不能把这一只算造成：
+            # 服务器未必造出来了，同一条旧队列会被数满整个数量。
+            say(f"{place} {bid} 这份剩余时间已经走完，不按旧队列算造成，重新开工")
+            left = 0
+            seen_left, seen_at = 0, time.monotonic()
+        else:
+            seen_left, seen_at = aged, time.monotonic()
 
     qq_hall, yellow, blue = _blast_flags(rec, config)
     wallet = None
@@ -2548,11 +2593,16 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
         def mine(data, kind=kind):
             if not isinstance(data, dict) or data.get("type") != kind:
                 return False
+            got_id = _one(data.get("id"))
             building = data.get("building")
-            if not isinstance(building, dict):
+            b_id = _one(building.get("field4")) if isinstance(building, dict) else None
+            if got_id and got_id != bid:
+                return False
+            if b_id and b_id != bid:
+                return False
+            if got_id == bid or b_id == bid:
                 return True
-            got = _one(building.get("field4"))
-            return not got or got == bid
+            return _spawned_id(data) > 0
 
         return _await_response(sock, rec, "RseBuildingModify", mark, 6, want=mine)
 
@@ -2563,16 +2613,24 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
         if not isinstance(got, dict):
             return False, "开工没有回包"
         err = got.get("error")
-        if not isinstance(err, int) or isinstance(err, bool) or err != 0:
-            return False, f"开工服务器返回 error={err}"
-        wallet = _wallet_credit(got)
+        credit = _wallet_credit(got)
+        if credit is not None:
+            wallet = credit
         building = got.get("building")
         queue = _blast_queue(building) if isinstance(building, dict) else None
-        if queue is None:
+        busy = (
+            queue is not None and queue[2] > 0 and queue[1] in (0, army_type))
+        if busy and (not isinstance(err, int) or isinstance(err, bool) or err != 0):
+            say(
+                f"{place} {bid} 开工被拒 error={err}，服务器还在造，"
+                f"改为按剩余 {queue[2]} 秒加速")
+        elif not isinstance(err, int) or isinstance(err, bool) or err != 0:
+            return False, f"开工服务器返回 error={err}"
+        elif queue is None:
             return False, "开工回包读不到剩余时间，不加速"
+        elif not busy:
+            return False, f"开工后没有进入{unit}队列（剩余 {queue[2]} 秒）"
         _army, making, left = queue
-        if left <= 0 or making not in (0, army_type):
-            return False, f"开工后没有进入{unit}队列（剩余 {left} 秒）"
         seen_left, seen_at = left, time.monotonic()
         say(f"{place} {bid} 开工，服务器剩余 {left} 秒")
 
@@ -2644,13 +2702,26 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
     if wallet is not None and after is not None and after < wallet:
         say(f"勋章从 {wallet} 变成 {after}，已停 {place} {bid} time={left}")
         return False, f"勋章从 {wallet} 变成 {after}，已停"
+    spawned = _spawned_id(got) if isinstance(err, int) and not isinstance(err, bool) and err == 0 else 0
     if not isinstance(err, int) or isinstance(err, bool) or err != 0:
         say(f"快速制造被拒 error={err} {place} {bid} time={left} 勋章 {wallet}->{after}")
         return False, f"快速制造服务器返回 error={err}，{place} {bid}，发出的剩余时间 {left} 秒"
-    made = got.get("army")
-    new_id = made.get("field2") if isinstance(made, dict) else 0
+    if not spawned:
+        say(f"快速制造回包没有新兵 {place} {bid} time={left}")
+        return False, f"快速制造回包没有新兵，{place} {bid}，发出的剩余时间 {left} 秒，不算造成"
+    if known_ids is not None and spawned in known_ids:
+        say(f"快速制造回包里的兵 {spawned} 本来就有，{place} {bid} 不算造成")
+        return False, f"回包里的兵 {spawned} 本来就有，不算造成"
+    if known_ids is not None:
+        known_ids.add(spawned)
+    if rec is not None:
+        made = getattr(rec, "_blast_made", None)
+        if not isinstance(made, set):
+            made = set()
+            rec._blast_made = made
+        made.add(spawned)
     if track:
-        note_blast_count(rec, new_id if isinstance(new_id, int) and not isinstance(new_id, bool) else 0)
+        note_blast_count(rec, spawned)
     note_population(rec)
     return True, f"成功：{place} {bid} 按剩余 {left} 秒、0 勋章加速完成"
 
@@ -2676,6 +2747,7 @@ def daily_blast(rec, sock, config, count=1, on_progress=None, *,
         done = count
     if track:
         note_blast_count(rec)
+    known_ids = _known_army_ids(rec)
     assume_idle = False
 
     def progress(text=""):
@@ -2691,7 +2763,7 @@ def daily_blast(rec, sock, config, count=1, on_progress=None, *,
             ok, why = _blast_once(
                 rec, sock, config, assume_idle=assume_idle, on_progress=progress,
                 building_type=building_type, army_type=army_type, place=place,
-                unit=unit, label=label, track=track)
+                unit=unit, label=label, track=track, known_ids=known_ids)
         except Later as later:
             later.done = done
             head = f"{unit} {done}/{count}"
