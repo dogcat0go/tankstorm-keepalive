@@ -322,7 +322,7 @@ function resText(n) {
             <label>数量<input v-model="count" class="mins" inputmode="numeric" required /></label>
             <button type="submit">开始制造</button>
           </form>
-          <p class="muted">按这个数量循环。兵营里已经在造爆破兵时，直接快速制造，不再开工。剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒。消耗金属和石油。数量 1 到 399。已经在造的那一只算进数量。</p>
+          <p class="muted">按这个数量循环。兵营里已经在造爆破兵时，直接快速制造，不再开工。剩余时间算出 0 勋章才加速，credit 固定写 0。要花勋章就停在这一只，不发。大厅蓝钻大约要等剩余降到 600 秒。消耗金属和石油。数量 1 到 399。已经在造的那一只，加速回包里有新兵才算进数量。旧队列时间走完了不算。</p>
         </div>
         <div class="item-part">
           <h3>战车工厂</h3>
