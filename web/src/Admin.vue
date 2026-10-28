@@ -21,6 +21,15 @@ const tierErr = ref({});
 const tierNote = ref({});
 const TIERS = ["初级", "中级", "高级", "高级pro"];
 const clearing = ref(0);
+const deleting = ref(0);
+const memberErr = ref("");
+const creating = ref(false);
+const newName = ref("");
+const newPassword = ref("");
+const newTier = ref("初级");
+const newExpiry = ref("");
+const createErr = ref("");
+const createNote = ref("");
 const stormNotes = ref({});
 const stormErr = ref({});
 const fighters = ref([]);
@@ -579,6 +588,58 @@ async function saveExpiry(m, action) {
   }
 }
 
+async function createMember() {
+  if (creating.value) return;
+  createErr.value = "";
+  createNote.value = "";
+  memberErr.value = "";
+  err.value = "";
+  creating.value = true;
+  try {
+    const data = await api("/api/admin/members/create", {
+      username: newName.value.trim(),
+      password: newPassword.value,
+      tier: newTier.value,
+      expires_at: newExpiry.value,
+    });
+    paintMembers(data.members);
+    createNote.value = "已创建 " + newName.value.trim();
+    newName.value = "";
+    newPassword.value = "";
+  } catch (e) {
+    const message = e.message || "请求失败";
+    createErr.value = message;
+    err.value = message;
+  } finally {
+    creating.value = false;
+  }
+}
+
+async function deleteMember(m) {
+  if (deleting.value) return;
+  memberErr.value = "";
+  if (me.value && m.id === me.value.id) {
+    memberErr.value = "当前登录的这个管理员留着，换别的管理员再删";
+    return;
+  }
+  const bits = ["删除登录账号 " + m.username + "？"];
+  if (m.admin) bits.push("这是管理员。");
+  if (onlineOf(m)) bits.push("这个账号正在线上。");
+  bits.push("订单、订阅和登录会一起删掉。");
+  if (!window.confirm(bits.join(""))) return;
+  err.value = "";
+  deleting.value = m.id;
+  try {
+    const data = await api("/api/admin/members/delete", { user_id: m.id });
+    paintMembers(data.members);
+    if (openMember.value === m.id) openMember.value = 0;
+    if (openTier.value === m.id) openTier.value = 0;
+    if (openExpiry.value === m.id) openExpiry.value = 0;
+  } finally {
+    deleting.value = 0;
+  }
+}
+
 async function clearMember(m) {
   if (clearing.value) return;
   if (!window.confirm("清空 " + m.username + " 的账号配置？档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限会留下。")) return;
@@ -671,7 +732,20 @@ onUnmounted(() => {
         <button type="button" role="tab" :aria-selected="sheet === 'fighters'" :class="{ ghost: sheet !== 'fighters' }" @click="sheet = 'fighters'">攻打 QQ</button>
       </div>
       <template v-if="sheet === 'members'">
-      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。</p>
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。创建账号不带管理权限，有效期留空就是不限期。删除会连订单、订阅和登录一起去掉，当前登录的管理员不能删自己。</p>
+      <form class="filters" @submit.prevent="createMember()">
+        <label>用户名<input v-model="newName" autocomplete="off" required /></label>
+        <label>密码<input v-model="newPassword" type="password" autocomplete="new-password" required /></label>
+        <label>会员等级
+          <select v-model="newTier">
+            <option v-for="t in TIERS" :key="'new' + t">{{ t }}</option>
+          </select>
+        </label>
+        <label>有效期<input v-model="newExpiry" type="date" title="留空就是不限期" /></label>
+        <button type="submit" :disabled="creating">创建账号</button>
+      </form>
+      <p v-if="createErr" class="err">{{ createErr }}</p>
+      <p v-else-if="createNote" class="muted">{{ createNote }}</p>
       <form class="filters" @submit.prevent>
         <label>搜索<input v-model="memberQ" placeholder="账号或 QQ" /></label>
         <label>区服
@@ -700,6 +774,7 @@ onUnmounted(() => {
         </label>
         <button v-if="memberFilterOn" type="button" class="ghost" @click="clearMemberFilters">清除筛选</button>
       </form>
+      <p v-if="memberErr" class="err">{{ memberErr }}</p>
       <p class="muted pager" v-if="members.length">
         显示 {{ memberView.from }}–{{ memberView.to }} / {{ shownMembers.length }} 个<template v-if="shownMembers.length !== members.length">，共 {{ members.length }} 个</template><template v-if="hiddenExpiredMembers">，已隐藏 {{ hiddenExpiredMembers }} 个过期</template>
         <template v-if="memberView.pages > 1">
@@ -735,6 +810,7 @@ onUnmounted(() => {
                   <button type="button" class="ghost" :disabled="clearing === m.id" @click="clearMember(m).catch((e) => (err = e.message))">清空</button>
                   <button type="button" class="ghost" :class="{ here: openTier === m.id }" :aria-expanded="openTier === m.id" @click="toggleTier(m)">{{ openTier === m.id ? "收起" : "会员等级" }}</button>
                   <button type="button" class="ghost" :class="{ here: openExpiry === m.id }" :aria-expanded="openExpiry === m.id" @click="toggleExpiry(m)">{{ openExpiry === m.id ? "收起" : "有效期" }}</button>
+                  <button type="button" class="ghost" :disabled="deleting === m.id" @click="deleteMember(m).catch((e) => (err = e.message))">删除</button>
                 </td>
               </tr>
               <tr v-if="openTier === m.id">

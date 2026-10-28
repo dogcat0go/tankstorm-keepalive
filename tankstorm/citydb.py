@@ -1366,6 +1366,71 @@ def reset_member_settings(user_id: int) -> str:
     return ""
 
 
+def admin_create_member(username: str, password: str, tier: str = "初级",
+                        expires_at: str = "") -> str:
+    """管理员手动建登录账号。成功返回空字符串。不设管理权限。"""
+    import re
+    username = str(username or "").strip()
+    password = str(password or "")
+    tier = str(tier or "").strip() or "初级"
+    expires_at = str(expires_at or "").strip()[:10]
+    if not re.fullmatch(r"[A-Za-z0-9_\u4e00-\u9fff]{2,32}", username):
+        return "用户名用 2 到 32 位字母、数字或中文"
+    if len(password) < 6 or len(password) > 72:
+        return "密码至少 6 位"
+    if tier not in TIERS:
+        return "会员等级只能是初级、中级、高级、高级pro"
+    if expires_at:
+        try:
+            day = datetime.strptime(expires_at, "%Y-%m-%d").date()
+        except ValueError:
+            return "有效期要写成 2026-12-31 这种日期"
+        if day.isoformat() != expires_at:
+            return "有效期要写成 2026-12-31 这种日期"
+    uid = create_user(username, password, expires_at, tier)
+    if uid is None:
+        return "这个用户名已经有了"
+    log.info("管理员创建了登录账号 %s，%s，有效期 %s",
+             username, tier, expires_at or "不限期")
+    return ""
+
+
+def delete_member(user_id: int, actor_id: int = 0) -> str:
+    """删掉这个登录账号，以及它的订单、订阅、会话和页面配置。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    actor_id = int(actor_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    if actor_id == user_id:
+        return "不能删除当前登录的管理员"
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT username FROM app_user WHERE id=?", (user_id,)).fetchone()
+        if not row:
+            conn.rollback()
+            return "没有这个账号"
+        name = row[0]
+        for table in (
+            "watch_sub", "clear_prio", "app_session", "app_clock",
+            "lock_card_use", "storm_reject", "atk_order", "daily_job",
+        ):
+            conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
+        cur = conn.execute("DELETE FROM app_user WHERE id=?", (user_id,))
+        if cur.rowcount != 1:
+            conn.rollback()
+            return "没有这个账号"
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    log.info("管理员删除了登录账号 %s", name)
+    return ""
+
+
 def login_user(username: str, password: str):
     """密码正确返回 session token。密码不对返回 None，账号过期返回 False。"""
     import secrets
