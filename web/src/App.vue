@@ -39,6 +39,9 @@ const bindWait = ref(false);
 const devLogin = ref(false);
 const registerOpen = ref(false);
 const loginPlatDefault = ref("空间");
+const napcatQr = ref("");
+const napcatNote = ref("");
+let napcatTimer = 0;
 const autoLock = ref(false);
 const holdMin = ref("0");
 const holdAll = ref(false);
@@ -1094,9 +1097,59 @@ function holdCell(it) {
   return finished && finished.id === it.id ? text : "—";
 }
 
-async function pushLogin(plat) {
+function stopNapcat() {
+  if (napcatTimer) {
+    clearInterval(napcatTimer);
+    napcatTimer = 0;
+  }
+}
+
+async function finishNapcat(plat) {
+  stopNapcat();
+  napcatQr.value = "";
+  napcatNote.value = "";
+  const data = await api("/api/attack-login", { platform: plat || "空间", way: "napcat" });
+  if (data.off_at != null) {
+    offAt.value = data.off_at ? String(data.off_at).replace(" ", "T") : "";
+    if (me.value) me.value.off_at = data.off_at || "";
+    offNote.value = data.off_at ? "到点后下线" : "已取消";
+  }
+  showErr(attackLoginError(data.login), "bar");
+  await refreshAttacks();
+}
+
+async function pollNapcat(plat) {
+  const data = await api("/api/test", { action: "qr", platform: plat || "空间" });
+  if (data.logged_in) {
+    await finishNapcat(plat);
+    return;
+  }
+  if (data.qrcode) {
+    napcatQr.value = data.qrcode;
+    napcatNote.value = data.msg || "用这个攻打号的手机 QQ 扫 NapCat 的登录码";
+    showErr("", "bar");
+  } else if (!data.ok) {
+    napcatQr.value = "";
+    napcatNote.value = "";
+    showErr(data.msg || "没有拿到 NapCat 登录码", "bar");
+    if (!String(data.msg || "").includes("还没有登录二维码")) stopNapcat();
+  }
+  if (!napcatTimer && !data.logged_in && (data.qrcode || String(data.msg || "").includes("还没有登录二维码"))) {
+    napcatTimer = setInterval(() => pollNapcat(plat).catch((e) => showErr(e.message, "bar")), 3000);
+  }
+}
+
+async function pushLogin(plat, way) {
   showErr("", "bar");
-  const data = await api("/api/attack-login", { platform: plat || "空间" });
+  if (way === "napcat") {
+    stopNapcat();
+    await pollNapcat(plat);
+    return;
+  }
+  stopNapcat();
+  napcatQr.value = "";
+  napcatNote.value = "";
+  const data = await api("/api/attack-login", { platform: plat || "空间", way: "qr" });
   if (data.off_at != null) {
     offAt.value = data.off_at ? String(data.off_at).replace(" ", "T") : "";
     if (me.value) me.value.off_at = data.off_at || "";
@@ -1279,6 +1332,7 @@ onUnmounted(() => {
   clearInterval(timer);
   clearInterval(atkTimer);
   clearInterval(clockTimer);
+  stopNapcat();
 });
 </script>
 
@@ -1330,6 +1384,8 @@ onUnmounted(() => {
         :proc-text="procText"
         :push-login="pushLogin"
         :login-plat-default="loginPlatDefault"
+        :napcat-qr="napcatQr"
+        :napcat-note="napcatNote"
         :set-attack-pause="setAttackPause"
         :close-attack="closeAttack"
         :close-busy="closeBusy"
