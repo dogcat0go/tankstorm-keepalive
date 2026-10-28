@@ -3218,6 +3218,41 @@ _wanted_platform = {}
 _wanted_platform_guard = threading.Lock()
 
 
+_wanted_way = {}
+_wanted_way_guard = threading.Lock()
+
+
+def _login_way(way: str) -> str:
+    text = str(way or "").strip().lower()
+    if text in ("napcat", "nc"):
+        return "napcat"
+    if text in ("qr", "scan", "扫码"):
+        return "qr"
+    return ""
+
+
+def remember_login_way(user_id: int = 0, uin: str = "", way: str = "") -> None:
+    """网页这次点的是扫码还是 NapCat。空着表示沿用原来的：有地址就先问 NapCat，不行再扫码。"""
+    kind = _login_way(way)
+    if not kind:
+        return
+    with _wanted_way_guard:
+        if int(user_id or 0):
+            _wanted_way[f"user-{int(user_id)}"] = kind
+        if str(uin or "").strip():
+            _wanted_way[str(uin).strip()] = kind
+
+
+def consume_login_way(user_id: int = 0, uin: str = "") -> str:
+    kind = ""
+    with _wanted_way_guard:
+        if str(uin or "").strip():
+            kind = _wanted_way.pop(str(uin).strip(), "") or kind
+        if int(user_id or 0):
+            kind = _wanted_way.pop(f"user-{int(user_id)}", "") or kind
+    return kind
+
+
 def remember_login_platform(user_id: int = 0, uin: str = "", platform: str = "") -> None:
     """网页点登录时选的空间/大厅，留给随后的扫码会话。"""
     from . import normalize_platform
@@ -3481,12 +3516,27 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
         just_scanned = False
         storm_retry = False
         storm_started = 0.0
+        login_way = consume_login_way(user_id, uin)
+        if login_way == "napcat":
+            citydb.set_attack_status("login")
+            if qq.adopt_napcat(config) and note_attack_qq(qq):
+                valid = True
+                just_scanned = True
+                log.info("攻打 QQ %s 已用 NapCat 登录", uin)
+            elif not valid:
+                citydb.take_attack_login()
+                log.info("攻打 QQ %s 的 NapCat 没接上，这次不改走扫码", uin)
+                return
+        elif login_way == "qr":
+            valid = False
         if scope_blocked or not valid:
             citydb.set_attack_status("login")
             _arm_login_limit()
             if on_page:
                 citydb.set_page_qr(True, user_id)
-            ok = relogin_with_push(qq, config, force_qr=scope_blocked)
+            ok = relogin_with_push(
+                qq, config, force_qr=scope_blocked or login_way == "qr",
+                way="qr" if login_way == "qr" else "")
             if on_page:
                 citydb.set_page_qr(False, user_id)
             if ok:
@@ -3500,13 +3550,29 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 if citydb.attack_paused():
                     citydb.set_attack_status("paused")
                     if citydb.take_attack_login():
-                        if any(citydb.attack_qq_blocked(uid)
-                               for uid in citydb.attack_context_users()):
+                        picked = consume_login_way(user_id, uin)
+                        blocked = any(citydb.attack_qq_blocked(uid)
+                                      for uid in citydb.attack_context_users())
+                        if picked == "napcat":
+                            citydb.set_attack_paused(False, _owner())
+                            citydb.set_attack_status("login")
+                            if qq.adopt_napcat(config) and note_attack_qq(qq):
+                                log.info("攻打 QQ %s 已用 NapCat 登录", uin)
+                            elif not qq.is_valid():
+                                log.info("攻打 QQ %s 的 NapCat 没接上，这次不改走扫码", uin)
+                                time.sleep(2)
+                                continue
+                            _arm_push_keepalive()
+                            _connect_attack_orders(qq, config)
+                            continue
+                        if picked == "qr" or blocked:
                             citydb.set_attack_status("login")
                             _arm_login_limit()
                             if on_page:
                                 citydb.set_page_qr(True, user_id)
-                            ok = relogin_with_push(qq, config, force_qr=True)
+                            ok = relogin_with_push(
+                                qq, config, force_qr=True,
+                                way="qr" if picked == "qr" else "")
                             if on_page:
                                 citydb.set_page_qr(False, user_id)
                             if not ok and _give_up_login(uin):
@@ -3535,6 +3601,27 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 asked = citydb.take_attack_login()
                 resumed = citydb.attack_resume_marked()
                 if asked:
+                    picked = consume_login_way(user_id, uin)
+                    if picked == "napcat":
+                        citydb.set_attack_status("login")
+                        if not (qq.adopt_napcat(config) and note_attack_qq(qq)):
+                            log.info("攻打 QQ %s 的 NapCat 没接上，这次不改走扫码", uin)
+                            if not qq.is_valid():
+                                time.sleep(2)
+                                continue
+                        else:
+                            log.info("攻打 QQ %s 已用 NapCat 登录", uin)
+                    elif picked == "qr":
+                        citydb.set_attack_status("login")
+                        _arm_login_limit()
+                        if on_page:
+                            citydb.set_page_qr(True, user_id)
+                        if not relogin_with_push(qq, config, force_qr=True, way="qr"):
+                            if on_page:
+                                citydb.set_page_qr(False, user_id)
+                            continue
+                        if on_page:
+                            citydb.set_page_qr(False, user_id)
                     _arm_push_keepalive()
                     if citydb.attack_in_keepalive(_owner()):
                         citydb.set_attack_status("hold")
@@ -3605,10 +3692,66 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     log.info("重新点登录后没能再拉起", exc_info=True)
 
 
+def _napcat_for_user(config: dict, user_id: int) -> tuple:
+    """这个登录账号要用的攻打号 NapCat。已绑定的按 QQ 号找；还没绑定就看配置里写了「用户」的那一条。"""
+    from . import citydb
+    from .qq_login import attack_napcat_endpoint
+
+    uin = str(citydb.attack_qq_of(user_id) or "").strip()
+    if uin:
+        api, token = attack_napcat_endpoint(config, uin)
+        if api:
+            return api, token
+    username = citydb.username_of(user_id)
+    accounts = ((config or {}).get("登录") or {}).get("账号") or {}
+    hits = []
+    if isinstance(accounts, dict):
+        for spec in accounts.values():
+            if not isinstance(spec, dict):
+                continue
+            box = spec.get("NapCat") if isinstance(spec.get("NapCat"), dict) else {}
+            api = str(box.get("地址") or "").strip().rstrip("/")
+            token = str(box.get("Token") or "").strip()
+            if not api:
+                continue
+            if str(spec.get("用户") or "").strip() == username:
+                return api, token
+            hits.append((api, token))
+    if not uin and len(hits) == 1:
+        return hits[0]
+    return "", ""
+
+
+def _bind_unbound_with_napcat(config: dict, user_id: int, platform: str) -> str:
+    """还没绑定攻打 QQ。在这条请求上向 NapCat 要票并绑上，不另开线程，不发消息。"""
+    from . import citydb
+    from .qq_login import accept_napcat_cookies
+
+    api, token = _napcat_for_user(config, user_id)
+    if not api:
+        log.info("登录账号 %s 没有攻打号 NapCat 地址", citydb.username_of(user_id))
+        return "no_napcat"
+    got = accept_napcat_cookies(config, api, token, platform)
+    if got.get("busy"):
+        return "napcat_busy"
+    uin = str(got.get("uin") or "").strip()
+    if not got.get("ok") or not uin.isdigit():
+        log.info("登录账号 %s 用 NapCat 登录没成：%s",
+                 citydb.username_of(user_id), got.get("msg") or "")
+        return "napcat_fail"
+    if not citydb.confirm_attack_qq(user_id, uin):
+        log.error("NapCat 登录的 QQ %s 不能绑到这个账号", uin)
+        return "taken"
+    remember_login_platform(user_id, uin, platform)
+    log.info("登录账号 %s 用 NapCat 绑定攻打 QQ %s", citydb.username_of(user_id), uin)
+    return "ready"
+
+
 def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
-                      platform: str = "") -> str:
+                      platform: str = "", way: str = "") -> str:
     """网页或主进程拉起：每个攻打 QQ 各有一条线程。
-    还没绑定、并且是本人点了推送登录时，只在网页上出二维码，不碰任何攻打线程。"""
+    还没绑定、并且是本人点了扫码登录时，只在网页上出二维码，不碰任何攻打线程。
+    点了 NapCat 就在当前这条线程上要票，不发消息。"""
     from . import citydb
     user_id = int(user_id or 0)
     if not user_id:
@@ -3621,15 +3764,21 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
         log.info("登录账号 %s 点了登录，定时关闭取消", citydb.username_of(user_id))
     if not claim and citydb.login_expired(user_id):
         return "timeout"
+    way = _login_way(way)
     if claim:
         citydb.clear_login_expired(user_id)
         bound = str(citydb.attack_qq_of(user_id) or "").strip()
         _reset_login_limit(bound or f"user:{user_id}")
         remember_login_platform(user_id, bound, platform)
     if claim and not citydb.attack_qq_of(user_id):
-        log.info("登录账号 %s 还没有攻打 QQ，二维码直接显示在网页上",
-                 citydb.username_of(user_id))
-        return start_unbound_page_qr(config, user_id, platform=platform)
+        if way == "napcat":
+            status = _bind_unbound_with_napcat(config, user_id, platform)
+            if status != "ready":
+                return status
+        else:
+            log.info("登录账号 %s 还没有攻打 QQ，二维码直接显示在网页上",
+                     citydb.username_of(user_id))
+            return start_unbound_page_qr(config, user_id, platform=platform)
     name, why = attack_account_for_user(config, user_id)
     if why:
         if why == "taken":
@@ -3640,6 +3789,9 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
             log.error("登录.账号 里没有可以给 %s 用的攻打号", citydb.username_of(user_id))
         return why
     uin = citydb.attack_qq_of(user_id)
+    if claim and way == "napcat" and not _napcat_for_user(config, user_id)[0]:
+        log.info("登录账号 %s 的攻打号没有 NapCat 地址", citydb.username_of(user_id))
+        return "no_napcat"
     on_page = _page_qr_account(config, name)
     with _pool_guard:
         running = _pool.get(uin)
@@ -3649,6 +3801,7 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
                 log.info("攻打 QQ %s 已在保活里暂停，先不拉起", uin)
                 return "paused"
             if claim:
+                remember_login_way(user_id, uin, way)
                 citydb.ask_attack_login(user_id)
             if not citydb.attack_in_keepalive(user_id):
                 citydb.note_attack_logging_in(user_id)
@@ -3657,8 +3810,9 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
                 if _drop_live_sock(user_id):
                     log.info("攻打 QQ %s 游戏没挂上，掐掉旧连接准备重连", uin)
             log.info("攻打 QQ %s 的线程已在跑", uin)
-            return "busy"
+            return "started" if claim and way == "napcat" else "busy"
         if claim:
+            remember_login_way(user_id, uin, way)
             citydb.ask_attack_login(user_id)
         citydb.note_attack_logging_in(user_id)
         th = threading.Thread(
@@ -3667,6 +3821,8 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
         _pool[uin] = th
         th.start()
     log.info("已为攻打 QQ %s 拉起线程，登录账号 %s", uin, citydb.username_of(user_id))
+    if way == "napcat":
+        return "started"
     return "qr" if on_page else "started"
 
 
@@ -3989,19 +4145,47 @@ def _login_context() -> str:
     return (f"登录账号{'、'.join(bits)}，配置挂机最长{minutes}分钟，{left_text}")
 
 
-def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
-    """需要重新扫码时：生成二维码并通过 PushPlus 推送给用户，等待扫码。
+def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -> bool:
+    """需要重新登录时：点了 NapCat 就只向这台要票；点了扫码就出二维码。
+    没指定时，配了攻打号 NapCat 就先要票，要不到再扫码。
     二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。
     攻打线程设了 10 分钟上限时，到点返回 False。
     force_qr 为真时不再用旧票据续上，必须重新扫。攻打 QQ 对不上时用这个。"""
     # 先向本机 NapCat 要当前票据。没有再试长效凭据静默续期。
     from . import citydb as _citydb
-    consume_login_platform(_citydb.attack_context_user(), getattr(qq, "uin", ""), qq)
-    qq.note_login("进入重新登录（%s）。强制扫码=%s。%s。%s",
-                  qq.platform, "是" if force_qr else "否", _login_context(),
+    user_id = _citydb.attack_context_user()
+    consume_login_platform(user_id, getattr(qq, "uin", ""), qq)
+    if not way:
+        way = consume_login_way(user_id, getattr(qq, "bound_uin", "") or getattr(qq, "uin", ""))
+    way = _login_way(way)
+    qq.note_login("进入重新登录（%s）。方式=%s。强制扫码=%s。%s。%s",
+                  qq.platform, way or "自动", "是" if force_qr else "否", _login_context(),
                   qq.ticket_brief())
+    if way == "napcat":
+        if not getattr(qq, "use_napcat", False):
+            from .qq_login import attack_napcat_endpoint
+            api, token = attack_napcat_endpoint(
+                config, getattr(qq, "bound_uin", "") or getattr(qq, "uin", ""))
+            qq.napcat_api = api
+            qq.napcat_token = token
+            qq.use_napcat = bool(api)
+        if not qq.use_napcat:
+            log.info("这个攻打号没有 NapCat 地址")
+            qq.note_login("没有 NapCat 地址，不能用 NapCat 登录")
+            return False
+        if qq.adopt_napcat(config) and note_attack_qq(qq):
+            qq.note_login("NapCat 已接上，不发消息。%s", qq.ticket_brief())
+            log.info("已用这个攻打号的 NapCat 登录，不发消息")
+            return True
+        qq.note_login("NapCat 没接上，这次不改走扫码")
+        log.info("NapCat 没接上，这次不改走扫码")
+        return False
+    if way == "qr":
+        force_qr = True
     own_napcat = bool(getattr(qq, "attack_account", False) and getattr(qq, "use_napcat", False))
-    if (own_napcat or not force_qr) and qq.adopt_napcat(config):
+    if (way != "qr" and (own_napcat or not force_qr)
+            and (own_napcat or not getattr(qq, "attack_account", False))
+            and qq.adopt_napcat(config)):
         if note_attack_qq(qq):
             qq.note_login("NapCat 已接上，不再扫码。%s", qq.ticket_brief())
             if own_napcat:
@@ -4032,9 +4216,6 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
         from . import citydb
         if getattr(qq, "attack_account", False):
             citydb.note_login_qr(path)
-        if own_napcat:
-            log.info("攻打号使用自己的 NapCat 取票，不发登录消息")
-            return
         if getattr(qq, "page_qr", False):
             log.info("登录二维码留在网页上：%s", path)
             return

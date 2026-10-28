@@ -703,7 +703,8 @@ def _handler(config: dict):
                     was_off = citydb.shutdown_due(user["id"])
                     login = kick_attack_login(
                         config, user["id"], claim=True,
-                        platform=str(data.get("platform") or ""))
+                        platform=str(data.get("platform") or ""),
+                        way=str(data.get("way") or ""))
                     out = {"ok": True, "login": login}
                     if was_off:
                         out["off_at"] = citydb.shutdown_at(user["id"])

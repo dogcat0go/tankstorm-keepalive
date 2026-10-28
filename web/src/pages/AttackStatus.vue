@@ -23,17 +23,25 @@ const props = defineProps({
 });
 
 const loginPlat = ref("空间");
+const loginWay = ref("qr");
 try {
   const saved = localStorage.getItem("ts_login_plat");
   loginPlat.value = saved === "大厅" || saved === "空间"
     ? saved
     : (props.loginPlatDefault || "空间");
+  const way = localStorage.getItem("ts_login_way");
+  loginWay.value = way === "napcat" ? "napcat" : "qr";
 } catch (e) {
   loginPlat.value = props.loginPlatDefault || "空间";
 }
 watch(loginPlat, (value) => {
   try {
     localStorage.setItem("ts_login_plat", value);
+  } catch (e) {}
+});
+watch(loginWay, (value) => {
+  try {
+    localStorage.setItem("ts_login_way", value === "napcat" ? "napcat" : "qr");
   } catch (e) {}
 });
 watch(() => props.loginPlatDefault, (value) => {
@@ -51,9 +59,10 @@ watch(() => props.loginPlatDefault, (value) => {
     <div v-if="!(proc && proc.qq)" class="bind-guide">
       <p class="bind-title">先绑定攻打 QQ</p>
       <ol v-if="!qrSrc">
-        <li>先选 QQ 空间还是 QQ 游戏大厅，再点「登录」，二维码会出现在这里。</li>
-        <li>用另一台设备打开手机 QQ，扫这张图。</li>
-        <li>扫完在手机上点「确认登录」。这个 QQ 就绑到当前账号，之后只用这一个。</li>
+        <li>先选 QQ 空间还是 QQ 游戏大厅，再选扫码或 NapCat，然后点「登录」。</li>
+        <li>扫码：二维码会出现在这里，用另一台设备打开手机 QQ 扫这张图。</li>
+        <li>NapCat：这个攻打号要先在配置里写好自己的地址。点下去就向那一台要票，不发消息。</li>
+        <li>扫完或要到票之后，这个 QQ 就绑到当前账号，之后只用这一个。</li>
       </ol>
       <ol v-else>
         <li>用另一台设备的手机 QQ 扫下面这张码。</li>
@@ -66,7 +75,9 @@ watch(() => props.loginPlatDefault, (value) => {
     <p v-if="pushLoginVisible(proc)" class="login-row">
       <label class="choice"><input v-model="loginPlat" type="radio" value="空间" /> QQ空间</label>
       <label class="choice"><input v-model="loginPlat" type="radio" value="大厅" /> QQ游戏大厅</label>
-      <button type="button" class="login" @click="pushLogin(loginPlat).catch((e) => showErr(e.message, 'bar'))">登录</button>
+      <label class="choice"><input v-model="loginWay" type="radio" value="qr" /> 扫码</label>
+      <label class="choice"><input v-model="loginWay" type="radio" value="napcat" /> NapCat</label>
+      <button type="button" class="login" @click="pushLogin(loginPlat, loginWay).catch((e) => showErr(e.message, 'bar'))">登录</button>
     </p>
     <div class="proc">
       <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>

@@ -305,6 +305,47 @@ def list_attack_napcat(config: dict | None, rows: list) -> dict:
     }
 
 
+def accept_napcat_cookies(config: dict | None, api: str, token: str = "",
+                          platform: str = "") -> dict:
+    """还没绑定攻打 QQ 时，用 NapCat 交出的号登录。游戏页认了才写入 cookie。
+
+    在调用方当前线程上做，不收发消息。
+    """
+    api = str(api or "").strip().rstrip("/")
+    token = str(token or "").strip()
+    limit = napcat_limit(config)
+    if not api:
+        return {"ok": False, "msg": "没有 NapCat 地址", "uin": ""}
+    if not napcat_begin(limit, 0):
+        return {"ok": False, "busy": True, "msg": "已有取票在进行", "uin": ""}
+    tmp = ""
+    try:
+        plat = normalize_platform(platform) if str(platform or "").strip() else config_platform(config)
+        ok, got = pull_napcat_cookies(api, token, platform_spec(plat)["napcat_domain"])
+        if not ok:
+            return {"ok": False, "msg": got, "uin": ""}
+        tmp = tempfile.mkdtemp(prefix="ts-napcat-")
+        qq = QQSession(os.path.join(tmp, "cookies.json"))
+        qq.set_platform(plat)
+        qq._apply_napcat_pairs(got)
+        uin = str(qq.uin or "").strip()
+        if not uin.isdigit():
+            return {"ok": False, "msg": "NapCat 票据里没有 QQ 号", "uin": ""}
+        if not qq.is_valid():
+            return {"ok": False, "msg": "游戏页不认这张票", "uin": uin}
+        scan_uin = str(ticket_report_file(paths.user_path("cookies.json")).get("uin") or "")
+        if scan_uin and scan_uin == uin:
+            return {"ok": False, "msg": "这个号是扫描号，不能当攻打号", "uin": uin}
+        dest = paths.user_path(f"accounts/qq-{uin}.json")
+        qq.cookie_file = dest
+        qq._save_cookies()
+        return {"ok": True, "msg": "已用 NapCat 登录", "uin": uin}
+    finally:
+        napcat_end()
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def try_lock(fh) -> bool:
     """非阻塞独占这份已打开的文件。句柄要一直留着，关掉锁就没了。
 
