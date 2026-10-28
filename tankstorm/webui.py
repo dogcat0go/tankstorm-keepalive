@@ -1043,30 +1043,39 @@ def _handler(config: dict):
 
         def _api_test_post(self, data):
             from .qq_login import attack_napcat_webui, list_attack_napcat, napcat_login_qr
-            user = self._attack_napcat_user()
+            from .socket_keepalive import napcat_webui_for_user
+            user = self._user()
             if not user:
+                _json(self, 401, {"error": "请先登录"})
                 return
             data = data or {}
             action = str(data.get("action") or data.get("动作") or "cookies").strip().lower()
-            if action in ("list", "列表"):
+            if action in ("qr", "status", "二维码", "状态"):
+                web, web_token = napcat_webui_for_user(config, user["id"])
+                if user.get("admin"):
+                    uin = str(data.get("qq") or "").strip()
+                    cfg_web, cfg_token = attack_napcat_webui(config, uin)
+                    if cfg_web:
+                        web, web_token = cfg_web, cfg_token
+                    typed_web = str(data.get("界面") or data.get("web") or "").strip()
+                    typed_token = data.get("界面Token")
+                    if typed_token is None:
+                        typed_token = data.get("web_token")
+                    if typed_web:
+                        web = typed_web.rstrip("/")
+                    if str(typed_token or "").strip():
+                        web_token = str(typed_token).strip()
                 try:
-                    _json(self, 200, list_attack_napcat(config, citydb.list_attack_fighters()))
+                    _json(self, 200, napcat_login_qr(web, web_token))
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                 return
-            if action in ("qr", "status", "二维码", "状态"):
-                uin = str(data.get("qq") or "").strip()
-                web, web_token = attack_napcat_webui(config, uin)
-                typed_web = str(data.get("界面") or data.get("web") or "").strip()
-                typed_token = data.get("界面Token")
-                if typed_token is None:
-                    typed_token = data.get("web_token")
-                if typed_web:
-                    web = typed_web.rstrip("/")
-                if str(typed_token or "").strip():
-                    web_token = str(typed_token).strip()
+            admin = self._attack_napcat_user()
+            if not admin:
+                return
+            if action in ("list", "列表"):
                 try:
-                    _json(self, 200, napcat_login_qr(web, web_token))
+                    _json(self, 200, list_attack_napcat(config, citydb.list_attack_fighters()))
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                 return

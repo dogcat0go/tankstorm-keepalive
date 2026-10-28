@@ -3692,14 +3692,16 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     log.info("重新点登录后没能再拉起", exc_info=True)
 
 
-def _napcat_for_user(config: dict, user_id: int) -> tuple:
-    """这个登录账号要用的攻打号 NapCat。已绑定的按 QQ 号找；还没绑定就看配置里写了「用户」的那一条。"""
+def _napcat_pair_for_user(config: dict, user_id: int, addr_key: str, token_key: str) -> tuple:
+    """这个登录账号的攻打号 NapCat。已绑定的按 QQ 号找；还没绑定就看配置里写了「用户」的那一条。"""
     from . import citydb
-    from .qq_login import attack_napcat_endpoint
+    from .qq_login import _account_napcat_box
 
     uin = str(citydb.attack_qq_of(user_id) or "").strip()
     if uin:
-        api, token = attack_napcat_endpoint(config, uin)
+        box = _account_napcat_box(config, uin)
+        api = str(box.get(addr_key) or "").strip().rstrip("/")
+        token = str(box.get(token_key) or "").strip()
         if api:
             return api, token
     username = citydb.username_of(user_id)
@@ -3710,8 +3712,8 @@ def _napcat_for_user(config: dict, user_id: int) -> tuple:
             if not isinstance(spec, dict):
                 continue
             box = spec.get("NapCat") if isinstance(spec.get("NapCat"), dict) else {}
-            api = str(box.get("地址") or "").strip().rstrip("/")
-            token = str(box.get("Token") or "").strip()
+            api = str(box.get(addr_key) or "").strip().rstrip("/")
+            token = str(box.get(token_key) or "").strip()
             if not api:
                 continue
             if str(spec.get("用户") or "").strip() == username:
@@ -3720,6 +3722,16 @@ def _napcat_for_user(config: dict, user_id: int) -> tuple:
     if not uin and len(hits) == 1:
         return hits[0]
     return "", ""
+
+
+def _napcat_for_user(config: dict, user_id: int) -> tuple:
+    """OneBot 地址和 Token，用来要网页票据。"""
+    return _napcat_pair_for_user(config, user_id, "地址", "Token")
+
+
+def napcat_webui_for_user(config: dict, user_id: int) -> tuple:
+    """NapCat 登录页。界面 Token 是 WebUI 口令。"""
+    return _napcat_pair_for_user(config, user_id, "界面", "界面Token")
 
 
 def _bind_unbound_with_napcat(config: dict, user_id: int, platform: str) -> str:
