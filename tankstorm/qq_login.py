@@ -132,11 +132,11 @@ def napcat_host(api: str) -> str:
     return text.split("/", 1)[0].split("@")[-1]
 
 
-def attack_napcat_endpoint(config: dict | None, uin: str) -> tuple:
-    """攻打号自己的 NapCat。没有就返回空，不回落到扫描号或通知机器人。"""
+def _account_napcat_box(config: dict | None, uin: str) -> dict:
+    """这个攻打号配置里的 NapCat。没有就空字典，不回落到扫描号。"""
     accounts = ((config or {}).get("登录") or {}).get("账号") or {}
     if not isinstance(accounts, dict):
-        return "", ""
+        return {}
     uin = str(uin or "").strip()
     found = None
     if uin:
@@ -152,11 +152,23 @@ def attack_napcat_endpoint(config: dict | None, uin: str) -> tuple:
                 found = item
                 break
     box = (found or {}).get("NapCat") if isinstance(found, dict) else {}
-    if not isinstance(box, dict):
-        box = {}
+    return box if isinstance(box, dict) else {}
+
+
+def attack_napcat_endpoint(config: dict | None, uin: str) -> tuple:
+    """攻打号自己的 OneBot 地址。没有就返回空，不回落到扫描号或通知机器人。"""
+    box = _account_napcat_box(config, uin)
     api = str(box.get("地址") or "").strip().rstrip("/")
     token = str(box.get("Token") or "").strip()
     return api, token
+
+
+def attack_napcat_webui(config: dict | None, uin: str) -> tuple:
+    """NapCat 自己的登录页。界面 Token 是 WebUI 口令，和 OneBot 的 Token 不是同一个。"""
+    box = _account_napcat_box(config, uin)
+    web = str(box.get("界面") or "").strip().rstrip("/")
+    token = str(box.get("界面Token") or "").strip()
+    return web, token
 
 
 def pull_napcat_cookies(api: str, token: str, domain: str):
@@ -191,6 +203,137 @@ def pull_napcat_cookies(api: str, token: str, domain: str):
     if not pairs.get("skey") or not pairs.get("p_skey"):
         return False, "NapCat 票据里没有 skey 或 p_skey"
     return True, pairs
+
+
+_webui_cred = {}
+_webui_guard = threading.Lock()
+
+
+def _webui_password_hash(token: str) -> str:
+    return hashlib.sha256((str(token) + ".napcat").encode()).hexdigest()
+
+
+def _webui_credential(base: str, token: str, force: bool = False):
+    """换 NapCat 界面凭证。凭证留在本进程里，不返回给网页，也不另开线程。"""
+    now = time.monotonic()
+    with _webui_guard:
+        hit = _webui_cred.get(base)
+        if not force and hit and hit[0] == token and hit[2] > now:
+            return True, hit[1]
+    try:
+        resp = requests.post(
+            base + "/api/auth/login",
+            json={"hash": _webui_password_hash(token)},
+            timeout=8,
+        )
+        data = resp.json()
+    except Exception as exc:
+        return False, f"连不上 NapCat 界面：{exc}"
+    if not isinstance(data, dict) or data.get("code") not in (0, "0"):
+        why = str((data or {}).get("message") or "") if isinstance(data, dict) else ""
+        if why == "token is invalid":
+            return False, "界面 Token 不对"
+        return False, f"NapCat 界面没有放行：{why or '登录失败'}"
+    cred = str((data.get("data") or {}).get("Credential") or "")
+    if not cred:
+        return False, "NapCat 界面没有返回凭证"
+    with _webui_guard:
+        _webui_cred[base] = (token, cred, now + 50 * 60)
+    return True, cred
+
+
+def _webui_post(base: str, path: str, token: str, retry: bool = True):
+    ok, cred = _webui_credential(base, token)
+    if not ok:
+        return False, cred
+    try:
+        resp = requests.post(
+            base + path,
+            json={},
+            headers={"Authorization": "Bearer " + cred},
+            timeout=8,
+        )
+        data = resp.json()
+    except Exception as exc:
+        return False, f"连不上 NapCat 界面：{exc}"
+    if not isinstance(data, dict):
+        return False, "NapCat 界面返回的不是登录信息"
+    message = str(data.get("message") or "")
+    if (data.get("code") not in (0, "0") and retry
+            and message.lower() in ("unauthorized", "authorization failed")):
+        with _webui_guard:
+            _webui_cred.pop(base, None)
+        return _webui_post(base, path, token, retry=False)
+    return True, data
+
+
+def _webui_qrcode(data: dict) -> str:
+    if not isinstance(data, dict) or data.get("code") not in (0, "0"):
+        return ""
+    body = data.get("data") or {}
+    if not isinstance(body, dict):
+        return ""
+    return str(body.get("qrcode") or body.get("qrcodeurl") or "")
+
+
+def _webui_already_in(data: dict) -> bool:
+    return "logined" in str((data or {}).get("message") or "").lower()
+
+
+def napcat_login_qr(base: str, token: str) -> dict:
+    """向 NapCat 界面要它自己的登录二维码。已经登录就不再要码。不收发消息。"""
+    base = str(base or "").strip().rstrip("/")
+    token = str(token or "").strip()
+    out = {
+        "ok": False, "logged_in": False, "offline": False, "qrcode": "",
+        "host": napcat_host(base), "msg": "",
+    }
+    if not base:
+        out["msg"] = "没有 NapCat 界面地址。写在登录.账号的 NapCat.界面"
+        return out
+    if not token:
+        out["msg"] = "没有 NapCat 界面 Token"
+        return out
+    ok, data = _webui_post(base, "/api/QQLogin/CheckLoginStatus", token)
+    if not ok:
+        out["msg"] = data
+        return out
+    if data.get("code") not in (0, "0"):
+        out["msg"] = str(data.get("message") or "看不了 NapCat 登录状态")
+        return out
+    info = data.get("data") if isinstance(data.get("data"), dict) else {}
+    if info.get("isLogin"):
+        out["ok"] = True
+        out["logged_in"] = True
+        out["msg"] = "NapCat 已经登录，不用再扫码"
+        return out
+    out["offline"] = bool(info.get("isOffline"))
+    qr = str(info.get("qrcodeurl") or "")
+    err = str(info.get("loginError") or "")
+    if not qr:
+        ok, got = _webui_post(base, "/api/QQLogin/GetQQLoginQrcode", token)
+        if ok and _webui_already_in(got):
+            out["ok"] = True
+            out["logged_in"] = True
+            out["msg"] = "NapCat 已经登录，不用再扫码"
+            return out
+        qr = _webui_qrcode(got) if ok else ""
+    if not qr:
+        _webui_post(base, "/api/QQLogin/RefreshQRcode", token)
+        ok, got = _webui_post(base, "/api/QQLogin/GetQQLoginQrcode", token)
+        if ok and _webui_already_in(got):
+            out["ok"] = True
+            out["logged_in"] = True
+            out["msg"] = "NapCat 已经登录，不用再扫码"
+            return out
+        qr = _webui_qrcode(got) if ok else ""
+    if not qr:
+        out["msg"] = err or "NapCat 还没有登录二维码"
+        return out
+    out["ok"] = True
+    out["qrcode"] = qr
+    out["msg"] = err or "用这个攻打号的手机 QQ 扫 NapCat 的登录码"
+    return out
 
 
 def probe_attack_napcat(config: dict | None, uin: str, api: str = "",
@@ -281,6 +424,7 @@ def list_attack_napcat(config: dict | None, rows: list) -> dict:
             continue
         seen.add(uin)
         api, token = attack_napcat_endpoint(config, uin)
+        web, web_token = attack_napcat_webui(config, uin)
         path = paths.user_path(f"accounts/qq-{uin}.json") if uin.isdigit() else ""
         report = ticket_report_file(path) if path else {}
         items.append({
@@ -291,6 +435,9 @@ def list_attack_napcat(config: dict | None, rows: list) -> dict:
             "host": napcat_host(api),
             "configured": bool(api),
             "token_set": bool(token),
+            "web_host": napcat_host(web),
+            "web_set": bool(web),
+            "web_token_set": bool(web_token),
             "uin": report.get("uin") or "",
             "long_term": bool(report.get("long_term")),
             "skey_left": report.get("skey_left"),

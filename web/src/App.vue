@@ -1094,12 +1094,9 @@ function holdCell(it) {
   return finished && finished.id === it.id ? text : "—";
 }
 
-async function pushLogin(plat, way) {
+async function pushLogin(plat) {
   showErr("", "bar");
-  const data = await api("/api/attack-login", {
-    platform: plat || "空间",
-    way: way === "napcat" ? "napcat" : "qr",
-  });
+  const data = await api("/api/attack-login", { platform: plat || "空间" });
   if (data.off_at != null) {
     offAt.value = data.off_at ? String(data.off_at).replace(" ", "T") : "";
     if (me.value) me.value.off_at = data.off_at || "";
