@@ -2343,9 +2343,16 @@ def _blast_queue(building):
         raw = alt if isinstance(alt, dict) else None
     if raw is None:
         return 0, 0, 0
-    left = _one(raw.get("field4"))
-    making = _one(raw.get("field3"))
-    army = _one(raw.get("field1"))
+    def pick(*keys):
+        for key in keys:
+            n = _one(raw.get(key))
+            if n is not None:
+                return n
+        return None
+
+    left = pick("field4", "leftTime")
+    making = pick("field3", "inProduceArmy")
+    army = pick("field1", "armyType")
     if left is None and making is None and army is None:
         return 0, 0, 0
     if left is None or left < 0:
@@ -2452,6 +2459,38 @@ def _blast_recent(rec, bid, army_type=_BLAST_ARMY):
     return "ours", army, making, left, mark
 
 
+def _blast_clock_put(rec, bid, army_type, left, mark):
+    """记下这座建筑的服务器剩余时间和读到的时刻。排队唤醒时登录包不会更新。"""
+    if rec is None or isinstance(mark, bool) or not isinstance(mark, (int, float)):
+        return
+    try:
+        left = float(left)
+    except (TypeError, ValueError):
+        return
+    if left <= 0:
+        return
+    clocks = getattr(rec, "_blast_clock", None)
+    if not isinstance(clocks, dict):
+        clocks = {}
+        rec._blast_clock = clocks
+    clocks[(bid, army_type)] = (left, float(mark))
+
+
+def _blast_clock_get(rec, bid, army_type):
+    """还没走完的那次读数。(原始剩余秒, 读到的时刻)。走完了就当没有。"""
+    clocks = getattr(rec, "_blast_clock", None) if rec is not None else None
+    raw = clocks.get((bid, army_type)) if isinstance(clocks, dict) else None
+    if not isinstance(raw, tuple) or len(raw) != 2:
+        return None
+    left, mark = raw
+    passed = time.monotonic() - float(mark)
+    if passed < 0:
+        passed = 0.0
+    if float(left) - passed <= 0:
+        return None
+    return left, mark
+
+
 def _spawned_id(got):
     """快速制造回包里新兵的编号。没有这个编号就不算造成。"""
     if not isinstance(got, dict):
@@ -2547,6 +2586,9 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
     # 上一只已经造成时，旧的建筑包还停在「正在造」。先按空闲开工，
     # 否则同一条过期队列会被反复算成造完，数量却不变。
     if assume_idle:
+        clocks = getattr(rec, "_blast_clock", None)
+        if isinstance(clocks, dict):
+            clocks.pop((bid, army_type), None)
         army, making, left = 0, 0, 0
         snap = None
     elif recent and recent[0] == "other":
@@ -2555,17 +2597,30 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
         army, making, left = recent[1], recent[2], recent[3]
         snap = recent[4]
         snap_name = "上一包"
+        _blast_clock_put(rec, bid, army_type, left, snap)
         say(f"{place} {bid} 已经在造{unit}，剩余 {left} 秒，直接快速制造")
+    elif (clock := _blast_clock_get(rec, bid, army_type)):
+        # 上一包可能被别的建筑改写。用开工时记下的剩余时间，按走过的秒数往下减。
+        left, snap = clock
+        army, making = army_type, army_type
+        snap_name = "上次读到的队列"
+        say(f"{place} {bid} 按上次读到的队列接着算，当时剩余 {int(left)} 秒")
     elif left > 0 and making not in (0, army_type) and army not in (0, army_type):
         return False, f"{place}正在造别的兵（{making or army}），不打断"
 
+    def elapsed(mark):
+        if isinstance(mark, bool) or not isinstance(mark, (int, float)):
+            return None
+        passed = time.monotonic() - float(mark)
+        return 0.0 if passed < 0 else passed
+
     seen_left, seen_at = left, time.monotonic()
     if left > 0 and snap is not None:
-        passed = _passed(snap)
-        aged = left if passed is None else max(0, left - passed)
+        passed = elapsed(snap)
+        aged = float(left) if passed is None else max(0.0, float(left) - passed)
         say(
-            f"{place} {bid} {snap_name}剩余 {left} 秒，这份数据已过 "
-            f"{'未知' if passed is None else passed} 秒，按 {aged} 秒算")
+            f"{place} {bid} {snap_name}剩余 {int(left)} 秒，这份数据已过 "
+            f"{'未知' if passed is None else int(passed)} 秒，按 {int(aged)} 秒算")
         if passed is not None and aged <= 0:
             # 快照里的剩余时间已经走完。不能把这一只算造成：
             # 服务器未必造出来了，同一条旧队列会被数满整个数量。
@@ -2579,10 +2634,10 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
     wallet = None
 
     def current_left():
-        passed = _passed(seen_at)
+        passed = elapsed(seen_at)
         if passed is None:
             return int(seen_left)
-        return max(0, int(seen_left) - passed)
+        return max(0, math.floor(float(seen_left) - passed))
 
     def send(kind, fields):
         mark = rec.seq_mark()
@@ -2631,7 +2686,9 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
         elif not busy:
             return False, f"开工后没有进入{unit}队列（剩余 {queue[2]} 秒）"
         _army, making, left = queue
-        seen_left, seen_at = left, time.monotonic()
+        seen_at = time.monotonic()
+        seen_left = left
+        _blast_clock_put(rec, bid, army_type, left, seen_at)
         say(f"{place} {bid} 开工，服务器剩余 {left} 秒")
 
     if wallet is None:
@@ -2677,23 +2734,62 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
                         10: ("int32", 0), 11: ("int32", send_left)})
         return got
 
-    got = speedup(left)
-    if isinstance(got, dict) and got.get("error") == 27:
-        building = got.get("building")
-        queue = _blast_queue(building) if isinstance(building, dict) else None
-        fresh = queue[2] if queue else None
+    def server_left(data):
+        if not isinstance(data, dict):
+            return None
+        building = data.get("building")
+        if not isinstance(building, dict):
+            return None
+        b_id = _one(building.get("field4"))
+        if b_id and b_id != bid:
+            return None
+        queue = _blast_queue(building)
+        if not queue or queue[2] <= 0:
+            return None
+        return queue[2]
+
+    # 排队唤醒会晚几秒，本地按单调钟减出来的剩余时间常常比服务器少一截，
+    # 或者包在半路多躺了一会儿，本地又偏大。error=27 就是秒数对不上。
+    # 回包里有另一份剩余时间就改用那份；没有就往下收 1 秒再发，最多再试 4 次。
+    sent = 0
+    while sent < 5:
+        got = speedup(left)
+        sent += 1
+        if not isinstance(got, dict) or got.get("error") != 27:
+            break
+        after = _wallet_credit(got)
+        if wallet is not None and after is not None and after < wallet:
+            break
+        fresh = server_left(got)
+        if fresh is None and rec is not None:
+            upd = (rec.latest.get("RseBuildingUpdate") or (None, None))[1]
+            upd_at = (getattr(rec, "latest_at", {}) or {}).get("RseBuildingUpdate")
+            age = elapsed(upd_at)
+            if age is not None and age <= 2:
+                fresh = server_left(upd)
+        if isinstance(fresh, int) and fresh > max(left + 30, cap):
+            fresh = None
         if isinstance(fresh, int) and fresh > 0 and fresh != left:
             fresh_cost = _blast_medal(fresh, qq_hall, yellow, blue)
-            if fresh_cost == 0:
-                say(f"{place} {bid} 剩余时间对不上，改用服务器的 {fresh} 秒再加速")
-                left = fresh
-                got = speedup(fresh)
-            else:
+            if fresh_cost != 0:
                 delay = max(1, fresh - cap)
                 say(f"{place} {bid} 服务器剩余 {fresh} 秒，要 {fresh_cost} 勋章，"
                     f"{delay} 秒后再加速")
+                now = time.monotonic()
+                _blast_clock_put(rec, bid, army_type, fresh, now)
                 raise Later(
                     delay, f"剩余 {fresh} 秒，{delay} 秒后降到 {cap} 秒再加速")
+            say(f"{place} {bid} 剩余时间对不上，改用服务器的 {fresh} 秒再加速")
+            now = time.monotonic()
+            seen_left, seen_at = fresh, now
+            _blast_clock_put(rec, bid, army_type, fresh, now)
+            left = fresh
+            continue
+        nxt = left - 1
+        if nxt < 1 or sent >= 5 or _blast_medal(nxt, qq_hall, yellow, blue) != 0:
+            break
+        say(f"{place} {bid} 发出的 {left} 秒服务器不认，改用 {nxt} 秒再加速")
+        left = nxt
     if not isinstance(got, dict):
         say(f"快速制造没有回包 {place} {bid} time={left}")
         return False, "快速制造没有回包"
@@ -2705,6 +2801,10 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
     spawned = _spawned_id(got) if isinstance(err, int) and not isinstance(err, bool) and err == 0 else 0
     if not isinstance(err, int) or isinstance(err, bool) or err != 0:
         say(f"快速制造被拒 error={err} {place} {bid} time={left} 勋章 {wallet}->{after}")
+        if err == 27:
+            return False, (
+                f"快速制造服务器返回 error=27，{place} {bid}，"
+                f"发出的剩余时间 {left} 秒。排队唤醒后的秒数和服务器对不上")
         return False, f"快速制造服务器返回 error={err}，{place} {bid}，发出的剩余时间 {left} 秒"
     if not spawned:
         say(f"快速制造回包没有新兵 {place} {bid} time={left}")
