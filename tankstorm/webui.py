@@ -895,6 +895,28 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "members": _member_views()})
+                elif path == "/api/admin/members/create":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能创建账号"})
+                        return
+                    why = citydb.admin_create_member(
+                        data.get("username"), data.get("password"),
+                        data.get("tier"), data.get("expires_at"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "members": _member_views()})
+                elif path == "/api/admin/members/delete":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能删除账号"})
+                        return
+                    try:
+                        user_id = int(str(data.get("user_id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("账号编号不对") from None
+                    why = citydb.delete_member(user_id, user.get("id") or 0)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "members": _member_views()})
                 elif path == "/api/atk-fail/reset":
                     uid = str(data.get("uid") or "").strip()
                     if uid:
