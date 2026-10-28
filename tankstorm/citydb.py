@@ -4939,7 +4939,7 @@ def attack_status(user_id: int) -> dict:
                 return mismatch
             if login_expired(user_id, conn=conn):
                 return pack({"online": False, "phase": "offline",
-                             "detail": "登录超过 10 分钟，已停止",
+                             "detail": login_stop_text(user_id, conn=conn),
                              "seen_at": beijing_ts(seen), "qr": False, "here": "",
                              "paused": False, "hold_left": None})
             return pack({"online": False, "phase": "offline", "detail": "没在跑",
@@ -5150,13 +5150,26 @@ def ask_attack_login(user_id: int = 0) -> None:
     _upsert_signal(_mark_name("login", user_id), "1")
 
 
-def mark_login_expired(user_id: int = 0) -> None:
-    """登录超过 10 分钟还没挂上。自动拉起不再开线程，等人再点登录。"""
-    _upsert_signal(_mark_name("logingive", user_id), "1")
+def mark_login_expired(user_id: int = 0, why: str = "") -> None:
+    """登录没挂上。自动拉起不再开线程，等人再点登录。
+
+    why 为 storm 时，是被超级强攻打断后 30 分钟还没登上。
+    """
+    _upsert_signal(_mark_name("logingive", user_id), "storm" if why == "storm" else "1")
 
 
 def login_expired(user_id: int = 0, conn=None) -> bool:
-    return _signal_value(_mark_name("logingive", user_id, conn=conn), conn=conn) == "1"
+    return bool(_signal_value(_mark_name("logingive", user_id, conn=conn), conn=conn))
+
+
+def login_stop_text(user_id: int = 0, conn=None) -> str:
+    """页面上这次停止登录的原因。没停返回空字符串。"""
+    val = _signal_value(_mark_name("logingive", user_id, conn=conn), conn=conn)
+    if val == "storm":
+        return "被超级强攻打断后 30 分钟还没登上，已停止"
+    if val:
+        return "登录超过 10 分钟，已停止"
+    return ""
 
 
 def clear_login_expired(user_id: int = 0) -> None:

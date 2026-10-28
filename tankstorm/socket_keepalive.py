@@ -46,6 +46,8 @@ LOGIN_TOUCH_SEC = 15 * 60
 LOGIN_WAIT_SEC = 10 * 60
 # 被超级强攻踢下线后，隔这么久再登录一次。登录上再把被打断的任务拉起来。
 STORM_RETRY_SEC = 30
+# 从被打断、游戏还没再登上起算。超过这段时间还没登上，就停止重复登录。
+STORM_RETRY_LIMIT_SEC = 30 * 60
 _storm_local = threading.local()
 _login_limits = {}
 _login_gen = {}
@@ -188,9 +190,54 @@ def _game_online() -> bool:
     return bool(getattr(_storm_local, "online", False))
 
 
-def _keep_storm_retry(dropped, retrying, online) -> bool:
-    """这一轮是被超级打断的，或者上一轮还没登录上。隔 30 秒再登一次。"""
-    return bool(dropped or (retrying and not online))
+def _storm_retry_decision(dropped, retrying, online, started, now):
+    """返回 (继续重登, 起始时刻, 已超时)。
+
+    从被超级打断、游戏还没再登上的那一刻起算。登上且这次没再被打断时，起始时刻归零。
+    刚登上又被打下去，重新计 30 分钟。
+    """
+    dropped = bool(dropped)
+    online = bool(online)
+    started = float(started or 0)
+    now = float(now)
+    if online and not dropped:
+        return False, 0.0, False
+    if not (dropped or (retrying and not online)):
+        return False, 0.0, False
+    if (dropped and online) or started <= 0:
+        started = now
+    if now - started >= STORM_RETRY_LIMIT_SEC:
+        return False, started, True
+    return True, started, False
+
+
+def _storm_retry_expired(started, now=None) -> bool:
+    """已经在重登，并且从起始时刻起过了 30 分钟。"""
+    started = float(started or 0)
+    if started <= 0:
+        return False
+    if now is None:
+        now = time.monotonic()
+    return float(now) - started >= STORM_RETRY_LIMIT_SEC
+
+
+def _stop_storm_relogin(uin: str = "") -> None:
+    """30 分钟还没登上。自动拉起不再开线程，等人再点登录。"""
+    from . import citydb
+
+    ids = [int(i) for i in citydb.attack_context_users() if int(i or 0)]
+    if not ids:
+        uid = int(citydb.attack_context_user() or 0)
+        if uid:
+            ids = [uid]
+    for uid in ids:
+        citydb.mark_login_expired(uid, "storm")
+    minutes = STORM_RETRY_LIMIT_SEC // 60
+    if uin:
+        log.info("被超级强攻打断后 %d 分钟还没登上，停止重复登录（攻打 QQ %s）",
+                 minutes, uin)
+    else:
+        log.info("被超级强攻打断后 %d 分钟还没登上，停止重复登录", minutes)
 
 
 def _give_up_login(uin: str = "") -> bool:
@@ -2927,6 +2974,7 @@ def run_remote_orders(qq, config: dict) -> int:
     user_id = _bind_named_account(config, name)
     told = False
     storm_retry = False
+    storm_started = 0.0
     while not user_id:
         if not told:
             log.error("攻打号「%s」还没绑定登录账号，不领订单。扫码后会记下 QQ，或执行：python3 web.py --bind-attack 用户名 QQ号",
@@ -3030,9 +3078,17 @@ def run_remote_orders(qq, config: dict) -> int:
                 citydb.set_attack_status("idle")
                 time.sleep(5)
                 continue
+            if storm_retry and _storm_retry_expired(storm_started):
+                _stop_storm_relogin(str(getattr(qq, "uin", "") or ""))
+                return 0
             _connect_attack_orders(qq, config)
             dropped = _take_storm_drop()
-            if _keep_storm_retry(dropped, storm_retry, _game_online()):
+            keep, storm_started, timed_out = _storm_retry_decision(
+                dropped, storm_retry, _game_online(), storm_started, time.monotonic())
+            if timed_out:
+                _stop_storm_relogin(str(getattr(qq, "uin", "") or ""))
+                return 0
+            if keep:
                 storm_retry = True
                 citydb.set_attack_status("login")
                 log.info("被超级强攻打断，%d 秒后重新登录并继续任务",
@@ -3424,6 +3480,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             citydb.attack_qq_blocked(uid) for uid in citydb.attack_context_users())
         just_scanned = False
         storm_retry = False
+        storm_started = 0.0
         if scope_blocked or not valid:
             citydb.set_attack_status("login")
             _arm_login_limit()
@@ -3487,11 +3544,14 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 if not (asked or resumed or holding or citydb.daily_job_open()
                         or citydb.attack_here_pending()):
                     break
+                if storm_retry and _storm_retry_expired(storm_started):
+                    _stop_storm_relogin(uin)
+                    break
                 if just_scanned:
                     just_scanned = False
                 elif storm_retry or citydb.attack_in_keepalive(_owner()):
                     # 已经挂上游戏的，按原来的挂机时间走，不套这 10 分钟。
-                    # 被超级打断后的重登也不套，服务器窗口里会连续失败一阵。
+                    # 被超级打断后的重登也不套这 10 分钟，30 分钟还没登上再停。
                     _clear_login_limit()
                 else:
                     _arm_login_limit()
@@ -3499,7 +3559,12 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                         break
                 _connect_attack_orders(qq, config)
                 dropped = _take_storm_drop()
-                if _keep_storm_retry(dropped, storm_retry, _game_online()):
+                keep, storm_started, timed_out = _storm_retry_decision(
+                    dropped, storm_retry, _game_online(), storm_started, time.monotonic())
+                if timed_out:
+                    _stop_storm_relogin(uin)
+                    break
+                if keep:
                     storm_retry = True
                     citydb.set_attack_status("login")
                     log.info("被超级强攻打断，%d 秒后重新登录并继续任务",
@@ -4062,6 +4127,7 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
     started = time.time()
     backoff = min_backoff
     storm_retry = False
+    storm_started = 0.0
 
     # 录制服务器消息；发现异常事件（如超级强攻的验证码通知）立刻推送到手机
     def on_alert(op, seq, body, text, reason):
@@ -4087,6 +4153,9 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
             if run_hours and (time.time() - started) >= run_hours * 3600:
                 log.info("达到设定运行时长，退出")
                 break
+            if storm_retry and _storm_retry_expired(storm_started):
+                _stop_storm_relogin(str(getattr(qq, "uin", "") or ""))
+                break
             if not qq.is_valid():
                 relogin_with_push(qq, config)
 
@@ -4094,7 +4163,12 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
                                   with_daily=with_daily)
             log.warning("本次连接结束：%s", reason)
             dropped = _take_storm_drop()
-            if _keep_storm_retry(dropped, storm_retry, _game_online()):
+            keep, storm_started, timed_out = _storm_retry_decision(
+                dropped, storm_retry, _game_online(), storm_started, time.monotonic())
+            if timed_out:
+                _stop_storm_relogin(str(getattr(qq, "uin", "") or ""))
+                break
+            if keep:
                 storm_retry = True
                 wait = STORM_RETRY_SEC
                 log.info("被超级强攻断开，%d 秒后重新登录", wait)
