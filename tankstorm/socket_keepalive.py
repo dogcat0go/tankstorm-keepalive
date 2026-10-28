@@ -4000,9 +4000,15 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
     qq.note_login("进入重新登录（%s）。强制扫码=%s。%s。%s",
                   qq.platform, "是" if force_qr else "否", _login_context(),
                   qq.ticket_brief())
-    if not force_qr and qq.adopt_napcat(config):
-        qq.note_login("NapCat 已接上，不再扫码。%s", qq.ticket_brief())
-        return True
+    own_napcat = bool(getattr(qq, "attack_account", False) and getattr(qq, "use_napcat", False))
+    if (own_napcat or not force_qr) and qq.adopt_napcat(config):
+        if note_attack_qq(qq):
+            qq.note_login("NapCat 已接上，不再扫码。%s", qq.ticket_brief())
+            if own_napcat:
+                log.info("已用这个攻打号的 NapCat 续上，不发消息")
+            return True
+        log.error("NapCat 续上的 QQ 不是这个账号绑定的，改走扫码")
+        qq.note_login("NapCat 续上的 QQ 不是绑定的号，改为扫码")
     if not force_qr and qq.silent_renew():
         qq.note_login("静默续期已接上。%s", qq.ticket_brief())
         if note_attack_qq(qq):
@@ -4026,6 +4032,9 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False) -> bool:
         from . import citydb
         if getattr(qq, "attack_account", False):
             citydb.note_login_qr(path)
+        if own_napcat:
+            log.info("攻打号使用自己的 NapCat 取票，不发登录消息")
+            return
         if getattr(qq, "page_qr", False):
             log.info("登录二维码留在网页上：%s", path)
             return

@@ -458,6 +458,9 @@ def _handler(config: dict):
             if path == "/api/pwd-lab" or path.startswith("/api/pwd-lab/"):
                 self._pwd_lab_get(path)
                 return
+            if path == "/api/attack-napcat":
+                self._attack_napcat_get()
+                return
             self._file(path)
 
         def do_POST(self):
@@ -504,6 +507,9 @@ def _handler(config: dict):
                 return
             if path.startswith("/api/pwd-lab"):
                 self._pwd_lab_post(path, data)
+                return
+            if path == "/api/attack-napcat":
+                self._attack_napcat_post(data)
                 return
             try:
                 if path == "/api/subs":
@@ -986,6 +992,48 @@ def _handler(config: dict):
                 return
             _json(self, 200, {"ok": True}, cookie=_set_cookie(self, token))
 
+        def _attack_napcat_user(self):
+            user = self._user()
+            if not user:
+                _json(self, 401, {"error": "请先登录"})
+                return None
+            if not user.get("admin"):
+                _json(self, 403, {"error": "只有管理员能测攻打号 NapCat"})
+                return None
+            return user
+
+        def _attack_napcat_get(self):
+            from .qq_login import list_attack_napcat
+            user = self._attack_napcat_user()
+            if not user:
+                return
+            try:
+                _json(self, 200, list_attack_napcat(config, citydb.list_attack_fighters()))
+            except Exception as exc:
+                _json(self, 500, {"error": str(exc)})
+
+        def _attack_napcat_post(self, data):
+            from .qq_login import probe_attack_napcat
+            from .socket_keepalive import attack_worker_alive
+            user = self._attack_napcat_user()
+            if not user:
+                return
+            data = data or {}
+            uin = str(data.get("qq") or "").strip()
+            try:
+                result = probe_attack_napcat(
+                    config, uin,
+                    api=str(data.get("地址") or data.get("api") or ""),
+                    token=str(data.get("Token") if data.get("Token") is not None else data.get("token") or ""),
+                    platform=str(data.get("平台") or data.get("platform") or ""),
+                    apply=bool(data.get("apply") or data.get("写入")),
+                    worker=attack_worker_alive(uin),
+                )
+            except Exception as exc:
+                _json(self, 500, {"error": str(exc)})
+                return
+            _json(self, 200, result)
+
         def _pwd_lab_user(self):
             user = self._user()
             if not user:
@@ -1040,13 +1088,15 @@ def _handler(config: dict):
                 path = "/admin.html"
             elif path in ("/pwd-lab", "/pwd-lab/", "/qr-lab", "/qr-lab/"):
                 path = "/pwd-lab.html"
+            elif path in ("/napcat", "/napcat/"):
+                path = "/napcat.html"
             rel = os.path.normpath(path.lstrip("/"))
             if rel.startswith(".."):
                 self.send_error(404)
                 return
             full = os.path.join(_DIST, rel)
             if not os.path.isfile(full):
-                if path.startswith("/admin") or path.startswith("/pwd-lab") or path.startswith("/qr-lab"):
+                if path.startswith("/admin") or path.startswith("/pwd-lab") or path.startswith("/qr-lab") or path.startswith("/napcat"):
                     self.send_error(404)
                     return
                 full = os.path.join(_DIST, "index.html")
@@ -1084,6 +1134,7 @@ def _announce(host, port, config):
         log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级|高级pro。中级及以上可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置要高级或高级pro。活动助手和基地战只要高级pro")
         log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin，可看成员配置、攻打 QQ 和扫描安排")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
+    log.info("攻打号 NapCat 取票测试：/napcat（只要管理员。只 POST get_cookies，不收发消息）")
     log.info("软件授时：登录后 POST /api/clock，正文 mono_ms 为单调计时毫秒，返回会员剩余时间")
     if _dev_login(config):
         log.warning("测试免注册已打开：POST /api/dev-login 会直接以 test 登录。正式对外前关掉「订阅.测试免注册」")

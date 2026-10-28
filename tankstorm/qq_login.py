@@ -70,6 +70,7 @@ import secrets
 import shutil
 import struct
 import sys
+import tempfile
 import threading
 import time
 import zlib
@@ -83,6 +84,225 @@ from .log import console_lock, get_logger
 from .qzone import fetch_hall_launch, hall_logged_in
 
 log = get_logger()
+
+# 取票和测试接口共用这一路计数。默认同时只允许 1 次，避免小机器上叠请求。
+_napcat_guard = threading.Lock()
+_napcat_inflight = 0
+
+
+def napcat_limit(config: dict | None) -> int:
+    raw = ((config or {}).get("登录") or {}).get("NapCat同时")
+    try:
+        n = int(raw if raw not in (None, "") else 1)
+    except (TypeError, ValueError):
+        n = 1
+    return min(4, max(1, n))
+
+
+def napcat_inflight() -> int:
+    with _napcat_guard:
+        return _napcat_inflight
+
+
+def napcat_begin(limit: int, wait_sec: float) -> bool:
+    """占一个取票名额。名额满了就在已有线程上等，等到点仍满则返回 False。不开新线程。"""
+    global _napcat_inflight
+    deadline = time.monotonic() + max(0.0, float(wait_sec or 0))
+    while True:
+        with _napcat_guard:
+            if _napcat_inflight < max(1, int(limit)):
+                _napcat_inflight += 1
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
+
+
+def napcat_end() -> None:
+    global _napcat_inflight
+    with _napcat_guard:
+        if _napcat_inflight:
+            _napcat_inflight -= 1
+
+
+def napcat_host(api: str) -> str:
+    text = str(api or "").strip()
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    return text.split("/", 1)[0].split("@")[-1]
+
+
+def attack_napcat_endpoint(config: dict | None, uin: str) -> tuple:
+    """攻打号自己的 NapCat。没有就返回空，不回落到扫描号或通知机器人。"""
+    accounts = ((config or {}).get("登录") or {}).get("账号") or {}
+    if not isinstance(accounts, dict):
+        return "", ""
+    uin = str(uin or "").strip()
+    found = None
+    if uin:
+        for key in (f"qq-{uin}", uin):
+            item = accounts.get(key)
+            if isinstance(item, dict):
+                found = item
+                break
+    if found is None and uin:
+        suffix = f"qq-{uin}.json"
+        for item in accounts.values():
+            if isinstance(item, dict) and str(item.get("cookie") or "").endswith(suffix):
+                found = item
+                break
+    box = (found or {}).get("NapCat") if isinstance(found, dict) else {}
+    if not isinstance(box, dict):
+        box = {}
+    api = str(box.get("地址") or "").strip().rstrip("/")
+    token = str(box.get("Token") or "").strip()
+    return api, token
+
+
+def pull_napcat_cookies(api: str, token: str, domain: str):
+    """只 POST /get_cookies。不带网页票据，不发消息。成功返回 (True, cookie 字典)。"""
+    api = str(api or "").strip().rstrip("/")
+    if not api:
+        return False, "没有 NapCat 地址"
+    headers = {}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    try:
+        r = requests.post(
+            api + "/get_cookies",
+            json={"domain": domain},
+            headers=headers,
+            timeout=10,
+        )
+        data = r.json()
+    except Exception as exc:
+        return False, f"向 NapCat 要票据失败：{exc}"
+    if not isinstance(data, dict):
+        return False, "NapCat 返回的不是票据"
+    if data.get("status") != "ok" and data.get("retcode") != 0:
+        why = data.get("message") or data.get("wording") or data.get("status") or "没有交出票据"
+        return False, f"NapCat 没有交出票据：{why}"
+    raw = ((data.get("data") or {}).get("cookies") or "")
+    pairs = {}
+    for part in str(raw).split(";"):
+        key, sep, val = part.strip().partition("=")
+        if sep and key and key != "domain_id":
+            pairs[key] = val
+    if not pairs.get("skey") or not pairs.get("p_skey"):
+        return False, "NapCat 票据里没有 skey 或 p_skey"
+    return True, pairs
+
+
+def probe_attack_napcat(config: dict | None, uin: str, api: str = "",
+                        token: str = "", platform: str = "",
+                        apply: bool = False, worker: bool = False) -> dict:
+    """在当前线程向攻打号的 NapCat 要一次票，并用游戏页验。不收发消息。
+
+    apply 为真且游戏页认、攻打线程没在跑时，才写入 accounts/qq-<uin>.json。
+    """
+    uin = str(uin or "").strip()
+    if not uin.isdigit() or not 5 <= len(uin) <= 12:
+        return {"ok": False, "busy": False, "msg": "QQ 号要是 5 到 12 位数字"}
+    cfg_api, cfg_token = attack_napcat_endpoint(config, uin)
+    api = str(api or cfg_api).strip().rstrip("/")
+    token = cfg_token if token == "" else str(token).strip()
+    limit = napcat_limit(config)
+    base = {
+        "ok": False, "busy": False, "applied": False, "worker": bool(worker),
+        "game_ok": None, "host": napcat_host(api), "limit": limit,
+        "inflight": napcat_inflight(), "uin": "", "bound": uin,
+    }
+    if not api:
+        base["msg"] = "这个攻打号没有 NapCat 地址。写在登录.账号的 NapCat.地址，或这次请求里带上地址"
+        return base
+    if not napcat_begin(limit, 0):
+        base["busy"] = True
+        base["inflight"] = napcat_inflight()
+        base["msg"] = "已有取票在进行，这次没有另开"
+        return base
+    tmp = ""
+    try:
+        plat = normalize_platform(platform) if str(platform or "").strip() else config_platform(config)
+        ok, got = pull_napcat_cookies(api, token, platform_spec(plat)["napcat_domain"])
+        if not ok:
+            base["msg"] = got
+            base["inflight"] = napcat_inflight()
+            return base
+        tmp = tempfile.mkdtemp(prefix="ts-napcat-")
+        qq = QQSession(os.path.join(tmp, "cookies.json"))
+        qq.attack_account = True
+        qq.bound_uin = uin
+        qq.set_platform(plat)
+        qq._apply_napcat_pairs(got)
+        report = qq.ticket_report()
+        base.update({
+            "uin": report.get("uin") or "",
+            "long_term": bool(report.get("long_term")),
+            "skey_left": report.get("skey_left"),
+            "p_skey_left": report.get("p_skey_left"),
+            "tickets": report.get("tickets") or [],
+        })
+        if qq.uin != uin:
+            base["msg"] = f"NapCat 登录的是 {qq.uin or '空'}，不是这个攻打号"
+            return base
+        game_ok = qq.is_valid()
+        base["game_ok"] = bool(game_ok)
+        if not game_ok:
+            base["msg"] = "游戏页不认这张票，没有写入"
+            return base
+        if not apply:
+            base["ok"] = True
+            base["msg"] = "游戏页认这张票，没有写入"
+            return base
+        if worker:
+            base["ok"] = True
+            base["msg"] = "游戏页认这张票。攻打线程在跑，没有改它正在用的 cookie"
+            return base
+        dest = paths.user_path(f"accounts/qq-{uin}.json")
+        qq.cookie_file = dest
+        qq._save_cookies()
+        base["ok"] = True
+        base["applied"] = True
+        base["msg"] = "游戏页认这张票，已写入攻打号 cookie"
+        return base
+    finally:
+        napcat_end()
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+def list_attack_napcat(config: dict | None, rows: list) -> dict:
+    """列出攻打号有没有自己的 NapCat。不访问网络，不返回 Token 和 cookie 值。"""
+    items = []
+    seen = set()
+    for row in rows or []:
+        uin = str((row or {}).get("qq") or "").strip()
+        if not uin or uin in seen:
+            continue
+        seen.add(uin)
+        api, token = attack_napcat_endpoint(config, uin)
+        path = paths.user_path(f"accounts/qq-{uin}.json") if uin.isdigit() else ""
+        report = ticket_report_file(path) if path else {}
+        items.append({
+            "username": (row or {}).get("username") or "",
+            "qq": uin,
+            "phase": (row or {}).get("phase") or "",
+            "online": bool((row or {}).get("online")),
+            "host": napcat_host(api),
+            "configured": bool(api),
+            "token_set": bool(token),
+            "uin": report.get("uin") or "",
+            "long_term": bool(report.get("long_term")),
+            "skey_left": report.get("skey_left"),
+            "p_skey_left": report.get("p_skey_left"),
+            "tickets": report.get("tickets") or [],
+            "missing": bool(report.get("missing", True)),
+        })
+    return {
+        "limit": napcat_limit(config),
+        "inflight": napcat_inflight(),
+        "items": items,
+    }
 
 
 def try_lock(fh) -> bool:
@@ -869,60 +1089,83 @@ class QQSession:
         return calc_g_tk(key)
 
     def adopt_napcat(self, config: dict) -> bool:
-        """向本机已登录的 NapCat 要空间票据。游戏页认这张票就不用扫码。"""
+        """向已登录的 NapCat 要网页票据。只 POST /get_cookies，不收发消息。
+
+        扫描号用「登录.内部QQ」，没填则用「通知」里的地址。
+        攻打号只用自己账号上的 NapCat.地址，不借用扫描号那一台。
+        """
         if not self.use_napcat:
             return False
         if self.attack_account:
-            log.error("攻打号不向 NapCat 要票据")
-            self.note_login("攻打号不向 NapCat 要票据")
+            api = str(getattr(self, "napcat_api", "") or "").strip().rstrip("/")
+            token = str(getattr(self, "napcat_token", "") or "").strip()
+            if not api:
+                api, token = attack_napcat_endpoint(
+                    config, getattr(self, "bound_uin", "") or self.uin)
+            if not api:
+                return False
+            wait = 12
+        else:
+            inner = ((config.get("登录") or {}).get("内部QQ") or {})
+            api = str(inner.get("地址") or "").strip().rstrip("/")
+            token = str(inner.get("Token") or "").strip()
+            if not api:
+                note = config.get("通知") or {}
+                api = str(note.get("qq_api") or "").strip().rstrip("/")
+                token = str(note.get("qq_token") or "").strip()
+            if not api:
+                return False
+            wait = 0
+        if not napcat_begin(napcat_limit(config), wait):
+            self.note_login("NapCat 取票已有 %d 路在进行，这次跳过", napcat_inflight())
+            log.info("NapCat 取票已有 %d 路在进行，这次跳过", napcat_inflight())
             return False
-        inner = ((config.get("登录") or {}).get("内部QQ") or {})
-        api = str(inner.get("地址") or "").strip().rstrip("/")
-        token = str(inner.get("Token") or "").strip()
-        if not api:
-            note = config.get("通知") or {}
-            api = str(note.get("qq_api") or "").strip().rstrip("/")
-            token = str(note.get("qq_token") or "").strip()
-        if not api:
-            return False
-        headers = {}
-        if token:
-            headers["Authorization"] = "Bearer " + token
         try:
-            r = self.session.post(
-                api + "/get_cookies",
-                json={"domain": self._pt()["napcat_domain"]},
-                headers=headers, timeout=10)
-            data = r.json()
-        except Exception as exc:
-            log.info("向 NapCat 要票据失败: %s", exc)
-            self.note_login("向 NapCat 要票据失败：%s", exc)
-            return False
-        if data.get("status") != "ok" and data.get("retcode") != 0:
-            why = data.get("message") or data.get("wording") or data.get("status")
-            log.info("NapCat 没有交出票据: %s", why)
-            self.note_login("NapCat 没有交出票据：%s", why)
-            return False
-        raw = ((data.get("data") or {}).get("cookies") or "")
-        pairs = {}
-        for part in raw.split(";"):
-            key, sep, val = part.strip().partition("=")
-            if sep and key and key != "domain_id":
-                pairs[key] = val
-        if not pairs.get("skey") or not pairs.get("p_skey"):
-            log.info("NapCat 票据里没有 skey 或 p_skey")
-            self.note_login("NapCat 票据里没有 skey 或 p_skey")
-            return False
+            return self._adopt_napcat_once(api, token)
+        finally:
+            napcat_end()
+
+    def _snapshot_cookies(self) -> list:
+        return [(c.name, c.value, c.domain, c.path, c.expires)
+                for c in self.session.cookies]
+
+    def _restore_cookies(self, snap: list) -> None:
+        self._clear_session_cookies()
+        for name, value, domain, path, expires in snap:
+            self.session.cookies.set(
+                name, value, domain=domain, path=path or "/", expires=expires)
+
+    def _apply_napcat_pairs(self, pairs: dict) -> None:
         named = {"p_skey", "p_uin", "pt4_token"}
         p_domain = self._pt()["p_skey_domain"]
         for key, val in pairs.items():
             domain = p_domain if key in named else ".qq.com"
             self._set_cookie(key, val, domain=domain)
-        self._save_cookies()
-        if not self.is_valid():
-            log.info("NapCat 票据打开游戏页未通过")
-            self.note_login("NapCat 票据已写入，游戏页仍不认。%s", self.ticket_brief())
+
+    def _adopt_napcat_once(self, api: str, token: str) -> bool:
+        self.note_login("向 NapCat 要票据 %s", napcat_host(api))
+        ok, got = pull_napcat_cookies(api, token, self._pt()["napcat_domain"])
+        if not ok:
+            log.info("%s", got)
+            self.note_login("%s", got)
             return False
+        snap = self._snapshot_cookies()
+        self._apply_napcat_pairs(got)
+        want = str(getattr(self, "bound_uin", "") or "").strip()
+        if self.attack_account and want and self.uin != want:
+            self._restore_cookies(snap)
+            log.info("NapCat 登录的是 %s，不是绑定的攻打号 %s", self.uin or "空", want)
+            self.note_login("NapCat 登录的是 %s，不是绑定的 %s", self.uin or "空", want)
+            return False
+        if self.shares_blocked_uin():
+            self._restore_cookies(snap)
+            return False
+        if not self.is_valid():
+            self._restore_cookies(snap)
+            log.info("NapCat 票据打开游戏页未通过")
+            self.note_login("NapCat 票据游戏页不认，已还原。%s", self.ticket_brief())
+            return False
+        self._save_cookies()
         log.info("已用 NapCat 当前登录的票据续上，uin=%s", self.uin)
         self.note_login("已用 NapCat 票据续上。%s", self.ticket_brief())
         return True
