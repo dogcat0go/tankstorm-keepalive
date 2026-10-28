@@ -276,6 +276,27 @@ def _webui_qrcode(data: dict) -> str:
     return str(body.get("qrcode") or body.get("qrcodeurl") or "")
 
 
+def _as_qr_image(text: str) -> str:
+    """交给网页的必须是图片。NapCat 给的常是 https 登录地址，浏览器打不开 6099，也不能把这个地址当图片。"""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("data:image"):
+        return raw
+    if raw.startswith("http://") or raw.startswith("https://"):
+        import segno
+        return segno.make(raw, error="m").png_data_uri(scale=6)
+    try:
+        blob = base64.b64decode(raw, validate=True)
+    except Exception:
+        return ""
+    if blob.startswith(b"\x89PNG"):
+        return "data:image/png;base64," + raw
+    if blob.startswith(b"\xff\xd8"):
+        return "data:image/jpeg;base64," + raw
+    return ""
+
+
 def _webui_already_in(data: dict) -> bool:
     return "logined" in str((data or {}).get("message") or "").lower()
 
@@ -330,9 +351,17 @@ def napcat_login_qr(base: str, token: str) -> dict:
     if not qr:
         out["msg"] = err or "NapCat 还没有登录二维码"
         return out
+    try:
+        image = _as_qr_image(qr)
+    except Exception as exc:
+        out["msg"] = f"没能把 NapCat 登录码画成图片：{exc}"
+        return out
+    if not image:
+        out["msg"] = "NapCat 没有给出可以显示的登录码"
+        return out
     out["ok"] = True
-    out["qrcode"] = qr
-    out["msg"] = err or "用这个攻打号的手机 QQ 扫 NapCat 的登录码"
+    out["qrcode"] = image
+    out["msg"] = err or "用这个攻打号的手机 QQ 扫网页上的这张 NapCat 登录码"
     return out
 
 
