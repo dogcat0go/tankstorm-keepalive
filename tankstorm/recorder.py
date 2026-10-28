@@ -305,7 +305,7 @@ class Recorder:
         self.auto_reject = conf.get("自动拒绝超级强攻", False)
         self.on_alert = on_alert
         self.on_super_storm = on_super_storm   # 收到 027c 且开了自动拒绝时的回调
-        self.on_storm_drop = None              # 收到 027c 就断开，外层再登录
+        self.on_storm_drop = None              # 这次没拒绝时断开，外层再登录
         # 每种服务器消息的最新一条解码结果 {消息名: (到达序号, 字段字典)}。
         # 每日任务靠它读"剩余免费次数"再决定发不发，避免免费用完后扣券/扣勋章。
         #
@@ -701,19 +701,20 @@ class Recorder:
                 self._maybe_alert(op, seq, body, text, alert_unknown,
                                   hit_kw, image, signature, data=data)
 
-            # 超级强攻：游戏连接上已经安排了断开重登，就不再发拒绝包。
-            # 没安排时，仍按原来的自动拒绝走。
+            # 超级强攻：这个号还能发拒绝包就拒绝，连接留着。
+            # 发不了（没开、上限是 0、今天次数用完）才断开，外层再登录。
             if op == "027c":
-                if self.on_storm_drop:
+                stayed = False
+                if self.auto_reject and self.on_super_storm and data:
+                    try:
+                        stayed = self.on_super_storm(data) is True
+                    except Exception as exc:
+                        log.warning("超级强攻自动拒绝回调失败: %s", exc)
+                if not stayed and self.on_storm_drop:
                     try:
                         self.on_storm_drop(data)
                     except Exception as exc:
                         log.warning("超级强攻断开回调失败: %s", exc)
-                elif self.auto_reject and self.on_super_storm and data:
-                    try:
-                        self.on_super_storm(data)
-                    except Exception as exc:
-                        log.warning("超级强攻自动拒绝回调失败: %s", exc)
 
     def _maybe_flag(self, op, seq, body, text, rec):
         """加密载荷的告警：沿用原有触发条件，只是在理由里补一句"载荷加密"。"""
