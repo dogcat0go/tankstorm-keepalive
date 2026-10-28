@@ -724,6 +724,7 @@ onUnmounted(() => {
       <p class="lead">
         {{ me.username }}
         <a class="ghost" href="/pwd-lab">密码登录测试</a>
+        <a class="ghost" href="/api/test">攻打号 NapCat 测试</a>
         <a class="ghost" href="/">回到订阅</a>
         <button type="button" class="ghost" @click="logout">退出</button>
       </p>

@@ -209,8 +209,9 @@ def _uin_in_cookie_file(path: str) -> str:
 
 
 def open_qq(config: dict, name: str, fatal_lock: bool = True):
-    """不带名字是扫描号：根目录 cookies.json，可以向 NapCat 要票据。
-    带名字是攻打号：独立 cookie，不碰 NapCat，也不能和扫描号是同一个 QQ。"""
+    """不带名字是扫描号：根目录 cookies.json，可以向「登录.内部QQ」要票据。
+    带名字是攻打号：独立 cookie。只有该账号写了 NapCat.地址才向那一台要票，
+    不发消息，也不借用扫描号的 NapCat。不能和扫描号是同一个 QQ。"""
     scan_path = os.path.normpath(paths.user_path("cookies.json"))
     if not name:
         if not _lock_cookie(scan_path, fatal=fatal_lock):
@@ -234,9 +235,20 @@ def open_qq(config: dict, name: str, fatal_lock: bool = True):
         log.error("登录.账号 里没有「%s」%s", name,
                   ("。已有：" + "、".join(names)) if names else "")
         sys.exit(1)
-    if spec.get("用NapCat"):
-        log.error("攻打号「%s」不能使用 NapCat。NapCat 只给扫描号续票", name)
-        sys.exit(1)
+    box = spec.get("NapCat") if isinstance(spec.get("NapCat"), dict) else {}
+    napcat_api = str(box.get("地址") or "").strip().rstrip("/")
+    napcat_token = str(box.get("Token") or "").strip()
+    if spec.get("用NapCat") and not napcat_api:
+        log.info("攻打号「%s」写了用NapCat，但没有 NapCat.地址，不向 NapCat 要票", name)
+    account_uin = uin if uin.isdigit() and 5 <= len(uin) <= 12 else ""
+    if not account_uin:
+        cookie_name = str(spec.get("cookie") or "")
+        mark = "qq-"
+        base = cookie_name.rsplit("/", 1)[-1]
+        if base.startswith(mark) and base.endswith(".json"):
+            digits = base[len(mark):-5]
+            if digits.isdigit() and 5 <= len(digits) <= 12:
+                account_uin = digits
     by_name = {}
     for key, item in accounts.items():
         if not isinstance(item, dict):
@@ -273,7 +285,10 @@ def open_qq(config: dict, name: str, fatal_lock: bool = True):
         return None
     qq = QQSession(path, qrcode_file=qr)
     qq.apply_config_platform(config)
-    qq.use_napcat = False
+    qq.napcat_api = napcat_api
+    qq.napcat_token = napcat_token
+    qq.use_napcat = bool(napcat_api)
+    qq.bound_uin = account_uin
     qq.attack_account = True
     qq.account_name = name
     qq.notify_qq = who

@@ -1113,6 +1113,9 @@ function attackLoginError(login) {
   if (login === "unbound") return "这个登录账号还没绑定攻打号";
   if (login === "off") return "已定时关闭，不再执行任务";
   if (login === "timeout") return "登录超过 10 分钟，已停止，请再点一次登录";
+  if (login === "no_napcat") return "这个攻打号没有 NapCat 地址";
+  if (login === "napcat_fail") return "NapCat 没有交出这张票";
+  if (login === "napcat_busy") return "已经有一次取票在进行";
   return "";
 }
 
