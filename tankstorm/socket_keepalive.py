@@ -151,17 +151,32 @@ def _abandon_login(key: str, user_id: int = 0) -> bool:
     return True
 
 
-def _mark_storm_drop() -> None:
-    _storm_local.dropped = True
+_storm_guard = threading.Lock()
+_storm_dropped_ids = set()
+
+
+def _mark_storm_drop(ident=None) -> None:
+    """记下这次是被超级强攻打断的。别的线程打断时，记到那条连接所在的线程上。"""
+    ident = threading.get_ident() if ident is None else int(ident)
+    if ident == threading.get_ident():
+        _storm_local.dropped = True
+        return
+    with _storm_guard:
+        _storm_dropped_ids.add(ident)
 
 
 def _storm_interrupted() -> bool:
-    return bool(getattr(_storm_local, "dropped", False))
+    if getattr(_storm_local, "dropped", False):
+        return True
+    with _storm_guard:
+        return threading.get_ident() in _storm_dropped_ids
 
 
 def _take_storm_drop() -> bool:
     dropped = _storm_interrupted()
     _storm_local.dropped = False
+    with _storm_guard:
+        _storm_dropped_ids.discard(threading.get_ident())
     return dropped
 
 
@@ -247,8 +262,6 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
     """
     if not rec or not getattr(rec, "auto_reject", False):
         return
-    if getattr(rec, "on_storm_drop", None):
-        return
     uin = str(getattr(qq, "uin", "") or "")
     from . import citydb
     bound_user = citydb.attack_context_user()
@@ -265,8 +278,20 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
             live = str(getattr(qq, "uin", "") or uin or "").strip()
         return live
 
-    def _reject_later(data):
-        """收到强攻时人还在 recv 里，连接锁没放开。就地发送会和这把锁死等。"""
+    def _abort_reject(user_id, day, session, warning=""):
+        citydb.release_storm_reject(user_id, day)
+        if warning:
+            log.warning("%s", warning)
+        _mark_storm_drop(session)
+        log.info("拒绝包没发出去，断开当前连接，稍后重新登录")
+        _force_close_socket(sock)
+
+    def _on_super_storm(data):
+        """能拒绝就在这条连接上拒绝，不重启。发不了返回 False，外层再断开重登。
+
+        额度先在收包线程里占上，这样决定留不留连接时次数已经扣了。
+        拒绝包本身仍丢到旁边的线程发，避免和收包锁死等。
+        """
         snapshot = dict(data or {})
         who = str(snapshot.get("atkName") or "").strip()
         if not who:
@@ -277,39 +302,41 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
         why = citydb.reserve_storm_reject(user_id, day, uin_now)
         if why:
             log.info("%s（进攻方 %s）", why, who or "未知玩家")
-            return
-        rc4 = rec.rc4_c2s
-        if rc4 is None:
-            citydb.release_storm_reject(user_id, day)
-            log.warning("自动拒绝超级强攻失败：RC4 C→S 实例不可用"
-                        "（实时解密未启用或密钥自检失败）")
-            return
-        ok = sender.send_reject_super_storm(sock, rc4, snapshot)
-        if not ok:
-            citydb.release_storm_reject(user_id, day)
-            return
-        try:
-            citydb.note_storm_reject(who, user_id=user_id, qq=uin_now)
-        except Exception:
-            log.info("超级强攻拒绝没记上页面", exc_info=True)
-        notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
-                    f"进攻方：{snapshot.get('atkName', '?')}（{snapshot.get('atkUid', '?')}）\n"
-                    f"防守方：{snapshot.get('deftName', '?')}（{snapshot.get('deftUid', '?')}）\n\n"
-                    f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
-                    f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
-                    f"请立刻打开游戏确认。")
+            return False
+        session = threading.get_ident()
 
-    def _on_super_storm(data):
-        threading.Thread(
-            target=_reject_later, args=(data,), name="storm-reject",
-            daemon=True).start()
+        def _send():
+            rc4 = rec.rc4_c2s
+            if rc4 is None:
+                _abort_reject(
+                    user_id, day, session,
+                    "自动拒绝超级强攻失败：RC4 C→S 实例不可用"
+                    "（实时解密未启用或密钥自检失败）")
+                return
+            if not sender.send_reject_super_storm(sock, rc4, snapshot):
+                _abort_reject(user_id, day, session)
+                return
+            try:
+                citydb.note_storm_reject(who, user_id=user_id, qq=uin_now)
+            except Exception:
+                log.info("超级强攻拒绝没记上页面", exc_info=True)
+            log.info("已拒绝超级强攻（进攻方 %s），这条连接不重启", who or "未知玩家")
+            notify.send(config, "🛡️ 坦克风暴：已自动拒绝超级强攻",
+                        f"进攻方：{snapshot.get('atkName', '?')}（{snapshot.get('atkUid', '?')}）\n"
+                        f"防守方：{snapshot.get('deftName', '?')}（{snapshot.get('deftUid', '?')}）\n\n"
+                        f"已自动发送 RceSuperStormOpt type=2 拒绝包。\n"
+                        f"如果服务端要求验证码才接受拒绝，此包可能被忽略，"
+                        f"请立刻打开游戏确认。")
+
+        threading.Thread(target=_send, name="storm-reject", daemon=True).start()
+        return True
 
     rec.on_super_storm = _on_super_storm
     log.info("超级强攻自动拒绝已就绪")
 
 
 def _arm_storm_relogin(rec, sock) -> None:
-    """被超级强攻就断开。不发拒绝包。外层隔 30 秒再登录，并把任务拉起来。"""
+    """这次没发出拒绝包时才断开。外层隔 30 秒再登录，并把任务拉起来。"""
     if not rec:
         return
 
