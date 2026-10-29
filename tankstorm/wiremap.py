@@ -17,11 +17,11 @@
     ACTIVE.to_wire()       发出去之前：本项目编号 -> 线上编号（sender、握手、心跳）
     ACTIVE.from_wire()     收到之后：线上编号 -> 本项目编号（录制器解密之后、解码之前）
 
-加密豁免按消息本身判断（本项目编号查 crypto.EXEMPT），收发两头都先把 opcode
-换回本项目编号再查，不用为每个版本另备一份名单。
+加密豁免写在该版本的 exempt 里，是线上 opcode。crypto.exempt() 读当前这张表。
 
-映射表 wiremap.json 由 tools/build_wiremap.py 从新版 SWF 生成。认不出的消息不在表里：
-收到时记成 8xxx 的伪 opcode，不会和本项目编号撞车；要发时直接拒发。
+映射表由 tools/build_wiremap.py 从新版 SWF 生成，步骤见 docs/协议更新.md。
+认不出的消息不在表里：收到时记成 8xxx 的伪 opcode，不会和本项目编号撞车；
+要发时直接拒发。
 """
 
 import contextlib
@@ -107,6 +107,7 @@ class WireMap:
     def __init__(self, version: str, entry: dict = None):
         self.version = version
         self.identity = entry is None
+        self.exempt = {"c2s": set(), "s2c": set()}
         if self.identity:
             return
         self._op_out = entry["ops"]
@@ -118,6 +119,11 @@ class WireMap:
                      for rows in entry["classes"]]
         self._in = [{w: (c, n, i) for i, (c, w, n) in enumerate(rows)}
                     for rows in entry["classes"]]
+        raw = entry.get("exempt") or {}
+        self.exempt = {
+            "c2s": set(raw.get("c2s") or ()),
+            "s2c": set(raw.get("s2c") or ()),
+        }
 
     def op_out(self, op: str) -> str:
         if self.identity:
@@ -221,6 +227,15 @@ def _load() -> dict:
     return _DATA
 
 
+def latest_version() -> str:
+    """已适配版本里日期最大的一个。登录用它，不拿 FlashVars 的版本字符串当文件名。"""
+    data = _load()
+    versions = sorted(k for k in data if k.isdigit())
+    if not versions:
+        raise UnsupportedVersion("wiremap.json 里没有游戏版本")
+    return versions[-1]
+
+
 def for_version(version: str) -> WireMap:
     data = _load()
     if version and version == data.get("_canon"):
@@ -232,7 +247,8 @@ def for_version(version: str) -> WireMap:
             f"游戏版本 {version or '（FlashVars 里没有 version）'} 还没有适配。"
             f"这个游戏从 2026102102 起每次更新都可能打乱协议编号，按旧编号发出去的请求"
             f"可能被服务端当成别的消息（包括购买），所以不连。已适配：{', '.join(known)}。"
-            f"重新生成映射的方法见 README「游戏更新后」")
+            f"重新生成映射：python tools/build_wiremap.py --latest"
+            f"（说明见 docs/协议更新.md）")
     return WireMap(version, entry)
 
 

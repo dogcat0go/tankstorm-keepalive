@@ -7,7 +7,7 @@
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
 """构造加密帧并通过 socket 发送 —— 用于主动发出 C→S 协议消息。
 
-保活进程原来只发三种豁免包（心跳 046c / 认证 045e / build 04c0），全在 RC4
+保活进程原来只发三种豁免包（心跳、认证、build），全在 RC4
 发送豁免名单里，body 不用加密，可以静态重放。
 
 但"拒绝超级强攻"(RceSuperStormOpt, opcode 04ab) **不在豁免名单里**，body 必须
@@ -60,7 +60,7 @@ def encrypt_body(opcode_hex: str, body: bytes, rc4_c2s) -> bytes:
     注意：RC4 是有状态的流密码，每次 crypt() 都会推进内部 i/j 指针。
     所以这个函数每调用一次（对非豁免包），密钥流就不可逆地前进了 len(body) 步。
     """
-    if opcode_hex in crypto.EXEMPT["c2s"]:
+    if opcode_hex in crypto.exempt("c2s"):
         return body
     if rc4_c2s is None:
         raise RuntimeError(
@@ -73,14 +73,14 @@ def encrypt_body(opcode_hex: str, body: bytes, rc4_c2s) -> bytes:
 def send_frame(sock, opcode_hex: str, body: bytes, rc4_c2s=None) -> None:
     """加密 body → 组帧 → sendall。
 
-    opcode 用本项目的旧编号。这里按 2026102901 的对照表换成线上编号，
-    再决定豁免与否。豁免的是线上编号 046c/045e/04c0/0436。
+    opcode 用本项目的旧编号。这里按当前版本的对照表换成线上编号，
+    再按那一版的 exempt 决定豁免与否。
     非豁免包从加密到 sendall 占同一把锁，拒绝强攻的线程和打城线程不会把密钥流写乱。
     """
     from . import wiremap
     if not wiremap.ACTIVE.identity:
         opcode_hex, body = wiremap.ACTIVE.to_wire(opcode_hex, body)
-    if opcode_hex in crypto.EXEMPT["c2s"]:
+    if opcode_hex in crypto.exempt("c2s"):
         frame = build_frame(opcode_hex, body)
         sock.sendall(frame)
     else:

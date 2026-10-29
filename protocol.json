@@ -20,19 +20,19 @@
       "delay": 0.1
     },
     {
-      "_step": "认证包 opcode 045e（RedWar_2026102901）。RceInit.versionKey 仍是字段 7，密钥仍是 Redwarhq2018HoneyHoneyHoney",
-      "raw_hex": "0023045e000000003a1b526564776172687132303138486f6e6579486f6e6579486f6e6579"
+      "_step": "认证包，本项目编号 041c（RceInit）。versionKey 是字段 3，密钥 Redwarhq2018HoneyHoneyHoney。发送时按 wiremap 换成线上 opcode 和字段号",
+      "raw_hex": "0023041c000000001a1b526564776172687132303138486f6e6579486f6e6579486f6e6579"
     },
     {
-      "_step": "build 信息包 opcode 04c0（RedWar_2026102901）。字段号与 2026102102 相同，取值仍是登录时那一组",
-      "raw_hex": "002804c0000000002a013032056275696c641209756e646566696e65642209756e646566696e65641800",
+      "_step": "build 信息包，本项目编号 041d（RceLoad）。字段是 baseid=0、type=build、h=undefined、hn=undefined、enterType=0。发送时按 wiremap 换成线上编号",
+      "raw_hex": "0028041d000000001201301a056275696c642209756e646566696e65642a09756e646566696e65643000",
       "delay": 0.2
     }
   ],
 
   "heartbeat": {
-    "_说明": "opcode 046c（RedWar_2026102901 的 RceHeartbeat），每 10 秒一次。服务器 pong 为 02ae。包体仍是空的。",
+    "_说明": "本项目编号 040e（RceHeartbeat），每 10 秒一次，包体是空的。发送时按 wiremap 换成线上编号。不要把这里改成某一版的线上 opcode。",
     "interval_sec": 10,
-    "raw_hex": "0006046c00000000"
+    "raw_hex": "0006040e00000000"
   }
 }

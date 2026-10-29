@@ -35,6 +35,18 @@ EXEMPT = {
 }
 
 
+def exempt(direction: str) -> set:
+    """当前连接这一版的线上豁免 opcode。对照表里带了 exempt 就用它。
+
+    离线解密没有选版本时，用上面这份（由 tools/build_wiremap.py 跟最新 SWF 一起写）。
+    """
+    from . import wiremap
+    active = wiremap.ACTIVE
+    if not active.identity and active.exempt.get(direction):
+        return active.exempt[direction]
+    return EXEMPT[direction]
+
+
 class RC4:
     """_-15y:_-0ly 的等价实现。reversed_sbox 对应构造函数第二个参数。"""
 

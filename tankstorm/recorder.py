@@ -26,8 +26,8 @@
 **绝大多数消息都是 RC4 加密的**，只有少数 opcode 走白名单豁免：
   接收豁免 02ae 02e6 0261 0292 0274   （心跳和四类广播）
   发送豁免 046c 045e 04c0 0436        （心跳、认证、加载、调试）
-protocol.json 的心跳/认证/build 三个包恰好都在发送豁免名单里 —— 这就是静态
-重放能工作的原因。广播在接收豁免名单里，所以关键词能读到明文。两者都推不出
+protocol.json 的心跳/认证/build 用本项目编号，发送前译成当前版本的线上 opcode，
+译完后落在发送豁免名单里。广播在接收豁免名单里，所以关键词能读到明文。两者都推不出
 "协议没加密"。
 
 密钥流范围（关键）：
@@ -119,11 +119,8 @@ IMAGE_MAGICS = [
     (b"GIF87a", "GIF"), (b"GIF89a", "GIF"),
 ]
 
-# 豁免 RC4 的 opcode。来自 RedWar_2026102901.swf：
-#   接收 02ae / 02e6 / 0261 / 0292 / 0274
-#   发送 046c / 045e / 04c0 / 0436
-# 这两个名单之外的 body 全部过 RC4，且连续消耗同一条密钥流。
-EXEMPT_OPCODES = crypto.EXEMPT      # 单一来源，见 tankstorm/crypto.py
+# 豁免名单在当前版本的 wiremap exempt 里。这两个名单之外的 body 全部过 RC4，
+# 且连续消耗同一条密钥流。
 
 
 def _canon_in(op: str, body: bytes):
@@ -435,12 +432,16 @@ class Recorder:
         self.uid = str((ctx or {}).get("uid") or "")
         try:
             from . import wiremap
-            wiremap.ACTIVE = wiremap.for_version("2026102901")
+            ver = wiremap.latest_version()
+            wiremap.ACTIVE = wiremap.for_version(ver)
             page_ver = str((ctx or {}).get("version") or "")
-            if page_ver and page_ver != "2026102901":
-                log.info("游戏页版本 %s，协议按 RedWar_2026102901", page_ver)
+            if page_ver and page_ver != ver:
+                log.info("游戏页版本 %s，协议按 %s", page_ver, ver)
+            if page_ver.isdigit() and page_ver > ver:
+                log.warning("游戏页版本 %s 比已适配的 %s 新。若登录后立刻被拆连接，"
+                            "按 docs/协议更新.md 生成新对照", page_ver, ver)
         except Exception as exc:
-            log.warning("2026102901 协议对照没载入，收到的包仍按旧编号解读：%s", exc)
+            log.warning("协议对照没载入，收到的包仍按旧编号解读：%s", exc)
         if not self.live_decrypt:
             return False
         rc4, why = crypto.from_ctx(ctx or {})
@@ -587,7 +588,7 @@ class Recorder:
             real_frame = wire_op.startswith("04") if outgoing else True
             # 加密判定：按 SWF 里的 opcode 白名单，不再猜。空 body 不消耗密钥流。
             encrypted = (real_frame and bool(body)
-                         and wire_op not in EXEMPT_OPCODES[direction])
+                         and wire_op not in crypto.exempt(direction))
             # 必须无条件解，且每条只解一次 —— 漏一条密钥流就永久错位
             plain = self._decrypt(direction, wire_op, body) if encrypted else None
             ent = _entropy(body) if len(body) >= ENTROPY_MIN_LEN else None

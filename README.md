@@ -806,11 +806,10 @@ python tools/capture_daily.py streams/<端口>/c2s.bin.decrypted/frames.jsonl
 
 ### 游戏更新后
 
-opcode 或字段号可能变。重新还原协议：
+登录刚发出去就被服务器拆连接，多半是 SWF 换了、opcode 变了。不要改登录包里的十六进制，按 [docs/协议更新.md](docs/协议更新.md) 做：
 
 ```bash
-python tools/extract_proto.py <新的.swf> out
-cp out/schema.json tankstorm/ && cp out/redwar.proto out/opcodes.json docs/
+python tools/build_wiremap.py --latest
 ```
 
 ---

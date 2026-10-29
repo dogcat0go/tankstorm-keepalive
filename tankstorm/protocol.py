@@ -109,10 +109,22 @@ def apply_framing(body: bytes, framing: str) -> bytes:
     raise ValueError(f"未知 framing={framing}")
 
 
+def _on_wire(frame: bytes) -> bytes:
+    """整帧里的本项目 opcode 换成当前版本的线上编号。
+
+    TGW 头和 a,{uid},{secret} 不是协议帧，原样返回。还没选定版本时也不改，
+    所以 enable_crypto 必须发生在组登录包之前。
+    """
+    from . import wiremap
+    if wiremap.ACTIVE.identity:
+        return frame
+    return wiremap.ACTIVE.frame_to_wire(frame)
+
+
 def _build_step(step: dict, ctx: dict, default_framing: str, encoding: str) -> bytes:
     """构造登录序列中的一步 → 字节。"""
     if "raw_hex" in step:
-        return bytes.fromhex(step["raw_hex"])
+        return _on_wire(bytes.fromhex(step["raw_hex"]))
     body = render_message(step["parts"], ctx, encoding)
     return apply_framing(body, step.get("framing", default_framing))
 
@@ -155,7 +167,7 @@ def build_heartbeat(spec: dict, ctx: dict) -> bytes:
     if not hb:
         raise ProtocolNotConfigured("protocol.json 缺少 heartbeat 段")
     if "raw_hex" in hb:
-        return bytes.fromhex(hb["raw_hex"])
+        return _on_wire(bytes.fromhex(hb["raw_hex"]))
     body = render_message(hb["parts"], ctx, spec.get("encoding", "utf-8"))
     return apply_framing(body, spec.get("framing", "raw"))
 
