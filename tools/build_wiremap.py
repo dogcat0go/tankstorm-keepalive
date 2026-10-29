@@ -11,8 +11,11 @@
     python tools/build_wiremap.py <新的.swf> [--canon-swf <基准.swf>] [--version 版本号]
 
 编号对照只靠混淆器改不掉的东西：报错模板里的消息名和字段名。
+原版 SWF 的地址是固定的，只改文件名里的 10 位版本：
+https://redwar-cdn.sincetimes.com/100616028/res/20120522/flash/RedWar_<版本>.swf
 交互流程是客户端按什么顺序 Send。字节码把 if/else 挤成一条直线；
 装了 ffdec（环境变量 FFDEC_JAR）时，改用反编译出来的脚本看分支。
+没有基准 SWF 时，嵌套消息的旧字段号用 docs/redwar.proto。
 
 生成的 out/wiremap.json 放到程序目录（和 main.py 同级）。
 tankstorm/wiremap.py 会把它叠到随包的那份上，不用改代码、也不用等发版。
@@ -36,6 +39,8 @@ _VAR = re.compile(
 _SEND = re.compile(r"\.Send\s*\(\s*(?:new\s+([A-Za-z0-9_\-]+)|([A-Za-z_][A-Za-z0-9_]*))")
 _STR = re.compile(r'"((?:\\.|[^"\\])*)"')
 _VER = re.compile(r"(\d{10})")
+_PROTO_FIELD = re.compile(
+    r"^\s*(?:optional|required|repeated)\s+(\w+)\s+(\w+)\s*=\s*(\d+)\s*;")
 
 
 def usable(name):
@@ -154,7 +159,29 @@ def schema_match(parsed, schema):
     return same, total
 
 
-def build_entry(schema, new_parsed, canon_parsed=None):
+def proto_decl(path):
+    """docs/redwar.proto 里的字段号就是本项目编号。类型写成 message 时没有嵌套类名。"""
+    out, cur = {}, None
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("message "):
+                cur = line.split()[1]
+                out.setdefault(cur, [])
+                continue
+            if cur and line.startswith("}"):
+                cur = None
+                continue
+            m = _PROTO_FIELD.match(line)
+            if not m or not cur:
+                continue
+            ty, name, tag = m.group(1), m.group(2), int(m.group(3))
+            out[cur].append({
+                "tag": tag, "type": ty, "name": name, "nested_name": None,
+            })
+    return out
+
+
+def build_entry(schema, new_parsed, canon_parsed=None, fallback_decl=None):
     wire = wire_by_name(new_parsed)
     by_sig = wire_by_sig(new_parsed)
     canon_sigs, canon_bad = {}, set()
@@ -171,6 +198,8 @@ def build_entry(schema, new_parsed, canon_parsed=None):
     for sig in canon_bad:
         canon_sigs.pop(sig, None)
     canon_decl = index_decl(canon_parsed) if canon_parsed else {}
+    for name, rows in (fallback_decl or {}).items():
+        canon_decl.setdefault(name, rows)
     new_decl = index_decl(new_parsed)
     items = []
     missed = []
@@ -203,13 +232,12 @@ def build_entry(schema, new_parsed, canon_parsed=None):
             return
         name_at[name] = len(items) + len(extras)
         extras.append((name, c_rows, w_rows))
-        for row in c_rows:
+        for row in list(c_rows) + list(w_rows):
             add_nested(row.get("nested_name"))
 
-    if canon_parsed:
-        for name, _cop, _wop, c_rows, _w in items:
-            for row in c_rows:
-                add_nested(row.get("nested_name"))
+    for _name, _cop, _wop, c_rows, w_rows in items:
+        for row in list(c_rows) + list(w_rows):
+            add_nested(row.get("nested_name"))
 
     def align(c_rows, w_rows):
         w_by = {}
@@ -224,7 +252,9 @@ def build_entry(schema, new_parsed, canon_parsed=None):
             if not w:
                 continue
             nested = None
-            if row.get("type") == "message" or w.get("type") == "message":
+            # 线上写函数的类型会被同名方法污染，标量也会被看成 message。
+            # 嵌套与否以本项目 schema / proto 为准。
+            if row.get("type") == "message":
                 nn = row.get("nested_name") or w.get("nested_name")
                 if nn and nn in name_at:
                     nested = name_at[nn]
@@ -488,7 +518,28 @@ def main():
         else:
             print(f"基准 SWF 和 schema.json 对上 {same}/{total} 个字段")
 
-    entry, unresolved, missed = build_entry(schema, new_parsed, canon_parsed)
+    fallback = None
+    if not canon_parsed:
+        proto = os.path.join(root, "docs", "redwar.proto")
+        if os.path.isfile(proto):
+            decl = proto_decl(proto)
+            same = total = 0
+            for entry in schema.values():
+                rows = {r["name"]: r["tag"] for r in decl.get(entry.get("name") or "", [])
+                        if usable(r.get("name"))}
+                for tag, meta in (entry.get("fields") or {}).items():
+                    if not usable(meta[0]):
+                        continue
+                    total += 1
+                    if rows.get(meta[0]) == int(tag):
+                        same += 1
+            if total and same / total >= 0.9:
+                fallback = decl
+                print(f"用 redwar.proto 补嵌套字段，和 schema.json 对上 {same}/{total} 个字段")
+            else:
+                print(f"redwar.proto 和 schema.json 对上 {same}/{total}，不用它补嵌套字段")
+
+    entry, unresolved, missed = build_entry(schema, new_parsed, canon_parsed, fallback)
     print(f"对上 {len(entry['ops'])} 个消息，没在新版里找到 {len(missed)} 个，"
           f"嵌套字段认不出 {unresolved} 个")
     if missed[:8]:

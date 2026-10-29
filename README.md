@@ -809,6 +809,13 @@ python tools/capture_daily.py streams/<端口>/c2s.bin.decrypted/frames.jsonl
 2026102102 起，一次更新会做两件事：把 opcode 和字段号整体打乱，有时还会改
 客户端先发哪条、后发哪条。编号打乱用映射表翻译，发送顺序变了映射表覆盖不了。
 
+原版 SWF 的地址是固定的，只改文件名里的 10 位版本：
+
+```bash
+curl -fsSL -o RedWar_2026102901.swf \
+  https://redwar-cdn.sincetimes.com/100616028/res/20120522/flash/RedWar_2026102901.swf
+```
+
 服务器上需要 Java，以及 [ffdec](https://github.com/jindrapetrik/jpexs-decompiler)（反编译才能看见 if/else，字节码只能看见挤成一条的直线）：
 
 ```bash
@@ -817,7 +824,7 @@ python tools/build_wiremap.py RedWar_<新版本>.swf \
     --canon-swf RedWar_2026101403.swf
 ```
 
-没有基准那一版 SWF 也能出编号对照，嵌套消息的字段先标成拒绝发送。
+没有基准那一版 SWF 时，嵌套消息的旧字段号用 `docs/redwar.proto`。类型对不上的字段标成拒绝发送。
 交互流程要有上一版才能对照，把上次的 `out/flows-<版本>.json` 用 `--flows-prev` 传回来。
 
 生成的 `out/wiremap.json` 放到程序目录（和 `main.py` 同级，不是 `tankstorm/` 里面）。

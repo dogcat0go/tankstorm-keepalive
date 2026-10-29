@@ -12,8 +12,9 @@
 
 三步
 ----
-1. opcode 表：注册函数把「立即数 opcode + 消息类」配在一起。旧版这个函数叫
-   _-055；secureSWF 每次更新都会改名，对不上时按调用形状重找。
+1. opcode 表：注册函数把「base + offset 的立即数 + 消息类」配在一起。旧版这个
+   函数叫 _-055；secureSWF 每次更新都会改名，还会在两个立即数中间插 if/jump。
+   对不上时按调用形状重找：离调用最近的一次 add，把它的两个操作数相加。
 2. 真实消息名：类名被改成 _-4mF 这种，但 protobuf-as3 的报错模板
    'Bad data format: <消息名>.<字段名> cannot be set twice.' 是字符串字面量，
    混淆器动不了。
@@ -166,6 +167,31 @@ def _opcode_from(nums):
 
 
 def _reg_window(lines, i, proto_q, short_to_q):
+    # 先认 add 的两个操作数。假分支会把 base 和 offset 拆开，只拿最近的那个数
+    # 会把 512+257 认成 257。
+    nums, klass, seen = [], None, False
+    j, steps = i - 1, 0
+    while j >= 0 and steps < 80 and len(nums) < 2:
+        steps += 1
+        _, t, c = lines[j]
+        op = t.split()[0]
+        if _call(c)[0]:
+            break
+        q = _q_of(t, c, proto_q, short_to_q)
+        if q and klass is None:
+            klass = q
+        elif klass and not seen and op in ("add", "add_i"):
+            seen = True
+        elif seen:
+            v = _imm(t, c)
+            if v is not None:
+                nums.append(v)
+        j -= 1
+    if klass and seen and len(nums) >= 2:
+        opv = _opcode_from(nums[:2])
+        if opv is not None:
+            return opv, klass
+
     nums, klass = [], None
     j, steps = i - 1, 0
     while j >= 0 and steps < 24:
@@ -431,6 +457,11 @@ def parse_swf(swf):
             real[q] = names.pop()
         elif names:
             real[q] = sorted(names)[0]
+        else:
+            # 没有字段的消息（心跳）不会生成报错字符串。类名没被改掉时，类名就是消息名。
+            short = q.split(":")[-1]
+            if "protocol" in q.split(":")[0] and short and not short.startswith("_-"):
+                real[q] = short
 
     proto_q = {q for q in by_q if q in real or "protocol" in q.split(":")[0]}
     short_to_q = _short_index(proto_q)
@@ -507,7 +538,7 @@ def parse_swf(swf):
         if q not in schema:
             continue
         tags = sorted(t for t, _ in schema[q])
-        names = {}
+        names, nested_at = {}, {}
         rx = next((mi for n, k, mi in inst["traits"]
                    if n == "readExternal" and mi is not None), None)
         if rx and rx in abc.bodies:
@@ -517,16 +548,26 @@ def parse_swf(swf):
             if len(cases) == len(tags):
                 for tag, start in zip(tags, cases):
                     end = next((b for b in bounds if b > start), 1 << 30)
-                    for a, t, _c in lines:
+                    for a, t, c in lines:
                         if not start <= a < end:
                             continue
-                        if t.startswith("pushstring"):
+                        if t.startswith("pushstring") and tag not in names:
                             m = BAD.match(abc.strings[int(t.split()[1])])
                             if m:
                                 names[tag] = m.group(2)
-                                break
+                        if tag not in nested_at and t.split()[0] == "constructprop":
+                            nq = _q_of(t, c, proto_q, short_to_q)
+                            if nq and nq != q:
+                                nested_at[tag] = nq
             elif cases:
                 skipped += 1
+        getters = {}
+        for n, k, mi in inst["traits"]:
+            if k != "getter" or mi is None or mi >= len(abc.methods):
+                continue
+            ret = abc.methods[mi].get("ret")
+            if ret:
+                getters[n] = abc.qname(ret)
         for tag in tags:
             if tag in names:
                 continue
@@ -536,6 +577,16 @@ def parse_swf(swf):
         fieldnames[q] = names
         for row in decl.get(q, []):
             row["name"] = names.get(row["tag"]) or f"field{row['tag']}"
+            nq = nested_at.get(row["tag"]) or getters.get(row["name"])
+            if not nq:
+                continue
+            short = nq.split(":")[-1]
+            if short in _SCALAR:
+                continue
+            nn = real.get(nq) or (None if short.startswith("_-") else short)
+            if nn and not str(nn).startswith("_-"):
+                row["nested"] = nq
+                row["nested_name"] = nn
 
     return {"reg": reg, "real": real, "schema": schema, "decl": decl,
             "fieldnames": fieldnames,             "flows": flows, "skipped": skipped,
