@@ -20,29 +20,20 @@ const props = defineProps({
   reloadQr: { type: Function, required: true },
   showErr: { type: Function, required: true },
   loginPlatDefault: { type: String, default: "空间" },
-  napcatQr: { type: String, default: "" },
-  napcatNote: { type: String, default: "" },
 });
 
 const loginPlat = ref("空间");
-const loginWay = ref("qr");
 try {
   const saved = localStorage.getItem("ts_login_plat");
   loginPlat.value = saved === "大厅" || saved === "空间"
     ? saved
     : (props.loginPlatDefault || "空间");
-  loginWay.value = localStorage.getItem("ts_login_way") === "napcat" ? "napcat" : "qr";
 } catch (e) {
   loginPlat.value = props.loginPlatDefault || "空间";
 }
 watch(loginPlat, (value) => {
   try {
     localStorage.setItem("ts_login_plat", value);
-  } catch (e) {}
-});
-watch(loginWay, (value) => {
-  try {
-    localStorage.setItem("ts_login_way", value === "napcat" ? "napcat" : "qr");
   } catch (e) {}
 });
 watch(() => props.loginPlatDefault, (value) => {
@@ -59,25 +50,23 @@ watch(() => props.loginPlatDefault, (value) => {
   <section class="attack-bar" aria-label="攻打号状态">
     <div v-if="!(proc && proc.qq)" class="bind-guide">
       <p class="bind-title">先绑定攻打 QQ</p>
-      <ol v-if="!qrSrc && !napcatQr">
-        <li>先选 QQ 空间还是 QQ 游戏大厅，再选扫码或 NapCat，然后点「登录」。</li>
-        <li>扫码：游戏二维码会出现在这里，用另一台设备的手机 QQ 扫。</li>
-        <li>NapCat：第一次登录会在这里显示 NapCat 自己的码。扫完并确认后，再向它要网页票据。</li>
+      <ol v-if="!qrSrc">
+        <li>先选 QQ 空间还是 QQ 游戏大厅，再点「登录」。</li>
+        <li>用另一台设备打开手机 QQ，扫这里出现的图。</li>
+        <li>扫完在手机上点「确认登录」。这个 QQ 就绑到当前账号，之后只用这一个。</li>
       </ol>
       <ol v-else>
         <li>用另一台设备的手机 QQ 扫下面这张码。</li>
         <li>扫完在手机上点「确认登录」，停在确认页才算扫上。</li>
         <li>过期后这里会自动换成新码，对着页面上最新的一张扫。</li>
       </ol>
-      <p class="muted">不要把图存进同一台手机的相册再扫，腾讯会拒绝。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。平时从大厅进游戏的选大厅，两边不是同一套登录票据。NapCat 的登录码也显示在这，扫的是 NapCat 自己的码。</p>
+      <p class="muted">不要把图存进同一台手机的相册再扫，腾讯会拒绝。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。平时从大厅进游戏的选大厅，两边不是同一套登录票据。</p>
       <p v-if="bindWait && !qrSrc" class="bind-wait">二维码正在生成，请稍等。</p>
     </div>
     <p v-if="pushLoginVisible(proc)" class="login-row">
       <label class="choice"><input v-model="loginPlat" type="radio" value="空间" /> QQ空间</label>
       <label class="choice"><input v-model="loginPlat" type="radio" value="大厅" /> QQ游戏大厅</label>
-      <label class="choice"><input v-model="loginWay" type="radio" value="qr" /> 扫码</label>
-      <label class="choice"><input v-model="loginWay" type="radio" value="napcat" /> NapCat</label>
-      <button type="button" class="login" @click="pushLogin(loginPlat, loginWay).catch((e) => showErr(e.message, 'bar'))">登录</button>
+      <button type="button" class="login" @click="pushLogin(loginPlat).catch((e) => showErr(e.message, 'bar'))">登录</button>
     </p>
     <div class="proc">
       <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
@@ -92,10 +81,8 @@ watch(() => props.loginPlatDefault, (value) => {
         <span class="muted">{{ offNote || "北京时间，留空不关" }}</span>
       </form>
     </div>
-    <img v-if="napcatQr" class="qr" :src="napcatQr" alt="NapCat 登录二维码" />
-    <p v-if="napcatQr && napcatNote" class="muted bind-foot">{{ napcatNote }}</p>
-    <img v-if="!napcatQr && qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
-    <p v-if="!napcatQr && qrSrc && !(proc && proc.qq)" class="muted bind-foot">扫上之后，页面上的「还没绑定」会变成这个 QQ 号。</p>
+    <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
+    <p v-if="qrSrc && !(proc && proc.qq)" class="muted bind-foot">扫上之后，页面上的「还没绑定」会变成这个 QQ 号。</p>
     <p v-if="err && errAt === 'bar'" class="err">{{ err }}</p>
   </section>
 </template>

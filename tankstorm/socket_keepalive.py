@@ -3704,10 +3704,10 @@ def _napcat_pair_for_user(config: dict, user_id: int, addr_key: str, token_key: 
         token = str(box.get(token_key) or "").strip()
         if api:
             return api, token
+    from .qq_login import _account_tables
     username = citydb.username_of(user_id)
-    accounts = ((config or {}).get("登录") or {}).get("账号") or {}
     hits = []
-    if isinstance(accounts, dict):
+    for accounts in _account_tables(config):
         for spec in accounts.values():
             if not isinstance(spec, dict):
                 continue
