@@ -207,19 +207,23 @@ class ABC:
         cnt, p = _u30(b, p)
         out = []
         name_ids = []
+        self._trait_slots = {}
         for _ in range(cnt):
             name_i, p = _u30(b, p)
             tag = b[p]
             p += 1
             kind, attrs = tag & 0x0F, tag >> 4
             mi = None
+            slots = getattr(self, "_trait_slots", None)
             if kind in (0, 6):               # Slot / Const
                 _, p = _u30(b, p)            # slot_id
-                _, p = _u30(b, p)            # type_name
+                ti, p = _u30(b, p)           # type_name
                 vindex, p = _u30(b, p)
                 if vindex:
                     p += 1                   # vkind
                 kname = "slot" if kind == 0 else "const"
+                if slots is not None and ti:
+                    slots[self.name_of(name_i)] = self.qname(ti)
             elif kind in (1, 2, 3):          # Method / Getter / Setter
                 _, p = _u30(b, p)            # disp_id
                 mi, p = _u30(b, p)
@@ -241,7 +245,9 @@ class ABC:
             out.append((self.name_of(name_i), kname, mi))
             name_ids.append(name_i)
         self.trait_mn[id(out)] = name_ids
-        return out, p
+        slots = self._trait_slots
+        self._trait_slots = None
+        return out, slots, p
 
     # ---------- 类 ----------
 
@@ -261,15 +267,15 @@ class ABC:
                 v, p = _u30(b, p)
                 iface.append(v)
             iinit, p = _u30(b, p)
-            traits, p = self._read_traits(b, p)
+            traits, slots, p = self._read_traits(b, p)
             self.instances.append({"name": name, "super": sup, "flags": flags,
                                    "iface": iface, "iinit": iinit,
-                                   "traits": traits})
+                                   "traits": traits, "slots": slots})
         self.classes = []
         for _ in range(n):
             cinit, p = _u30(b, p)
-            traits, p = self._read_traits(b, p)
-            self.classes.append({"cinit": cinit, "traits": traits})
+            traits, slots, p = self._read_traits(b, p)
+            self.classes.append({"cinit": cinit, "traits": traits, "slots": slots})
         return p
 
     def _read_scripts(self, b, p):
@@ -277,8 +283,8 @@ class ABC:
         self.scripts = []
         for _ in range(n):
             init, p = _u30(b, p)
-            traits, p = self._read_traits(b, p)
-            self.scripts.append({"init": init, "traits": traits})
+            traits, slots, p = self._read_traits(b, p)
+            self.scripts.append({"init": init, "traits": traits, "slots": slots})
         return p
 
     # ---------- 方法体 ----------
@@ -309,7 +315,7 @@ class ABC:
                 vn, p = _u30(b, p)
                 exc.append((fr, to, tg, et, vn))
             tr0 = p
-            _, p = self._read_traits(b, p)
+            _, _, p = self._read_traits(b, p)
             self.bodies[mi] = code
             self.body_order.append(mi)
             self.body_info[mi] = {"max_stack": max_stack,

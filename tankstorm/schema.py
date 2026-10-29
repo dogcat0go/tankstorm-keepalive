@@ -8,15 +8,15 @@
 """协议 schema：opcode 与消息名、字段号与字段名的对照。
 
 schema.json 由 tools/extract_proto.py 从 RedWar SWF 还原：
-  · opcode 表来自 _-1JW::_-67s 里 563 次 _-055(opcode, 消息类) 注册调用
+  · opcode 表来自「立即数 + 消息类」的注册调用。旧版函数名是 _-055，
+    更新后改名就按调用形状重找
   · 消息真名来自 protobuf-as3 的报错模板 'Bad data format: <消息>.<字段> ...'
     ——字符串字面量，secureSWF 动不了
   · 字段号来自 writeToBuffer 里 writeTag(output, wiretype, <tag>) 的立即数
-  · 字段类型由 WriteUtils(_-3EJ) 各方法体实测认定
-    （_-yF=string 写 writeUTFBytes，_-30c=bool 写 writeByte，等等）
+  · 字段类型看写函数的方法体（writeUTFBytes 是 string，writeByte 是 bool）
 
-游戏更新后重新生成：
-    python tools/extract_proto.py <新的.swf> out && cp out/schema.json tankstorm/
+游戏更新后不要整份替换这份表。本项目代码认的是这里的编号，
+新版编号放到程序目录的 wiremap.json，见 tools/build_wiremap.py。
 """
 
 import json

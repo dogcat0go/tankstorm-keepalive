@@ -806,12 +806,24 @@ python tools/capture_daily.py streams/<端口>/c2s.bin.decrypted/frames.jsonl
 
 ### 游戏更新后
 
-opcode 或字段号可能变。重新还原协议：
+2026102102 起，一次更新会做两件事：把 opcode 和字段号整体打乱，有时还会改
+客户端先发哪条、后发哪条。编号打乱用映射表翻译，发送顺序变了映射表覆盖不了。
+
+服务器上需要 Java，以及 [ffdec](https://github.com/jindrapetrik/jpexs-decompiler)（反编译才能看见 if/else，字节码只能看见挤成一条的直线）：
 
 ```bash
-python tools/extract_proto.py <新的.swf> out
-cp out/schema.json tankstorm/ && cp out/redwar.proto out/opcodes.json docs/
+export FFDEC_JAR=/opt/ffdec/ffdec.jar   # 装在哪就指到哪
+python tools/build_wiremap.py RedWar_<新版本>.swf \
+    --canon-swf RedWar_2026101403.swf
 ```
+
+没有基准那一版 SWF 也能出编号对照，嵌套消息的字段先标成拒绝发送。
+交互流程要有上一版才能对照，把上次的 `out/flows-<版本>.json` 用 `--flows-prev` 传回来。
+
+生成的 `out/wiremap.json` 放到程序目录（和 `main.py` 同级，不是 `tankstorm/` 里面）。
+下次连接按 FlashVars 里的版本翻译，对不上的版本一个字节都不会发。
+
+`out/flow-diff-<版本>.txt` 里是发送顺序变了的方法。这些要改对应任务的组包顺序，不能只换编号。
 
 ---
 
