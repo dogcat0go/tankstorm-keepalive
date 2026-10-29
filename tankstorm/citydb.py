@@ -5672,7 +5672,8 @@ def enqueue_due_daily_jobs(guild_defaults=None) -> list:
     """到点且这一档今天还没排过的账号，排一轮日常。
 
     公会任务不另开线程干等。同一次定时醒来里，开关开着并且距上次已满一小时，
-    也在这里再排一次，只做公会任务。别的日常仍是每天一档。
+    也在这里再排一次。这一轮做公会任务；授勋或加强授勋今天还没满，并且开关开着，
+    就各再拨一次。别的日常仍是每天一档。
     返回刚排上的 user_id。
     """
     if "daily" in LOCKED_DAILY_KINDS:
@@ -5768,12 +5769,13 @@ def _switch_blob(raw):
     return data if isinstance(data, dict) else {}
 
 
-def _guild_switch_on(saved, defaults) -> bool:
+def _guild_switch_on(saved, defaults, key=None) -> bool:
     """没单独存过时跟服务器配置。存过就只认这个账号的开关。"""
-    if _GUILD_TASK_KEY in saved:
-        return bool(saved.get(_GUILD_TASK_KEY))
-    if isinstance(defaults, dict) and _GUILD_TASK_KEY in defaults:
-        return bool(defaults.get(_GUILD_TASK_KEY))
+    key = key or _GUILD_TASK_KEY
+    if key in saved:
+        return bool(saved.get(key))
+    if isinstance(defaults, dict) and key in defaults:
+        return bool(defaults.get(key))
     return False
 
 
@@ -5811,7 +5813,8 @@ def _daily_job_runs_guild(params_raw) -> bool:
 def enqueue_due_guild_tasks(defaults=None) -> list:
     """给定时日常那一次醒来用，不自己开线程，也不睡到整点。
 
-    公会任务开关开着，并且距上次看过已经满一小时，就再排一次，只做这一项。
+    公会任务开关开着，并且距上次看过已经满一小时，就再排一次。
+    授勋、加强授勋开关开着且今天没满，跟这一轮一起再拨一次。
     定时日常那一轮如果正排着或正在做，它自己会看公会任务，这里不重复排。
     别的日常仍按原来的每天一档，不受这一小时影响。
     """
@@ -5819,10 +5822,12 @@ def enqueue_due_guild_tasks(defaults=None) -> list:
         return []
     from . import daily
     hour = 3600
+    medal_caps = []
     for task in daily.TASKS:
         if task.key == _GUILD_TASK_KEY and task.cooldown_sec:
             hour = int(task.cooldown_sec)
-            break
+        elif task.key in ("将领授勋", "将领加强授勋"):
+            medal_caps.append((task.key, int(task.max_per_day or 1)))
     now = time.time()
     conn = connect()
     try:
@@ -5857,7 +5862,16 @@ def enqueue_due_guild_tasks(defaults=None) -> list:
                 continue
             stamp = int(now)
             saved[_GUILD_HOUR_AT] = stamp
-            blob = json.dumps({"only": [_GUILD_TASK_KEY]}, ensure_ascii=False)
+            only = [_GUILD_TASK_KEY]
+            done = daily._load_state(daily.state_path_for_qq(qq)).get("done") or {}
+            for key, cap in medal_caps:
+                if key in LOCKED_DAILY_TASKS or not _guild_switch_on(saved, defaults, key):
+                    continue
+                raw = done.get(key, 0)
+                got = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
+                if got < cap:
+                    only.append(key)
+            blob = json.dumps({"only": only}, ensure_ascii=False)
             now_text = now_ts()
             conn.execute(
                 "INSERT INTO daily_job(user_id, kind, params, status, detail, created_at, updated_at) "
@@ -5867,7 +5881,11 @@ def enqueue_due_guild_tasks(defaults=None) -> list:
                 "UPDATE app_user SET daily_switch=? WHERE id=?",
                 (json.dumps(saved, ensure_ascii=False), int(user_id)))
             queued.append(int(user_id))
-            log.info("公会任务：账号 %s 满一小时，已排队", name)
+            extra = "、".join(key for key in only if key != _GUILD_TASK_KEY)
+            if extra:
+                log.info("公会任务：账号 %s 满一小时，已排队，并带上 %s", name, extra)
+            else:
+                log.info("公会任务：账号 %s 满一小时，已排队", name)
         conn.commit()
         return queued
     finally:

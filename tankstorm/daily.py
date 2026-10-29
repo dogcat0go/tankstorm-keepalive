@@ -1487,21 +1487,30 @@ TASKS = [
 
     # 2026-10-10 抓包。type=1 只查询。type=11 是拨款，只写 type，
     # 一次把一部分铸造兑成代币（42→20，代币 +22），拨到 0 为止。
+    # 一天 50 次，按铸造次数减少来记。一次请求会兑掉付得起的一批。
+    # 没到 50 时，定时公会任务还会再拨一次。
     _t("将领授勋", "将领·授勋拨款", "04c1", "RceMedalHonorOpt",
        {}, "实测",
        "2026-10-10：RceAdmiralOpen{type:0} → "
        "{type:1,nCreditType:0,bUseItem:false} 查询 → {type:11} 拨款。"
+       "一天 50 次，按 nCastNum 的减少来记。没到 50，定时公会任务再拨一次。"
        "nCastNum>0 才发。不带点券、不用道具。回包看 nType 和 nResult",
+       max_per_day=50,
+       counts_itself=True,
        runner=lambda rec, sock, config: daily_medal(rec, sock, config)),
 
     # 2026-10-11 抓包。查询仍是 type=1。加强拨款是 type=17，只写 type。
     # nStrongCastNum 15→8，nStrongTokenNum 78→85，nGetToken 为 7 个 1。
     # 金属和石油各少 3500 万，合每枚 500 万。普通铸造次数和普通代币不动。
+    # 一天 15 次。付不起的留下，定时公会任务没满再拨。
     _t("将领加强授勋", "将领·加强授勋拨款", "04c1", "RceMedalHonorOpt",
        {}, "实测",
        "2026-10-11：同一条查询 {type:1}，nStrongCastNum>0 才发 {type:17}。"
+       "一天 15 次，按 nStrongCastNum 的减少来记。没到 15，定时公会任务再拨一次。"
        "不带点券、不用道具。每枚加强代币扣 500 万金属和 500 万石油，"
        "付不起的次数留下。回包看 nType 和 nResult",
+       max_per_day=15,
+       counts_itself=True,
        runner=lambda rec, sock, config: daily_medal(rec, sock, config, strong=True)),
 
     # 将领和参谋是两份独立的技能书，各领各的。原先是一个任务 max_per_day=2，
@@ -2003,6 +2012,16 @@ def task_board(uin: str, switches: dict) -> list:
                 "到了 5 个，能领奖才去领，没有可领的就不动。"
                 "身上的任务已经算进这个次数。活跃任务另算。"
             )
+        elif task.key in ("将领授勋", "将领加强授勋"):
+            row["hint"] = (
+                "一天 %d 次，按这次拨掉的铸造次数记。"
+                "没满时，定时做公会任务会再拨一次，直到满。"
+                % int(task.max_per_day or 1)
+            )
+            if task.key == "将领加强授勋":
+                row["hint"] += "每枚扣 500 万金属和 500 万石油，付不起的留下。"
+            else:
+                row["hint"] += "不花点券、不用道具。"
         rows.append(row)
     for key, name in CAMPAIGN_EXTRAS:
         try:
@@ -3862,7 +3881,8 @@ def daily_medal(rec, sock, config, strong=False):
 
     先开将领面板，再 type=1 查询。普通看 nCastNum，加强看 nStrongCastNum，
     大于 0 才拨款。拨款包只写 type，不带点券、不用道具。
-    一次请求只兑掉付得起的那一部分，拨到 0 或不再减少为止。
+    一次请求只兑掉付得起的那一部分。普通一天 50 次，加强一天 15 次，
+    按铸造次数减少来记。没到上限时，定时公会任务还会再拨一次。
     回包步骤是 nType，nResult=0 才算成。
     加强这一档扣金属和石油。2026-10-11 实测 7 枚各扣 500 万金属和 500 万石油。
     """
@@ -3870,12 +3890,25 @@ def daily_medal(rec, sock, config, strong=False):
     token_key = "nStrongTokenNum" if strong else "nTokenNum"
     action = 17 if strong else 11
     kind = "加强" if strong else ""
+    task_key = "将领加强授勋" if strong else "将领授勋"
+    cap = 1
+    for task in TASKS:
+        if task.key == task_key:
+            cap = int(task.max_per_day or 1)
+            break
 
     def _num(data, key):
         v = data.get(key) if isinstance(data, dict) else None
         if isinstance(v, bool) or not isinstance(v, int):
             return None
         return v
+
+    raw = _load_state().get("done", {}).get(task_key, 0)
+    prev = raw if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0 else 0
+    if prev > cap:
+        prev = cap
+    if prev >= cap:
+        return True, f"成功：今日已拨款 {prev}/{cap}"
 
     before = rec.seq_mark() if rec else 0
     sender.send_frame(sock, "044e",
@@ -3895,10 +3928,11 @@ def daily_medal(rec, sock, config, strong=False):
     if panel is None or left is None:
         return False, f"失败：未收到授勋面板，读不到{kind}铸造次数"
     if left <= 0:
-        return True, f"成功：没有可拨款的{kind}铸造次数"
+        return True, f"成功：没有可拨款的{kind}铸造次数，今日 {prev}/{cap}"
     start = tokens
     rounds = 0
-    while left > 0 and rounds < 20:
+    consumed = 0
+    while left > 0 and prev + consumed < cap and rounds < cap:
         raise_if_stopped()
         mark = rec.seq_mark() if rec else 0
         sender.send_frame(sock, "04c1",
@@ -3920,18 +3954,32 @@ def daily_medal(rec, sock, config, strong=False):
             return False, f"失败：拨款被拒 nResult={result}"
         if now is None or now >= left:
             break
+        consumed += left - now
         rounds += 1
         left = now
         if now_tokens is not None:
             tokens = now_tokens
         _nap(0.4)
+    noted = prev
+    if consumed:
+        noted = prev + consumed
+        if noted > cap:
+            noted = cap
+        st = _load_state()
+        st.setdefault("done", {})[task_key] = noted
+        _save_state(st)
     if rounds == 0:
-        return False, f"失败：{kind}铸造次数没有减少"
+        return False, f"失败：{kind}铸造次数没有减少，今日 {prev}/{cap}"
     gain = ""
     if isinstance(start, int) and isinstance(tokens, int):
         gain = f"，{kind}代币 {start}→{tokens}"
-    tail = f"{kind}铸造次数已用完" if left <= 0 else f"还剩{kind}铸造 {left} 次"
-    return True, f"成功：拨款 {rounds} 次{gain}，{tail}"
+    if noted >= cap:
+        tail = "今日已满"
+    elif left <= 0:
+        tail = f"{kind}铸造次数已用完"
+    else:
+        tail = f"还剩{kind}铸造 {left} 次"
+    return True, f"成功：拨款 {consumed} 次{gain}，{tail}，今日 {noted}/{cap}"
 
 
 def daily_collect_res(rec, sock, config):
