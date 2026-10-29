@@ -12,7 +12,10 @@
 
     type:2   刷新自己国家的面板   → countryData 里有行动力、当前城市、今日攻击次数
     type:3   打开某城市的面板     → cityData 里有"这城还有没有支援兵"
-    type:45  召唤摩多军团支援兵   → 随后服务端推 RseCountryUserLst，给出攻击目标
+    type:45  召唤摩多军团支援兵   → 随后服务端推 RseCountryUserLst，给出攻击目标。
+             2026-10-29 抓包：dailyGiftId 是召唤个数（这次是 1）。客户端先看背包
+             10118 够不够这个数，不够就不发；发出去的包是
+             countryID + type:45 + cityID + dailyGiftId。
     type:19  扫荡                 行动力 -15，dayatktimes +3；打玩家时带 atkUserID
     type:14  普通攻击             行动力 -5， dayatktimes +1；打玩家时带 atkUserID
     type:4   移动或占领相邻城市   2026-09-24 抓包：先 type:3 开目标城，
@@ -271,11 +274,13 @@ def _use_recovery_card(sock, rec, item_id, lock_meter=True):
     return True, f"已用掉 1 张国战恢复卡（用前背包有 {count} 张）"
 
 
-def _fields(type_, country=0, city=0, atk=None, check=False, page=0):
+def _fields(type_, country=0, city=0, atk=None, check=False, page=0, gift=0):
     """照抓包的字段集构造请求。
 
     真客户端把 0 值字段也显式写出来，所以一律 omit_zero=False 发全套；
     只有攻击/扫荡才带 atkUserID，别的 type 抓包里根本没有这个字段。
+    gift 是 dailyGiftId。type:45 召唤时是召唤个数。
+    0 就不写，避免给开面板、移动这些请求多塞一个字段。
     """
     f = {1: ("int32", 0),          # costCredit：花勋章的字段，永远 0
          2: ("int32", 0),          # count：同上
@@ -290,6 +295,8 @@ def _fields(type_, country=0, city=0, atk=None, check=False, page=0):
          16: ("int32", 0)}
     if atk:
         f[5] = ("string", str(atk))
+    if gift:
+        f[11] = ("int32", int(gift))
     return f
 
 
@@ -600,9 +607,12 @@ def run(rec, sock, config: dict, rounds: int = 0, beat=None,
 
 
 def _summon_npc(sock, rec, npc_country, npc_city):
-    """召唤摩多支援兵。成功返回 (目标, 士气, "")，失败返回 (None, None, 原因)。"""
+    """召唤摩多支援兵。成功返回 (目标, 士气, "")，失败返回 (None, None, 原因)。
+
+    一次召唤 1 个。2026-10-29 抓包里这个个数写在 dailyGiftId。
+    """
     mark = rec.seq_mark() if rec else 0
-    since = _send(sock, rec, 45, country=npc_country, city=npc_city)
+    since = _send(sock, rec, 45, country=npc_country, city=npc_city, gift=1)
     reply = _wait(sock, rec, since, 45)
     if not isinstance(reply, dict):
         return None, None, "召唤支援兵没有回包"

@@ -1659,9 +1659,9 @@ TASKS = [
     # 模块级 import 会成环。
     _t("国战攻击", "国战·攻击摩多军团 10 次", "0463", "RceCountryOpt",
        {}, "实测",
-       "8/29 抓包实测：type:3 开驻地面板 → type:45 召唤支援兵 → "
+       "8/29 抓包：type:3 开驻地面板 → type:45 召唤支援兵 → "
        "type:14 普通攻击（每次 5 点行动力、dayatktimes+1）。"
-       "五种请求已与真客户端逐字段比对一致",
+       "10/29 起 type:45 要带 dailyGiftId=召唤个数，一次召唤写 1",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.country_war", fromlist=["daily_attack"]
        ).daily_attack(rec, sock, config)),
