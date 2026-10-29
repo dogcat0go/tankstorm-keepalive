@@ -706,13 +706,6 @@ function procText(p) {
   return p.detail || "空闲，等订单";
 }
 
-async function setAttackPause(on) {
-  showErr("", "bar");
-  const data = await api("/api/attack-pause", { on });
-  if (proc.value) proc.value.paused = !!data.paused;
-  await refreshAttacks();
-}
-
 async function enter() {
   showErr("");
   const path = mode.value === "register" && registerOpen.value ? "/api/register" : "/api/login";
@@ -1330,7 +1323,6 @@ onUnmounted(() => {
         :proc-text="procText"
         :push-login="pushLogin"
         :login-plat-default="loginPlatDefault"
-        :set-attack-pause="setAttackPause"
         :close-attack="closeAttack"
         :close-busy="closeBusy"
         v-model:off-at="offAt"
