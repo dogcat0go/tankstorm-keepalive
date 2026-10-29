@@ -20,12 +20,12 @@
       "delay": 0.1
     },
     {
-      "_step": "认证包 opcode 045e（RedWar_2026102901）。RceInit.versionKey 仍是字段 7，密钥仍是 Redwarhq2018HoneyHoneyHoney",
+      "_step": "认证包 opcode 045e（RedWar_2026102901）。versionKey 仍是字段 7，密钥仍是 Redwarhq2018HoneyHoneyHoney",
       "raw_hex": "0023045e000000003a1b526564776172687132303138486f6e6579486f6e6579486f6e6579"
     },
     {
-      "_step": "build 信息包 opcode 04c0（RedWar_2026102901）。字段号与 2026102102 相同，取值仍是登录时那一组",
-      "raw_hex": "002804c0000000002a013032056275696c641209756e646566696e65642209756e646566696e65641800",
+      "_step": "build 信息包 opcode 04c0（RedWar_2026102901）。字段号：2=baseid 3=hn 4=h 5=type 6=enterType",
+      "raw_hex": "002804c0000000001201302a056275696c642209756e646566696e65641a09756e646566696e65643000",
       "delay": 0.2
     }
   ],
