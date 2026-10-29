@@ -4907,8 +4907,7 @@ def attack_status(user_id: int) -> dict:
         page_on = _signal_value(_mark_name("pageqr", user_id, conn=conn), conn=conn) == "1"
         show_qr = bool(
             page_login_path(user_id, conn=conn)
-            or (online and phase == "login"
-                and (page_on or login_qr_path(user_id, conn=conn))))
+            or (online and phase == "login" and page_on))
 
         keeping = (
             phase in ("hold", "paused", "running", "daily", "queue")

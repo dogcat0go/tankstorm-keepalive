@@ -3579,6 +3579,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             note_attack_qq(qq)
             qq.note_login("攻打线程启动，票据仍有效。%s。%s",
                           _login_context(), qq.ticket_brief())
+            citydb.set_page_qr(False, user_id)
         scope_blocked = any(
             citydb.attack_qq_blocked(uid) for uid in citydb.attack_context_users())
         just_scanned = False
@@ -3903,8 +3904,10 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
                 citydb.ask_attack_login(user_id)
             if not citydb.attack_in_keepalive(user_id):
                 citydb.note_attack_logging_in(user_id)
-                if on_page:
+                if on_page and claim and way == "qr":
                     citydb.set_page_qr(True, user_id)
+                elif on_page:
+                    citydb.set_page_qr(False, user_id)
                 if _drop_live_sock(user_id):
                     log.info("攻打 QQ %s 游戏没挂上，掐掉旧连接准备重连", uin)
             log.info("攻打 QQ %s 的线程已在跑", uin)
@@ -4056,6 +4059,7 @@ def _connect_and(qq, config: dict, work) -> int:
                 time.sleep(delay)
         log.info("已登录，uid=%s sid=%s", ctx.get("uid"), ctx.get("sid"))
         qq.note_login("游戏连接开始。%s。%s", _login_context(), qq.ticket_brief())
+        citydb.set_page_qr(False)
 
         interval = float(config.get("保持活跃", {}).get("心跳间隔秒")
                          or protocol.heartbeat_interval(spec))
@@ -4297,6 +4301,7 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
             _arm_login_hold()
             qq.note_login("票据还在，不重新扫码。%s。%s", _login_context(), qq.ticket_brief())
             log.info("攻打 QQ %s 票据还在，不重新扫码", getattr(qq, "uin", "") or "")
+            _citydb.set_page_qr(False)
             return True
     own_napcat = bool(getattr(qq, "attack_account", False) and getattr(qq, "use_napcat", False))
     if (way != "qr" and (own_napcat or not force_qr)
@@ -4409,8 +4414,7 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
             time.sleep(pause)
     finally:
         qq._login_busy = False
-        if owner:
-            citydb.set_page_qr(False, owner)
+        citydb.set_page_qr(False, owner or citydb.attack_context_user() or 0)
 
 
 def run(qq, config: dict, with_daily: bool = False) -> int:
