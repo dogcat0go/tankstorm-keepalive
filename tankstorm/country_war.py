@@ -264,7 +264,8 @@ def _use_recovery_card(sock, rec, item_id, lock_meter=True):
         return False, f"背包里没读到物品 {item_id}（读不到就不用）"
     if count <= 0:
         return False, f"国战恢复卡已用完（背包剩 {count} 张）"
-    # 2026-10-22 抓包：国战界面点恢复卡发 {count:1, itemID:40004, optType:7}，不发 id(4) 和 selectID(1)。
+    # 2026-10-29 21:57 国战里点恢复卡：count=1、itemID、optType=7，不带槽位。回包 ret=0。
+    # 背包里点是另一条：带槽位、optType=0。这里走国战这条。
     body = encode_message({3: ("int32", 1),
                            5: ("int32", item_id), 7: ("int32", 7)},
                           omit_zero=False)
