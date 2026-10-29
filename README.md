@@ -812,7 +812,7 @@ python tools/capture_daily.py streams/<端口>/c2s.bin.decrypted/frames.jsonl
 服务器上需要 Java，以及 [ffdec](https://github.com/jindrapetrik/jpexs-decompiler)（反编译才能看见 if/else，字节码只能看见挤成一条的直线）：
 
 ```bash
-export FFDEC_JAR=/opt/ffdec/ffdec.jar   # 装在哪就指到哪
+export FFDEC_JAR=/usr/share/java/ffdec/ffdec.jar   # deb 包的实际位置
 python tools/build_wiremap.py RedWar_<新版本>.swf \
     --canon-swf RedWar_2026101403.swf
 ```

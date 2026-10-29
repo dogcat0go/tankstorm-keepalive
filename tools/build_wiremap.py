@@ -46,8 +46,9 @@ def find_ffdec(explicit=""):
     cands = [
         explicit or "",
         os.environ.get("FFDEC_JAR") or "",
-        "/usr/share/ffdec/ffdec.jar",
+        "/usr/share/java/ffdec/ffdec.jar",
         "/usr/share/java/ffdec.jar",
+        "/usr/share/ffdec/ffdec.jar",
         "/opt/ffdec/ffdec.jar",
         os.path.expanduser("~/ffdec/ffdec.jar"),
         os.path.expanduser("~/tools/ffdec/ffdec.jar"),

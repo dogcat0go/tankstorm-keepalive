@@ -480,7 +480,8 @@ def _hook_dir() -> str:
 
 def _find_ffdec() -> str:
     env = os.environ.get("FFDEC_JAR") or ""
-    cands = [env, "/usr/share/ffdec/ffdec.jar", "/usr/share/java/ffdec.jar",
+    cands = [env, "/usr/share/java/ffdec/ffdec.jar",
+             "/usr/share/java/ffdec.jar", "/usr/share/ffdec/ffdec.jar",
              "/opt/ffdec/ffdec.jar",
              os.path.expanduser("~/ffdec/ffdec.jar"),
              r"D:\tools\ffdec\ffdec.jar", r"D:\ffdec\ffdec.jar",
