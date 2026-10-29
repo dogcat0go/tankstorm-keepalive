@@ -2349,9 +2349,10 @@ def confirm_attack_qq(user_id: int, uin: str) -> bool:
                     (user_id,))
                 conn.commit()
                 log.info("登录账号 %s 的攻打 QQ %s 已对上，暂停解开", who, uin)
-                set_attack_paused(False, user_id)
             else:
                 log.info("登录账号 %s 的攻打 QQ %s 核对通过", who, uin)
+            if attack_paused(user_id):
+                set_attack_paused(False, user_id)
             return True
         conn.execute(
             "UPDATE app_user SET attack_qq_block=1 WHERE id=?",

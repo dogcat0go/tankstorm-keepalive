@@ -3596,7 +3596,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 citydb.take_attack_login()
                 log.info("攻打 QQ %s 的 NapCat 没接上，这次不改走扫码", uin)
                 return
-        elif login_way == "qr":
+        elif login_way == "qr" and not (valid and not scope_blocked):
             valid = False
         if scope_blocked or not valid:
             citydb.set_attack_status("login")
@@ -3636,18 +3636,23 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                             _connect_attack_orders(qq, config)
                             continue
                         if picked == "qr" or blocked:
-                            citydb.set_attack_status("login")
-                            _arm_login_limit()
-                            if on_page:
-                                citydb.set_page_qr(True, user_id)
-                            ok = relogin_with_push(
-                                qq, config, force_qr=True,
-                                way="qr" if picked == "qr" else "")
-                            if on_page:
-                                citydb.set_page_qr(False, user_id)
-                            if not ok and _give_up_login(uin):
-                                break
-                            continue
+                            if not blocked and qq.is_valid():
+                                citydb.set_attack_paused(False, _owner())
+                                _arm_login_hold()
+                                log.info("攻打 QQ %s 票据还在，不重新扫码，直接连游戏", uin)
+                            else:
+                                citydb.set_attack_status("login")
+                                _arm_login_limit()
+                                if on_page:
+                                    citydb.set_page_qr(True, user_id)
+                                ok = relogin_with_push(
+                                    qq, config, force_qr=True,
+                                    way="qr" if picked == "qr" else "")
+                                if on_page:
+                                    citydb.set_page_qr(False, user_id)
+                                if not ok and _give_up_login(uin):
+                                    break
+                                continue
                         _arm_push_keepalive()
                         if not citydb.attack_in_keepalive(_owner()):
                             citydb.set_attack_paused(False, _owner())
@@ -3684,16 +3689,22 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                             _arm_login_hold()
                             log.info("攻打 QQ %s 已用 NapCat 登录", uin)
                     elif picked == "qr":
-                        citydb.set_attack_status("login")
-                        _arm_login_limit()
-                        if on_page:
-                            citydb.set_page_qr(True, user_id)
-                        if not relogin_with_push(qq, config, force_qr=True, way="qr"):
+                        if qq.is_valid() and not any(
+                                citydb.attack_qq_blocked(uid)
+                                for uid in citydb.attack_context_users()):
+                            _arm_login_hold()
+                            log.info("攻打 QQ %s 票据还在，不重新扫码，直接连游戏", uin)
+                        else:
+                            citydb.set_attack_status("login")
+                            _arm_login_limit()
+                            if on_page:
+                                citydb.set_page_qr(True, user_id)
+                            if not relogin_with_push(qq, config, force_qr=True, way="qr"):
+                                if on_page:
+                                    citydb.set_page_qr(False, user_id)
+                                continue
                             if on_page:
                                 citydb.set_page_qr(False, user_id)
-                            continue
-                        if on_page:
-                            citydb.set_page_qr(False, user_id)
                     _arm_push_keepalive()
                     if citydb.attack_in_keepalive(_owner()):
                         citydb.set_attack_status("hold")
@@ -4203,6 +4214,8 @@ def note_attack_qq(qq) -> bool:
         if getattr(qq, "_attack_qq_bad", False):
             citydb.set_attack_paused(True, user_id)
             return False
+        if citydb.attack_paused(user_id):
+            citydb.set_attack_paused(False, user_id)
         return True
     ok = citydb.confirm_attack_qq(user_id, uin)
     qq._attack_qq_seen = (user_id, uin)
@@ -4277,6 +4290,14 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
         return False
     if way == "qr":
         force_qr = True
+    if force_qr and getattr(qq, "attack_account", False):
+        blocked = any(
+            _citydb.attack_qq_blocked(uid) for uid in _citydb.attack_context_users())
+        if not blocked and qq.is_valid() and note_attack_qq(qq):
+            _arm_login_hold()
+            qq.note_login("票据还在，不重新扫码。%s。%s", _login_context(), qq.ticket_brief())
+            log.info("攻打 QQ %s 票据还在，不重新扫码", getattr(qq, "uin", "") or "")
+            return True
     own_napcat = bool(getattr(qq, "attack_account", False) and getattr(qq, "use_napcat", False))
     if (way != "qr" and (own_napcat or not force_qr)
             and (own_napcat or not getattr(qq, "attack_account", False))
