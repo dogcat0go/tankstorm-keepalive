@@ -132,25 +132,37 @@ def napcat_host(api: str) -> str:
     return text.split("/", 1)[0].split("@")[-1]
 
 
+def _account_tables(config: dict | None) -> list:
+    """攻打号写在登录.账号。也认放在最外层的账号，避免配置嵌错就整页显示没配。"""
+    tables = []
+    for node in (
+        ((config or {}).get("登录") or {}).get("账号"),
+        (config or {}).get("账号"),
+    ):
+        if isinstance(node, dict):
+            tables.append(node)
+    return tables
+
+
 def _account_napcat_box(config: dict | None, uin: str) -> dict:
     """这个攻打号配置里的 NapCat。没有就空字典，不回落到扫描号。"""
-    accounts = ((config or {}).get("登录") or {}).get("账号") or {}
-    if not isinstance(accounts, dict):
-        return {}
     uin = str(uin or "").strip()
     found = None
-    if uin:
-        for key in (f"qq-{uin}", uin):
-            item = accounts.get(key)
-            if isinstance(item, dict):
-                found = item
-                break
-    if found is None and uin:
-        suffix = f"qq-{uin}.json"
-        for item in accounts.values():
-            if isinstance(item, dict) and str(item.get("cookie") or "").endswith(suffix):
-                found = item
-                break
+    for accounts in _account_tables(config):
+        if uin:
+            for key in (f"qq-{uin}", uin):
+                item = accounts.get(key)
+                if isinstance(item, dict):
+                    found = item
+                    break
+        if found is None and uin:
+            suffix = f"qq-{uin}.json"
+            for item in accounts.values():
+                if isinstance(item, dict) and str(item.get("cookie") or "").endswith(suffix):
+                    found = item
+                    break
+        if found is not None:
+            break
     box = (found or {}).get("NapCat") if isinstance(found, dict) else {}
     return box if isinstance(box, dict) else {}
 
