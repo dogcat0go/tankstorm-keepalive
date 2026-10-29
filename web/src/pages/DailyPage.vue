@@ -155,7 +155,7 @@ const guildClaimable = computed(() =>
           <tr v-for="it in progressTasks" :key="it.key">
             <td>
               <div>{{ it.name }}</div>
-              <div v-if="it.key === '公会任务'" class="muted">{{ it.hint || "开着时每小时看一次。今日参与还没到 5 个就去领任务。到了 5 个，能领奖才去领，没有可领的就不动。身上的任务已经算进这个次数。活跃任务另算。" }}</div>
+              <div v-if="it.hint" class="muted">{{ it.hint }}</div>
             </td>
             <td>
               <el-switch
