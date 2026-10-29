@@ -6,7 +6,7 @@
 # （第 3 版，或你选择的任何更新版本）之条款，再分发和/或修改它。
 # 本程序希望能有用，但不提供任何担保；甚至不含适销性或特定用途适用性的默示担保。
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
-"""坦克风暴 RC4 解密 —— 豁免名单来自 RedWar_2026102102.swf 的协议常量。
+"""坦克风暴 RC4 解密 —— 豁免名单来自 RedWar_2026102901.swf 的协议常量。
 
     python tools/redwar_rc4.py logs/streams/<会话>/s2c.bin --sid <sid> --uid <uid>
     python tools/redwar_rc4.py logs/streams/<会话>/s2c.bin --sid <sid> --uid <uid> --write

@@ -21,11 +21,11 @@
 
 帧格式（抓包确认）：[2字节大端长度 N][2字节 opcode][4字节 seq][body]，整帧 = 2 + N。
 
-关于加密（2026-10-21，已按 RedWar_2026102102.swf 改过豁免名单）
+关于加密（2026-10-29，已按 RedWar_2026102901.swf 改过豁免名单）
 ------------------------------------------------------------
 **绝大多数消息都是 RC4 加密的**，只有少数 opcode 走白名单豁免：
-  接收豁免 0237 032a 0200 0246 0298   （心跳和四类广播）
-  发送豁免 043e 044a 0451 04ee        （心跳、认证、加载、调试）
+  接收豁免 02ae 02e6 0261 0292 0274   （心跳和四类广播）
+  发送豁免 046c 045e 04c0 0436        （心跳、认证、加载、调试）
 protocol.json 的心跳/认证/build 三个包恰好都在发送豁免名单里 —— 这就是静态
 重放能工作的原因。广播在接收豁免名单里，所以关键词能读到明文。两者都推不出
 "协议没加密"。
@@ -119,9 +119,9 @@ IMAGE_MAGICS = [
     (b"GIF87a", "GIF"), (b"GIF89a", "GIF"),
 ]
 
-# 豁免 RC4 的 opcode。来自 RedWar_2026102102.swf：
-#   接收 0237 / 032a / 0200 / 0246 / 0298
-#   发送 043e / 044a / 0451 / 04ee
+# 豁免 RC4 的 opcode。来自 RedWar_2026102901.swf：
+#   接收 02ae / 02e6 / 0261 / 0292 / 0274
+#   发送 046c / 045e / 04c0 / 0436
 # 这两个名单之外的 body 全部过 RC4，且连续消耗同一条密钥流。
 EXEMPT_OPCODES = crypto.EXEMPT      # 单一来源，见 tankstorm/crypto.py
 
@@ -435,9 +435,12 @@ class Recorder:
         self.uid = str((ctx or {}).get("uid") or "")
         try:
             from . import wiremap
-            wiremap.ACTIVE = wiremap.for_version("2026102102")
+            wiremap.ACTIVE = wiremap.for_version("2026102901")
+            page_ver = str((ctx or {}).get("version") or "")
+            if page_ver and page_ver != "2026102901":
+                log.info("游戏页版本 %s，协议按 RedWar_2026102901", page_ver)
         except Exception as exc:
-            log.warning("2026102102 协议对照没载入，收到的包仍按旧编号解读：%s", exc)
+            log.warning("2026102901 协议对照没载入，收到的包仍按旧编号解读：%s", exc)
         if not self.live_decrypt:
             return False
         rc4, why = crypto.from_ctx(ctx or {})
