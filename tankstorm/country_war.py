@@ -221,26 +221,71 @@ BAG_LST = "RseBagItemLst"
 CARD_ITEM_ID = 40004          # 国战恢复卡，抓包实测：用掉后行动力与士气全满
 
 
+def _bag_rows(node):
+    """从一包背包里取出 (物品号, 槽位, 数量)。
+
+    只有一格时解码器给的是 dict，不是 list。槽位在 field1，不能再拿 field1
+    去套一层列表。物品也可能挂在临时背包 field2，或包在更外一层里。
+    """
+    if isinstance(node, list):
+        rows = []
+        for one in node:
+            rows.extend(_bag_rows(one))
+        return rows
+    if not isinstance(node, dict):
+        return []
+    tid = node.get("field2")
+    if isinstance(tid, bool) or not isinstance(tid, int):
+        tid = node.get("itemID")
+    if isinstance(tid, int) and not isinstance(tid, bool) and tid > 0:
+        slot = node.get("field1")
+        if isinstance(slot, bool) or not isinstance(slot, int):
+            slot = node.get("id")
+        count = node.get("field4")
+        if isinstance(count, bool) or not isinstance(count, int):
+            count = node.get("count") if isinstance(node.get("count"), int) else 0
+        if isinstance(count, bool) or not isinstance(count, int):
+            count = 0
+        if isinstance(slot, bool) or not isinstance(slot, int) or slot <= 0:
+            slot = 0
+        return [(tid, slot, count)]
+    rows = []
+    for val in node.values():
+        if isinstance(val, (dict, list)):
+            rows.extend(_bag_rows(val))
+    return rows
+
+
 def _find_bag_item(rec, item_id):
     """在背包里找某件物品，返回 (槽位ID, 数量)；没有返回 (None, 0)。
 
     抓包实测背包条目形如
         {"field1": 1035, "field2": 40004, "field3": 1696834514, "field4": 63}
-    field1 是**槽位 ID**（正是 RceBagItemUse 请求里的 id），field2 是物品 ID，
-    field4 是数量。槽位 ID 跟着这一格走，不能写死。
+    field1 是槽位 ID，field2 是物品 ID，field4 是数量。
+
+    登录会把整包推下来，之后可能只推变动的那几格。整包更大，用它覆盖；
+    更小的包只更新里面出现的物品，避免后一格把恢复卡冲掉。
     """
-    got = rec.latest.get(BAG_LST) if rec else None
-    if not got or not isinstance(got[1], dict):
+    if not rec:
         return None, 0
-    items = (got[1].get("bagItem") or {})
-    if isinstance(items, dict):
-        items = items.get("field1") or items.get("field2") or []
-    if not isinstance(items, list):
-        return None, 0
-    for e in items:
-        if isinstance(e, dict) and e.get("field2") == item_id:
-            return e.get("field1"), int(e.get("field4") or 0)
-    return None, 0
+    hist = list((getattr(rec, "recent", {}) or {}).get(BAG_LST) or [])
+    one = (getattr(rec, "latest", {}) or {}).get(BAG_LST)
+    if one and one not in hist:
+        hist.append(one)
+    found = None
+    most = 0
+    for item in hist:
+        data = item[1] if isinstance(item, tuple) and len(item) > 1 else item
+        rows = _bag_rows(data)
+        if not rows:
+            continue
+        hit = next(((slot, count) for tid, slot, count in rows if tid == item_id), None)
+        if len(rows) > most:
+            most = len(rows)
+            found = hit
+        elif hit:
+            found = hit
+    return found or (None, 0)
 
 
 def _use_recovery_card(sock, rec, item_id, lock_meter=True):
