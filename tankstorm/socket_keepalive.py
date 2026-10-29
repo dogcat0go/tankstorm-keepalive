@@ -240,6 +240,17 @@ def _stop_storm_relogin(uin: str = "") -> None:
         log.info("被超级强攻打断后 %d 分钟还没登上，停止重复登录", minutes)
 
 
+def _keep_reconnecting(qq) -> bool:
+    """游戏连接掉了，挂机还没结束，网页票据也还在。这不是扫码超时。"""
+    from . import citydb
+    if not citydb.attack_hold_on():
+        return False
+    try:
+        return bool(qq.is_valid())
+    except Exception:
+        return False
+
+
 def _give_up_login(uin: str = "") -> bool:
     key = str(uin or "").strip() or _limit_key()
     if not _abandon_login(key):
@@ -999,6 +1010,15 @@ class _Pulse:
         if not self.user_id:
             return
         try:
+            with self._lock:
+                sock = self._sock
+                last = self.last
+                interval = self.interval
+            # 刚挂上、或心跳还在发，页面上的保活标记会晚一拍。
+            # 按那个标记掐连接，会把挂机打成每隔一会儿重连一次。
+            if sock is not None and (
+                    last <= 0 or time.time() - last < max(40.0, interval * 2 + 10)):
+                return
             st = citydb.attack_status(self.user_id)
             if (st.get("online") and not st.get("keepalive")
                     and st.get("phase") in (
@@ -2385,15 +2405,31 @@ def _run_requested_move(rec, sock, config, beater) -> bool:
 
 # 点「推送登录二维码」之后，先挂上这么久，连接断了也在这段时间里重连。
 PUSH_KEEPALIVE_MINUTES = 180
-# 全天候开着时，剩余不到这么多分钟就再续一段，避免到点断开。
-ALWAYS_HOLD_REFRESH_MIN = 10
-ALWAYS_HOLD_WINDOW_MIN = 30
+
+
+def _arm_login_hold() -> None:
+    """这次登录成功才重算。全天候不设截止；没开就从现在起按配置的分钟数。"""
+    from . import citydb
+
+    if not citydb.attack_context_user():
+        return
+    if citydb.attack_hold_always():
+        citydb.clear_attack_hold()
+        log.info("全天候挂机，从这次登录起不限时")
+        return
+    minutes = citydb.attack_hold_minutes()
+    if minutes <= 0:
+        return
+    citydb.note_attack_hold(time.time() + minutes * 60)
+    log.info("这次登录后挂机保活 %d 分钟", minutes)
 
 
 def _arm_push_keepalive() -> None:
-    """推送登录之后开始保活。已经比这更长的，不把时间改短。"""
+    """推送登录之后开始保活。已经比这更长的，不把时间改短。全天候不限时，不再另记一段。"""
     from . import citydb
 
+    if citydb.attack_hold_always():
+        return
     left = citydb.attack_hold_left() or 0
     need = PUSH_KEEPALIVE_MINUTES * 60
     if left >= need:
@@ -2406,18 +2442,21 @@ def _begin_attack_hold(fresh=False) -> bool:
     """队列空了就按配置开始或继续挂机。该结束时返回 False。
 
     推送登录已经记下的剩余时间要接着挂，不因为表单里的分钟数是 0 就清掉。
+    全天候不写截止时间，旧的倒计时清掉，避免到点断开。
     """
     from . import citydb
 
     minutes = citydb.attack_hold_minutes()
     always = citydb.attack_hold_always()
     left = citydb.attack_hold_left()
-    if always and (left is None or left <= ALWAYS_HOLD_REFRESH_MIN * 60):
-        citydb.note_attack_hold(time.time() + ALWAYS_HOLD_WINDOW_MIN * 60)
-        if left is None or left <= 0:
-            log.info("全天候挂机，接着保活")
-            fresh = True
-        left = ALWAYS_HOLD_WINDOW_MIN * 60
+    if always:
+        if left is not None:
+            citydb.clear_attack_hold()
+            log.info("全天候挂机，不限时")
+        if fresh:
+            citydb.set_attack_status(
+                "hold" if citydb.attack_link_alive() else "login")
+        return True
     if left is not None and left > 0:
         if fresh:
             citydb.set_attack_status(
@@ -3551,6 +3590,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
             if qq.adopt_napcat(config) and note_attack_qq(qq):
                 valid = True
                 just_scanned = True
+                _arm_login_hold()
                 log.info("攻打 QQ %s 已用 NapCat 登录", uin)
             elif not valid:
                 citydb.take_attack_login()
@@ -3586,6 +3626,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                             citydb.set_attack_paused(False, _owner())
                             citydb.set_attack_status("login")
                             if qq.adopt_napcat(config) and note_attack_qq(qq):
+                                _arm_login_hold()
                                 log.info("攻打 QQ %s 已用 NapCat 登录", uin)
                             elif not qq.is_valid():
                                 log.info("攻打 QQ %s 的 NapCat 没接上，这次不改走扫码", uin)
@@ -3626,7 +3667,8 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 citydb.release_due_waits()
                 # 新订单本身不登录。先推送登录挂上游戏，这条连接再领单。
                 # 服务器停前正在打的那一单要接着做，不另加挂机时间。
-                # 点了推送登录就先记 180 分钟。一直停在登录中超过 10 分钟就关掉线程。
+                # 点了推送登录：全天候不限时；没开全天候且比 180 分钟短，才补到 180 分钟。
+                # 一直停在登录中超过 10 分钟就关掉线程。
                 asked = citydb.take_attack_login()
                 resumed = citydb.attack_resume_marked()
                 if asked:
@@ -3639,6 +3681,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                                 time.sleep(2)
                                 continue
                         else:
+                            _arm_login_hold()
                             log.info("攻打 QQ %s 已用 NapCat 登录", uin)
                     elif picked == "qr":
                         citydb.set_attack_status("login")
@@ -3665,8 +3708,10 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     break
                 if just_scanned:
                     just_scanned = False
-                elif storm_retry or citydb.attack_in_keepalive(_owner()):
+                elif (storm_retry or citydb.attack_in_keepalive(_owner())
+                        or _keep_reconnecting(qq)):
                     # 已经挂上游戏的，按原来的挂机时间走，不套这 10 分钟。
+                    # 连接刚断、挂机还没结束时也一样：那 10 分钟只留给扫码。
                     # 被超级打断后的重登也不套这 10 分钟，30 分钟还没登上再停。
                     _clear_login_limit()
                 else:
@@ -3689,6 +3734,7 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                     continue
                 storm_retry = False
                 if (not citydb.attack_in_keepalive(_owner())
+                        and not _keep_reconnecting(qq)
                         and _login_limit_hit() and _give_up_login(uin)):
                     break
                 if resumed:
@@ -4181,13 +4227,16 @@ def _login_context() -> str:
         name = citydb.username_of(uid) or str(uid)
         flag = "开" if citydb.attack_hold_always(uid) else "关"
         bits.append(f"{name}全天候{flag}")
+    head = f"登录账号{'、'.join(bits)}"
+    if citydb.attack_hold_always():
+        return f"{head}，全天候不限时"
     left = citydb.attack_hold_left()
     minutes = citydb.attack_hold_minutes()
     if left is None:
         left_text = "这次没有挂机计时"
     else:
         left_text = f"这次还剩{left}秒"
-    return (f"登录账号{'、'.join(bits)}，配置挂机最长{minutes}分钟，{left_text}")
+    return f"{head}，配置挂机最长{minutes}分钟，{left_text}"
 
 
 def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -> bool:
@@ -4219,7 +4268,8 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
             qq.note_login("没有 NapCat 地址，不能用 NapCat 登录")
             return False
         if qq.adopt_napcat(config) and note_attack_qq(qq):
-            qq.note_login("NapCat 已接上，不发消息。%s", qq.ticket_brief())
+            _arm_login_hold()
+            qq.note_login("NapCat 已接上，不发消息。%s。%s", _login_context(), qq.ticket_brief())
             log.info("已用这个攻打号的 NapCat 登录，不发消息")
             return True
         qq.note_login("NapCat 没接上，这次不改走扫码")
@@ -4232,15 +4282,17 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
             and (own_napcat or not getattr(qq, "attack_account", False))
             and qq.adopt_napcat(config)):
         if note_attack_qq(qq):
-            qq.note_login("NapCat 已接上，不再扫码。%s", qq.ticket_brief())
+            _arm_login_hold()
+            qq.note_login("NapCat 已接上，不再扫码。%s。%s", _login_context(), qq.ticket_brief())
             if own_napcat:
                 log.info("已用这个攻打号的 NapCat 续上，不发消息")
             return True
         log.error("NapCat 续上的 QQ 不是这个账号绑定的，改走扫码")
         qq.note_login("NapCat 续上的 QQ 不是绑定的号，改为扫码")
     if not force_qr and qq.silent_renew():
-        qq.note_login("静默续期已接上。%s", qq.ticket_brief())
         if note_attack_qq(qq):
+            _arm_login_hold()
+            qq.note_login("静默续期已接上。%s。%s", _login_context(), qq.ticket_brief())
             log.info("已用长效凭据静默续期，无需人工介入")
             return True
         log.error("续上的 QQ 不是这个账号绑定的，改走扫码")
@@ -4310,11 +4362,12 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
             timeout = 180 if not until else max(1, int(until - time.time()))
             if qq.qr_login(on_qr=on_qr, push_uin=push_uin,
                            timeout_sec=min(180, timeout), until=until):
-                qq.note_login("重新登录成功。%s。%s", _login_context(), qq.ticket_brief())
                 if not note_attack_qq(qq):
                     log.error("这次登录的 QQ 不是绑定的那个，请改用原来的号再扫")
                     qq.note_login("扫上的 QQ 不是绑定的号，继续等下一次扫码")
                     continue
+                _arm_login_hold()
+                qq.note_login("重新登录成功。%s。%s", _login_context(), qq.ticket_brief())
                 if not getattr(qq, "attack_account", False):
                     notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
                 return True
