@@ -623,9 +623,9 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                 log.info("登录态数据接收完毕，开始翻城")
             else:
                 got = "、".join(getattr(rec, "latest", {}) or {}) or "无"
-                log.error("登录后没收到角色数据，读不到国家ID（已有回包：%s）。"
-                          "这一轮先不翻。先停掉其它游戏窗口再试，多半是号被另一路占着",
-                          got)
+                log.warning("登录后没读到国家面板（已有回包：%s）。"
+                            "这一轮先不翻，保活继续",
+                            got)
                 last_pages = time.time()
                 last_watch = time.time()
 
@@ -2757,6 +2757,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     stated = False
     path_box = [0.0]
     hold_closed = False
+    country_paused = False
+    move_told = 0
     side_kinds = (
         "blast", "factory",
         "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "chest", "cards", "clean",
@@ -2773,14 +2775,28 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
             return "factory"
         return "cards"
 
+    def _war_on():
+        """有国家 ID 才领单、走路、看被挡的路径。没有就只保活。"""
+        nonlocal country_paused
+        if _my_country(rec, config) > 0:
+            if country_paused:
+                log.info("已读到国家，国战助手恢复")
+                country_paused = False
+            return True
+        if not country_paused:
+            log.info("没有国家面板，国战助手先停。保活和其它任务继续")
+            country_paused = True
+        return False
+
     def _jobs_open():
-        return (citydb.daily_job_open() or citydb.attack_order_open()
+        orders = citydb.attack_order_open() if _war_on() else False
+        return (citydb.daily_job_open() or orders
                 or citydb.attack_move_pending() > 0
                 or citydb.attack_here_pending())
 
     def _pump():
         """冷却空档。到点的空城改回排队；剩下的时间还够，就先打一单国战。"""
-        if citydb.attack_paused():
+        if citydb.attack_paused() or not _war_on():
             return False
         try:
             citydb.release_due_waits()
@@ -2851,9 +2867,20 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 if (hold_closed and not citydb.attack_hold_on()
                         and not _jobs_open() and not citydb.attack_paused()):
                     return 0
-                if _run_requested_move(rec, sock, config, beater):
-                    stated = False
-                    continue
+                if _war_on():
+                    move_told = 0
+                    if _run_requested_move(rec, sock, config, beater):
+                        stated = False
+                        continue
+                else:
+                    city = citydb.attack_move_pending()
+                    if city and city != move_told:
+                        label = f"{city} {citydb.city_name(city) or ''}".strip()
+                        citydb.note_attack_move_text(
+                            f"没有国家面板，先不移动到 {label}")
+                        move_told = city
+                    elif not city:
+                        move_told = 0
                 if _refresh_asked_here(rec, sock, config):
                     continue
                 _refresh_equip_bag(rec, sock)
@@ -2863,22 +2890,23 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     citydb.skip_unfinished_auto(uid)
                 citydb.release_due_waits()
                 citydb.set_lane("war")
-                job = citydb.claim_attack_order()
-                if job:
-                    stated = False
-                    hold_closed = False
-                    citydb.clear_attack_hold()
-                    log.info("领到订单 %s，城市 %s UID %s",
-                             job["id"], job["city_id"], job["uid"])
-                    with _order_account(int(job.get("user_id") or 0)):
-                        _fight_claimed(rec, sock, config, beater, job)
-                    continue
-                if citydb.attack_order_open():
-                    hold_closed = False
-                    citydb.set_attack_status("queue")
-                    if not _wait_socket(sock, spec, ctx):
-                        raise OSError("服务器关闭连接")
-                    continue
+                if _war_on():
+                    job = citydb.claim_attack_order()
+                    if job:
+                        stated = False
+                        hold_closed = False
+                        citydb.clear_attack_hold()
+                        log.info("领到订单 %s，城市 %s UID %s",
+                                 job["id"], job["city_id"], job["uid"])
+                        with _order_account(int(job.get("user_id") or 0)):
+                            _fight_claimed(rec, sock, config, beater, job)
+                        continue
+                    if citydb.attack_order_open():
+                        hold_closed = False
+                        citydb.set_attack_status("queue")
+                        if not _wait_socket(sock, spec, ctx):
+                            raise OSError("服务器关闭连接")
+                        continue
                 side = citydb.claim_daily_job(side_kinds)
                 if side:
                     stated = False
@@ -2910,9 +2938,10 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 if not stated:
                     path_box[0] = 0.0
                 stated = True
-                # 空挂只心跳、等订单。打开国战助手时另读一次所在城市。扫描号自己翻城。
-                path_box[0] = _watch_blocked_path(
-                    rec, sock, config, beater, path_box[0])
+                # 空挂只心跳、等订单。没有国家面板时不领单、不看路径。
+                if _war_on():
+                    path_box[0] = _watch_blocked_path(
+                        rec, sock, config, beater, path_box[0])
                 if not _wait_socket(sock, spec, ctx):
                     log.info("挂机时游戏连接断了，准备重连")
                     return 0
@@ -3859,7 +3888,11 @@ def run_farm_city_once(qq, config: dict, city_id, times=1, sweep=False,
 
 
 def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
-    """读登录推送，直到出现自己的国家ID。手填了「国战.自己国家ID」则直接返回。"""
+    """等到自己的国家ID。手填了「国战.自己国家ID」则直接返回 True。
+
+    连接还在、只是没读到面板时返回 False。对端把连接关掉时抛 OSError。
+    没读到面板不要据此下线。
+    """
     filled = int(((config or {}).get("国战") or {}).get("自己国家ID") or 0)
     if filled or daily.read_my_country(rec):
         return True
@@ -3884,7 +3917,7 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
         except socket.timeout:
             continue
         if not chunk:
-            return False
+            raise OSError("服务器关闭连接")
         reply = protocol.maybe_online_reply(spec, chunk, ctx)
         if reply:
             sock.sendall(reply)
@@ -3971,15 +4004,15 @@ def _connect_and(qq, config: dict, work) -> int:
                          or protocol.heartbeat_interval(spec))
         heart = _open_heart(sock, protocol.build_heartbeat(spec, ctx), interval)
 
-        # 只收到 RseAuthState 就开打，后面一律是「读不到自己的国家ID」。
-        # 保活连上前会走 loadIdInfo.war，这里以前漏了，服务端有时只回认证包、不推 RseLoad。
-        if not _await_role(sock, rec, spec, ctx, config):
+        # 没读到国家面板也保持这条连接。国战助手在 _attack_orders 里先停，
+        # 日常、兵营和心跳照常。对端已经关掉连接时 _await_role 抛 OSError。
+        if _await_role(sock, rec, spec, ctx, config):
+            log.info("登录态数据接收完毕，开始执行")
+        else:
             got = "、".join(rec.latest.keys()) or "无"
-            log.error("登录后没收到角色数据，读不到国家ID（已有回包：%s）。"
-                      "先停掉 --keepalive 和游戏窗口再试，多半是号被另一路占着",
-                      got)
-            return 1
-        log.info("登录态数据接收完毕，开始执行")
+            log.warning("登录后没读到国家面板（已有回包：%s）。"
+                        "连接保持，国战助手先停",
+                        got)
         _mark_game_online(True)
         citydb.note_attack_link(interval)
         if citydb.attack_context_user() or citydb.attack_context_qq():
