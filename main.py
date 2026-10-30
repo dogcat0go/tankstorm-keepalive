@@ -419,6 +419,9 @@ def main() -> int:
                     metavar="次数",
                     help="实验室探索 50 连后退出。一次用 50 张实验室探索卡，"
                          "credit 写 0。次数默认 1")
+    g4.add_argument("--blast", nargs="?", const=1, type=int, default=None,
+                    metavar="数量",
+                    help="连上游戏造 N 个爆破兵（默认 1）。开工失败时把线上字段和生产槽打出来")
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
                          "登录可选空间或大厅。游戏窗口仍是 flash_host，"
@@ -443,7 +446,8 @@ def main() -> int:
                 args.web, args.list_cities, args.route is not None,
                 args.move is not None, args.orders,
                 args.capture, args.fund is not None,
-                args.pve is not None, args.draw, args.pick, args.lab50 is not None)):
+                args.pve is not None, args.draw, args.pick, args.lab50 is not None,
+                args.blast is not None)):
         parser.print_help()
         return 0
 
@@ -456,7 +460,8 @@ def main() -> int:
                               args.route is not None, args.move is not None,
                               args.orders,
                               args.capture, args.fund is not None,
-                              args.pve is not None, args.draw, args.pick, args.lab50 is not None)):
+                              args.pve is not None, args.draw, args.pick, args.lab50 is not None,
+                              args.blast is not None)):
         log.error("订阅页面已和游戏分开。另开一个进程：python3 web.py")
         return 1
 
@@ -702,6 +707,12 @@ def main() -> int:
 
     if args.lab50 is not None:
         return socket_keepalive.run_lab50_once(qq, config, args.lab50)
+
+    if args.blast is not None:
+        if args.blast < 1:
+            log.error("--blast 数量至少是 1")
+            return 1
+        return socket_keepalive.run_blast_once(qq, config, args.blast)
 
     if args.draw:
         return socket_keepalive.run_draw_once(qq, config, args.draw)

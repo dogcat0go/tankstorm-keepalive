@@ -4162,6 +4162,22 @@ def run_lab50_once(qq, config: dict, times: int) -> int:
     return _connect_and(qq, config, _work)
 
 
+def run_blast_once(qq, config: dict, count: int) -> int:
+    """连一次，造 N 个爆破兵，看开工回包后退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        try:
+            ok, why = daily.daily_blast(rec, sock, config, count=count)
+        except daily.Later as later:
+            log.info("[爆破兵] %s", later.text)
+            log.info("任务执行期间共发心跳 %d 次", beater.count)
+            return 0
+        log.info("[爆破兵] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
 def run_draw_once(qq, config: dict, mode: str) -> int:
     """连一次，按抓包发指定的那一种抽取，看回包后退出。"""
     def _work(rec, sock, spec, ctx, beater):

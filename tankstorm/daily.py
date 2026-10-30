@@ -2349,36 +2349,106 @@ def _blast_flags(rec, config):
     return qq_hall, yellow, blue
 
 
-def _blast_queue(building):
-    """兵营生产槽。(兵种, 正在造的兵种, 剩余秒)。没有槽就是空闲。读不懂返回 None。
-
-    2026-10-11 18:06 登录包：类型 29 的生产槽是 field25，
-    field3 是正在造的兵种，field4 是剩余秒。空闲时是 {field3:0, field4:0}。
-    2026102901 和 2026103001 的线上号是 1、2，对照表翻成这里的 field3、field4。
-    写成线上 3、4 时，剩余秒读到的是别的字段，开工会显示剩余 0 秒。
-    field20 在这份包里是整数，不是队列。
-    """
-    raw = building.get("field25")
+def _slot_queue(raw):
+    """一块生产槽。(兵种, 正在造的兵种, 剩余秒)。不像槽就返回 None。"""
     if not isinstance(raw, dict):
-        alt = building.get("field20")
-        raw = alt if isinstance(alt, dict) else None
-    if raw is None:
-        return 0, 0, 0
-    def pick(*keys):
+        return None
+
+    def num(*keys):
         for key in keys:
             n = _one(raw.get(key))
             if n is not None:
                 return n
         return None
 
-    left = pick("field4", "leftTime")
-    making = pick("field3", "inProduceArmy")
-    army = pick("field1", "armyType")
-    if left is None and making is None and army is None:
-        return 0, 0, 0
-    if left is None or left < 0:
+    making = num("field3", "inProduceArmy")
+    left = num("field4", "leftTime")
+    army = num("field1", "armyType") if making is not None else None
+    if making is None and left is None:
+        making = num("field1")
+        left = num("field2")
+        army = making
+    if not isinstance(left, int) or not 0 < left <= 20000:
+        return None
+    if not ((isinstance(making, int) and 1 <= making <= 40)
+            or (isinstance(army, int) and 1 <= army <= 40)):
         return None
     return army or 0, making or 0, left
+
+
+def _nested_dicts(value):
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _nested_dicts(item)
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _nested_dicts(item)
+
+
+def _blast_queue(building):
+    """兵营生产槽。(兵种, 正在造的兵种, 剩余秒)。没有槽就是空闲。读不懂返回 None。
+
+    2026-10-11 登录包里空闲槽是 field25={field3:0, field4:0}。
+    开工成功后剩余秒在同一块槽里，field3 是兵种，field4 是秒。
+    新版可能把槽放在别的字段，或解成列表，所以整座建筑里都找。
+    """
+    if not isinstance(building, dict):
+        return 0, 0, 0
+    found = []
+    for raw in _nested_dicts(building):
+        if raw is building:
+            continue
+        queue = _slot_queue(raw)
+        if queue:
+            found.append(queue)
+    if found:
+        return max(found, key=lambda q: q[2])
+    raw = building.get("field25")
+    if isinstance(raw, dict):
+        left = _one(raw.get("field4"))
+        if left == 0:
+            return 0, 0, 0
+        return None
+    return 0, 0, 0
+
+
+def _producing(building):
+    """建筑里还在走的生产槽。(兵种, 正在造的, 剩余秒)。没有就 None。
+
+    回包里的槽可能不在 field25，剩余秒也可能还在字段 2 上。
+    """
+    if not isinstance(building, dict):
+        return None
+    slots = []
+    for key in ("field25", "field20", "prcArmy"):
+        raw = building.get(key)
+        if isinstance(raw, dict) and raw not in slots:
+            slots.append(raw)
+    for value in building.values():
+        if isinstance(value, dict) and value not in slots and any(
+                k in value for k in (
+                    "field4", "leftTime", "field3", "inProduceArmy", "field2")):
+            slots.append(value)
+    for raw in slots:
+        def pick(*keys, raw=raw):
+            for key in keys:
+                n = _one(raw.get(key))
+                if n is not None:
+                    return n
+            return None
+
+        left = pick("field4", "leftTime")
+        if left in (None, 0):
+            alt = pick("field2")
+            if isinstance(alt, int) and alt > 0 and "field4" not in raw and "leftTime" not in raw:
+                left = alt
+        if not isinstance(left, int) or left <= 0:
+            continue
+        making = pick("field3", "inProduceArmy") or 0
+        army = pick("field1", "armyType") or 0
+        return army, making, left
+    return None
 
 
 def _wallet_credit(data):
@@ -2580,6 +2650,8 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
         if not bid or bid <= 0:
             continue
         queue = _blast_queue(b)
+        if queue == (0, 0, 0):
+            queue = _producing(b) or queue
         if queue is None:
             if building_type is None:
                 continue
@@ -2662,9 +2734,16 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
 
     def send(kind, fields):
         mark = rec.seq_mark()
-        sender.send_frame(sock, "0414",
-                          encode_message(fields, omit_zero=False),
-                          rec.rc4_c2s)
+        body = encode_message(fields, omit_zero=False)
+        if kind == 1:
+            from . import wiremap
+            try:
+                wop, wired = wiremap.ACTIVE.to_wire("0414", body)
+                tags = [(t, val.hex()) for t, _wt, val in wiremap._split(wired)]
+                log.info("[爆破兵] 开工线上 %s 字段 %s", wop, tags)
+            except Exception as exc:
+                log.info("[爆破兵] 开工字段没能翻译：%s", exc)
+        sender.send_frame(sock, "0414", body, rec.rc4_c2s)
 
         def mine(data, kind=kind):
             if not isinstance(data, dict) or data.get("type") != kind:
@@ -2694,18 +2773,38 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
             wallet = credit
         building = got.get("building")
         queue = _blast_queue(building) if isinstance(building, dict) else None
-        busy = (
-            queue is not None and queue[2] > 0 and queue[1] in (0, army_type))
-        if busy and (not isinstance(err, int) or isinstance(err, bool) or err != 0):
+        if queue is None or queue[2] <= 0:
+            queue = _producing(building) or queue
+        ours = (
+            queue is not None and queue[2] > 0
+            and queue[1] in (0, army_type) and queue[0] in (0, army_type))
+        other = (
+            queue is not None and queue[2] > 0 and not ours)
+        rejected = not isinstance(err, int) or isinstance(err, bool) or err != 0
+        # 只有回包里的槽确实在走，才把拒绝当成「已经在造」并改去加速。
+        # 槽是空的就还没开工，不能说成不重复开工。
+        if rejected and ours:
             say(
-                f"{place} {bid} 开工被拒 error={err}，服务器还在造，"
+                f"{place} {bid} 开工被拒 error={err}，队列里已有{unit}，"
                 f"改为按剩余 {queue[2]} 秒加速")
-        elif not isinstance(err, int) or isinstance(err, bool) or err != 0:
-            return False, f"开工服务器返回 error={err}"
+        elif rejected and other:
+            who = queue[1] or queue[0]
+            return False, f"{place}正在造别的兵（{who}），不打断"
+        elif rejected:
+            slot = building.get("field25") if isinstance(building, dict) else None
+            log.info("[爆破兵] 开工回包 error=%s 槽=%s", err, slot)
+            return False, f"开工服务器返回 error={err}，兵营没有进入生产"
         elif queue is None:
             return False, "开工回包读不到剩余时间，不加速"
-        elif not busy:
-            return False, f"开工后没有进入{unit}队列（剩余 {queue[2]} 秒）"
+        elif not ours:
+            slot = building.get("field25") if isinstance(building, dict) else None
+            nested = sorted(
+                k for k, v in (building or {}).items()
+                if isinstance(v, (dict, list))) if isinstance(building, dict) else None
+            log.info("[爆破兵] 开工回包 error=%s type=%s id=%s armyType=%s 槽=%s 嵌套=%s",
+                     err, got.get("type"), got.get("id"), got.get("armyType"),
+                     slot, nested)
+            return False, f"开工后没有进入{unit}队列（剩余 {queue[2] if queue else 0} 秒）"
         _army, making, left = queue
         seen_at = time.monotonic()
         seen_left = left

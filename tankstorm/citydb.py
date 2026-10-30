@@ -2166,15 +2166,30 @@ def _forget_page_names(conn) -> None:
     fail_cols = {r[1] for r in conn.execute("PRAGMA table_info(atk_fail)")}
     if "acct" not in fail_cols:
         return
-    if row and str(row[0] or "").strip():
-        conn.execute(
-            "UPDATE atk_fail SET acct=? WHERE acct='' OR acct='网页' OR "
-            "(acct LIKE '网页-%' AND substr(acct, 4) GLOB '[0-9]*')",
-            (str(row[0]).strip(),))
-    else:
-        conn.execute(
-            "UPDATE atk_fail SET acct='' WHERE acct='网页' OR "
+    # 网页占位和空账号都要收成同一个攻打 QQ。同一个 uid 已经有目标行时，
+    # 直接改名会撞上 PRIMARY KEY (acct, uid)，先删掉多余的占位。
+    hold = ("acct='' OR acct='网页' OR "
             "(acct LIKE '网页-%' AND substr(acct, 4) GLOB '[0-9]*')")
+    target = str(row[0]).strip() if row and str(row[0] or "").strip() else ""
+    if target:
+        conn.execute(
+            f"DELETE FROM atk_fail WHERE ({hold}) AND uid IN "
+            "(SELECT uid FROM atk_fail WHERE acct=?)",
+            (target,))
+    else:
+        hold = ("acct='网页' OR "
+                "(acct LIKE '网页-%' AND substr(acct, 4) GLOB '[0-9]*')")
+        conn.execute(
+            f"DELETE FROM atk_fail WHERE ({hold}) AND uid IN "
+            "(SELECT uid FROM atk_fail WHERE acct='')")
+    conn.execute(
+        "DELETE FROM atk_fail WHERE rowid IN ("
+        f" SELECT rowid FROM atk_fail WHERE ({hold}) AND rowid NOT IN ("
+        f"  SELECT MIN(rowid) FROM atk_fail WHERE ({hold}) GROUP BY uid))")
+    if target:
+        conn.execute(f"UPDATE atk_fail SET acct=? WHERE {hold}", (target,))
+    else:
+        conn.execute(f"UPDATE atk_fail SET acct='' WHERE {hold}")
 
 
 def _ensure_attack_qq_map(conn) -> None:
