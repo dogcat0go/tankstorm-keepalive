@@ -2354,6 +2354,8 @@ def _blast_queue(building):
 
     2026-10-11 18:06 登录包：类型 29 的生产槽是 field25，
     field3 是正在造的兵种，field4 是剩余秒。空闲时是 {field3:0, field4:0}。
+    2026102901 和 2026103001 的线上号是 1、2，对照表翻成这里的 field3、field4。
+    写成线上 3、4 时，剩余秒读到的是别的字段，开工会显示剩余 0 秒。
     field20 在这份包里是整数，不是队列。
     """
     raw = building.get("field25")
