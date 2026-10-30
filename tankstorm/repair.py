@@ -246,17 +246,103 @@ def _pack(tank) -> bytes:
     return encode_int32(1, 0) + encode_bytes(2, army)
 
 
-def _send(rec, sock, tank):
+def _send(rec, sock, tank, what="修复"):
     from . import daily
     mark = rec.seq_mark() if rec else 0
     sender.send_frame(sock, OPCODE, _pack(tank), rec.rc4_c2s if rec else None)
     data = daily._await_response(sock, rec, "RseBaseBattleModify", mark, 6.0)
     if not isinstance(data, dict):
-        return False, "未收到修复回包"
+        return False, f"未收到{what}回包"
     err = data.get("error")
     if err not in (0, None, False):
-        return False, f"修复被拒 error={err}"
+        return False, f"{what}被拒 error={err}"
     return True, ""
+
+
+def _spread_shape(n, w, h):
+    """按区域宽高选列数和行数，格子尽量接近正方形。"""
+    if w <= 0:
+        return 1, n
+    if h <= 0:
+        return n, 1
+    best = None
+    for cols in range(1, n + 1):
+        rows = (n + cols - 1) // cols
+        empty = cols * rows - n
+        cw = w / cols
+        ch = h / rows
+        score = abs(cw - ch) / max(cw, ch) + empty / n
+        if best is None or score < best[0]:
+            best = (score, cols, rows)
+    return best[1], best[2]
+
+
+def _spread_points(n, x1, y1, x2, y2):
+    """把 n 个点铺满矩形，含四角。两个角重合时返回 None。"""
+    left, right = (x1, x2) if x1 <= x2 else (x2, x1)
+    top, bottom = (y1, y2) if y1 <= y2 else (y2, y1)
+    w, h = right - left, bottom - top
+    if n <= 0 or (w == 0 and h == 0):
+        return None
+    if n == 1:
+        return [(left + w // 2, top + h // 2)], 1, 1
+    cols, rows = _spread_shape(n, w, h)
+    base, extra = divmod(n, rows)
+    pts = []
+    for r in range(rows):
+        count = base + (1 if r < extra else 0)
+        y = top + h // 2 if rows == 1 else round(top + r * h / (rows - 1))
+        for c in range(count):
+            if count == 1:
+                x = left + w // 2
+            else:
+                x = round(left + c * w / (count - 1))
+            pts.append((x, y))
+    return pts, cols, rows
+
+
+def spread_blasts(rec, sock, x1, y1, x2, y2, on_progress=None):
+    """把活着的爆破兵均匀布进两个角框出的矩形。一只一条 0427。"""
+    from . import daily
+
+    if blast_ids(rec) is None:
+        return False, "还没读到兵册"
+    seen = {}
+    for row in _loaded(rec):
+        one = _unit(row)
+        if one and one["type"] == 7 and one["id"] > 0:
+            seen.setdefault(one["id"], one)
+    units = [seen[i] for i in sorted(seen)]
+    if not units:
+        return False, "没有活着的爆破兵"
+    laid = _spread_points(len(units), int(x1), int(y1), int(x2), int(y2))
+    if not laid:
+        return False, "两个角不能是同一个点"
+    pts, cols, rows = laid
+    if len(set(pts)) < len(pts):
+        return False, "这块区域太小，铺开后会叠在同一个点"
+    done = 0
+    sent = 0
+    for unit, (x, y) in zip(units, pts):
+        daily.raise_if_stopped()
+        if unit["x"] == x and unit["y"] == y:
+            done += 1
+            continue
+        spot = dict(unit)
+        spot["x"], spot["y"] = x, y
+        ok, why = _send(rec, sock, spot, "布开")
+        if not ok:
+            return False, f"已布开 {done} 只，下一只{why}"
+        sent += 1
+        done += 1
+        if on_progress and (sent == 1 or done == len(units) or done % 10 == 0):
+            on_progress(f"已布开 {done}/{len(units)}")
+        daily._nap(0.05)
+    text = f"布开 {done} 只，{cols} 列 {rows} 行"
+    stay = done - sent
+    if stay:
+        text += f"，其中 {stay} 只本来就在点上"
+    return True, text
 
 
 def repair_tanks(rec, sock, config=None):

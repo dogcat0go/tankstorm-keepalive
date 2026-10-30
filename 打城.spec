@@ -1,13 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+try:
+    import webview
+    _hooks = [os.path.join(os.path.dirname(webview.__file__), "__pyinstaller")]
+except Exception:
+    _hooks = []
 
 a = Analysis(
     ['city_gui.py'],
     pathex=[],
     binaries=[],
     datas=[('config.json', '.'), ('protocol.json', '.'), ('endpoints.json', '.'), ('tankstorm/schema.json', 'tankstorm')],
-    hiddenimports=[],
-    hookspath=[],
+    hiddenimports=["webview", "clr"],
+    hookspath=_hooks,
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],

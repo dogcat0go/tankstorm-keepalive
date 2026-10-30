@@ -70,6 +70,7 @@ class ABC:
     def __init__(self, data: bytes):
         self.raw = data
         self.trait_mn = {}
+        self.slot_types = {}          # id(traits) -> {槽名: 类型限定名}
         p = 0
         self.minor, self.major = struct.unpack_from("<HH", data, p)
         p += 4
@@ -207,6 +208,7 @@ class ABC:
         cnt, p = _u30(b, p)
         out = []
         name_ids = []
+        slots = {}
         for _ in range(cnt):
             name_i, p = _u30(b, p)
             tag = b[p]
@@ -215,7 +217,8 @@ class ABC:
             mi = None
             if kind in (0, 6):               # Slot / Const
                 _, p = _u30(b, p)            # slot_id
-                _, p = _u30(b, p)            # type_name
+                type_mn, p = _u30(b, p)
+                slots[self.name_of(name_i)] = self.qname(type_mn)
                 vindex, p = _u30(b, p)
                 if vindex:
                     p += 1                   # vkind
@@ -241,6 +244,7 @@ class ABC:
             out.append((self.name_of(name_i), kname, mi))
             name_ids.append(name_i)
         self.trait_mn[id(out)] = name_ids
+        self.slot_types[id(out)] = slots
         return out, p
 
     # ---------- 类 ----------

@@ -161,7 +161,8 @@ def fetch_hall_launch(session, *, referer: str = "", appid: str = "") -> dict:
                 last = {"_error": str(exc)}
                 continue
             if not data:
-                last = {"_error": f"HTTP {r.status_code}"}
+                if not last:
+                    last = {"_error": f"HTTP {r.status_code}"}
                 continue
             last = data
             if hall_logged_in(data) or data.get("jump_url") or data.get("openid"):

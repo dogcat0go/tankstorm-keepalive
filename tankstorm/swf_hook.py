@@ -418,13 +418,31 @@ def _recv_site(abc: ABC, cls_mn: int, meth_mn: int):
     for i, cur in enumerate(ins):
         if cur["name"] != "callpropvoid" or abc.name_of(cur["mn"]) != "readExternal":
             continue
-        # 紧挨调用的是「getslot 消息 / getscopeobject 1 / getslot 字节数组」。
-        # 2026102601 起混淆把消息对象的 getscopeobject 和 getslot 拆开了，
-        # 前面那条 getscopeobject 1 不再贴着 getslot。
-        window = ins[i - 3:i]
-        if len(window) != 3:
+        # 语义上紧挨调用的是「getslot 消息 / getscopeobject 1 / getslot 字节数组」。
+        # 2026102601 起混淆把消息对象的 getscopeobject 和 getslot 拆开了。
+        # 2026103001 又在 getscopeobject 和字节数组的 getslot 之间插了无条件 jump，
+        # 跳过几条垃圾指令。只认这种短跳，顺着它找回这三条。
+        picked = []
+        idx = i
+        for _ in range(3):
+            addr = ins[idx]["addr"]
+            prev_i = idx - 1
+            for j in range(idx - 1, -1, -1):
+                prev = ins[j]
+                if addr - prev["addr"] > 80:
+                    break
+                off = prev["ops"][0] if prev["ops"] else None
+                if (prev["name"] == "jump" and isinstance(off, int)
+                        and 0 < off <= 64 and prev["end"] + off == addr):
+                    prev_i = j - 1
+                    break
+            if prev_i < 0:
+                break
+            picked.append(ins[prev_i])
+            idx = prev_i
+        if len(picked) != 3:
             continue
-        msg, base, arg = window
+        arg, base, msg = picked
         if (msg["name"] != "getslot" or base["text"] != "getscopeobject 1"
                 or arg["name"] != "getslot"):
             continue
