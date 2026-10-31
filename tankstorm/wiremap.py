@@ -140,12 +140,13 @@ class WireMap:
             if hit is None:
                 if out:
                     raise Unmapped(f"字段 {tag} 在游戏版本 {self.version} 里没有对应")
-                # 新版多出来的消息留下，否则生产槽这类嵌套字段会被丢掉。
-                if wt == 2 and 0 < len(val) <= 512:
+                # 新版多出来的整数和短消息留下。月卡的天数、领取标记
+                # 和生产槽都不在旧字段号上，丢掉就读成没领、没进队列。
+                if (wt == 2 and 0 < len(val) <= 512) or wt == 0:
                     used = set(self._out[cls])
                     kept = tag if tag not in used else 10000 + tag
-                    parts.append((kept, _put_varint(kept << 3 | wt)
-                                  + _put_varint(len(val)) + val))
+                    extra = _put_varint(len(val)) + val if wt == 2 else val
+                    parts.append((kept, _put_varint(kept << 3 | wt) + extra))
                 continue
             new, nested, pos = hit
             if wt == 2 and nested is not None:

@@ -831,15 +831,23 @@ def judge(rse_msg: str, data, ignore_left=False, success_flag=None):
     # ——语义和 ret 正好相反。不特判的话 judge() 找不到 ret 就直接判"成功"，
     # 又是一个假成功。2026-08-10 真客户端抓包实测：领取上期排名奖励回
     # {type:3, result:1}，随后 RseArenaInfo.bLastRankGet 由 false 翻 true。
-    # 月卡回包没有 ret，成败看 nResult，0 才是领到。
-    # 2026-10-10 三张都是 nResult=0，已领标记翻 true、剩余天数减 1。
+    # 月卡回包没有 ret。旧包看 nResult=0。
+    # 2026-10-31 领取回包没有 nResult：type=1，三张卡的已领标记翻 true、
+    # 对应剩余天数减 1。超值 activetype=0 勋章 +300；VIP activetype=4 天数那一档减 1。
     if rse_msg == "RseRedwarMonthCard":
         r = data.get("nResult")
-        if not isinstance(r, int) or isinstance(r, bool):
-            return False, "响应里没有 nResult，认不出成败", False
-        if r != 0:
-            return False, f"服务器返回 nResult={r}", True
-        return True, "成功：nResult=0", False
+        if isinstance(r, int) and not isinstance(r, bool):
+            if r != 0:
+                return False, f"服务器返回 nResult={r}", True
+            return True, "成功：nResult=0", False
+        if data.get("type") == 1:
+            index = {0: 0, 4: 1, 2: 2}.get(data.get("activetype"))
+            text = _month_card_status(data, index) if index is not None else None
+            if text and text.endswith("今日已领"):
+                return True, f"成功：{text}", False
+            if text and (text.endswith("今日可领") or text == "没有剩余天数"):
+                return False, f"{text}，没领到", True
+        return False, "响应里没有 nResult，也读不到月卡领取标记", False
 
     if rse_msg in RESULT_IS_STATUS:
         r = data.get("result")
@@ -2062,6 +2070,18 @@ def _read_path(data, path):
 
     取不到返回 None。
     """
+    if isinstance(data, dict) and path.startswith("field4[field1=1]."):
+        direct = _walk_path(data, path)
+        if direct is not None:
+            return direct
+        slot = _book_free(data)
+        if slot is None:
+            return None
+        return slot[0] if path.endswith(".field2") else slot[1]
+    return _walk_path(data, path)
+
+
+def _walk_path(data, path):
     cur = data
     for part in path.split("."):
         sel = _SELECT.match(part)
@@ -2093,6 +2113,58 @@ def _read_path(data, path):
                 cur = [cur]
             return cur                     # 下一段负责从每个元素里挑
     return cur
+
+
+def _book_free(data):
+    """技能书免费档 (剩余次数, 下次时刻)。2026-10-31 档位列表不在 field4。
+
+    三条里有一档 type 是 1、2、3 且互不重复，另一档是 0–20 的剩余次数，
+    再有一个 0 或 unix 秒的下次时刻。参谋领取前是 type=1、leftCnt=1。
+    """
+    lists = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            if len(value) >= 3 and all(isinstance(item, dict) for item in value):
+                lists.append(value)
+            for item in value:
+                walk(item)
+
+    walk(data)
+    for rows in lists:
+        keys = set.intersection(*(set(row) for row in rows))
+
+        def column(key):
+            out = []
+            for row in rows:
+                num = row.get(key)
+                if isinstance(num, bool) or not isinstance(num, int):
+                    return None
+                out.append(num)
+            return out
+
+        time_key = next((key for key in keys
+                         if column(key) and max(column(key)) > 1000000000), None)
+        type_keys = [key for key in keys
+                     if key != time_key and column(key)
+                     and set(column(key)) <= {1, 2, 3} and 1 in column(key)
+                     and len(set(column(key))) == len(column(key))]
+        type_key = next((key for key in type_keys if set(column(key)) == {1, 2, 3}),
+                        type_keys[0] if type_keys else None)
+        if type_key is None:
+            continue
+        cnt_key = next((key for key in keys
+                        if key not in (time_key, type_key) and column(key)
+                        and all(0 <= num <= 20 for num in column(key))), None)
+        if cnt_key is None:
+            continue
+        for row in rows:
+            if row.get(type_key) == 1:
+                return row.get(cnt_key), row.get(time_key) or 0
+    return None
 
 
 def read_my_country(rec):
@@ -2144,21 +2216,48 @@ def _read_counts(data, path):
     return _read_path(data, path)
 
 
-def _month_card_status(data, index):
-    """这一张的剩余天数，以及今天还能不能领。读不到返回 None。"""
-    if not isinstance(data, dict):
-        return None
+def _month_card_arrays(data):
+    """三张月卡的 (剩余天数, 今日已领)。旧字段名没有时，在回包顶层找这两条数组。
+
+    2026-10-31：天数是 [54,26,0] 这种 0–400 的三个整数，已领是三个布尔。
+    结束时间是 10 位时间戳，不拿来当天数。
+    """
     counts = _aslist(data.get("threeMonthCardCnt"))
     flags = _aslist(data.get("threeMonthCardGetAwd"))
+    if len(counts) >= 3 and len(flags) >= 3 and any(
+            isinstance(x, int) and not isinstance(x, bool) and x > 1 for x in counts):
+        return counts, flags
+    days = bits = None
+    for value in data.values():
+        if not isinstance(value, list) or len(value) < 3:
+            continue
+        if all(isinstance(x, bool) for x in value):
+            bits = value
+        elif all(isinstance(x, int) and not isinstance(x, bool) and x in (0, 1)
+                 for x in value):
+            bits = bits or [bool(x) for x in value]
+        elif all(isinstance(x, int) and not isinstance(x, bool) and 0 <= x <= 400
+                 for x in value) and any(x > 1 for x in value):
+            days = value
+    if days is not None and bits is not None:
+        return days, bits
+    return counts, flags
+
+
+def _month_card_status(data, index):
+    """这一张的剩余天数，以及今天还能不能领。读不到返回 None。"""
+    if not isinstance(data, dict) or index is None:
+        return None
+    counts, flags = _month_card_arrays(data)
     if index >= len(counts) and index >= len(flags):
         return None
     left = counts[index] if index < len(counts) else None
     bit = flags[index] if index < len(flags) else None
     if not isinstance(left, int) or isinstance(left, bool) or left <= 0:
         return "没有剩余天数"
-    if bit is True:
+    if bit is True or bit == 1:
         return f"剩余 {left} 天，今日已领"
-    if bit is False:
+    if bit is False or bit == 0:
         return f"剩余 {left} 天，今日可领"
     return f"剩余 {left} 天"
 
@@ -2177,6 +2276,13 @@ def _check_gate(gate, data, tiers=None):
         return (False, f"{gate.timeout:.0f}s 内没收到 {gate.rse_msg}，"
                        "这一轮不做（宁可少做也不误扣券/勋章）", False, None)
     raw = _read_counts(data, gate.field)
+    if raw is None and gate.count_field:
+        text = _month_card_status(data, gate.index)
+        if text and text.endswith("今日可领"):
+            return (True, text, False, None)
+        if text:
+            done_today = text.endswith("今日已领") or text == "没有剩余天数"
+            return (False, text, done_today, None)
     if raw is None:
         return (False, f"{gate.rse_msg} 里没有 {gate.field}，这一轮不做",
                 False, None)
@@ -2189,9 +2295,6 @@ def _check_gate(gate, data, tiers=None):
             return (False, f"{gate.field}={list(raw)} 没有第 {gate.index} 张，"
                            "这一轮不做", False, None)
         bit = raw[gate.index]
-        if not isinstance(bit, bool):
-            return (False, f"{gate.field}[{gate.index}]={bit!r} 不是领取标记，"
-                           "这一轮不做", False, None)
         if gate.count_field:
             text = _month_card_status(data, gate.index)
             if not text:
@@ -2201,6 +2304,9 @@ def _check_gate(gate, data, tiers=None):
                 return (True, text, False, None)
             done_today = text.endswith("今日已领") or text == "没有剩余天数"
             return (False, text, done_today, None)
+        if not isinstance(bit, bool):
+            return (False, f"{gate.field}[{gate.index}]={bit!r} 不是领取标记，"
+                           "这一轮不做", False, None)
         if bit:
             return (False, f"已经领过了（{gate.field}[{gate.index}]=True）",
                     True, None)
@@ -4201,12 +4307,12 @@ def daily_scene_tree(rec, sock, config):
         sock, rec, "RseRedwarMonthCard", mark, 6.0,
         want=lambda d: isinstance(d, dict) and d.get("type") == 1
         and d.get("activetype") == 1)
-    result = _one(got.get("nResult")) if isinstance(got, dict) else None
-    if got is None or result is None:
+    if not isinstance(got, dict):
         return False, "失败：未收到实景树回包"
-    if result != 0 or got.get("hasGetDayfree") is not True:
-        return False, f"失败：实景树被拒 nResult={result}"
-    return True, "成功：领到实景树每日奖励"
+    result = _one(got.get("nResult"))
+    if got.get("hasGetDayfree") is True and result in (0, None):
+        return True, "成功：领到实景树每日奖励"
+    return False, f"失败：实景树被拒 nResult={result}"
 
 
 def daily_world_idle(rec, sock, config):
@@ -4226,7 +4332,14 @@ def daily_world_idle(rec, sock, config):
     last = _one(panel.get("tRewardTime"))
     if last is None:
         return False, "失败：读不到上次领取时间"
-    if last > 0 and time.localtime(last)[:3] == time.localtime()[:3]:
+    # 2026-10-31：冷却时刻还在今天、但已经过去时，客户端仍能领。
+    # 只有冷却还没到，或冷却是 0 且上次领取就在今天，才跳过。
+    cd = _one(panel.get("cdtime"))
+    now = time.time()
+    if isinstance(cd, int) and not isinstance(cd, bool) and cd > now:
+        return True, "成功：挂机奖励还在冷却"
+    if (not isinstance(cd, int) or isinstance(cd, bool) or cd <= 0) and last > 0 \
+            and time.localtime(last)[:3] == time.localtime()[:3]:
         return True, "成功：今天已经领过挂机奖励"
     mark = rec.seq_mark() if rec else 0
     sender.send_frame(sock, "045b",
@@ -4236,11 +4349,28 @@ def daily_world_idle(rec, sock, config):
         sock, rec, "RsePVEFightOpt", mark, 6.0,
         want=lambda d: isinstance(d, dict) and d.get("type") == 301)
     num = _one(got.get("nIdleRewardNum")) if isinstance(got, dict) else None
-    if got is None or not num:
+    items = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            iid = value.get("itemID")
+            if isinstance(iid, int) and not isinstance(iid, bool) and iid > 0:
+                items.append(iid)
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    if isinstance(got, dict):
+        walk(got)
+    if got is None or (not num and not items):
         return False, "失败：挂机奖励没有到账"
-    rid = _one(got.get("nIdleRewardID"))
+    rid = _one(got.get("nIdleRewardID")) if isinstance(got, dict) else None
     extra = f"，编号 {rid}" if rid else ""
-    return True, f"成功：领到挂机奖励，数量 {num}{extra}"
+    if num:
+        return True, f"成功：领到挂机奖励，数量 {num}{extra}"
+    return True, "成功：领到挂机奖励 " + "、".join(str(i) for i in items)
 
 
 def daily_train(rec, sock, config):
