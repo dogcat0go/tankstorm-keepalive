@@ -10,6 +10,7 @@
 """
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -233,6 +234,48 @@ def _run_timeout(fn, timeout=DB_OP_TIMEOUT, default=None):
     return box[0]
 
 
+def sideline_poison_wal():
+    """挪走 2026-09-26 误提交的那份 wal。
+
+    两帧都写第 380 页，提交后库被收成 391 页。线上库如果还是同一套盐，
+    下次打开会按这个尺寸截断主库，Datasette 就报
+    database disk image is malformed。活着的 wal 帧数和页号对不上，不会动。
+    """
+    wal = DB_FILE + "-wal"
+    try:
+        if not os.path.isfile(wal) or os.path.getsize(wal) != 8272:
+            return False
+        with open(wal, "rb") as f:
+            hdr = f.read(32)
+            if hdr[:4] not in (b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83"):
+                return False
+            if int.from_bytes(hdr[8:12], "big") != 4096:
+                return False
+            marks = []
+            for _ in range(2):
+                frame = f.read(24)
+                if len(frame) != 24:
+                    return False
+                marks.append((int.from_bytes(frame[0:4], "big"),
+                              int.from_bytes(frame[4:8], "big")))
+                if len(f.read(4096)) != 4096:
+                    return False
+        if marks != [(380, 391), (380, 391)]:
+            return False
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        for suf in ("-wal", "-shm"):
+            src = DB_FILE + suf
+            if not os.path.isfile(src):
+                continue
+            dest = src + ".stale-" + stamp
+            os.replace(src, dest)
+            log.info("已挪走会截断主库的旧文件 %s", os.path.basename(dest))
+        return True
+    except OSError as exc:
+        log.info("检查旧 wal 失败，继续打开：%s", exc)
+        return False
+
+
 def connect(readonly=False, timeout=15):
     """打开库。只读不改 journal，避免 DB Browser 开着时 PRAGMA 抢锁失败。
 
@@ -240,8 +283,19 @@ def connect(readonly=False, timeout=15):
     DB Browser 占着写锁会连等三次，国战心跳就被拖死。
     """
     global _schema_ready
+    sideline_poison_wal()
     if not _schema_ready:
-        setup = sqlite3.connect(DB_FILE, timeout=timeout)
+        try:
+            setup = sqlite3.connect(DB_FILE, timeout=timeout)
+        except sqlite3.DatabaseError as exc:
+            if "malformed" in str(exc).lower():
+                log.error(
+                    "打不开 %s：database disk image is malformed。"
+                    "旧的 city_players.db-wal 已经把主库截断。"
+                    "先停掉本程序和 Datasette；wal、shm 挪走后若仍打不开，"
+                    "用备份恢复主库，或用带 sqlite_dbpage 的 sqlite3 执行 .recover。",
+                    DB_FILE)
+            raise
         try:
             setup.execute("PRAGMA journal_mode=WAL")
             setup.executescript(_SCHEMA)
