@@ -88,6 +88,7 @@ const aaCount = ref("1");
 const drinkCount = ref("1");
 const admiralCount = ref("1");
 const admiral10Count = ref("10");
+const agentCount = ref("10");
 const boxMidCount = ref("10");
 const boxHighCount = ref("10");
 const generalCount = ref("1");
@@ -101,7 +102,7 @@ const spreadY1 = ref("");
 const spreadX2 = ref("");
 const spreadY2 = ref("");
 const emptyCards = () => ({
-  general: null, staff: null, lab: null, auto: null, drink: null, recruit: null, explore: null,
+  general: null, staff: null, lab: null, auto: null, drink: null, agent: null, recruit: null, explore: null,
   box_mid: null, box_high: null, box_mid_key: null, box_high_key: null,
 });
 const baseCards = ref(emptyCards());
@@ -460,11 +461,11 @@ async function runDraw(mode, count) {
   showErr("", "base");
   baseNote.value = "";
   const n = cardNum(count);
-  const used = mode === "admiral10" ? Math.floor(n / 10) * 10 : n;
-  const times = mode === "admiral10" ? Math.floor(n / 10) : n;
-  if (mode === "admiral10" && times < 1) throw new Error("十连至少要 10 张卡");
-  const name = mode === "haoyin" ? "豪饮卡" : "高级将领卡";
-  const extra = mode === "admiral10" ? `，十连 ${times} 次` : "";
+  const used = mode === "admiral10" || mode === "agent10" ? Math.floor(n / 10) * 10 : n;
+  const times = mode === "admiral10" || mode === "agent10" ? Math.floor(n / 10) : n;
+  if ((mode === "admiral10" || mode === "agent10") && times < 1) throw new Error("十连至少要 10 张卡");
+  const name = mode === "haoyin" ? "豪饮卡" : mode === "agent10" ? "紫色特工令" : "高级将领卡";
+  const extra = mode === "admiral10" || mode === "agent10" ? `，十连 ${times} 次` : "";
   const ok = await confirmUse(`使用${name} ${used} 张${extra}。`);
   if (!ok) return;
   await api("/api/base", { count, unit: mode });
@@ -1499,6 +1500,7 @@ onUnmounted(() => {
         v-model:drink-count="drinkCount"
         v-model:admiral-count="admiralCount"
         v-model:admiral10-count="admiral10Count"
+        v-model:agent-count="agentCount"
         v-model:box-mid-count="boxMidCount"
         v-model:box-high-count="boxHighCount"
         v-model:general-count="generalCount"

@@ -2674,7 +2674,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     rec, sock, params.get("ids") or [], on_progress=_show)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
-            elif kind in ("haoyin", "admiral", "admiral10"):
+            elif kind in ("haoyin", "admiral", "admiral10", "agent10"):
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
                     return
@@ -2801,7 +2801,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     side_kinds = (
         "blast", "factory",
         "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "chest", "cards", "clean",
-        "haoyin", "admiral", "admiral10", "box_mid", "box_high",
+        "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
 

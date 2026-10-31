@@ -121,8 +121,11 @@ def query(rec, sock):
 def vip_restart(rec, sock):
     """第 4 次：VIP 加次换成一次重开，再把关卡打回第 1 关。
 
-    2026-09-26 00:36 抓包。只在 vipcardaddtimes>0 且 refreshTimes=0 时发。
-    type=101 会扣 100 勋章。次数没对上就停，不再发 type=2。
+    2026-10-31 15:45 抓包，停在第 151 关：type=101 之后
+    vipcardaddtimes 1→0，refreshTimes 0→1，关卡仍是 151。
+    接着 type=2，关卡回到 1，refreshTimes 用回 0。
+    这一次勋章没有减少。成败看这两个次数，不看勋章。
+    次数没对上就停，不再发 type=2。
     条件不满足时返回成功，表示这次不用做。
     """
     cur, panel = query(rec, sock)
@@ -145,7 +148,8 @@ def vip_restart(rec, sock):
         return False, f"type=101 被拒 result={None if not isinstance(got, dict) else got.get('result')}"
     vip2 = _num(got, "field10")
     refresh2 = _num(got, "field2")
-    if vip2 is None or vip2 >= vip or not refresh2:
+    # 加次用掉之后是 0，线上可能不写这个字段。重开次数变成至少 1 就算换成了。
+    if not refresh2 or (vip2 is not None and vip2 >= vip):
         return False, f"type=101 之后次数不对（VIP {vip2}，重开 {refresh2}），停手"
     before = _send(sock, rec, OP, {2: ("int32", TYPE_RESTART)})
     got2 = _await_response(

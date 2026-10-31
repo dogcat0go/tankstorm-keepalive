@@ -9,6 +9,7 @@ const aaCount = defineModel("aaCount", { type: String, required: true });
 const drinkCount = defineModel("drinkCount", { type: String, required: true });
 const admiralCount = defineModel("admiralCount", { type: String, required: true });
 const admiral10Count = defineModel("admiral10Count", { type: String, required: true });
+const agentCount = defineModel("agentCount", { type: String, required: true });
 const boxMidCount = defineModel("boxMidCount", { type: String, required: true });
 const boxHighCount = defineModel("boxHighCount", { type: String, required: true });
 const generalCount = defineModel("generalCount", { type: String, required: true });
@@ -191,7 +192,7 @@ function resText(n) {
     <h2>基地内资源</h2>
     <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
     <p>勋章 {{ resText(credit) }} · 人口 {{ resText(pop) }}</p>
-    <p>高级将领卡 {{ resText(cards.general) }} · 参谋卡 {{ resText(cards.staff) }} · 实验卡 {{ resText(cards.lab) }} · 自动化探索卡 {{ resText(cards.auto) }} · 豪饮卡 {{ resText(cards.drink) }}</p>
+    <p>高级将领卡 {{ resText(cards.general) }} · 参谋卡 {{ resText(cards.staff) }} · 实验卡 {{ resText(cards.lab) }} · 自动化探索卡 {{ resText(cards.auto) }} · 豪饮卡 {{ resText(cards.drink) }} · 紫色特工令 {{ resText(cards.agent) }}</p>
     <p>中级补给箱 {{ resText(cards.box_mid) }} · 中级钥匙 {{ resText(cards.box_mid_key) }} · 高级补给箱 {{ resText(cards.box_high) }} · 高级钥匙 {{ resText(cards.box_high_key) }}</p>
     <p>招募卡自选 {{ resText(cards.recruit) }} · 探索卡自选 {{ resText(cards.explore) }}</p>
     <p class="muted">进入这一页就读攻打号背包里的这几种卡。开卡、换自选包或抽卡之后，剩余张数会跟着背包更新。还没收到就显示还没读到。</p>
@@ -251,7 +252,13 @@ function resText(n) {
             <label>卡数量<input v-model="admiral10Count" class="mins" inputmode="numeric" required /></label>
             <button type="submit">抽取</button>
           </form>
-          <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。十连按卡数除以 10 向下取整，例如 25 张抽 2 次、用 20 张。不够就停，并写出剩余张数。1 到 99999，十连至少 10 张。点下去会先确认卡和张数。</p>
+          <form class="lock-row" @submit.prevent="runDraw('agent10', agentCount).catch((e) => showErr(e.message))">
+            <span class="switch">紫色特工令十连</span>
+            <span class="card-have">紫色特工令 {{ resText(cards.agent) }}</span>
+            <label>数量<input v-model="agentCount" class="mins" inputmode="numeric" required /></label>
+            <button type="submit">抽取</button>
+          </form>
+          <p class="muted">数量是要消耗的卡。豪饮用物品 10061，一张抽一次。高级将领用物品 10020，单抽一张一次。紫色特工令用物品 10095，十连一次用 10 个。十连按数量除以 10 向下取整。不够就停，并写出剩余张数。回包里会单独写出这次得到的紫色特工令个数。1 到 99999，十连至少 10 张。点下去会先确认卡和张数。</p>
         </FoldPart>
         <FoldPart title="补给箱">
           <form class="lock-row" @submit.prevent="runBox('box_mid', boxMidCount).catch((e) => showErr(e.message))">

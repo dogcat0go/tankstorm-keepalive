@@ -403,11 +403,12 @@ def main() -> int:
                          "写成 1-10 或 3,5,8 时，当前关不在名单里会停，不会跳关")
 
     g4 = parser.add_argument_group("其它")
-    g4.add_argument("--draw", choices=("haoyin", "admiral", "admiral10"),
+    g4.add_argument("--draw", choices=("haoyin", "admiral", "admiral10", "agent10"),
                     help="连上后只发这一种，打印回包后退出。"
                          "haoyin=英雄豪饮，耗 1 个物品 10061；"
                          "admiral=高级将领单抽，耗 1 个物品 10020；"
-                         "admiral10=高级将领十连，耗 10 个物品 10020")
+                         "admiral10=高级将领十连，耗 10 个物品 10020；"
+                         "agent10=紫色特工令十连，耗 10 个物品 10095")
     g4.add_argument("--pick", choices=("general", "staff", "lab", "auto"),
                     help="用自选包换成指定卡后退出。"
                          "general=招募包换高级将领卡，staff=招募包换高级参谋招募卡，"

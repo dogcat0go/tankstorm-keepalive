@@ -3160,7 +3160,7 @@ def _draw_slot(rec, item_id):
 
 _WATCH_CARDS = (
     (10020, "general"), (10107, "staff"), (10006, "lab"),
-    (10116, "auto"), (10061, "drink"),
+    (10116, "auto"), (10061, "drink"), (10095, "agent"),
     (110011, "recruit"), (110015, "explore"),
 )
 # 补给箱和钥匙不在普通背包。点开装备栏才回 RseVirtualItemList。
@@ -3210,7 +3210,14 @@ def _item_rows(data):
     if isinstance(rows, dict):
         nested = rows.get("field1") or rows.get("field2")
         rows = nested if isinstance(nested, list) else [rows]
-    return rows if isinstance(rows, list) else []
+    if isinstance(rows, list):
+        return rows
+    found = []
+    for value in data.values():
+        if isinstance(value, list) and value and all(isinstance(row, dict) for row in value):
+            if any("itemID" in row or "field2" in row for row in value):
+                found.extend(value)
+    return found
 
 
 def note_virtual_cards(rec) -> None:
@@ -3290,13 +3297,33 @@ _BOXES = {
 _BOX_BATCH = 10
 
 
-def open_supply_box(rec, sock, kind, count=10, on_progress=None):
-    """开补给箱。2026-10-23 23:17 抓包：RceBagItemUse，optType=5，一次 count=10。
+def _loot_ids(data, skip=()):
+    """回包里开出来的物品号。箱子和钥匙自己的编号不算。"""
+    found = []
+    skip = set(skip)
 
-    中级箱 60002 配钥匙 10038，高级箱 60003 配钥匙 10039。十连各扣 10。
-    请求里只写箱子，钥匙由服务端扣。箱子或钥匙不够 10 就不发。
-    数量在装备栏。进基地战助手时读一次；这里只有还没读到才再读。
-    开完若服务器没推新列表，就按扣掉的个数更新页面。
+    def walk(value):
+        if isinstance(value, list) and value and all(
+                isinstance(item, int) and not isinstance(item, bool)
+                and 10000 <= item < 200000 for item in value):
+            found.extend(item for item in value if item not in skip)
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(data)
+    return found
+
+
+def open_supply_box(rec, sock, kind, count=10, on_progress=None):
+    """开补给箱。2026-10-31：槽位是装备栏里的 id，高级箱 60003 的槽是 6100。
+
+    十连 count=10、optType=5。箱子 424→414，钥匙 10039 556→546。
+    回包 ret=0，开出的物品在奖励列表里。箱子或钥匙不够 10 就不发。
     """
     spec = _BOXES.get(kind)
     if not spec:
@@ -3315,6 +3342,7 @@ def open_supply_box(rec, sock, kind, count=10, on_progress=None):
             return False, "失败：没打开装备栏，读不到箱子和钥匙"
     done = 0
     have = 0
+    looted = []
     for _ in range(times):
         raise_if_stopped()
         found = latest_card(rec, item_id)
@@ -3352,6 +3380,7 @@ def open_supply_box(rec, sock, kind, count=10, on_progress=None):
             _consume_virtual(rec, item_id, _BOX_BATCH)
             _consume_virtual(rec, key_id, _BOX_BATCH)
             note_virtual_cards(rec)
+        looted.extend(_loot_ids(got, skip=(item_id, key_id)))
         if on_progress:
             on_progress(f"{name} {done}/{times}")
         _nap(0.4)
@@ -3359,8 +3388,11 @@ def open_supply_box(rec, sock, kind, count=10, on_progress=None):
     keys = latest_card(rec, key_id)
     remain = left[0] if left else have
     key_left = keys[0] if keys else 0
-    return True, (f"成功：{name}十连 {done} 次、用 {done * _BOX_BATCH} 个，"
-                  f"剩余箱子={remain}，剩余{key_name}={key_left}")
+    text = (f"成功：{name}十连 {done} 次、用 {done * _BOX_BATCH} 个，"
+            f"剩余箱子={remain}，剩余{key_name}={key_left}")
+    if looted:
+        text += "，开出 " + "、".join(str(i) for i in looted)
+    return True, text
 
 
 def _draw_send(rec, sock, opcode, fields, reply, kind):
@@ -3386,19 +3418,34 @@ def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
         return False, "数量要是数字"
     if not 1 <= count <= 99999:
         return False, "卡数量要在 1 到 99999"
-    per = 10 if mode == "admiral10" else 1
+    per = 10 if mode in ("admiral10", "agent10") else 1
     times = count // per if by_card else count
     if times < 1:
         return False, f"十连至少要 10 张卡，这次 {count} 张，向下取整是 0 次，不发"
-    title = {"haoyin": "豪饮", "admiral": "高级将领单抽", "admiral10": "高级将领十连"}.get(mode, mode)
-    item_id = _DRAW_DRINK if mode == "haoyin" else _DRAW_TICKET
-    card = "豪饮卡" if mode == "haoyin" else "高级招募卡"
+    title = {
+        "haoyin": "豪饮", "admiral": "高级将领单抽", "admiral10": "高级将领十连",
+        "agent10": "紫色特工令十连",
+    }.get(mode, mode)
+    if mode == "haoyin":
+        item_id, card = _DRAW_DRINK, "豪饮卡"
+    elif mode == "agent10":
+        item_id, card = 10095, "紫色特工令"
+    else:
+        item_id, card = _DRAW_TICKET, "高级招募卡"
     if mode == "haoyin":
         _draw_send(rec, sock, "0400", {3: ("int32", 0)}, "RseHeroOpen", 0)
+    elif mode == "agent10":
+        mark = rec.seq_mark()
+        sender.send_frame(sock, "04d6", encode_message(
+            {1: ("int32", 0)}, omit_zero=False), rec.rc4_c2s)
+        _await_response(
+            sock, rec, "RseTrenchMortarOpt", mark, 3,
+            want=lambda d: isinstance(d, dict) and d.get("optType") == 0)
     else:
         _draw_send(rec, sock, "044e", {3: ("int32", 0)}, "RseAdmiralOpen", 0)
     _nap(0.3)
     done = 0
+    gained_all = 0
     while done < times:
         raise_if_stopped()
         item = _draw_slot(rec, item_id)
@@ -3412,6 +3459,16 @@ def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
                 1: ("int32", 0), 2: ("int32", item[0]), 3: ("int32", 0),
                 4: ("int32", 2), 5: ("int32", 0),
             }, "RseHeroVisit", 2)
+        elif mode == "agent10":
+            before_n = have
+            sent = f"04d6 optType=17 subType=1003 itemID={item_id} 数量={before_n}"
+            mark = rec.seq_mark()
+            sender.send_frame(sock, "04d6", encode_message({
+                1: ("int32", 17), 2: ("int32", 1003), 6: ("int32", item_id),
+            }, omit_zero=False), rec.rc4_c2s)
+            got = _await_response(
+                sock, rec, "RseTrenchMortarOpt", mark, 6,
+                want=lambda d: isinstance(d, dict) and d.get("optType") == 17)
         else:
             kind, credit = (12, -250) if mode == "admiral10" else (2, 250)
             sent = f"0450 type={kind} credit={credit} item槽={item[0]}"
@@ -3419,7 +3476,19 @@ def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
                 2: ("int32", item[0]), 3: ("int32", 0),
                 4: ("int32", kind), 5: ("int32", credit),
             }, "RseAdmiralVisit", kind)
-        ok, why = _draw_done(title, sent, got, "")
+        if mode == "agent10":
+            if not isinstance(got, dict) or got.get("optType") != 17:
+                ok, why = False, f"{title} 已发出 {sent}，没有回包"
+            elif got.get("nRet") not in (0, None) or (
+                    got.get("ret") not in (0, None) and "ret" in got):
+                ok, why = False, (
+                    f"{title} 被拒 nRet={got.get('nRet')} ret={got.get('ret')}")
+            else:
+                gained = _loot_ids(got).count(item_id)
+                gained_all += gained
+                ok, why = True, f"{title} 已发出 {sent}，得到紫色特工令 {gained} 个"
+        else:
+            ok, why = _draw_done(title, sent, got, "")
         if not ok:
             head = f"完成 {done}/{times}。" if done else ""
             return False, head + why
@@ -3445,19 +3514,23 @@ def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
     remain = left[1] if left else "未知"
     note_bag_cards(rec)
     used = done * per
-    if by_card and mode == "admiral10":
+    if by_card and mode in ("admiral10", "agent10"):
         tail = f"指定 {count} 张，向下取整抽 {done} 次、用 {used} 张"
     else:
         tail = f"抽了 {done} 次、用 {used} 张"
-    return True, f"成功：{title}{tail}，{card}剩余={remain}"
+    text = f"成功：{title}{tail}，{card}剩余={remain}"
+    if mode == "agent10":
+        text += f"，得到紫色特工令 {gained_all} 个"
+    return True, text
 
 
 # 2026-10-17 09:55 抓包。自选包是 RceBagItemUse：selectID 是要换成的物品，
 # id 是包的背包槽，itemID 是包本身，optType=0。回包 ret=0，credit=0、medal=0。
 # 招募包 110011：10020 高级将领卡、10107 高级参谋招募卡。
 # 探索包 110015：10006 实验室探索卡、10116 军备自动化探索卡。
-# 实验室 50 连是 RceWPCExplore：sceneID=10003、expType=1、exploreCnt=50、
-# credit=0、useItemID=实验室卡的槽位、useItemCnt=50。10006 从 823 减到 773。
+# 实验室 50 连是 RceWPCExplore：sceneID=10003、expType=0、exploreCnt=0、
+# credit=0、useItemID=实验室卡的槽位、useItemCnt=这次用的张数。
+# 2026-10-31 客户端高级探索就是这组字段，不再写 expType=1、exploreCnt=50。
 _PACKS = {
     "general": (110011, 10020, "招募卡自选包", "高级将领卡"),
     "staff": (110011, 10107, "招募卡自选包", "高级参谋招募卡"),
@@ -3609,11 +3682,11 @@ def lab50_probe(rec, sock, times=1, on_progress=None):
         if slot is None:
             return False, f"{head}实验室探索卡有 {have} 张，没读到背包槽位，不发"
         before = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
-        sent = (f"043a scene={_LAB_SCENE} expType=1 exploreCnt={_LAB_BATCH} "
+        sent = (f"043a scene={_LAB_SCENE} expType=0 exploreCnt=0 "
                 f"credit=0 槽={slot} useItemCnt={_LAB_BATCH}")
         mark = rec.seq_mark()
         sender.send_frame(sock, "043a", encode_message({
-            1: ("int32", _LAB_SCENE), 2: ("int32", 1), 3: ("int32", _LAB_BATCH),
+            1: ("int32", _LAB_SCENE), 2: ("int32", 0), 3: ("int32", 0),
             4: ("int32", 0), 5: ("int32", slot), 6: ("int32", _LAB_BATCH),
             7: ("int32", 0),
         }, omit_zero=False), rec.rc4_c2s)

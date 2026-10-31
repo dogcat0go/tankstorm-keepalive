@@ -655,7 +655,7 @@ def _handler(config: dict):
                         raise ValueError("基地战需要高级pro订阅")
                     kind = str(data.get("kind") or data.get("unit") or "blast").strip()
                     if kind not in (
-                            "blast", "spread", "factory", "cards", "clean", "haoyin", "admiral", "admiral10",
+                            "blast", "spread", "factory", "cards", "clean", "haoyin", "admiral", "admiral10", "agent10",
                             "box_mid", "box_high",
                             "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"):
                         raise ValueError("没有这项")
