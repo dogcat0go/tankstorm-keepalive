@@ -26,6 +26,9 @@ debug/
 logs/
 *.db
 city_players.db
+*.db-wal
+*.db-shm
+*.db-journal
 __pycache__/
 *.py[cod]
 *$py.class

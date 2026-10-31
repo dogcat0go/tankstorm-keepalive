@@ -13,6 +13,17 @@ echo "[1/4] 在 $REPO_DIR 执行 git pull..."
 # 处理 root 操作 ubuntu 属主仓库的 dubious ownership 问题
 git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
 cd "$REPO_DIR"
+# 仓库里曾经的 city_players.db-wal 会把主库截成 391 页。拉代码前先挪走。
+python3 - << 'PY'
+import os
+import sys
+sys.path.insert(0, os.getcwd())
+try:
+    from tankstorm.citydb import sideline_poison_wal
+except Exception:
+    raise SystemExit(0)
+sideline_poison_wal()
+PY
 git pull
 echo "  git pull 完成"
 
