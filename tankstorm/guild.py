@@ -337,7 +337,7 @@ def daily_campaign(rec, sock, config):
             if lvl == level:
                 found = npc
                 break
-        if found or not rows:
+        if found:
             break
     if not found:
         return False, f"据点列表里没有 {level} 级，不打"
@@ -443,24 +443,54 @@ _ORDER_ITEM = 10044               # 2026-10-04 抓包：contributeID=6 每包扣
 _DONATE_NAME = {2: "金属石油", 4: "功勋", 6: "军令"}
 
 
+def _donate_list(raw):
+    """是不是今日各类型已捐次数。下标 0 不限，1 最多 3，2 和 3 最多 6。"""
+    if isinstance(raw, bool) or isinstance(raw, int):
+        raw = [raw] if isinstance(raw, int) and not isinstance(raw, bool) else None
+    if not isinstance(raw, list) or not raw or len(raw) > 8:
+        return None
+    if not all(isinstance(x, int) and not isinstance(x, bool) and 0 <= x <= 40 for x in raw):
+        return None
+    caps = {1: 3, 2: 6, 3: 6}
+    for i, num in enumerate(raw):
+        cap = caps.get(i, 6 if i else None)
+        if cap is not None and num > cap:
+            return None
+    return raw
+
+
 def _donate_counts(data, missing_ok=False):
-    """userGuild.field9 是今日各类型已捐次数。查询包里没写，就是今天还没捐。"""
+    """今日各类型已捐次数。查询包里没写，就是今天还没捐。
+
+    2026-10-31 次数不在 userGuild.field9 上，是回包里的 [0,3,6,6]：
+    下标 1 金属石油捐到 3，下标 2 功勋、下标 3 军令各捐到 6。
+    """
     if not isinstance(data, dict):
         return None
     guild = data.get("userGuild")
-    if not isinstance(guild, dict):
-        return None
-    if "field9" not in guild or guild.get("field9") is None:
+    if isinstance(guild, dict):
+        found = _donate_list(guild.get("field9"))
+        if found is not None:
+            return found
+    lists = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            got = _donate_list(value)
+            if got is not None:
+                lists.append(got)
+            for item in value:
+                walk(item)
+
+    walk(data)
+    if lists:
+        return max(lists, key=len)
+    if guild is not None and isinstance(guild, dict) and guild.get("field9") is None:
         return [] if missing_ok else None
-    raw = guild.get("field9")
-    if isinstance(raw, bool):
-        return None
-    if isinstance(raw, int):
-        return [raw]
-    if isinstance(raw, list) and all(
-            isinstance(x, int) and not isinstance(x, bool) for x in raw):
-        return raw
-    return None
+    return [] if missing_ok else None
 
 
 def _res(rec):
