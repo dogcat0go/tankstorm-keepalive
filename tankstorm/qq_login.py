@@ -144,9 +144,49 @@ def _account_tables(config: dict | None) -> list:
     return tables
 
 
+def _napcat_box_on_disk(uin: str) -> dict:
+    """config.local.json 里这份 NapCat。进程启动后新起的容器也能读到。"""
+    path = paths.user_path("config.local.json")
+    if not uin or not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            loaded = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    accounts = (loaded.get("登录") or {}).get("账号")
+    if not isinstance(accounts, dict):
+        accounts = loaded.get("账号")
+    if not isinstance(accounts, dict):
+        return {}
+    found = None
+    for key in (f"qq-{uin}", uin):
+        item = accounts.get(key)
+        if isinstance(item, dict):
+            found = item
+            break
+    if found is None:
+        suffix = f"qq-{uin}.json"
+        for item in accounts.values():
+            if isinstance(item, dict) and str(item.get("cookie") or "").endswith(suffix):
+                found = item
+                break
+    box = (found or {}).get("NapCat") if isinstance(found, dict) else {}
+    if not isinstance(box, dict):
+        return {}
+    if not str(box.get("地址") or "").strip() and not str(box.get("界面") or "").strip():
+        return {}
+    return box
+
+
 def _account_napcat_box(config: dict | None, uin: str) -> dict:
     """这个攻打号配置里的 NapCat。没有就空字典，不回落到扫描号。"""
     uin = str(uin or "").strip()
+    fresh = _napcat_box_on_disk(uin)
+    if fresh:
+        return fresh
     found = None
     for accounts in _account_tables(config):
         if uin:
