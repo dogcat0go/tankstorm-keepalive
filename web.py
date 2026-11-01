@@ -15,6 +15,8 @@
   python3 web.py --set-admin 用户名 开
   python3 web.py --clear-attack 用户名
   python3 web.py --status 用户名
+  python3 web.py --napcat QQ号
+  python3 web.py --napcat QQ号 --napcat-user 登录名
 
 扫城仍用 main.py，例如 python3 main.py --watch-pages 1201:10-20。
 注册默认关闭。有效期按北京时间的日期，这一天仍然有效。
@@ -93,9 +95,25 @@ def main() -> int:
                         help="解开这个登录账号的攻打 QQ，未完成的攻打记为失败。别的账号还用这个 QQ 时不删票据，不启动网页")
     parser.add_argument("--status", metavar="用户名",
                         help="查看这个登录账号的攻打 QQ 登录和暂停，不启动网页")
+    parser.add_argument("--napcat", metavar="QQ号",
+                        help="给这个攻打 QQ 起一台 NapCat 并写入配置，不启动网页")
+    parser.add_argument("--napcat-user", metavar="登录名",
+                        help="和 --napcat 一起用，把这个号绑到该登录账号")
     args = parser.parse_args()
-    if (args.add_user or args.set_expires or args.set_tier or args.set_admin
-            or args.bind_attack or args.clear_attack or args.status):
+    if (args.napcat or args.napcat_user or args.add_user or args.set_expires
+            or args.set_tier or args.set_admin or args.bind_attack
+            or args.clear_attack or args.status):
+        if args.napcat or args.napcat_user:
+            if args.napcat_user and not args.napcat:
+                log.error("--napcat-user 要和 --napcat 一起用")
+                return 1
+            from tankstorm.napcat_up import ensure_napcat
+            result = ensure_napcat(args.napcat.strip(), username=(args.napcat_user or "").strip())
+            if not result.get("ok"):
+                log.error("%s", result.get("msg") or "没能起 NapCat")
+                return 1
+            log.info("%s", result.get("msg") or "已起 NapCat")
+            return 0
         if args.status:
             username = args.status.strip()
             user_id = citydb.user_id_by_name(username)

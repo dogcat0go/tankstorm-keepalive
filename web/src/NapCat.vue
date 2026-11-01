@@ -14,6 +14,7 @@ const platform = ref("");
 const apply = ref(false);
 const busy = ref(false);
 const qrBusy = ref(false);
+const upBusy = ref("");
 const err = ref("");
 const info = ref(null);
 const result = ref(null);
@@ -112,6 +113,29 @@ async function askQr() {
   }
 }
 
+async function upBox(row) {
+  const id = row ? row.qq : qq.value;
+  if (upBusy.value) return;
+  if (!id) {
+    err.value = "先填攻打 QQ";
+    return;
+  }
+  upBusy.value = id;
+  err.value = "";
+  try {
+    const data = await apiCall("/api/test", {
+      action: "up",
+      qq: id,
+      username: row && row.username || "",
+    });
+    loginMsg.value = data.msg || "";
+    if (!data.ok) err.value = data.msg || "没能起 NapCat";
+    await refresh();
+  } finally {
+    upBusy.value = "";
+  }
+}
+
 async function pull() {
   err.value = "";
   busy.value = true;
@@ -170,6 +194,7 @@ onUnmounted(stopQr);
         同时取票数是 {{ info ? info.limit : 1 }}，现在进行中 {{ info ? info.inflight : 0 }}。
         名额满了这次直接返回，不会排队再开一条。
         勾选写入时，攻打线程正在跑就不会改它手里的 cookie。
+        还没有 NapCat 的号，点「起 NapCat」。程序拉起容器并写好地址和 Token，不用自己起 Docker。接着再取登录码。
       </p>
       <form class="stack" @submit.prevent="pull().catch((e) => (err = e.message))">
         <label>攻打 QQ<input v-model="qq" inputmode="numeric" autocomplete="off" /></label>
@@ -189,6 +214,7 @@ onUnmounted(stopQr);
           游戏页认了就写入这个攻打号的 cookie
         </label>
         <p class="proc">
+          <button type="button" :disabled="!!upBusy" @click="upBox().catch((e) => (err = e.message))">{{ upBusy === qq ? "正在起…" : "起 NapCat" }}</button>
           <button type="button" :disabled="qrBusy" @click="askQr().catch((e) => (err = e.message))">取 NapCat 登录码</button>
           <button type="submit" :disabled="busy">{{ busy ? "取票中…" : "向 NapCat 要票据" }}</button>
           <button type="button" class="ghost" @click="refresh().catch((e) => (err = e.message))">刷新列表</button>
@@ -231,6 +257,7 @@ onUnmounted(stopQr);
           · {{ row.web_token_set ? "有界面 Token" : "没界面 Token" }}
           · {{ row.online ? "线程在线" : "线程不在" }}
           · skey {{ row.missing ? "没有文件" : leftText(row.skey_left) }}
+          <button type="button" class="ghost" :disabled="!!upBusy" @click="upBox(row).catch((e) => (err = e.message))">{{ upBusy === row.qq ? "正在起…" : "起 NapCat" }}</button>
           <button type="button" class="ghost" @click="useRow(row)">填到上面</button>
         </p>
       </div>

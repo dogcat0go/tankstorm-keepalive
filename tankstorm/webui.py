@@ -1079,6 +1079,19 @@ def _handler(config: dict):
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                 return
+            if action in ("up", "起"):
+                from .napcat_up import ensure_napcat
+                try:
+                    result = ensure_napcat(
+                        str(data.get("qq") or "").strip(),
+                        username=str(data.get("username") or data.get("用户") or "").strip(),
+                        config=config,
+                    )
+                except Exception as exc:
+                    _json(self, 500, {"error": str(exc)})
+                    return
+                _json(self, 200, result)
+                return
             self._attack_napcat_post(data)
 
         def _pwd_lab_user(self):
@@ -1185,6 +1198,7 @@ def _announce(host, port, config):
         log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin，可看成员配置、攻打 QQ 和扫描安排")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
     log.info("攻打号 NapCat 测试：/api/test（只要管理员。登录二维码和 get_cookies，不收发消息）")
+    log.info("给攻打号起 NapCat：python3 web.py --napcat QQ号。一台容器一个号，地址和 Token 写入 config.local.json")
     log.info("软件授时：登录后 POST /api/clock，正文 mono_ms 为单调计时毫秒，返回会员剩余时间")
     if _dev_login(config):
         log.warning("测试免注册已打开：POST /api/dev-login 会直接以 test 登录。正式对外前关掉「订阅.测试免注册」")
