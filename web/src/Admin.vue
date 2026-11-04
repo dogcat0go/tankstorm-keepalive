@@ -59,8 +59,12 @@ const logDays = ref("3");
 const logView = ref(null);
 const logBusy = ref(false);
 const logErr = ref("");
+const scanLogin = ref(null);
+const scanQr = ref("");
+const scanErr = ref("");
 const PAGE = 20;
 let fighterTimer = 0;
+let scanTimer = 0;
 const TIER_RANK = { 初级: 1, 中级: 2, 高级: 3, 高级pro: 4 };
 
 async function api(path, body) {
@@ -674,6 +678,31 @@ async function loadMe() {
   await loadAdmin();
 }
 
+function stopScanTimer() {
+  if (!scanTimer) return;
+  clearInterval(scanTimer);
+  scanTimer = 0;
+}
+
+async function refreshScanLogin() {
+  const data = await api("/api/admin/scan-login");
+  scanLogin.value = data;
+  scanErr.value = "";
+  if (data.qr && data.qr_at) {
+    const next = "/api/admin/scan-qr?t=" + encodeURIComponent(data.qr_at);
+    if (scanQr.value.split("&r=")[0] !== next) scanQr.value = next;
+  } else scanQr.value = "";
+}
+
+function watchScan(on) {
+  stopScanTimer();
+  if (!on) return;
+  refreshScanLogin().catch((e) => (scanErr.value = e.message));
+  scanTimer = setInterval(() => {
+    refreshScanLogin().catch((e) => (scanErr.value = e.message));
+  }, 2000);
+}
+
 async function logout() {
   await api("/api/logout", {});
   me.value = null;
@@ -686,9 +715,17 @@ async function logout() {
   clearMemberFilters();
   clearFighterFilters();
   sheet.value = "members";
+  scanLogin.value = null;
+  scanQr.value = "";
+  scanErr.value = "";
+  stopScanTimer();
   memberPage.value = 1;
   fighterPage.value = 1;
 }
+
+watch(sheet, (value) => {
+  watchScan(value === "scan" && !!(me.value && me.value.admin));
+});
 
 onMounted(async () => {
   await loadMe();
@@ -698,6 +735,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   clearInterval(fighterTimer);
+  stopScanTimer();
 });
 </script>
 
@@ -731,6 +769,7 @@ onUnmounted(() => {
       <div class="sheet-switch" role="tablist" aria-label="账号表">
         <button type="button" role="tab" :aria-selected="sheet === 'members'" :class="{ ghost: sheet !== 'members' }" @click="sheet = 'members'">成员账号</button>
         <button type="button" role="tab" :aria-selected="sheet === 'fighters'" :class="{ ghost: sheet !== 'fighters' }" @click="sheet = 'fighters'">攻打 QQ</button>
+        <button type="button" role="tab" :aria-selected="sheet === 'scan'" :class="{ ghost: sheet !== 'scan' }" @click="sheet = 'scan'">扫描号</button>
       </div>
       <template v-if="sheet === 'members'">
       <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。创建账号不带管理权限，有效期留空就是不限期。删除会连订单、订阅和登录一起去掉，当前登录的管理员不能删自己。</p>
@@ -883,6 +922,17 @@ onUnmounted(() => {
       <p v-if="!members.length" class="muted">还没有登录账号。</p>
       <p v-else-if="!shownMembers.length" class="muted">{{ hiddenExpiredMembers && !memberFilterOn ? "过期账号已隐藏。" : "没有符合筛选的账号。" }}</p>
       </template>
+      <template v-else-if="sheet === 'scan'">
+        <h2>扫描号登录</h2>
+        <p class="muted">只显示扫描进程正在等的那一张。用扫描号的手机 QQ 对着屏幕扫，不要把图存进同一部手机的相册再扫。大约两分钟过期，过期后进程会换一张，这里跟着换。</p>
+        <p v-if="scanErr" class="err">{{ scanErr }}</p>
+        <p v-else-if="!scanLogin" class="muted">正在看扫描号的登录状态。</p>
+        <template v-else>
+          <p>{{ scanLogin.detail }}</p>
+          <p v-if="scanLogin.at" class="muted">{{ scanLogin.at }}</p>
+          <img v-if="scanQr" class="qr scan-qr" :src="scanQr" alt="扫描号登录二维码" />
+        </template>
+      </template>
       <template v-else-if="logQq">
         <div class="qq-log-head">
           <button type="button" class="ghost" @click="closeQqLog">返回攻打 QQ</button>
@@ -1003,8 +1053,8 @@ onUnmounted(() => {
       <p v-if="!fighters.length" class="muted">还没有绑定攻打 QQ。</p>
       <p v-else-if="!shownFighters.length" class="muted">{{ hiddenExpiredFighters && !fighterFilterOn ? "过期账号的攻打 QQ 已隐藏。" : "没有符合筛选的攻打 QQ。" }}</p>
       </template>
-      <h2 v-if="sheet === 'members' || !logQq">扫描安排</h2>
-      <form v-if="sheet === 'members' || !logQq" class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
+      <h2 v-if="sheet === 'members' || (sheet !== 'scan' && !logQq)">扫描安排</h2>
+      <form v-if="sheet === 'members' || (sheet !== 'scan' && !logQq)" class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
         <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>
         <label>停扫开始<input v-model="quietStart" type="time" /></label>
         <label>停扫结束<input v-model="quietEnd" type="time" /></label>
