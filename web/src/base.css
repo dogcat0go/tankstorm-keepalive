@@ -296,6 +296,7 @@ table.daily-jobs td.reason {
 .off { color: #666; }
 code { font-size: 13px; }
 img.qr { width: 220px; height: auto; background: #fff; padding: 8px; border: 1px solid #ddd; }
+img.scan-qr { width: 280px; }
 @media (max-width: 720px) {
   main { padding: 16px 12px 40px; }
   .campaign-line { grid-template-columns: 1fr; gap: 4px 12px; }

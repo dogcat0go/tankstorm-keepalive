@@ -19,12 +19,14 @@ import os
 import re
 import secrets
 import threading
+import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
 from . import citydb
 from .log import get_logger
-from .paths import app_dir
+from .paths import app_dir, user_path
 
 log = get_logger()
 
@@ -252,6 +254,93 @@ def _after_attack_submit(config, user_id: int) -> dict:
     return {"login": "busy", "resumed": resumed, "scan": ""}
 
 
+_SCAN_LOGIN_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[INFO\] 扫描号(?: QQ \d+)? (.*)$")
+
+
+def _tail_scan_login(path: str):
+    """登录日志末尾最后一条扫描号记录。文件不在或还没写过就没有。"""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            if size > 65536:
+                handle.seek(size - 65536)
+                handle.readline()
+            last = None
+            for line in handle:
+                matched = _SCAN_LOGIN_RE.match(line.rstrip("\n\r"))
+                if matched:
+                    last = (matched.group(1), matched.group(2).strip())
+            return last
+    except OSError:
+        return None
+
+
+def _scan_login_phase(msg: str) -> str:
+    if "二维码已生成" in msg:
+        return "wait"
+    if "已扫码" in msg:
+        return "scanned"
+    if "二维码已失效" in msg or "二维码已过期" in msg:
+        return "expired"
+    if msg.startswith("开始取二维码"):
+        return "minting"
+    if any(k in msg for k in ("扫码登录完成", "重新登录成功", "网页票据已保活",
+                              "票据还在", "静默续期成功")):
+        return "ok"
+    return "other"
+
+
+def _scan_login_view() -> dict:
+    """扫描号现在是否在等扫码。过期图不交给页面。"""
+    last = _tail_scan_login(user_path(os.path.join("logs", "login.log")))
+    qr_path = user_path("qrcode.png")
+    if not last:
+        return {"phase": "none",
+                "detail": "登录日志里还没有扫描号的记录。",
+                "at": "", "qr": False, "qr_at": ""}
+    at, msg = last
+    phase = _scan_login_phase(msg)
+    mtime = 0.0
+    qr_at = ""
+    try:
+        st = os.stat(qr_path)
+        mtime = st.st_mtime
+        qr_at = str(st.st_mtime_ns)
+    except OSError:
+        mtime = 0.0
+    show = False
+    if phase in ("wait", "scanned") and mtime:
+        try:
+            logged = datetime.strptime(at, "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            logged = 0.0
+        fresh = time.time() - mtime <= 150 and (not logged or mtime + 30 >= logged)
+        if fresh:
+            show = True
+        else:
+            phase = "stale"
+    detail = {
+        "wait": "扫描号正在等扫码。用这个号的手机 QQ 扫下面的图。大约两分钟过期，过期后这里会换成新的。不要把图存进同一部手机的相册再扫。",
+        "scanned": "手机已经扫到，请在手机 QQ 上点确认。",
+        "minting": "正在出一张新的二维码。",
+        "expired": "上一张已经过期，正在出新的。",
+        "ok": "扫描号这会儿不在等扫码。",
+        "stale": "上次的二维码已经过期，扫描进程没有换成新的。先看扫描服务是否还在跑。",
+        "other": "扫描号最近没有在出二维码。",
+        "none": "登录日志里还没有扫描号的记录。",
+    }[phase]
+    if phase == "ok":
+        short = msg.split("。", 1)[0].strip()
+        if short:
+            detail = "扫描号这会儿不在等扫码。" + short + "。"
+    return {"phase": phase, "detail": detail, "at": at,
+            "qr": show, "qr_at": qr_at if show else ""}
+
+
 def _handler(config: dict):
     invite = _invite(config)
     dev_login = _dev_login(config)
@@ -435,6 +524,41 @@ def _handler(config: dict):
                     _json(self, 403, {"error": "只有管理员能看成员配置"})
                     return
                 _json(self, 200, {"members": _member_views()})
+                return
+            if path == "/api/admin/scan-login":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看扫描号登录"})
+                    return
+                _json(self, 200, _scan_login_view())
+                return
+            if path == "/api/admin/scan-qr":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看扫描号登录"})
+                    return
+                if not _scan_login_view().get("qr"):
+                    self.send_error(404)
+                    return
+                fp = user_path("qrcode.png")
+                try:
+                    with open(fp, "rb") as f:
+                        body = f.read()
+                except OSError:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
                 return
             if path == "/api/attack-qr":
                 user = self._user()
@@ -1195,7 +1319,7 @@ def _announce(host, port, config):
     if not _register_open(config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
         log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级|高级pro。中级及以上可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置要高级或高级pro。活动助手和基地战只要高级pro")
-        log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin，可看成员配置、攻打 QQ 和扫描安排")
+        log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin，可看成员配置、攻打 QQ 和扫描安排。扫描号登录二维码在「扫描号」一栏")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
     log.info("攻打号 NapCat 测试：/api/test（只要管理员。登录二维码和 get_cookies，不收发消息）")
     log.info("给攻打号起 NapCat：python3 web.py --napcat QQ号。一台容器一个号，地址和 Token 写入 config.local.json")
