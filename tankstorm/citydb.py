@@ -2664,7 +2664,9 @@ def _lock_card_cutoff() -> str:
 
 
 def _storm_day_cutoff() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """今天北京时间 0 点，写成库存用的 UTC。过了 0 点，昨天的拒绝不再计入。"""
+    start = beijing_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def lock_cards_used(user_id: int = 0) -> int:
@@ -2884,7 +2886,7 @@ def note_storm_reject(name: str, user_id: int = 0, qq: str = "") -> None:
 
 
 def list_storm_rejects(user_id: int) -> list:
-    """这个登录账号最近 1 小时拒绝的超级强攻。新的在前。"""
+    """这个登录账号今天拒绝的超级强攻。北京时间 0 点起算，新的在前。"""
     user_id = int(user_id or 0)
     if not user_id:
         return []
@@ -2893,14 +2895,14 @@ def list_storm_rejects(user_id: int) -> list:
         rows = conn.execute(
             "SELECT name, at FROM storm_reject WHERE user_id=? AND at>=? "
             "ORDER BY at DESC, id DESC LIMIT 20",
-            (user_id, _lock_card_cutoff())).fetchall()
+            (user_id, _storm_day_cutoff())).fetchall()
     finally:
         conn.close()
     return [{"name": str(name or ""), "at": beijing_ts(at)} for name, at in rows]
 
 
 def storm_rejects_day(user_id: int) -> int:
-    """这个登录账号最近 1 天拒绝的超级强攻次数。"""
+    """这个登录账号今天拒绝的超级强攻次数。北京时间 0 点起算。"""
     user_id = int(user_id or 0)
     if not user_id:
         return 0
