@@ -29,6 +29,7 @@
 `data_file()` 把两者接起来：exe 旁边有用户自己那份就用它，没有就退回随包的默认值。
 """
 
+import json
 import os
 import shutil
 import sys
@@ -90,3 +91,47 @@ def ensure_user_copy(name: str) -> bool:
         return True
     except OSError:
         return False
+
+
+def _skip_conflict(text: str) -> str:
+    kept = []
+    for line in text.splitlines():
+        head = line.strip()
+        if head.startswith("<<<<<<<") or head.startswith(">>>>>>>") or head == "=======":
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def load_json_dict(path: str):
+    """读一个 JSON 对象。返回 (内容, 提示)。
+
+    内容是 None 表示没有这份文件，或读出来不是对象。
+    合并冲突标记先跳过；剩下还能解析时，内容可用，提示里说明要改文件。
+    """
+    if not os.path.exists(path):
+        return None, f"缺少文件: {path}"
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeError) as exc:
+        return None, f"读不了 {path}：{exc}"
+    try:
+        data = json.loads(text)
+        note = ""
+    except json.JSONDecodeError as exc:
+        data = None
+        note = f"{path} 第 {exc.lineno} 行 JSON 不对（{exc.msg}）"
+        if "<<<<<<<" in text or ">>>>>>>" in text:
+            try:
+                data = json.loads(_skip_conflict(text))
+            except json.JSONDecodeError:
+                data = None
+            if isinstance(data, dict):
+                note = (f"{path} 里有合并冲突标记，已先跳过这些行把服务拉起来。"
+                        "请删掉冲突标记后再存。")
+            else:
+                note = note + "。文件里有合并冲突标记，先改掉再启动。"
+    if not isinstance(data, dict):
+        return None, note or f"{path} 内容不是对象"
+    return data, note

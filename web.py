@@ -24,7 +24,6 @@
 """
 
 import argparse
-import json
 import os
 import sys
 
@@ -34,7 +33,7 @@ import re
 from datetime import datetime
 
 from tankstorm.log import get_logger
-from tankstorm.paths import data_file, ensure_user_copy, user_path
+from tankstorm.paths import data_file, ensure_user_copy, load_json_dict, user_path
 from tankstorm import citydb, webui
 
 log = get_logger()
@@ -44,13 +43,18 @@ if ensure_user_copy("config.json"):
 
 
 def _load_json(path: str, required: bool = True) -> dict:
-    if not os.path.exists(path):
+    data, note = load_json_dict(path)
+    if data is None:
+        if note:
+            log.error("%s", note)
         if required:
-            log.error("缺少文件: %s", path)
             sys.exit(1)
+        if note:
+            log.error("这份本地配置先不用，服务照常启动")
         return {}
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    if note:
+        log.error("%s", note)
+    return data
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
