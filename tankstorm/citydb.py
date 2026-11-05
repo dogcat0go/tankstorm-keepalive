@@ -580,6 +580,16 @@ def connect(readonly=False, timeout=15):
                     "ALTER TABLE daily_job ADD COLUMN ready_at TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             _schema_ready = True
+        except sqlite3.DatabaseError as exc:
+            text = str(exc).lower()
+            if "malformed" in text or "not a database" in text:
+                log.error(
+                    "打不开 %s：%s。"
+                    "旧的 city_players.db-wal 可能已经把主库截断。"
+                    "先停掉本程序和 Datasette；wal、shm 挪走后若仍打不开，"
+                    "用备份恢复主库，或用带 sqlite_dbpage 的 sqlite3 执行 .recover。",
+                    DB_FILE, exc)
+            raise
         finally:
             setup.close()
     # URI mode=ro 建不了 WAL 的共享内存文件。Windows 上会间歇报 disk I/O error，

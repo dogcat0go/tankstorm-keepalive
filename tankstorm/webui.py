@@ -1422,8 +1422,11 @@ def _wake_attack_orders(config) -> None:
 
 
 def serve(host="0.0.0.0", port=8765, config=None) -> int:
-    from .socket_keepalive import install_login_refresh
-    install_login_refresh()
+    try:
+        from .socket_keepalive import install_login_refresh
+        install_login_refresh()
+    except Exception:
+        log.exception("退出时刷新网页票据没挂上，网页继续开")
     httpd = _server(host, port, config)
     _announce(host, port, config or {})
     threading.Thread(

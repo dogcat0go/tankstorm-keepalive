@@ -25,6 +25,17 @@ except Exception:
 sideline_poison_wal()
 PY
 git pull
+# pull 可能把旧 wal 又拿回来。构建还没停服务，先按新代码再挪一次。
+python3 - << 'PY'
+import os
+import sys
+sys.path.insert(0, os.getcwd())
+try:
+    from tankstorm.citydb import sideline_poison_wal
+except Exception:
+    raise SystemExit(0)
+sideline_poison_wal()
+PY
 echo "  git pull 完成"
 
 echo "[2/4] 构建页面..."
