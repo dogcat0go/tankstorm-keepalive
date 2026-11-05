@@ -81,6 +81,10 @@ const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
 const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
 const dailyJobs = ref([]);
 const guildBoard = ref(null);
+const guildCatalog = ref([]);
+const guildAccept = ref([]);
+const guildAcceptNote = ref("");
+let guildAcceptReady = false;
 const baseCount = ref("1");
 const baseArmy = ref("");
 const baseFactoryCount = ref("1");
@@ -221,6 +225,10 @@ async function refreshDaily() {
     dailyTasks.value = [];
     dailyJobs.value = [];
     guildBoard.value = null;
+    guildCatalog.value = [];
+    guildAccept.value = [];
+    guildAcceptNote.value = "";
+    guildAcceptReady = false;
     pveStages.value = "";
     pveStagesReady = false;
     dailyAt.value = "";
@@ -243,6 +251,11 @@ async function refreshDaily() {
   dailyTasks.value = data.tasks || [];
   dailyJobs.value = data.jobs || [];
   guildBoard.value = data.guild_tasks || null;
+  guildCatalog.value = data.guild_catalog || [];
+  if (!guildAcceptReady) {
+    guildAccept.value = (data.guild_accept || []).slice();
+    guildAcceptReady = true;
+  }
   if (!pveStagesReady) {
     pveStages.value = data.stages || "";
     pveStagesReady = true;
@@ -264,6 +277,15 @@ async function refreshDaily() {
   guildThew.value = data.guild_thew == null ? null : data.guild_thew;
   guildScore.value = data.guild_score == null ? null : data.guild_score;
   strikeLeft.value = data.strike_left == null ? null : data.strike_left;
+}
+
+async function saveGuildAccept() {
+  showErr("", "daily");
+  guildAcceptNote.value = "";
+  const data = await api("/api/daily/guild-accept", { ids: guildAccept.value });
+  guildAccept.value = (data.guild_accept || []).slice();
+  guildAcceptReady = true;
+  guildAcceptNote.value = "已保存，下一轮按这份接受";
 }
 
 async function saveGuildLevel() {
@@ -767,6 +789,8 @@ function takeUser(user) {
   me.value = user;
   if (!user.base_war && (tab.value === "base" || tab.value === "activity")) tab.value = "attack";
   pveStagesReady = false;
+  guildAcceptReady = false;
+  guildAcceptNote.value = "";
   guildLevelReady = false;
   dailyAtReady = false;
   modoAtReady = false;
@@ -1183,6 +1207,10 @@ async function logout() {
   dailyTasks.value = [];
   dailyJobs.value = [];
   guildBoard.value = null;
+  guildCatalog.value = [];
+  guildAccept.value = [];
+  guildAcceptNote.value = "";
+  guildAcceptReady = false;
   pveStages.value = "";
   pveStagesReady = false;
   dailyAt.value = "";
@@ -1383,6 +1411,10 @@ onUnmounted(() => {
         :progress-tasks="progressTasks"
         :daily-jobs="dailyJobs"
         :guild-board="guildBoard"
+        :guild-catalog="guildCatalog"
+        v-model:guild-accept="guildAccept"
+        :guild-accept-note="guildAcceptNote"
+        :save-guild-accept="saveGuildAccept"
         v-model:modo-at="modoAt"
         :daily-at-note="dailyAtNote"
         :modo-at-note="modoAtNote"

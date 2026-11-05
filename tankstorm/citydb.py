@@ -6009,6 +6009,62 @@ def guild_task_board(user_id: int):
     return _clean_guild_board(saved.get(_GUILD_BOARD))
 
 
+_GUILD_ACCEPT = "_公会任务接受"
+
+
+def guild_task_accept(user_id: int) -> list:
+    """这个账号要接受的任务编号。没记过就用默认的 4 星、5 星。"""
+    conn = connect(readonly=True)
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+    finally:
+        conn.close()
+    raw = saved.get(_GUILD_ACCEPT)
+    from .guild import guild_accept_default, guild_task_catalog
+    known = {star["id"] for group in guild_task_catalog() for star in group["stars"]}
+    if not isinstance(raw, list):
+        return guild_accept_default()
+    out = []
+    for item in raw:
+        if isinstance(item, bool) or not isinstance(item, int) or item not in known:
+            continue
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def set_guild_task_accept(user_id: int, ids) -> str:
+    """记下要接受的任务编号。空列表表示一个都不接。成功返回空字符串。"""
+    from .guild import guild_task_catalog
+    known = {star["id"] for group in guild_task_catalog() for star in group["stars"]}
+    if not isinstance(ids, list):
+        return "要给出任务列表"
+    picked = []
+    for item in ids:
+        if isinstance(item, bool):
+            return "没有这项任务"
+        if isinstance(item, str) and item.strip().isdigit():
+            item = int(item.strip())
+        if not isinstance(item, int) or item not in known:
+            return "没有这项任务"
+        if item not in picked:
+            picked.append(item)
+    picked.sort()
+    conn = connect()
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+        saved[_GUILD_ACCEPT] = picked
+        cur = conn.execute(
+            "UPDATE app_user SET daily_switch=? WHERE id=?",
+            (json.dumps(saved, ensure_ascii=False), int(user_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "账号不存在"
+        return ""
+    finally:
+        conn.close()
+
+
 def save_guild_task_board(user_id: int, board) -> None:
     """记下这次公会任务面板。跟每小时的时刻记在同一份开关里。"""
     user_id = int(user_id or 0)

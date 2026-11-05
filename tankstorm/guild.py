@@ -817,27 +817,48 @@ def _remember_guild_panel(panel, just_claimed=()):
         log.info("公会任务面板没记下", exc_info=True)
 
 
-_STAR5 = frozenset({
-    10, 15, 20, 35, 45, 55, 60, 65, 70,
-})
+def guild_task_catalog():
+    """页面上能勾的任务。名字、星级、说明都来自 _TASK_BOOK。"""
+    groups = []
+    by_name = {}
+    for kind in sorted(_TASK_BOOK):
+        name, star, detail = _TASK_BOOK[kind]
+        row = by_name.get(name)
+        if row is None:
+            row = {"name": name, "stars": []}
+            by_name[name] = row
+            groups.append(row)
+        row["stars"].append({"id": kind, "star": star, "detail": detail})
+    return groups
 
 
-def _star(kind):
-    if kind in _STAR5:
-        return 5
-    if kind in _STAR_IDS:
-        return 4
-    return 0
+def guild_accept_default():
+    """没在页面改过时接受的编号。4 星和 5 星，不含默认跳过的那几项。"""
+    return sorted(kind for kind in _STAR_IDS if kind in _TASK_BOOK)
 
 
-def _best(rows, seen, mine):
-    """5 星先于 4 星。已经接过、做满的不要。"""
+def _wanted_kinds(config):
+    """这一轮可以参加或承接的 nTaskType。没写就用默认的 4 星、5 星。"""
+    block = config.get("每日任务") if isinstance(config, dict) else None
+    if not isinstance(block, dict) or "公会任务接受" not in block:
+        return set(guild_accept_default())
+    raw = block.get("公会任务接受")
+    if not isinstance(raw, list):
+        return set(guild_accept_default())
+    return {
+        item for item in raw
+        if isinstance(item, int) and not isinstance(item, bool) and item in _TASK_BOOK
+    }
+
+
+def _best(rows, seen, mine, accept):
+    """勾选的星级里，星高的先接。已经接过、做满的不要。"""
     cands = [
         row for row in rows
-        if row[0] not in seen and row[0] not in mine and _star(row[1]) >= 4
+        if row[0] not in seen and row[0] not in mine and row[1] in accept
         and row[3] > 0 and row[2] < row[3]
     ]
-    cands.sort(key=lambda row: _star(row[1]), reverse=True)
+    cands.sort(key=lambda row: _TASK_BOOK.get(row[1], ("", 0, ""))[1], reverse=True)
     return cands[0] if cands else None
 
 
@@ -872,7 +893,7 @@ def _published(panel, prev):
     return prev
 
 
-def _guild_tasks(sock, rec):
+def _guild_tasks(sock, rec, config=None):
     panel = _build_send(sock, rec, _TASK_OPEN)
     if not isinstance(panel, dict):
         return False, "失败：没收到公会任务面板"
@@ -903,12 +924,13 @@ def _guild_tasks(sock, rec):
     refreshes = 0
     seen = set()
     pub = _task_rows(panel, "field21")
+    accept = _wanted_kinds(config)
     got_n = 0
-    while got_n < room:
+    while accept and got_n < room:
         raise_if_stopped()
         mine = {row[0] for row in _task_rows(panel, "field22")}
         pub = _published(panel, pub)
-        live = _best(pub, seen, mine)
+        live = _best(pub, seen, mine, accept)
         if live is not None:
             nid, kind, _proc, _need, _got = live
             seen.add(nid)
@@ -924,7 +946,7 @@ def _guild_tasks(sock, rec):
             got_n += 1
             _nap(0.35)
             continue
-        pick = _best(_task_rows(panel, "field23"), seen, mine)
+        pick = _best(_task_rows(panel, "field23"), seen, mine, accept)
         if pick is not None:
             nid, kind, _proc, _need, _got = pick
             seen.add(nid)
@@ -966,8 +988,13 @@ def _guild_tasks(sock, rec):
         bits.append("领奖 %d 个" % len(claimed))
     head = "今日参与 %d/%d" % (noted, _TASK_CAP)
     if not bits:
-        return True, "成功：%s，没有可参加或可承接的 4 星、5 星，刷新 %d 次" % (head, refreshes)
-    return True, "成功：%s，" % head + "，".join(bits) + "，刷新 %d 次" % refreshes
+        if not accept:
+            return True, "成功：%s，没有勾选要接受的任务" % head
+        return True, "成功：%s，没有可参加或可承接的任务，刷新 %d 次" % (head, refreshes)
+    text = "成功：%s，" % head + "，".join(bits)
+    if accept:
+        text += "，刷新 %d 次" % refreshes
+    return True, text
 
 
 def _note_guild_joined(panel, fallback):
@@ -1071,8 +1098,8 @@ def claim_guild_rewards(rec, sock):
 
 
 def daily_guild_task(rec, sock, config):
-    """参与没到 5 个就领 4 星、5 星任务。到了 5 个，能领奖才领。公会活跃另领，不计入这 5 个。"""
-    ok, why = _guild_tasks(sock, rec)
+    """参与没到 5 个就按勾选的任务和星级去领。没勾过就领默认的 4 星、5 星。到了 5 个，能领奖才领。公会活跃另领，不计入这 5 个。"""
+    ok, why = _guild_tasks(sock, rec, config)
     if ok:
         _touch_guild_hour()
     act_ok, act_why = _guild_activity(sock, rec)

@@ -2552,6 +2552,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 if user_id:
                     block["任务"] = citydb.daily_switches(
                         user_id, (config.get("每日任务") or {}).get("任务") or {})
+                    block["公会任务接受"] = citydb.guild_task_accept(user_id)
                     level = citydb.guild_camp_level(user_id)
                     if level is not None:
                         camp = cfg.get("公会战役")
