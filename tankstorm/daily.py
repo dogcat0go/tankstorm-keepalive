@@ -3407,6 +3407,49 @@ def _draw_send(rec, sock, opcode, fields, reply, kind):
         want=lambda d, kind=kind: isinstance(d, dict) and d.get("type") == kind)
 
 
+def egg_probe(rec, sock, times=1, on_progress=None):
+    """欢乐砸彩蛋。2026-11-05 19:35 抓包（logs/packets/2026-11-05.jsonl）。
+
+    19:35:04 开面板 RceMoonOpen {type:0, activeFlag:4}，回包 moonCnt=3。
+    19:35:29 砸一次 RceMoonStake {nStakeCnt:1, activeFlag:4}，回包 ret=0，
+    stake 一条：ShowID=4、stage=1、moonCnt=1、MoonDropID=4003。
+    背包物品 10015 从 18 减到 17，20025（200万石油）从 1 加到 2。
+    点券、勋章、金属、石油数量都没变。次数是把这一条再发几次。
+    """
+    try:
+        times = int(times)
+    except (TypeError, ValueError):
+        return False, "次数要是数字"
+    if not 1 <= times <= 20:
+        return False, "次数要在 1 到 20"
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "0434", encode_message(
+        {1: ("int32", 0), 2: ("int32", 4)}, omit_zero=False), rec.rc4_c2s)
+    opened = _await_response(sock, rec, "RseMoonOpen", mark, 6)
+    _nap(0.3)
+    done = 0
+    last = None
+    while done < times:
+        raise_if_stopped()
+        mark = rec.seq_mark()
+        sender.send_frame(sock, "0435", encode_message(
+            {1: ("int32", 1), 2: ("int32", 4)}, omit_zero=False), rec.rc4_c2s)
+        got = _await_response(sock, rec, "RseMoonStake", mark, 6)
+        if not isinstance(got, dict):
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, head + "砸彩蛋没有回包"
+        if got.get("ret") not in (0, None):
+            head = f"完成 {done}/{times}。" if done else ""
+            return False, f"{head}砸彩蛋被拒 ret={got.get('ret')} {got}"
+        done += 1
+        last = got
+        if on_progress:
+            on_progress(f"砸彩蛋 {done}/{times}")
+        _nap(0.4)
+    moon = opened.get("moonCnt") if isinstance(opened, dict) else None
+    return True, f"成功：砸彩蛋 {done} 次，开面板 moonCnt={moon}，回包 {last}"
+
+
 def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
     """抽指定次数。by_card 时 count 是卡的张数，十连次数为张数除以 10 向下取整。
 

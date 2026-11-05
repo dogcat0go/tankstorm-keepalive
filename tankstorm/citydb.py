@@ -5371,6 +5371,7 @@ DAILY_KIND_LABEL = {
     "guild_camp": "公会战役",
     "guild_claim": "公会任务领奖",
     "strike": "精准打击",
+    "egg": "欢乐砸彩蛋",
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "clean", "haoyin", "admiral", "admiral10", "agent10",
@@ -5780,7 +5781,7 @@ def enqueue_due_daily_jobs(guild_defaults=None) -> list:
                 continue
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job "
-                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike') "
+                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg') "
                 "AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
             if int(waiting or 0) >= 3:
@@ -6325,6 +6326,14 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "拨款次数要在 1 到 999"
         clean["building_id"] = building
         clean["times"] = times
+    elif kind == "egg":
+        try:
+            times = int(str(params.get("times") or "1").strip())
+        except (TypeError, ValueError):
+            return "次数要是数字"
+        if not (1 <= times <= 20):
+            return "次数要在 1 到 20"
+        clean["times"] = times
     elif kind in ("blast", "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high"):
         try:
             count = int(str(params.get("count") or "").strip())
@@ -6400,7 +6409,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         else:
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
-                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike') AND status IN ('pending','running')",
+                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg') AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
             return "还有没做完的，先等这几项"

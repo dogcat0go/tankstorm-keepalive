@@ -2634,6 +2634,14 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 ok, why = strike.run_strike(rec, sock, on_progress=_show)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "egg":
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
+                    return
+                ok, why = daily.egg_probe(
+                    rec, sock, params.get("times") or 1, on_progress=_show)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_claim":
                 from . import guild
                 ok, why = guild.claim_guild_rewards(rec, sock)
@@ -2801,13 +2809,13 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     move_told = 0
     side_kinds = (
         "blast", "factory",
-        "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "chest", "cards", "clean",
+        "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "chest", "cards", "clean",
         "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
 
     def _lane_for(kind):
-        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "chest"):
+        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "chest"):
             return "daily"
         if kind == "blast":
             return "blast"
@@ -4173,6 +4181,17 @@ def run_blast_once(qq, config: dict, count: int) -> int:
             log.info("任务执行期间共发心跳 %d 次", beater.count)
             return 0
         log.info("[爆破兵] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_egg_once(qq, config: dict, times: int) -> int:
+    """连一次，按抓包砸彩蛋，看回包后退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.egg_probe(rec, sock, times)
+        log.info("[砸彩蛋] %s", why)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         return 0 if ok else 1
 

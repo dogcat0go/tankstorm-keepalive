@@ -134,6 +134,8 @@ let guildLevelReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
 const fundNote = ref("");
+const eggTimes = ref("1");
+const eggNote = ref("");
 const fundBuildings = [
   { id: "10132", name: "比萨斜塔" },
   { id: "10133", name: "埃菲尔铁塔" },
@@ -244,6 +246,7 @@ async function refreshDaily() {
     guildScore.value = null;
     strikeLeft.value = null;
     fundNote.value = "";
+    eggNote.value = "";
     return;
   }
   const data = await api("/api/daily");
@@ -578,6 +581,19 @@ async function runFund(building, times) {
   fundNote.value = "";
   await api("/api/daily", { kind: "fund", building_id: building, times });
   fundNote.value = "已交给绑定的攻打号";
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runEgg(times) {
+  showErr("", "activity");
+  eggNote.value = "";
+  const n = cardNum(times);
+  if (n < 1 || n > 20) throw new Error("次数要在 1 到 20");
+  const ok = await confirmUse(`砸彩蛋 ${n} 次，每次消耗 1 个物品 10015。`);
+  if (!ok) return;
+  await api("/api/daily", { kind: "egg", times: n });
+  eggNote.value = "已交给绑定的攻打号";
   await refreshDaily();
   await refreshAttacks();
 }
@@ -1382,6 +1398,7 @@ onUnmounted(() => {
         v-model:guild-level="guildLevel"
         v-model:fund-building="fundBuilding"
         v-model:fund-times="fundTimes"
+        v-model:egg-times="eggTimes"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"
         :jobs="dailyJobs"
@@ -1394,11 +1411,13 @@ onUnmounted(() => {
         :run-strike="runStrike"
         :fund-buildings="fundBuildings"
         :fund-note="fundNote"
+        :egg-note="eggNote"
         :err="err"
         :err-at="errAt"
         :save-level="saveGuildLevel"
         :save-daily-switch="saveDailySwitch"
         :run-fund="runFund"
+        :run-egg="runEgg"
         :show-err="showErr"
       />
       <DailyPage
