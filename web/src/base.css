@@ -256,6 +256,11 @@ form.campaign-line { margin: 0 0 10px; grid-template-columns: 1fr; }
 .guild-fold[open] > summary::before { content: "▾"; }
 .guild-fold > summary .muted { font-size: 14px; font-weight: 400; }
 .guild-fold > .muted { margin: 8px 0 12px; }
+.guild-pick { margin: 10px 0 14px; }
+.guild-pick .switch { display: block; margin: 0 0 4px; }
+.guild-stars { display: flex; flex-direction: column; gap: 4px; }
+.guild-stars label.choice { font-weight: 400; }
+.guild-stars input { width: auto; min-width: 0; padding: 0; border: 0; }
 table.daily-jobs th,
 table.daily-jobs td { white-space: nowrap; }
 table.fail-list button.ghost { margin-left: 0; padding: 4px 10px; }

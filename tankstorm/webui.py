@@ -461,7 +461,7 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
-                from . import daily
+                from . import daily, guild
                 uin = citydb.attack_qq_of(user["id"])
                 switches = citydb.daily_switches(
                     user["id"], (config.get("每日任务") or {}).get("任务") or {})
@@ -482,6 +482,8 @@ def _handler(config: dict):
                     "guild_score": citydb.guild_camp_live(user["id"])["score"],
                     "strike_left": citydb.strike_live(user["id"]),
                     "guild_tasks": citydb.guild_task_board(user["id"]),
+                    "guild_catalog": guild.guild_task_catalog(),
+                    "guild_accept": citydb.guild_task_accept(user["id"]),
                 })
                 return
             if path == "/api/admin/fighters":
@@ -726,6 +728,14 @@ def _handler(config: dict):
                     _json(self, 200, {
                         "ok": True,
                         "tasks": daily.task_board(uin, switches),
+                    })
+                elif path == "/api/daily/guild-accept":
+                    why = citydb.set_guild_task_accept(user["id"], data.get("ids"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {
+                        "ok": True,
+                        "guild_accept": citydb.guild_task_accept(user["id"]),
                     })
                 elif path == "/api/daily/guild-level":
                     if not citydb.base_tier(user.get("tier") or ""):

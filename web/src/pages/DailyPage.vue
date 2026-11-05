@@ -7,6 +7,7 @@ const dailyAt = defineModel("dailyAt", { type: String, required: true });
 const pveStages = defineModel("pveStages", { type: String, required: true });
 const modoCards = defineModel("modoCards", { type: String, required: true });
 const modoAt = defineModel("modoAt", { type: String, required: true });
+const guildAccept = defineModel("guildAccept", { type: Array, required: true });
 
 const props = defineProps({
   dailyQq: { type: String, default: "" },
@@ -14,6 +15,9 @@ const props = defineProps({
   progressTasks: { type: Array, required: true },
   dailyJobs: { type: Array, required: true },
   guildBoard: { type: Object, default: null },
+  guildCatalog: { type: Array, default: () => [] },
+  guildAcceptNote: { type: String, default: "" },
+  saveGuildAccept: { type: Function, required: true },
   dailyAtNote: { type: String, default: "" },
   modoAtNote: { type: String, default: "" },
   dailyNote: { type: String, default: "" },
@@ -32,6 +36,19 @@ const props = defineProps({
 
 const guildClaimable = computed(() =>
   (props.guildBoard?.tasks || []).filter((it) => it.state === "可领奖").length);
+
+function guildOn(id) {
+  return guildAccept.value.includes(id);
+}
+
+function toggleGuild(id, on) {
+  const cur = guildAccept.value;
+  if (on) {
+    if (!cur.includes(id)) guildAccept.value = cur.concat(id);
+    return;
+  }
+  if (cur.includes(id)) guildAccept.value = cur.filter((x) => x !== id);
+}
 </script>
 
 <template>
@@ -96,9 +113,31 @@ const guildClaimable = computed(() =>
       <summary>
         公会任务
         <span class="muted">功能尚在完善</span>
+        <span v-if="guildCatalog.length" class="muted">接受 {{ guildAccept.length }} 项</span>
         <span v-if="!guildBoard" class="muted">还没读到</span>
         <span v-else class="muted">今日参与 {{ guildBoard.finish }}/{{ guildBoard.cap }} · {{ guildClaimable ? "身上 " + guildClaimable + " 条可以领" : "现在不能领奖" }}</span>
       </summary>
+      <h3>接受哪些</h3>
+      <p class="muted">勾上才会参加或承接。星级就是这一项的等级，说明写在星级旁边。没改过时勾着现在会接的：4 星和 5 星，不接摧毁基地、战争令牌、探索、消耗勋章、公会捐献。保存后下一轮按这份来。领奖不看这份勾选，整队做完仍会领。</p>
+      <p v-if="!guildCatalog.length" class="muted">还没读到任务表。</p>
+      <div v-for="task in guildCatalog" :key="task.name" class="guild-pick">
+        <span class="switch">{{ task.name }}</span>
+        <div class="guild-stars">
+          <label v-for="star in task.stars" :key="star.id" class="choice">
+            <input
+              type="checkbox"
+              :checked="guildOn(star.id)"
+              @change="toggleGuild(star.id, $event.target.checked)"
+            />
+            {{ star.star }}星
+            <span class="muted">{{ star.detail }}</span>
+          </label>
+        </div>
+      </div>
+      <form class="lock-row" @submit.prevent="saveGuildAccept().catch((e) => showErr(e.message))">
+        <button type="submit">保存</button>
+        <span v-if="guildAcceptNote" class="muted">{{ guildAcceptNote }}</span>
+      </form>
       <p v-if="!guildBoard" class="muted">还没读到公会任务</p>
       <template v-else>
         <p class="muted">今日参与是游戏里的参与次数。参加一次加一，身上这些任务已经算进去了，不再另加。领奖不加次数。活跃任务是另一项，不进这 5 个。可领奖是整队都完成，游戏里按钮是领取。自己做完、队友还没齐是等队友，游戏里是强制完成，这里不强制完成。<span v-if="guildBoard.read_at"> {{ guildBoard.read_at }} 读到的。</span></p>
