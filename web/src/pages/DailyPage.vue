@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { ElSwitch } from "element-plus";
 import "element-plus/es/components/switch/style/css";
 
@@ -36,6 +36,26 @@ const props = defineProps({
 
 const guildClaimable = computed(() =>
   (props.guildBoard?.tasks || []).filter((it) => it.state === "可领奖").length);
+
+const guildTask = ref("");
+
+watch(() => props.guildCatalog, (list) => {
+  const names = (list || []).map((it) => it.name);
+  if (!names.length) {
+    guildTask.value = "";
+    return;
+  }
+  if (!names.includes(guildTask.value)) guildTask.value = names[0];
+}, { immediate: true });
+
+const guildCurrent = computed(() =>
+  (props.guildCatalog || []).find((it) => it.name === guildTask.value) || null);
+
+const guildPicked = computed(() =>
+  (props.guildCatalog || []).flatMap((task) => {
+    const stars = (task.stars || []).filter((star) => guildAccept.value.includes(star.id));
+    return stars.length ? [{ name: task.name, stars }] : [];
+  }));
 
 function guildOn(id) {
   return guildAccept.value.includes(id);
@@ -118,12 +138,16 @@ function toggleGuild(id, on) {
         <span v-else class="muted">今日参与 {{ guildBoard.finish }}/{{ guildBoard.cap }} · {{ guildClaimable ? "身上 " + guildClaimable + " 条可以领" : "现在不能领奖" }}</span>
       </summary>
       <h3>接受哪些</h3>
-      <p class="muted">勾上才会参加或承接。星级就是这一项的等级，说明写在星级旁边。没改过时勾着现在会接的：4 星和 5 星，不接摧毁基地、战争令牌、探索、消耗勋章、公会捐献。保存后下一轮按这份来。领奖不看这份勾选，整队做完仍会领。</p>
+      <p class="muted">先选任务，再勾这一项要接的星级。星级就是等级，说明写在星级旁边。没改过时勾着现在会接的：4 星和 5 星，不接摧毁基地、战争令牌、探索、消耗勋章、公会捐献。保存后下一轮按这份来。领奖不看这份勾选，整队做完仍会领。</p>
       <p v-if="!guildCatalog.length" class="muted">还没读到任务表。</p>
-      <div v-for="task in guildCatalog" :key="task.name" class="guild-pick">
-        <span class="switch">{{ task.name }}</span>
-        <div class="guild-stars">
-          <label v-for="star in task.stars" :key="star.id" class="choice">
+      <template v-else>
+        <label class="guild-task">任务
+          <select v-model="guildTask">
+            <option v-for="task in guildCatalog" :key="task.name" :value="task.name">{{ task.name }}</option>
+          </select>
+        </label>
+        <div v-if="guildCurrent" class="guild-stars">
+          <label v-for="star in guildCurrent.stars" :key="star.id" class="choice">
             <input
               type="checkbox"
               :checked="guildOn(star.id)"
@@ -133,7 +157,18 @@ function toggleGuild(id, on) {
             <span class="muted">{{ star.detail }}</span>
           </label>
         </div>
-      </div>
+        <p v-if="guildPicked.length" class="guild-picked">
+          <button
+            v-for="row in guildPicked"
+            :key="row.name"
+            type="button"
+            class="ghost"
+            :class="{ here: row.name === guildTask }"
+            @click="guildTask = row.name"
+          >{{ row.name }} {{ row.stars.map((s) => s.star).join("、") }}星</button>
+        </p>
+        <p v-else class="muted">现在一项都不接。</p>
+      </template>
       <form class="lock-row" @submit.prevent="saveGuildAccept().catch((e) => showErr(e.message))">
         <button type="submit">保存</button>
         <span v-if="guildAcceptNote" class="muted">{{ guildAcceptNote }}</span>
