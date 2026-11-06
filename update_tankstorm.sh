@@ -14,7 +14,10 @@ echo "[1/4] 在 $REPO_DIR 执行 git pull..."
 git config --global --add safe.directory "$REPO_DIR" 2>/dev/null || true
 cd "$REPO_DIR"
 # 仓库里曾经的 city_players.db-wal 会把主库截成 391 页。拉代码前先挪走。
-python3 - << 'PY'
+# 用 root 跑会把当天日志建成 root 的，服务用户接着就写不了，两个服务一起退出。
+sideline_wal() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        sudo -u ubuntu bash -lc "cd \"$REPO_DIR\" && python3 -" << 'PY'
 import os
 import sys
 sys.path.insert(0, os.getcwd())
@@ -24,18 +27,23 @@ except Exception:
     raise SystemExit(0)
 sideline_poison_wal()
 PY
+    else
+        python3 - << 'PY'
+import os
+import sys
+sys.path.insert(0, os.getcwd())
+try:
+    from tankstorm.citydb import sideline_poison_wal
+except Exception:
+    raise SystemExit(0)
+sideline_poison_wal()
+PY
+    fi
+}
+sideline_wal
 git pull
 # pull 可能把旧 wal 又拿回来。构建还没停服务，先按新代码再挪一次。
-python3 - << 'PY'
-import os
-import sys
-sys.path.insert(0, os.getcwd())
-try:
-    from tankstorm.citydb import sideline_poison_wal
-except Exception:
-    raise SystemExit(0)
-sideline_poison_wal()
-PY
+sideline_wal
 echo "  git pull 完成"
 
 echo "[2/4] 构建页面..."
@@ -59,6 +67,10 @@ for svc in "${SERVICES[@]}"; do
 done
 
 echo "[4/4] 重新启动 Tankstorm 两个服务..."
+# 今天的日志如果是 root 建的，服务用户打不开，进程在导入时就退出。
+if [[ "$(id -u)" -eq 0 && -d "$REPO_DIR/logs" ]]; then
+    chown -R --reference="$REPO_DIR" "$REPO_DIR/logs" || true
+fi
 for svc in "${SERVICES[@]}"; do
     systemctl start "$svc"
     echo "  已启动 $svc ($(systemctl is-active "$svc"))"
