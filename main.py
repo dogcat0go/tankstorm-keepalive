@@ -50,8 +50,8 @@
   python main.py --pick lab --count 99        探索自选包换 99 张实验室探索卡
   python main.py --pick auto --count 99       探索自选包换 99 张军备自动化探索卡
   python main.py --lab50                      实验室探索 50 连，默认 1 次
-  python main.py --egg                        欢乐砸彩蛋 1 次
-  python main.py --egg 3                      欢乐砸彩蛋 3 次
+  python main.py --egg                        把剩余彩蛋全部砸开
+  python main.py --strike                     精准打击打一下
 """
 
 import argparse
@@ -430,10 +430,12 @@ def main() -> int:
     g4.add_argument("--blast", nargs="?", const=1, type=int, default=None,
                     metavar="数量",
                     help="连上游戏造 N 个爆破兵（默认 1）。开工失败时把线上字段和生产槽打出来")
-    g4.add_argument("--egg", nargs="?", const=1, type=int, default=None,
-                    metavar="次数",
-                    help="欢乐砸彩蛋后退出。每次发一条 nStakeCnt=1、activeFlag=4，"
-                         "消耗 1 个物品 10015。次数默认 1")
+    g4.add_argument("--egg", action="store_true",
+                    help="连上后把剩余彩蛋全部砸开再退出。"
+                         "每砸一个消耗 1 个物品 10015")
+    g4.add_argument("--strike", action="store_true",
+                    help="连上后打开精准打击并打一下再退出。"
+                         "只发 type=1，不带奖励编号")
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
                          "登录可选空间或大厅。游戏窗口仍是 flash_host，"
@@ -459,7 +461,7 @@ def main() -> int:
                 args.move is not None, args.orders,
                 args.capture, args.fund is not None,
                 args.pve is not None, args.draw, args.pick, args.lab50 is not None,
-                args.blast is not None, args.egg is not None)):
+                args.blast is not None, args.egg, args.strike)):
         parser.print_help()
         return 0
 
@@ -473,7 +475,7 @@ def main() -> int:
                               args.orders,
                               args.capture, args.fund is not None,
                               args.pve is not None, args.draw, args.pick, args.lab50 is not None,
-                              args.blast is not None, args.egg is not None)):
+                              args.blast is not None, args.egg, args.strike)):
         log.error("订阅页面已和游戏分开。另开一个进程：python3 web.py")
         return 1
 
@@ -726,11 +728,11 @@ def main() -> int:
             return 1
         return socket_keepalive.run_blast_once(qq, config, args.blast)
 
-    if args.egg is not None:
-        if args.egg < 1:
-            log.error("--egg 次数至少是 1")
-            return 1
-        return socket_keepalive.run_egg_once(qq, config, args.egg)
+    if args.egg:
+        return socket_keepalive.run_egg_once(qq, config)
+
+    if args.strike:
+        return socket_keepalive.run_strike_once(qq, config)
 
     if args.draw:
         return socket_keepalive.run_draw_once(qq, config, args.draw)

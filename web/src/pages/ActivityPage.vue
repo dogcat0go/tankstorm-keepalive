@@ -6,7 +6,6 @@ import "element-plus/es/components/switch/style/css";
 const guildLevel = defineModel("guildLevel", { type: String, required: true });
 const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
 const fundTimes = defineModel("fundTimes", { type: String, required: true });
-const eggTimes = defineModel("eggTimes", { type: String, required: true });
 
 const props = defineProps({
   dailyQq: { type: String, default: "" },
@@ -17,6 +16,7 @@ const props = defineProps({
   thew: { default: null },
   score: { default: null },
   strikeLeft: { default: null },
+  eggLeft: { default: null },
   fundBuildings: { type: Array, required: true },
   fundNote: { type: String, default: "" },
   eggNote: { type: String, default: "" },
@@ -108,14 +108,14 @@ function liveText(n) {
     </details>
     <details class="campaign-box">
       <summary>欢乐砸彩蛋</summary>
-      <form class="lock-row" @submit.prevent="runEgg(eggTimes).catch((e) => showErr(e.message))">
+      <form class="lock-row" @submit.prevent="runEgg().catch((e) => showErr(e.message))">
         <span class="switch">欢乐砸彩蛋</span>
-        <label>次数<input v-model="eggTimes" class="mins" inputmode="numeric" required /></label>
-        <button type="submit">砸蛋</button>
+        <button type="submit">全部砸开</button>
       </form>
       <p v-if="eggJob">{{ eggJob.status }} {{ eggJob.detail }}</p>
       <p v-if="eggNote" class="muted">{{ eggNote }}</p>
-      <p class="muted">一次砸 1 下，消耗 1 个物品 10015，得到 1 张 200 万石油卡。次数 1 到 20。</p>
+      <p>还可以开 {{ liveText(eggLeft) }} 个</p>
+      <p class="muted">进入这个页面会读一次剩余数量。点下去会一直砸，直到剩余变成 0。每砸一个消耗 1 个物品 10015，得到 1 张 200 万石油卡。</p>
     </details>
     <p v-if="err && errAt === 'activity'" class="err">{{ err }}</p>
   </section>

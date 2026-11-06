@@ -481,6 +481,7 @@ def _handler(config: dict):
                     "guild_thew": citydb.guild_camp_live(user["id"])["thew"],
                     "guild_score": citydb.guild_camp_live(user["id"])["score"],
                     "strike_left": citydb.strike_live(user["id"]),
+                    "egg_left": citydb.egg_live(user["id"]),
                     "guild_tasks": citydb.guild_task_board(user["id"]),
                     "guild_catalog": guild.guild_task_catalog(),
                     "guild_accept": citydb.guild_task_accept(user["id"]),

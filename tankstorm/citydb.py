@@ -2470,7 +2470,7 @@ def bind_attack_account(user_id: int, account: str) -> str:
     return ""
 
 
-_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "campask", "strikeask", "pageqr", "qrpath", "resume")
+_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "campask", "strikeask", "eggask", "pageqr", "qrpath", "resume")
 
 
 def clear_attack_binding(user_id: int) -> str:
@@ -4164,7 +4164,7 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
         if here:
             data["here"] = here
         for key in ("morale", "power", "blast", "pop", "metal", "oil", "credit",
-                    "camp_thew", "camp_score", "strike_left"):
+                    "camp_thew", "camp_score", "strike_left", "egg_left"):
             val = _kept_int(prev, key)
             if val is not None:
                 data[key] = val
@@ -4550,6 +4550,33 @@ def strike_live(user_id: int):
     return _kept_int(parsed, "strike_left")
 
 
+def note_egg(left) -> bool:
+    """记下还能砸的彩蛋。可以是 0。"""
+    if isinstance(left, bool) or not isinstance(left, int) or left < 0:
+        return False
+    if not attack_context_user() and not attack_context_qq():
+        return False
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return False
+            if data.get("egg_left") == left:
+                return True
+            data["egg_left"] = left
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+            return True
+        except sqlite3.Error:
+            return False
+
+
+def egg_live(user_id: int):
+    """页面上还能砸的彩蛋。还没读到是 None。"""
+    parsed, _seen, _online = _read_user_proc(int(user_id))
+    return _kept_int(parsed, "egg_left")
+
+
 def request_camp_live(user_id: int) -> str:
     """进活动助手时读一次公会战役体力和当前积分。成功返回空字符串。"""
     user_id = int(user_id or 0)
@@ -4566,6 +4593,7 @@ def request_camp_live(user_id: int) -> str:
         return "还在登录，连上后再看体力和积分"
     _upsert_signal(_mark_name("campask", user_id), "1")
     _upsert_signal(_mark_name("strikeask", user_id), "1")
+    _upsert_signal(_mark_name("eggask", user_id), "1")
     return ""
 
 
@@ -4588,6 +4616,17 @@ def take_strike_live() -> bool:
     if _signal_value(_mark_name("strikeask", user_id)).strip() != "1":
         return False
     _delete_signal(_mark_name("strikeask", user_id))
+    return True
+
+
+def take_egg_live() -> bool:
+    """领走这一次查看砸彩蛋。领过就不再读第二次。"""
+    user_id = attack_context_user()
+    if not user_id or (shutdown_due(user_id) and shutdown_covers_context()):
+        return False
+    if _signal_value(_mark_name("eggask", user_id)).strip() != "1":
+        return False
+    _delete_signal(_mark_name("eggask", user_id))
     return True
 
 
@@ -6325,14 +6364,6 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         if not (1 <= times <= 999):
             return "拨款次数要在 1 到 999"
         clean["building_id"] = building
-        clean["times"] = times
-    elif kind == "egg":
-        try:
-            times = int(str(params.get("times") or "1").strip())
-        except (TypeError, ValueError):
-            return "次数要是数字"
-        if not (1 <= times <= 20):
-            return "次数要在 1 到 20"
         clean["times"] = times
     elif kind in ("blast", "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high"):
         try:

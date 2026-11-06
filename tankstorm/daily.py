@@ -3407,47 +3407,100 @@ def _draw_send(rec, sock, opcode, fields, reply, kind):
         want=lambda d, kind=kind: isinstance(d, dict) and d.get("type") == kind)
 
 
-def egg_probe(rec, sock, times=1, on_progress=None):
-    """欢乐砸彩蛋。2026-11-05 19:35 抓包（logs/packets/2026-11-05.jsonl）。
+_EGG_ITEM = 10015
 
-    19:35:04 开面板 RceMoonOpen {type:0, activeFlag:4}，回包 moonCnt=3。
-    19:35:29 砸一次 RceMoonStake {nStakeCnt:1, activeFlag:4}，回包 ret=0，
-    stake 一条：ShowID=4、stage=1、moonCnt=1、MoonDropID=4003。
-    背包物品 10015 从 18 减到 17，20025（200万石油）从 1 加到 2。
-    点券、勋章、金属、石油数量都没变。次数是把这一条再发几次。
-    """
-    try:
-        times = int(times)
-    except (TypeError, ValueError):
-        return False, "次数要是数字"
-    if not 1 <= times <= 20:
-        return False, "次数要在 1 到 20"
+
+def _egg_open(rec, sock):
     mark = rec.seq_mark()
     sender.send_frame(sock, "0434", encode_message(
         {1: ("int32", 0), 2: ("int32", 4)}, omit_zero=False), rec.rc4_c2s)
-    opened = _await_response(sock, rec, "RseMoonOpen", mark, 6)
-    _nap(0.3)
+    return _await_response(sock, rec, "RseMoonOpen", mark, 6)
+
+
+def _egg_once(rec, sock):
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "0435", encode_message(
+        {1: ("int32", 1), 2: ("int32", 4)}, omit_zero=False), rec.rc4_c2s)
+    return _await_response(sock, rec, "RseMoonStake", mark, 6)
+
+
+def _egg_item(rec):
+    found = _draw_slot(rec, _EGG_ITEM)
+    if not found:
+        return None
+    return _one(found[1])
+
+
+def peek_eggs(rec, sock):
+    """打开砸彩蛋，把剩余数量记给页面。不砸。"""
+    from . import citydb
+    got = _egg_open(rec, sock)
+    if not isinstance(got, dict):
+        return None
+    left = _one(got.get("moonCnt"))
+    if left is None:
+        left = _egg_item(rec)
+    if left is not None:
+        citydb.note_egg(left)
+    return got
+
+
+def egg_probe(rec, sock, on_progress=None):
+    """把剩余彩蛋砸完。2026-11-05 19:35 抓包。
+
+    开面板 RceMoonOpen {type:0, activeFlag:4}，moonCnt 是面板上的剩余。
+    砸一下 RceMoonStake {nStakeCnt:1, activeFlag:4}。
+    每砸一下消耗 1 个物品 10015。砸完再开一次面板，按新的剩余接着砸，
+    直到剩余变成 0。面板数字不降、物品数量在降时，改按物品 10015 砸完。
+    """
+    from . import citydb
+    panel = peek_eggs(rec, sock)
+    if not isinstance(panel, dict):
+        return False, "失败：没打开砸彩蛋"
+    left = _one(panel.get("moonCnt"))
+    item = _egg_item(rec)
+    by_item = left is None
+    if by_item:
+        left = item
+    if left is None:
+        return False, "失败：读不到剩余彩蛋"
+    if left <= 0:
+        citydb.note_egg(0)
+        return True, "成功：没有剩余彩蛋"
     done = 0
-    last = None
-    while done < times:
+    while left > 0:
         raise_if_stopped()
-        mark = rec.seq_mark()
-        sender.send_frame(sock, "0435", encode_message(
-            {1: ("int32", 1), 2: ("int32", 4)}, omit_zero=False), rec.rc4_c2s)
-        got = _await_response(sock, rec, "RseMoonStake", mark, 6)
+        got = _egg_once(rec, sock)
         if not isinstance(got, dict):
-            head = f"完成 {done}/{times}。" if done else ""
-            return False, head + "砸彩蛋没有回包"
-        if got.get("ret") not in (0, None):
-            head = f"完成 {done}/{times}。" if done else ""
-            return False, f"{head}砸彩蛋被拒 ret={got.get('ret')} {got}"
+            head = f"已砸 {done} 个。" if done else ""
+            return False, head + f"砸彩蛋没有回包，剩余 {left}"
+        if _one(got.get("ret")) not in (0, None):
+            head = f"已砸 {done} 个。" if done else ""
+            return False, head + f"被拒 ret={got.get('ret')}，剩余 {left}"
+        fresh = _egg_open(rec, sock)
+        now = _one(fresh.get("moonCnt")) if isinstance(fresh, dict) else None
+        now_item = _egg_item(rec)
+        if not by_item and now is not None and now < left:
+            left = now
+        elif (item is not None and now_item is not None and now_item < item):
+            by_item = True
+            left = now_item
+            item = now_item
+        else:
+            if now is not None:
+                left = now
+                citydb.note_egg(left)
+            head = f"已砸 {done} 个。" if done else ""
+            return False, head + f"剩余 {left} 没有下降"
         done += 1
-        last = got
+        item = now_item if now_item is not None else item
+        citydb.note_egg(left)
         if on_progress:
-            on_progress(f"砸彩蛋 {done}/{times}")
+            on_progress(f"已砸 {done} 个，剩余 {left}")
+        if left <= 0:
+            break
         _nap(0.4)
-    moon = opened.get("moonCnt") if isinstance(opened, dict) else None
-    return True, f"成功：砸彩蛋 {done} 次，开面板 moonCnt={moon}，回包 {last}"
+    return True, f"成功：砸彩蛋 {done} 个，剩余 {left}"
 
 
 def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):

@@ -134,8 +134,8 @@ let guildLevelReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
 const fundNote = ref("");
-const eggTimes = ref("1");
 const eggNote = ref("");
+const eggLeft = ref(null);
 const fundBuildings = [
   { id: "10132", name: "比萨斜塔" },
   { id: "10133", name: "埃菲尔铁塔" },
@@ -245,6 +245,7 @@ async function refreshDaily() {
     guildThew.value = null;
     guildScore.value = null;
     strikeLeft.value = null;
+    eggLeft.value = null;
     fundNote.value = "";
     eggNote.value = "";
     return;
@@ -280,6 +281,7 @@ async function refreshDaily() {
   guildThew.value = data.guild_thew == null ? null : data.guild_thew;
   guildScore.value = data.guild_score == null ? null : data.guild_score;
   strikeLeft.value = data.strike_left == null ? null : data.strike_left;
+  eggLeft.value = data.egg_left == null ? null : data.egg_left;
 }
 
 async function saveGuildAccept() {
@@ -585,14 +587,12 @@ async function runFund(building, times) {
   await refreshAttacks();
 }
 
-async function runEgg(times) {
+async function runEgg() {
   showErr("", "activity");
   eggNote.value = "";
-  const n = cardNum(times);
-  if (n < 1 || n > 20) throw new Error("次数要在 1 到 20");
-  const ok = await confirmUse(`砸彩蛋 ${n} 次，每次消耗 1 个物品 10015。`);
+  const ok = await confirmUse("把剩余彩蛋全部砸开，直到服务器上的数量变成 0。每个消耗 1 个物品 10015。");
   if (!ok) return;
-  await api("/api/daily", { kind: "egg", times: n });
+  await api("/api/daily", { kind: "egg" });
   eggNote.value = "已交给绑定的攻打号";
   await refreshDaily();
   await refreshAttacks();
@@ -1398,7 +1398,6 @@ onUnmounted(() => {
         v-model:guild-level="guildLevel"
         v-model:fund-building="fundBuilding"
         v-model:fund-times="fundTimes"
-        v-model:egg-times="eggTimes"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"
         :jobs="dailyJobs"
@@ -1408,6 +1407,7 @@ onUnmounted(() => {
         :thew="guildThew"
         :score="guildScore"
         :strike-left="strikeLeft"
+        :egg-left="eggLeft"
         :run-strike="runStrike"
         :fund-buildings="fundBuildings"
         :fund-note="fundNote"

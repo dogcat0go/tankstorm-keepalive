@@ -2351,6 +2351,19 @@ def _refresh_strike_live(rec, sock) -> None:
         raise
 
 
+def _refresh_egg_live(rec, sock) -> None:
+    """页面刚进入活动助手。读一次还能砸的彩蛋，不砸。"""
+    from . import citydb, daily
+
+    try:
+        with daily.lane_hold():
+            if not citydb.take_egg_live():
+                return
+            daily.peek_eggs(rec, sock)
+    except OSError:
+        raise
+
+
 def _run_requested_move(rec, sock, config, beater) -> bool:
     """页面点了移动到指定城。走进那座城，不打它。没有请求返回 False。"""
     from . import citydb, country_war
@@ -2638,8 +2651,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
                     return
-                ok, why = daily.egg_probe(
-                    rec, sock, params.get("times") or 1, on_progress=_show)
+                ok, why = daily.egg_probe(rec, sock, on_progress=_show)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_claim":
@@ -2906,6 +2918,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     _refresh_equip_bag(rec, sock)
                     _refresh_camp_live(rec, sock)
                     _refresh_strike_live(rec, sock)
+                    _refresh_egg_live(rec, sock)
                     if not _wait_socket(sock, spec, ctx):
                         raise OSError("服务器关闭连接")
                     continue
@@ -2934,6 +2947,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 _refresh_equip_bag(rec, sock)
                 _refresh_camp_live(rec, sock)
                 _refresh_strike_live(rec, sock)
+                _refresh_egg_live(rec, sock)
                 for uid in citydb.attack_context_users():
                     citydb.skip_unfinished_auto(uid)
                 citydb.release_due_waits()
@@ -4187,10 +4201,23 @@ def run_blast_once(qq, config: dict, count: int) -> int:
     return _connect_and(qq, config, _work)
 
 
-def run_egg_once(qq, config: dict, times: int) -> int:
-    """连一次，按抓包砸彩蛋，看回包后退出。"""
+def run_strike_once(qq, config: dict) -> int:
+    """连一次，按抓包打开精准打击并打一下，看回包后退出。"""
+    from . import strike
+
     def _work(rec, sock, spec, ctx, beater):
-        ok, why = daily.egg_probe(rec, sock, times)
+        ok, why = strike.strike_once(rec, sock)
+        log.info("[精准打击] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_egg_once(qq, config: dict) -> int:
+    """连一次，把剩余彩蛋砸完，看回包后退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.egg_probe(rec, sock)
         log.info("[砸彩蛋] %s", why)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         return 0 if ok else 1

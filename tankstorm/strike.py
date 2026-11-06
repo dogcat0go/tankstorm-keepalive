@@ -1,10 +1,14 @@
 # tankstorm-keepalive  Copyright (C) 2026 Dimlitter
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""精准打击。2026-10-25 17:21–17:22 抓包。
+"""精准打击。RcePreciseStrikeOpt / 04d9。type=0 打开，type=1 打一次。不发 nRewardID。
 
-RcePreciseStrikeOpt / 04d9。type=0 打开，type=1 打一次。不发 nRewardID。
-打开时 nCurEnergy=5，打一次变成 4。nCurCircle 62→63，nRandNum 变成 5。
-回包里没有活动开始或结束时间。
+2026-11-06 21:34:56–21:35:27 抓包（logs/packets/2026-11-06.jsonl）。
+标记从「打算开始捕捉活动：精准打击」到「活动：精准打击 结束」。
+打开的正文是 08 00，打一次是 08 01，都只有 type。
+打开时剩余 76。连打 13 次，每次剩余减 1，停在 63。
+骰子 nRandNum 是 1 到 6。圈数不是每下都加。
+第 7 下回包 nRewardID=3，背包物品 110009 从 97 加到 99。
+请求仍然不带 nRewardID。回包里没有活动起止时间。
 """
 
 from . import citydb, sender
@@ -46,6 +50,34 @@ def _landed(before_left, before_circle, data):
     if (circle is not None and before_circle is not None and circle > before_circle):
         return True, now if now is not None else before_left, circle
     return False, now if now is not None else before_left, circle
+
+
+def strike_once(rec, sock):
+    """打开后只打一下，用来对这次抓包。不把剩余打完。"""
+    panel = peek_strike(rec, sock)
+    if not isinstance(panel, dict):
+        return False, "失败：没打开精准打击"
+    left = _one(panel.get("nCurEnergy"))
+    if left is None:
+        return False, "失败：读不到剩余次数"
+    if left <= 0:
+        return True, "成功：没有剩余次数"
+    got = _send(rec, sock, 1)
+    if not isinstance(got, dict):
+        return False, "打击没有回包"
+    ret = _one(got.get("nRet"))
+    if ret not in (0, None):
+        return False, f"被拒 nRet={ret}，剩余 {left}"
+    now = _one(got.get("nCurEnergy"))
+    if now is not None:
+        citydb.note_strike(now)
+    roll = _one(got.get("nRandNum"))
+    circle = _one(got.get("nCurCircle"))
+    reward = _one(got.get("nRewardID"))
+    text = f"成功：打了 1 次，剩余 {left}→{now}，骰子 {roll}，圈数 {circle}"
+    if reward:
+        text += f"，奖励 {reward}"
+    return True, text
 
 
 def run_strike(rec, sock, on_progress=None):
