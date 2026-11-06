@@ -1120,6 +1120,8 @@ def _scan_plan(config):
 
 def _page_range_jobs(config):
     """页范围监视。返回 ([(城市, 起始页, 结束页), ...], 间隔秒)。没启用给空列表。"""
+    from . import citydb
+
     w = config.get("页范围监视") or {}
     gap = float(w.get("间隔秒") or 300)
     if not w.get("启用"):
@@ -1131,59 +1133,42 @@ def _page_range_jobs(config):
     if not raw and w.get("城市"):
         raw = [{"城市": w.get("城市"), "起始页": w.get("起始页") or 0,
                 "结束页": w.get("结束页")}]
-    jobs, seen = [], set()
+    jobs = []
     for item in raw:
         if not isinstance(item, dict):
             log.error("页范围监视有一条不是对象，已跳过")
             continue
         try:
             city = int(item.get("城市") or 0)
-            start = int(item.get("起始页") or 0)
-            end = item.get("结束页")
-            end = int(end)
         except (TypeError, ValueError):
             log.error("页范围监视配置不完整：%s", item)
             continue
-        if city <= 0 or start < 0 or end < start:
-            log.error("页范围监视页码无效：城市 %s，第 %s–%s 页", city, start, end)
-            continue
-        if city in seen:
-            log.error("城市 %s 写了两段页范围，一座城只保留第一段", city)
-            continue
-        seen.add(city)
-        jobs.append((city, start, end))
+        pages = str(item.get("页码段") or "").strip()
+        if pages:
+            spans, why = citydb.parse_page_spans(pages)
+            if why:
+                log.error("页范围监视 城市 %s：%s", city, why)
+                continue
+        else:
+            try:
+                start = int(item.get("起始页") or 0)
+                end = int(item.get("结束页"))
+            except (TypeError, ValueError):
+                log.error("页范围监视配置不完整：%s", item)
+                continue
+            spans = [(start, end)]
+        for start, end in spans:
+            if city <= 0 or start < 0 or end < start:
+                log.error("页范围监视页码无效：城市 %s，第 %s–%s 页", city, start, end)
+                continue
+            jobs.append((city, start, end))
     return jobs, gap
 
 
-def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
-                   end_page=None):
-    """拉一座城：玩家入库，并记下当前归属国。"""
-    from . import citydb, country_war
+def _note_watch(config, city_id, cname, changes):
+    """订阅里刚出现的人推送，该锁的排一条攻打。"""
+    from . import citydb
 
-    cname = citydb.city_name(city_id) or str(city_id)
-    ts = citydb.now_ts()
-    n = [0]
-
-    def on_page(batch, page):
-        n[0] += citydb.upsert_players(city_id, batch, ts, page=page)
-
-    out = country_war.list_city_players(
-        rec, sock, config, city_id, country=country_id, beat=beat,
-        on_page=on_page, start_page=start_page, end_page=end_page)
-    players = out.get("玩家") or []
-    last = out.get("last_page")
-    total = out.get("userCnt")
-    owner = out.get("owner")
-    if owner is not None or total is not None:
-        citydb.record_occupy(city_id, owner, total, ts)
-    full = (start_page == 0 and not out.get("原因")
-            and total is not None and len(players) >= total)
-    changes = citydb.sync_watch(
-        city_id, [str(p.get("uid") or "") for p in players], not out.get("原因"))
-    if full:
-        gone = citydb.drop_stale(city_id, ts)
-        if gone:
-            log.info("已清掉本城过期记录 %d 条", gone)
     token = ((config.get("通知") or {}).get("pushplus_token") or "").strip()
     for ch in changes:
         who = ch["name"] or ch["uid"]
@@ -1206,11 +1191,68 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
             queued = False
         if queued:
             log.info("[订阅] %s 在 %s，已交给攻打号排队", who, where)
+
+
+def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
+                   end_page=None, apply_watch=True):
+    """拉一座城的一段页：玩家入库，并记下当前归属国。
+
+    apply_watch 为假时只入库，不改订阅在不在。一座城有多段页码时，
+    各段拉完再按见到的人合在一起更新一次。
+    """
+    from . import citydb, country_war
+
+    cname = citydb.city_name(city_id) or str(city_id)
+    ts = citydb.now_ts()
+    n = [0]
+
+    def on_page(batch, page):
+        n[0] += citydb.upsert_players(city_id, batch, ts, page=page)
+
+    out = country_war.list_city_players(
+        rec, sock, config, city_id, country=country_id, beat=beat,
+        on_page=on_page, start_page=start_page, end_page=end_page)
+    players = out.get("玩家") or []
+    last = out.get("last_page")
+    total = out.get("userCnt")
+    owner = out.get("owner")
+    if owner is not None or total is not None:
+        citydb.record_occupy(city_id, owner, total, ts)
+    full = (start_page == 0 and not out.get("原因")
+            and total is not None and len(players) >= total)
+    if apply_watch:
+        changes = citydb.sync_watch(
+            city_id, [str(p.get("uid") or "") for p in players], not out.get("原因"))
+        if full:
+            gone = citydb.drop_stale(city_id, ts)
+            if gone:
+                log.info("已清掉本城过期记录 %d 条", gone)
+        _note_watch(config, city_id, cname, changes)
     oname = citydb.country_name(owner) if owner else ""
     log.info("―― 城市 %s %s ―― 归属国家 %s%s，面板人数 %s，本轮写入 %d 人，最后一页 %s",
              out.get("city"), cname, owner,
              f" {oname}" if oname else "", total, n[0], last)
     return out, n[0]
+
+
+_PAGE_STOP = ("没有回包", "读不到国战面板", "连接断开", "读不到自己的国家ID")
+
+
+def _page_job_groups(jobs):
+    """按城市收拢多段页码，保留第一次出现的顺序。"""
+    order, spans = [], {}
+    for city, start, end in jobs:
+        try:
+            city = int(city)
+            start = int(start)
+            end = int(end)
+        except (TypeError, ValueError):
+            continue
+        if city not in spans:
+            order.append(city)
+            spans[city] = []
+        spans[city].append((start, end))
+    return [(city, spans[city]) for city in order]
 
 
 def _scan_page_ranges(rec, sock, config, jobs, beat):
@@ -1220,26 +1262,60 @@ def _scan_page_ranges(rec, sock, config, jobs, beat):
         citydb.ensure_catalog()
     except Exception as exc:
         log.warning("城市目录更新失败（仍会拉玩家）：%s", exc)
-    log.info("[页范围] 开始刷新 %d 座城", len(jobs))
+    groups = _page_job_groups(jobs)
+    log.info("[页范围] 开始刷新 %d 座城", len(groups))
     done = 0
-    for city, start, end in jobs:
-        try:
-            out, _n = _scan_one_city(rec, sock, config, city, beat,
-                                     start_page=start, end_page=end)
-        except OSError:
-            raise
-        except Exception as exc:
-            log.error("页范围监视 城市 %s 异常：%s", city, exc)
+    for city, spans in groups:
+        if len(spans) == 1:
+            start, end = spans[0]
+            try:
+                out, _n = _scan_one_city(rec, sock, config, city, beat,
+                                         start_page=start, end_page=end)
+            except OSError:
+                raise
+            except Exception as exc:
+                log.error("页范围监视 城市 %s 异常：%s", city, exc)
+                continue
+            reason = out.get("原因") or ""
+            if reason:
+                log.info("[页范围] 城市 %s：%s", city, reason)
+            if any(s in reason for s in _PAGE_STOP):
+                log.info("[页范围] 本轮剩下的下次再拉")
+                break
+            done += 1
             continue
-        reason = out.get("原因") or ""
-        if reason:
-            log.info("[页范围] 城市 %s：%s", city, reason)
-        if any(s in reason for s in ("没有回包", "读不到国战面板", "连接断开",
-                                     "读不到自己的国家ID")):
+        seen = []
+        finished = True
+        fatal = ""
+        for start, end in spans:
+            try:
+                out, _n = _scan_one_city(
+                    rec, sock, config, city, beat,
+                    start_page=start, end_page=end, apply_watch=False)
+            except OSError:
+                raise
+            except Exception as exc:
+                log.error("页范围监视 城市 %s 第 %s–%s 页异常：%s", city, start, end, exc)
+                finished = False
+                break
+            seen.extend(str(p.get("uid") or "") for p in (out.get("玩家") or []))
+            reason = out.get("原因") or ""
+            if reason:
+                log.info("[页范围] 城市 %s 第 %s–%s 页：%s", city, start, end, reason)
+                finished = False
+                if any(s in reason for s in _PAGE_STOP):
+                    fatal = reason
+                    break
+        cname = citydb.city_name(city) or str(city)
+        changes = citydb.sync_watch(city, seen, finished)
+        _note_watch(config, city, cname, changes)
+        if fatal:
             log.info("[页范围] 本轮剩下的下次再拉")
             break
+        if not finished and not seen:
+            continue
         done += 1
-    log.info("[页范围] 本轮完成 %d/%d 座城", done, len(jobs))
+    log.info("[页范围] 本轮完成 %d/%d 座城", done, len(groups))
 
 
 def _watch_cities_round(rec, sock, config, cities, beat):

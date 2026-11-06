@@ -219,19 +219,30 @@ def _scan_view(config: dict) -> dict:
                 continue
             try:
                 city = int(item.get("城市") or 0)
-                start_page = int(item.get("起始页") or 0)
-                end_page = int(item.get("结束页"))
             except (TypeError, ValueError):
                 continue
-            if city > 0 and start_page >= 0 and end_page >= start_page:
-                ranges.append({
-                    "city_id": city, "start_page": start_page, "end_page": end_page,
-                })
+            pages = str(item.get("页码段") or "").strip()
+            if pages:
+                spans, _why = citydb.parse_page_spans(pages)
+            else:
+                try:
+                    start_page = int(item.get("起始页") or 0)
+                    end_page = int(item.get("结束页"))
+                except (TypeError, ValueError):
+                    continue
+                spans = [(start_page, end_page)] if (
+                    city > 0 and start_page >= 0 and end_page >= start_page) else []
+            for start_page, end_page in spans:
+                if city > 0 and start_page >= 0 and end_page >= start_page:
+                    ranges.append({
+                        "city_id": city, "start_page": start_page, "end_page": end_page,
+                    })
         saved = {
             "gap_sec": gap, "quiet_start": "", "quiet_end": "",
             "quiet": False, "ranges": ranges,
         }
-    for row in saved["ranges"]:
+    rows = citydb.collapse_scan_ranges(saved["ranges"])
+    for row in rows:
         row["city_name"] = citydb.city_name(row["city_id"])
     return {
         "gap_sec": saved["gap_sec"],
@@ -239,7 +250,7 @@ def _scan_view(config: dict) -> dict:
         "quiet_end": saved["quiet_end"],
         "quiet_now": bool(saved["quiet"]),
         "saved": stored,
-        "ranges": saved["ranges"],
+        "ranges": rows,
     }
 
 
