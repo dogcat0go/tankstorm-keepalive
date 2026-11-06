@@ -1040,9 +1040,12 @@ def _flag_list(val):
 
 
 def _guild_activity(sock, rec):
-    """公会活跃。2026-10-23 23:15：type=350 开面板，type=351 按 0 起的档位领。
+    """公会活跃。2026-11-06 22:16 抓包。
 
-    atvQstMsg.field4 是可领标记，field3 是已领标记。0 也要写出来。
+    type=350 开面板。可领是 [1,1,1,1,0]，已领是 [0,0,0,0,0]。
+    type=351 从高档往低档领：3、2、1，第 0 档不写档位。
+    档位是本项目第 30 号，2026102901 线上是第 19 号。
+    领完已领变成 [1,1,1,1,0]，ret=0。第 5 档可领是 0，不发。
     """
     fields = _fields(_ACT_OPEN)
     before = rec.seq_mark() if rec else 0
@@ -1056,14 +1059,15 @@ def _guild_activity(sock, rec):
     ready = _flag_list(msg.get("field4"))
     got_flags = _flag_list(msg.get("field3"))
     claimed = []
-    for i, flag in enumerate(ready):
+    for i in range(len(ready) - 1, -1, -1):
         raise_if_stopped()
-        if flag != 1:
+        if ready[i] != 1:
             continue
         if i < len(got_flags) and got_flags[i] == 1:
             continue
         body = _fields(_ACT_CLAIM)
-        body[30] = ("int32", i)
+        if i:
+            body[30] = ("int32", i)
         before = rec.seq_mark() if rec else 0
         sender.send_frame(
             sock, OPCODE, encode_message(body, omit_zero=False), rec.rc4_c2s)
