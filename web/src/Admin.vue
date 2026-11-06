@@ -332,8 +332,7 @@ async function loadScan() {
   scanRanges.value = (data.ranges || []).map((row) => ({
     city_id: String(row.city_id),
     city_name: row.city_name || "",
-    start_page: String(row.start_page),
-    end_page: String(row.end_page),
+    pages: row.pages || `${row.start_page}-${row.end_page}`,
   }));
 }
 
@@ -346,8 +345,7 @@ async function saveScan() {
     quiet_end: quietEnd.value,
     ranges: scanRanges.value.map((row) => ({
       city_id: row.city_id,
-      start_page: row.start_page,
-      end_page: row.end_page,
+      pages: row.pages,
     })),
   });
   scanGap.value = String(data.gap_sec ?? 300);
@@ -357,14 +355,13 @@ async function saveScan() {
   scanRanges.value = (data.ranges || []).map((row) => ({
     city_id: String(row.city_id),
     city_name: row.city_name || "",
-    start_page: String(row.start_page),
-    end_page: String(row.end_page),
+    pages: row.pages || `${row.start_page}-${row.end_page}`,
   }));
   scanNote.value = "已保存。正在跑的扫描进程下一轮按这个间隔和名单翻页";
 }
 
 function addScanCity() {
-  scanRanges.value.push({ city_id: "", city_name: "", start_page: "0", end_page: "0" });
+  scanRanges.value.push({ city_id: "", city_name: "", pages: "0-0" });
 }
 
 async function refreshFighters() {
@@ -1058,11 +1055,11 @@ onUnmounted(() => {
         <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>
         <label>停扫开始<input v-model="quietStart" type="time" /></label>
         <label>停扫结束<input v-model="quietEnd" type="time" /></label>
-        <p class="muted">北京时间。例如 01:00 到 05:00 这段不翻页，游戏连接保持。23:00 到 05:00 这样跨过零点也可以。两个都空着就是全天扫。页码从 0 起，含结束页；订阅页面上的页数要减 1。一座城只填一段。</p>
+        <p class="muted">北京时间。例如 01:00 到 05:00 这段不翻页，游戏连接保持。23:00 到 05:00 这样跨过零点也可以。两个都空着就是全天扫。页码从 0 起，含结束页；订阅页面上的页数要减 1。一座城可以写多段，用分号隔开，例如 0-10; 20-30; 200-230。挨着或重叠的段会并成一段。</p>
         <p v-if="scanQuiet">现在处于停扫时段，扫描会跳过。</p>
         <table class="scan">
           <thead>
-            <tr><th>城市</th><th>起始页</th><th>结束页</th><th></th></tr>
+            <tr><th>城市</th><th>页码段</th><th></th></tr>
           </thead>
           <tbody>
             <tr v-for="(row, i) in scanRanges" :key="i">
@@ -1073,8 +1070,7 @@ onUnmounted(() => {
                   <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
                 </select>
               </td>
-              <td><input v-model="row.start_page" inputmode="numeric" required /></td>
-              <td><input v-model="row.end_page" inputmode="numeric" required /></td>
+              <td><input v-model="row.pages" class="pages" required placeholder="0-10; 20-30; 200-230" /></td>
               <td><button type="button" class="ghost" @click="scanRanges.splice(i, 1)">去掉</button></td>
             </tr>
           </tbody>

@@ -11,6 +11,7 @@
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -5131,6 +5132,71 @@ def scan_quiet(start: str, end: str, now=None) -> bool:
     return cur >= a or cur < b
 
 
+def parse_page_spans(text):
+    """把「0-10; 20-30; 200-230」拆成页段。成功返回 ([(起, 止), ...], "")。
+
+    分号用英文或中文都行。挨着或重叠的段并成一段，并按起始页从小到大排。
+    """
+    parts = [p.strip() for p in str(text or "").replace("；", ";").split(";") if p.strip()]
+    if not parts:
+        return [], "写上页码段，例如 0-10; 20-30"
+    if len(parts) > 30:
+        return [], "一段城市最多 30 段页码"
+    spans = []
+    for part in parts:
+        if not re.fullmatch(r"\d+\s*-\s*\d+", part):
+            return [], f"页码段写成 起始-结束，多段用分号隔开。这一段认不出：{part}"
+        start_s, end_s = (p.strip() for p in part.split("-", 1))
+        start, end = int(start_s), int(end_s)
+        if end < start or end > 100000:
+            return [], f"页码段 {start}-{end} 无效"
+        spans.append((start, end))
+    spans.sort()
+    merged = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged, ""
+
+
+def format_page_spans(spans) -> str:
+    return "; ".join(f"{int(start)}-{int(end)}" for start, end in spans)
+
+
+def collapse_scan_ranges(ranges) -> list:
+    """同一座城的多段页码收成一行，给页面的页码段输入框用。"""
+    order, bucket = [], {}
+    for row in ranges or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            city = int(row.get("city_id") or 0)
+            start = int(row.get("start_page") or 0)
+            end = int(row.get("end_page"))
+        except (TypeError, ValueError):
+            continue
+        if city <= 0 or start < 0 or end < start:
+            continue
+        if city not in bucket:
+            order.append(city)
+            bucket[city] = []
+        bucket[city].append((start, end))
+    out = []
+    for city in order:
+        spans, _err = parse_page_spans(format_page_spans(bucket[city]))
+        if not spans:
+            continue
+        out.append({
+            "city_id": city,
+            "pages": format_page_spans(spans),
+            "start_page": spans[0][0],
+            "end_page": spans[0][1],
+        })
+    return out
+
+
 def get_scan_plan():
     """管理员在页面上保存过的扫描安排。还没保存过返回 None，调用方继续用 config。"""
     conn = connect(readonly=True)
@@ -5199,18 +5265,34 @@ def save_scan_plan(gap_sec, quiet_start, quiet_end, ranges) -> str:
             return "城市页范围有一条不是对象"
         try:
             city = int(str(item.get("city_id", "")).strip())
-            start_page = int(str(item.get("start_page", "")).strip())
-            end_page = int(str(item.get("end_page", "")).strip())
         except (TypeError, ValueError, AttributeError):
-            return "城市 ID 和页码要是数字"
+            return "城市 ID 要是数字"
         if city <= 0:
             return "城市 ID 要大于 0"
-        if start_page < 0 or end_page < start_page or end_page > 100000:
-            return f"城市 {city} 的页码无效"
         if city in seen:
-            return f"城市 {city} 写了两段，一座城只保留一段"
+            return f"城市 {city} 写了两行，多段页码写在同一格，用分号隔开"
         seen.add(city)
-        clean.append({"city_id": city, "start_page": start_page, "end_page": end_page})
+        pages = str(item.get("pages") or "").strip()
+        if pages:
+            spans, why = parse_page_spans(pages)
+            if why:
+                label = city_name(city) or str(city)
+                return f"{label}：{why}"
+        else:
+            try:
+                start_page = int(str(item.get("start_page", "")).strip())
+                end_page = int(str(item.get("end_page", "")).strip())
+            except (TypeError, ValueError, AttributeError):
+                return "城市 ID 和页码要是数字"
+            if start_page < 0 or end_page < start_page or end_page > 100000:
+                return f"城市 {city} 的页码无效"
+            spans = [(start_page, end_page)]
+        for start_page, end_page in spans:
+            clean.append({
+                "city_id": city, "start_page": start_page, "end_page": end_page,
+            })
+    if len(clean) > 300:
+        return "页码段太多"
     conn = connect()
     try:
         conn.execute(

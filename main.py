@@ -110,40 +110,54 @@ def _deep_merge(base: dict, over: dict) -> dict:
 
 
 def _cli_page_ranges(tokens, page, page_end):
-    """命令行上的页范围。一座城一段，返回 [(城市, 起始页, 结束页)]。"""
+    """命令行上的页范围。一座城可以有多段，返回 [(城市, 起始页, 结束页)]。"""
+    from tankstorm import citydb
+
     bare = [t for t in tokens if ":" not in t]
     if bare and len(tokens) > 1:
-        raise ValueError("多座城请每座都写成 城市:起始-结束，例如 1201:10-20 1301:0-8")
-    spans = []
+        raise ValueError("多座城请每座都写成 城市:起始-结束，例如 1201:0-10;20-30 1301:0-8")
+    raw = []
     if len(tokens) == 1 and bare:
         try:
             city = int(tokens[0])
         except ValueError:
-            raise ValueError(f"无法识别 {tokens[0]}，写成 城市:起始-结束，例如 1201:10-20")
+            raise ValueError(f"无法识别 {tokens[0]}，写成 城市:起始-结束，例如 1201:0-10;20-30")
         if page_end is None:
-            raise ValueError("单座城请带 --city-page-end，或写成 1201:10-20")
-        spans.append((city, page, page_end))
+            raise ValueError("单座城请带 --city-page-end，或写成 1201:0-10;20-30")
+        raw.append((city, page, page_end))
     else:
         for token in tokens:
             city_s, sep, span = token.partition(":")
-            start_s, dash, end_s = span.partition("-")
-            if not sep or not dash or not city_s or start_s == "" or end_s == "":
-                raise ValueError(f"无法识别 {token}，写成 城市:起始-结束，例如 1201:10-20")
+            bits = [p.strip() for p in span.replace("；", ";").split(";") if p.strip()]
+            if not sep or not city_s or not bits:
+                raise ValueError(f"无法识别 {token}，写成 1201:0-10;20-30")
             try:
-                spans.append((int(city_s), int(start_s), int(end_s)))
+                city = int(city_s)
             except ValueError:
-                raise ValueError(f"无法识别 {token}，写成 城市:起始-结束，例如 1201:10-20")
-    seen = set()
-    for city, start, end in spans:
+                raise ValueError(f"无法识别 {token}，写成 1201:0-10;20-30")
+            for bit in bits:
+                start_s, dash, end_s = bit.partition("-")
+                if not dash or start_s == "" or end_s == "":
+                    raise ValueError(f"无法识别 {token}，写成 1201:0-10;20-30")
+                try:
+                    raw.append((city, int(start_s), int(end_s)))
+                except ValueError:
+                    raise ValueError(f"无法识别 {token}，写成 1201:0-10;20-30")
+    order, grouped = [], {}
+    for city, start, end in raw:
         if city <= 0:
             raise ValueError("城市 ID 要大于 0")
-        if start < 0 or end < 0:
-            raise ValueError("页码从 0 起，不能是负数")
-        if end < start:
-            raise ValueError(f"城市 {city} 的结束页 {end} 小于起始页 {start}")
-        if city in seen:
-            raise ValueError(f"城市 {city} 写了两段页范围，一座城只对应一段")
-        seen.add(city)
+        if city not in grouped:
+            order.append(city)
+            grouped[city] = []
+        grouped[city].append((start, end))
+    spans = []
+    for city in order:
+        merged, why = citydb.parse_page_spans(citydb.format_page_spans(grouped[city]))
+        if why:
+            raise ValueError(f"城市 {city}：{why}")
+        for start, end in merged:
+            spans.append((city, start, end))
     return spans
 
 
@@ -358,7 +372,7 @@ def main() -> int:
     g5.add_argument("--watch-pages", nargs="*", default=None,
                     metavar="城市:起始-结束",
                     help="常驻：每 5 分钟按各自的页范围翻这些城。"
-                         "可写多座，一座城一段：1201:10-20 1301:0-8。"
+                         "可写多座。一座城多段用分号：1201:0-10;20-30 1301:0-8。"
                          "页码从 0 起，含结束页。只写一座城 ID 时仍用 "
                          "--city-page 和 --city-page-end。"
                          "不带参数则用 config「页范围监视.范围」。"
@@ -643,7 +657,7 @@ def main() -> int:
         except Exception as exc:
             log.info("读扫描安排失败：%s", exc)
         if not _page_range_jobs(config)[0] and not (saved_plan and saved_plan.get("jobs")):
-            log.error("页范围监视没有可用的城市。写成 1201:10-20 1301:0-8，"
+            log.error("页范围监视没有可用的城市。写成 1201:0-10;20-30 1301:0-8，"
                       "或在订阅页面的扫描安排里加上，或填 config「页范围监视.范围」")
             return 1
         config.setdefault("保持活跃", {})["启用"] = True

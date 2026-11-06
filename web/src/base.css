@@ -137,7 +137,10 @@ fieldset.locked-area {
 .modal-actions { display: flex; gap: 8px; }
 .muted { color: #777; font-size: 13px; }
 table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 12px; }
+form.scan-form { max-width: 100%; overflow-x: auto; }
+table.scan { width: max-content; min-width: 100%; }
 table.scan td input { width: 7em; box-sizing: border-box; }
+table.scan td input.pages { width: 16em; max-width: 70vw; }
 table.scan td select { min-width: 9em; }
 form.filters { margin-top: 8px; }
 form.filters input, form.filters select { min-width: 8em; }
