@@ -7661,7 +7661,7 @@ def failed_names_in(city_id=None) -> list:
             if uid:
                 names[uid] = name
     cut, uid_cuts = _fail_cut(acct), _fail_uid_cuts(acct)
-    for op in _atk_q:
+    for op in _fail_queue():
         if not _fail_op_mine(op) or not _op_kept(op, cut, uid_cuts):
             continue
         if op[0] == "wipe":
@@ -7701,7 +7701,7 @@ def failed_names() -> dict:
     got = _run_timeout(_read, default={})
     names = dict(got) if isinstance(got, dict) else {}
     cut, uid_cuts = _fail_cut(acct), _fail_uid_cuts(acct)
-    for op in _atk_q:
+    for op in _fail_queue():
         if not _fail_op_mine(op) or not _op_kept(op, cut, uid_cuts):
             continue
         if op[0] == "wipe":
@@ -7740,7 +7740,7 @@ def in_atk_fail(uid) -> bool:
     acct = _fail_acct()
     pending = None
     cut, uid_cuts = _fail_cut(acct), _fail_uid_cuts(acct)
-    for op in _atk_q:
+    for op in _fail_queue():
         if not _fail_op_mine(op) or not _op_kept(op, cut, uid_cuts):
             continue
         if op[0] == "wipe":
@@ -7767,26 +7767,43 @@ def in_atk_fail(uid) -> bool:
     return bool(_run_timeout(_read, default=False))
 
 
-# 打人热路径不能同步写库：L 盘/DB Browser 一锁，sqlite3.connect 能卡住几分钟，
-# 心跳发不出去，服务端直接掐连接。先记队列，断开前再 flush。
+# 打人线程最多等一秒。库被别人锁住时不在这里死等，写不进去就留在队列里，过几秒再试。
+# 断开时再写一次。
+# 以前只在游戏连接断开时落盘。连接一直挂着，或者服务被打退，战败就丢了。
+# 订单是当场写的，所以页面上看得到「没打成」，战败库里却没有这个人。
+_atk_lock = threading.Lock()
 _atk_q = []
+_atk_retrying = False
+_FAIL_RETRY_SEC = 5.0
+
+
+def _fail_queue():
+    with _atk_lock:
+        return list(_atk_q)
+
+
+def _enqueue_fail(op) -> None:
+    with _atk_lock:
+        _atk_q.append(op)
+    flush_atk_fail()
 
 
 def record_atk_fail(uid, city_id=0, ret=None, reason="", name=""):
     uid = str(uid or "").strip()
-    if uid:
-        _atk_q.append(("record", _fail_acct(), uid, name or "", int(city_id or 0),
-                       ret, reason or "", now_ts()))
+    if not uid:
+        return
+    _enqueue_fail(("record", _fail_acct(), uid, name or "", int(city_id or 0),
+                   ret, reason or "", now_ts()))
 
 
 def clear_atk_fail(uid=None):
     acct = _fail_acct()
     if uid is None:
-        _atk_q.append(("wipe", acct, now_ts()))
+        _enqueue_fail(("wipe", acct, now_ts()))
         return
     uid = str(uid or "").strip()
     if uid:
-        _atk_q.append(("clear", acct, uid, now_ts()))
+        _enqueue_fail(("clear", acct, uid, now_ts()))
 
 
 def atk_fail_count(user_id: int) -> tuple:
@@ -7897,47 +7914,103 @@ def reset_atk_fail_uid(user_id: int, uid: str) -> tuple:
     return had, name, ""
 
 
-def flush_atk_fail():
-    """战斗结束再写盘。超过 DB_OP_TIMEOUT 就放弃，不堵下一轮。只动记下时那个攻打号的记录。"""
-    global _atk_q
-    if not _atk_q:
-        return
-    batch, _atk_q = _atk_q, []
+def _write_atk_fail(batch) -> bool:
+    """把这一批写进战败库。成功返回 True。调用方负责超时和失败后留着重试。"""
+    conn = connect(timeout=DB_OP_TIMEOUT)
+    noted = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        cuts = {}
+        ones = {}
+        for op in batch:
+            acct = str(op[1] if len(op) > 1 else "")
+            if acct not in cuts:
+                cuts[acct] = _fail_cut(acct, conn)
+                ones[acct] = _fail_uid_cuts(acct, conn)
+            if not _op_kept(op, cuts[acct], ones.get(acct) or {}):
+                continue
+            if op[0] == "wipe":
+                conn.execute("DELETE FROM atk_fail WHERE acct=?", (op[1],))
+            elif op[0] == "clear":
+                conn.execute(
+                    "DELETE FROM atk_fail WHERE acct=? AND uid=?",
+                    (op[1], op[2]))
+            elif op[0] == "record":
+                acct, uid, name, city_id, ret, reason = (
+                    op[1], op[2], op[3], op[4], op[5], op[6])
+                conn.execute(
+                    "INSERT INTO atk_fail(acct, uid, name, city_id, ret, reason, at) "
+                    "VALUES (?,?,?,?,?,?,?) "
+                    "ON CONFLICT(acct, uid) DO UPDATE SET "
+                    "name=excluded.name, city_id=excluded.city_id, "
+                    "ret=excluded.ret, reason=excluded.reason, at=excluded.at",
+                    (acct, uid, name, city_id, ret, reason, now_ts()))
+                who = str(name or "").strip() or str(uid)
+                noted.append(who)
+        conn.commit()
+    finally:
+        conn.close()
+    if noted:
+        shown = "、".join(noted[:8])
+        if len(noted) > 8:
+            shown += f" 等 {len(noted)} 人"
+        log.info("战败库已记下 %s", shown)
+    return True
 
-    def _write():
-        conn = connect(timeout=DB_OP_TIMEOUT)
+
+def _kick_fail_retry() -> None:
+    """写库失败时过几秒再试。已经有线程在等就不再开。"""
+    global _atk_retrying
+    with _atk_lock:
+        if _atk_retrying or not _atk_q:
+            return
+        _atk_retrying = True
+
+    def _again():
+        global _atk_retrying
         try:
-            conn.execute("BEGIN IMMEDIATE")
-            cuts = {}
-            ones = {}
-            for op in batch:
-                acct = str(op[1] if len(op) > 1 else "")
-                if acct not in cuts:
-                    cuts[acct] = _fail_cut(acct, conn)
-                    ones[acct] = _fail_uid_cuts(acct, conn)
-                if not _op_kept(op, cuts[acct], ones.get(acct) or {}):
-                    continue
-                if op[0] == "wipe":
-                    conn.execute("DELETE FROM atk_fail WHERE acct=?", (op[1],))
-                elif op[0] == "clear":
-                    conn.execute(
-                        "DELETE FROM atk_fail WHERE acct=? AND uid=?",
-                        (op[1], op[2]))
-                elif op[0] == "record":
-                    acct, uid, name, city_id, ret, reason = (
-                        op[1], op[2], op[3], op[4], op[5], op[6])
-                    conn.execute(
-                        "INSERT INTO atk_fail(acct, uid, name, city_id, ret, reason, at) "
-                        "VALUES (?,?,?,?,?,?,?) "
-                        "ON CONFLICT(acct, uid) DO UPDATE SET "
-                        "name=excluded.name, city_id=excluded.city_id, "
-                        "ret=excluded.ret, reason=excluded.reason, at=excluded.at",
-                        (acct, uid, name, city_id, ret, reason, now_ts()))
-            conn.commit()
+            time.sleep(_FAIL_RETRY_SEC)
+            flush_atk_fail()
         finally:
-            conn.close()
+            with _atk_lock:
+                _atk_retrying = False
+                pending = bool(_atk_q)
+            if pending:
+                _kick_fail_retry()
 
-    _run_timeout(_write)
+    threading.Thread(target=_again, name="atk-fail-retry", daemon=True).start()
+
+
+def _drop_written(batch) -> None:
+    with _atk_lock:
+        for op in batch:
+            try:
+                _atk_q.remove(op)
+            except ValueError:
+                pass
+
+
+def flush_atk_fail():
+    """把还没落盘的战败写进库。超过 DB_OP_TIMEOUT 就停手，队列留着下次再写。
+
+    打不过的人要马上能在战败库里看到，不能等游戏连接断开。
+    只动记下时那个攻打号的记录。清空时间点之前的内存记录仍然丢掉。
+    """
+    with _atk_lock:
+        batch = list(_atk_q)
+    if not batch:
+        return True
+    saved = _run_timeout(lambda: _write_atk_fail(batch), default=None)
+    if saved is not True:
+        log.info("战败库这次没写上，%d 条先留着", len(batch))
+        _kick_fail_retry()
+        return False
+    _drop_written(batch)
+    with _atk_lock:
+        pending = bool(_atk_q)
+    if pending:
+        _kick_fail_retry()
+    return True
 
 
 def find_player(uid: str):

@@ -1643,7 +1643,7 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             citydb.record_atk_fail(uid, city, ret, reason=why, name=who)
             out["记失败"] = True
             out["停止原因"] = why
-            log.info("[打人] %s，已写入 atk_fail", why)
+            log.info("[打人] %s，记入战败库", why)
             break
         out["成功"] += 1
         citydb.clear_atk_fail(uid)
