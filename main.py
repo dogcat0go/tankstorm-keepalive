@@ -574,6 +574,11 @@ def main() -> int:
         return 1
 
     qq = open_qq(config, args.qq)
+    if getattr(qq, "attack_account", False):
+        from tankstorm.qq_ban import refuse_banned_attack
+        if refuse_banned_attack(
+                config, getattr(qq, "bound_uin", "") or getattr(qq, "uin", "")):
+            return 1
     if args.platform or args.capture:
         raw = (args.platform or "").strip()
         if not raw and args.capture and sys.stdin.isatty():
@@ -782,6 +787,10 @@ def main() -> int:
         return 1
     if qq.shares_blocked_uin():
         return 1
+    if getattr(qq, "attack_account", False):
+        from tankstorm.qq_ban import refuse_banned_attack
+        if refuse_banned_attack(config, getattr(qq, "uin", "") or ""):
+            return 1
 
     ctx = qzone.get_game_context(qq)
     if args.check:

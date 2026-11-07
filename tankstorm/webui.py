@@ -656,6 +656,11 @@ def _handler(config: dict):
                 self._attack_napcat_post(data)
                 return
             try:
+                from .qq_ban import attack_api_stop
+                why = attack_api_stop(
+                    config, citydb.attack_qq_of(user["id"]), path)
+                if why:
+                    raise ValueError(why)
                 if path == "/api/subs":
                     region = int(user.get("region") or 0)
                     if region and region != 1:
@@ -1395,6 +1400,12 @@ def _wake_attack_orders(config) -> None:
         for user_id in users:
             try:
                 uin = citydb.attack_qq_of(user_id)
+                from .qq_ban import attack_qq_banned
+                if uin and attack_qq_banned(config, uin):
+                    if user_id not in noted:
+                        log.error("攻打 QQ %s 在黑名单里，不拉起", uin)
+                        noted.add(user_id)
+                    continue
                 if not uin:
                     if user_id not in noted:
                         log.info("登录账号 %s 还有订单，攻打 QQ 还没绑到这个人，不自动扫码",
@@ -1415,13 +1426,16 @@ def _wake_attack_orders(config) -> None:
             except Exception:
                 log.info("自动拉起攻打没成", exc_info=True)
                 continue
-            if login in ("taken", "no_account", "unbound"):
+            if login in ("taken", "no_account", "unbound", "banned"):
                 if user_id not in noted:
                     if login == "taken":
                         log.error("登录账号 %s 的订单不能用别人的攻打号",
                                   citydb.username_of(user_id))
                     elif login == "unbound":
                         log.error("登录账号 %s 还没绑定攻打号",
+                                  citydb.username_of(user_id))
+                    elif login == "banned":
+                        log.error("登录账号 %s 的攻打 QQ 在黑名单里，不拉起",
                                   citydb.username_of(user_id))
                     else:
                         log.error("登录账号 %s 有攻打订单，但没有可绑定的攻打号",

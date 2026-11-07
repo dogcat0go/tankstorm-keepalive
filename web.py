@@ -112,6 +112,12 @@ def main() -> int:
                 log.error("--napcat-user 要和 --napcat 一起用")
                 return 1
             from tankstorm.napcat_up import ensure_napcat
+            from tankstorm.qq_ban import refuse_banned_attack
+            banned_cfg = _deep_merge(
+                _load_json(data_file("config.json")),
+                _load_json(user_path("config.local.json"), required=False))
+            if refuse_banned_attack(banned_cfg, args.napcat.strip()):
+                return 1
             result = ensure_napcat(args.napcat.strip(), username=(args.napcat_user or "").strip())
             if not result.get("ok"):
                 log.error("%s", result.get("msg") or "没能起 NapCat")
@@ -165,6 +171,12 @@ def main() -> int:
             user_id = citydb.user_id_by_name(username)
             if not user_id:
                 log.error("没有这个账号：%s", username)
+                return 1
+            from tankstorm.qq_ban import refuse_banned_attack
+            banned_cfg = _deep_merge(
+                _load_json(data_file("config.json")),
+                _load_json(user_path("config.local.json"), required=False))
+            if refuse_banned_attack(banned_cfg, acct.strip()):
                 return 1
             why = citydb.bind_attack_account(user_id, acct.strip())
             if why:

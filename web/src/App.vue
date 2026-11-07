@@ -1144,6 +1144,7 @@ async function pushLogin(plat) {
 function attackLoginError(login) {
   if (login === "no_account") return "服务器还没配置攻打号，二维码发不出去";
   if (login === "taken") return "这个攻打 QQ 已经绑定别的登录账号，不能接着用";
+  if (login === "banned") return "这个攻打 QQ 在黑名单里，已退出";
   if (login === "unbound") return "这个登录账号还没绑定攻打号";
   if (login === "off") return "已定时关闭，不再执行任务";
   if (login === "timeout") return "登录超过 10 分钟，已停止，请再点一次登录";

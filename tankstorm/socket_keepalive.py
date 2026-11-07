@@ -3149,6 +3149,10 @@ def run_remote_orders(qq, config: dict) -> int:
             told = True
         time.sleep(5)
         user_id = _bind_named_account(config, name)
+    from .qq_ban import refuse_banned_attack
+    bound_qq = citydb.attack_qq_of(user_id) or getattr(qq, "uin", "") or getattr(qq, "bound_uin", "")
+    if refuse_banned_attack(config, bound_qq):
+        return 1
     citydb.set_attack_context(user_id, citydb.attack_qq_of(user_id))
     who = "、".join(citydb.username_of(i) for i in citydb.attack_context_users()) or citydb.username_of(user_id)
     log.info("开始领取远程扫码攻打，攻打号「%s」打登录账号 %s 的订单", name, who)
@@ -3190,6 +3194,8 @@ def run_remote_orders(qq, config: dict) -> int:
             current = citydb.attack_context_user()
             if current:
                 user_id = current
+            if _banned_attack(qq, config):
+                return 1
             if _shutdown_stop():
                 time.sleep(5)
                 continue
@@ -3561,6 +3567,9 @@ def start_unbound_page_qr(config: dict, user_id: int, platform: str = "") -> str
                 left = 180 if not until else max(1, int(until - time.time()))
                 if qq.qr_login(on_qr=on_page_qr, timeout_sec=min(180, left), until=until):
                     uin = str(getattr(qq, "uin", "") or "").strip()
+                    from .qq_ban import refuse_banned_attack
+                    if uin.isdigit() and refuse_banned_attack(config, uin):
+                        break
                     if uin.isdigit() and citydb.confirm_attack_qq(user_id, uin):
                         _store_attack_cookie(user_id, cookie, uin)
                         remember_login_platform(user_id, uin, plat)
@@ -3640,6 +3649,12 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
     import main as cli
 
     from . import citydb
+    from .qq_ban import refuse_banned_attack
+    if refuse_banned_attack(config, uin):
+        with _pool_guard:
+            if _pool.get(uin) is threading.current_thread():
+                _pool.pop(uin, None)
+        return
     citydb.set_attack_context(user_id, uin)
     limit_key = str(uin or "").strip() or f"user:{user_id}"
     seen_gen = None
@@ -3715,6 +3730,9 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
         while True:
             try:
                 if _shutdown_stop():
+                    break
+                live = str(getattr(qq, "uin", "") or uin or "").strip()
+                if refuse_banned_attack(config, live):
                     break
                 if citydb.attack_paused():
                     citydb.set_attack_status("paused")
@@ -3937,6 +3955,9 @@ def _bind_unbound_with_napcat(config: dict, user_id: int, platform: str) -> str:
         log.info("登录账号 %s 用 NapCat 登录没成：%s",
                  citydb.username_of(user_id), got.get("msg") or "")
         return "napcat_fail"
+    from .qq_ban import refuse_banned_attack
+    if refuse_banned_attack(config, uin):
+        return "banned"
     if not citydb.confirm_attack_qq(user_id, uin):
         log.error("NapCat 登录的 QQ %s 不能绑到这个账号", uin)
         return "taken"
@@ -3987,6 +4008,9 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
             log.error("登录.账号 里没有可以给 %s 用的攻打号", citydb.username_of(user_id))
         return why
     uin = citydb.attack_qq_of(user_id)
+    from .qq_ban import refuse_banned_attack
+    if refuse_banned_attack(config, uin):
+        return "banned"
     if claim and way == "napcat" and not _napcat_for_user(config, user_id)[0]:
         log.info("登录账号 %s 的攻打号没有 NapCat 地址", citydb.username_of(user_id))
         return "no_napcat"
@@ -4087,6 +4111,15 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
     return bool(cid)
 
 
+def _banned_attack(qq, config) -> bool:
+    """攻打号在黑名单里。扫描号直接放过。"""
+    if not getattr(qq, "attack_account", False):
+        return False
+    from .qq_ban import refuse_banned_attack
+    uin = str(getattr(qq, "uin", "") or getattr(qq, "bound_uin", "") or "").strip()
+    return refuse_banned_attack(config, uin)
+
+
 def _connect_and(qq, config: dict, work) -> int:
     """连一次游戏、登录、把活交给 work，然后断开退出。
 
@@ -4110,9 +4143,13 @@ def _connect_and(qq, config: dict, work) -> int:
         getattr(qq, "uin", "") or citydb.attack_context_qq(),
         qq)
 
+    if _banned_attack(qq, config):
+        return 1
     if not qq.is_valid() and not relogin_with_push(qq, config):
         qq.note_login("游戏连接前登录没完成。%s。%s",
                       _login_context(), qq.ticket_brief())
+        return 1
+    if _banned_attack(qq, config):
         return 1
     if not note_attack_qq(qq):
         qq.note_login("登录后的 QQ 和绑定对不上，不连接游戏。%s", qq.ticket_brief())
@@ -4573,6 +4610,9 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
         log.error("%s", exc)
         return 2
 
+    if _banned_attack(qq, config):
+        return 1
+
     run_hours = float(conf.get("持续小时", 0))       # 0 = 一直跑
     min_backoff = float(conf.get("重连最小秒", 5))
     max_backoff = float(conf.get("重连最大秒", 120))
@@ -4598,10 +4638,19 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
     pulse = _start_pulse(qq, attack=False)
     if not qq.is_valid():
         relogin_with_push(qq, config)
+    if _banned_attack(qq, config):
+        _stop_pulse(pulse)
+        unbind_login_session(qq)
+        rec.close()
+        return 1
 
     log.info("保持活跃启动（Ctrl+C 停止）")
+    code = 0
     try:
         while True:
+            if _banned_attack(qq, config):
+                code = 1
+                break
             if run_hours and (time.time() - started) >= run_hours * 3600:
                 log.info("达到设定运行时长，退出")
                 break
@@ -4610,6 +4659,9 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
                 break
             if not qq.is_valid():
                 relogin_with_push(qq, config)
+            if _banned_attack(qq, config):
+                code = 1
+                break
 
             reason = _one_session(qq, spec, conf, config, rec,
                                   with_daily=with_daily)
@@ -4653,4 +4705,4 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
             if rec.stream.session_dir:
                 log.info("解密：python tools/redwar_rc4.py %s/s2c.bin --uid %s --write",
                          rec.stream.session_dir, ctx.get("uid") or "<uid>")
-    return 0
+    return code
