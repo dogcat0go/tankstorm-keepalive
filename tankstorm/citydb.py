@@ -7402,14 +7402,16 @@ def remove_watch(user_id: int, city_id: int, uid: str) -> None:
 
 
 def watch_city_ids() -> list:
-    """网页里订阅过的城市。读失败时给空列表，不拖住游戏连接。"""
+    """管理员订阅过的城市。读失败时给空列表，不拖住游戏连接。"""
     try:
         conn = connect(readonly=True, timeout=1)
     except sqlite3.OperationalError:
         return []
     try:
         return [int(r[0]) for r in conn.execute(
-            "SELECT DISTINCT city_id FROM watch_sub ORDER BY city_id")]
+            "SELECT DISTINCT s.city_id FROM watch_sub s "
+            "JOIN app_user u ON u.id=s.user_id "
+            "WHERE IFNULL(u.admin,0)=1 ORDER BY s.city_id")]
     except sqlite3.OperationalError:
         return []
     finally:
@@ -7504,7 +7506,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
         rows = conn.execute(
             "SELECT s.user_id, s.uid, s.last_present, IFNULL(u.qq_target,''), "
             "IFNULL(u.expires_at,''), IFNULL(u.tier,'初级'), IFNULL(u.auto_lock,0), "
-            "IFNULL(s.lock_sent,0) "
+            "IFNULL(s.lock_sent,0), IFNULL(u.admin,0) "
             "FROM watch_sub s JOIN app_user u ON u.id=s.user_id "
             "WHERE s.city_id=?",
             (city_id,)).fetchall()
@@ -7514,7 +7516,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                              (city_id,)).fetchone()
         cname = cname[0] if cname else ""
         changes = []
-        for user_id, uid, last, qq_target, expires_at, tier, auto_lock, lock_sent in rows:
+        for user_id, uid, last, qq_target, expires_at, tier, auto_lock, lock_sent, admin in rows:
             if uid in seen:
                 now = 1
             elif finished:
@@ -7540,7 +7542,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                     "UPDATE watch_sub SET last_present=?, lock_sent=? "
                     "WHERE user_id=? AND city_id=? AND uid=?",
                     (now, 0 if now == 0 else sent, user_id, city_id, uid))
-            if account_expired(expires_at):
+            if account_expired(expires_at) or not admin:
                 continue
             armed = bool(auto_lock) and high_tier(tier or "") and not shutdown_due(user_id)
             if now == 1 and just:
