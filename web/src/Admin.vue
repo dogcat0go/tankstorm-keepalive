@@ -43,6 +43,7 @@ const memberQ = ref("");
 const memberRegion = ref("");
 const memberOnline = ref("");
 const memberTier = ref("");
+const memberUnbound = ref(false);
 const memberSort = ref("id");
 const memberDir = ref("asc");
 const fighterQ = ref("");
@@ -238,11 +239,16 @@ function fighterKey(f, col) {
   return f.user_id;
 }
 
+function memberBound(m) {
+  return !!String((m && m.attack_qq) || "").trim();
+}
+
 function memberPasses(m) {
   return hitQuery(memberQ.value, m.username, m.attack_qq, m.qq_target)
     && hitRegion(memberRegion.value, m.region)
     && hitOnline(memberOnline.value, onlineOf(m))
-    && (!memberTier.value || (m.tier || "初级") === memberTier.value);
+    && (!memberTier.value || (m.tier || "初级") === memberTier.value)
+    && (!memberUnbound.value || !memberBound(m));
 }
 
 function fighterPasses(f) {
@@ -291,7 +297,7 @@ function pageOf(rows, page) {
 const memberView = computed(() => pageOf(shownMembers.value, memberPage.value));
 const fighterView = computed(() => pageOf(shownFighters.value, fighterPage.value));
 
-watch([memberQ, memberRegion, memberOnline, memberTier, memberSort, memberDir, showExpired], () => {
+watch([memberQ, memberRegion, memberOnline, memberTier, memberUnbound, memberSort, memberDir, showExpired], () => {
   memberPage.value = 1;
 });
 watch([fighterQ, fighterRegion, fighterOnline, fighterSort, fighterDir, showExpired], () => {
@@ -299,7 +305,7 @@ watch([fighterQ, fighterRegion, fighterOnline, fighterSort, fighterDir, showExpi
 });
 
 const memberFilterOn = computed(() =>
-  !!(memberQ.value || memberRegion.value || memberOnline.value || memberTier.value));
+  !!(memberQ.value || memberRegion.value || memberOnline.value || memberTier.value || memberUnbound.value));
 const fighterFilterOn = computed(() =>
   !!(fighterQ.value || fighterRegion.value || fighterOnline.value));
 
@@ -308,6 +314,7 @@ function clearMemberFilters() {
   memberRegion.value = "";
   memberOnline.value = "";
   memberTier.value = "";
+  memberUnbound.value = false;
   showExpired.value = false;
 }
 
@@ -804,6 +811,10 @@ onUnmounted(() => {
             <option value="">全部</option>
             <option v-for="t in TIERS" :key="'ft' + t">{{ t }}</option>
           </select>
+        </label>
+        <label class="choice" title="只看攻打 QQ 还是空的登录账号。">
+          <input type="checkbox" v-model="memberUnbound" />
+          还没有绑定QQ
         </label>
         <label class="choice" title="有效期按北京时间。到期当天仍显示，没填有效期的一直显示。">
           <input type="checkbox" v-model="showExpired" />
