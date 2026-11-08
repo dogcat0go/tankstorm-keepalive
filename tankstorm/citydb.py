@@ -11,6 +11,7 @@
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -253,6 +254,48 @@ def _park_bad_db():
         log.error("城市库已损坏，原文件已改名留在旁边，重新建一个空库")
 
 
+def sideline_poison_wal():
+    """挪走 2026-09-26 误提交的那份 wal。
+
+    两帧都写第 380 页，提交后库被收成 391 页。线上库如果还是同一套盐，
+    下次打开会按这个尺寸截断主库，Datasette 就报
+    database disk image is malformed。活着的 wal 帧数和页号对不上，不会动。
+    """
+    wal = DB_FILE + "-wal"
+    try:
+        if not os.path.isfile(wal) or os.path.getsize(wal) != 8272:
+            return False
+        with open(wal, "rb") as f:
+            hdr = f.read(32)
+            if hdr[:4] not in (b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83"):
+                return False
+            if int.from_bytes(hdr[8:12], "big") != 4096:
+                return False
+            marks = []
+            for _ in range(2):
+                frame = f.read(24)
+                if len(frame) != 24:
+                    return False
+                marks.append((int.from_bytes(frame[0:4], "big"),
+                              int.from_bytes(frame[4:8], "big")))
+                if len(f.read(4096)) != 4096:
+                    return False
+        if marks != [(380, 391), (380, 391)]:
+            return False
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        for suf in ("-wal", "-shm"):
+            src = DB_FILE + suf
+            if not os.path.isfile(src):
+                continue
+            dest = src + ".stale-" + stamp
+            os.replace(src, dest)
+            log.info("已挪走会截断主库的旧文件 %s", os.path.basename(dest))
+        return True
+    except OSError as exc:
+        log.info("检查旧 wal 失败，继续打开：%s", exc)
+        return False
+
+
 def connect(readonly=False, timeout=15):
     """打开库。只读不改 journal，避免 DB Browser 开着时 PRAGMA 抢锁失败。
 
@@ -260,8 +303,19 @@ def connect(readonly=False, timeout=15):
     DB Browser 占着写锁会连等三次，国战心跳就被拖死。
     """
     global _schema_ready
+    sideline_poison_wal()
     if not _schema_ready:
-        setup = sqlite3.connect(DB_FILE, timeout=timeout)
+        try:
+            setup = sqlite3.connect(DB_FILE, timeout=timeout)
+        except sqlite3.DatabaseError as exc:
+            if "malformed" in str(exc).lower():
+                log.error(
+                    "打不开 %s：database disk image is malformed。"
+                    "旧的 city_players.db-wal 已经把主库截断。"
+                    "先停掉本程序和 Datasette；wal、shm 挪走后若仍打不开，"
+                    "用备份恢复主库，或用带 sqlite_dbpage 的 sqlite3 执行 .recover。",
+                    DB_FILE)
+            raise
         try:
             setup.execute("PRAGMA journal_mode=WAL")
         except sqlite3.DatabaseError:
@@ -552,6 +606,16 @@ def connect(readonly=False, timeout=15):
                     "ALTER TABLE daily_job ADD COLUMN ready_at TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             _schema_ready = True
+        except sqlite3.DatabaseError as exc:
+            text = str(exc).lower()
+            if "malformed" in text or "not a database" in text:
+                log.error(
+                    "打不开 %s：%s。"
+                    "旧的 city_players.db-wal 可能已经把主库截断。"
+                    "先停掉本程序和 Datasette；wal、shm 挪走后若仍打不开，"
+                    "用备份恢复主库，或用带 sqlite_dbpage 的 sqlite3 执行 .recover。",
+                    DB_FILE, exc)
+            raise
         finally:
             setup.close()
     # URI mode=ro 建不了 WAL 的共享内存文件。Windows 上会间歇报 disk I/O error，
@@ -2432,7 +2496,7 @@ def bind_attack_account(user_id: int, account: str) -> str:
     return ""
 
 
-_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "campask", "strikeask", "pageqr", "qrpath", "resume")
+_ATTACK_MARKS = ("proc", "hold", "login", "pause", "move", "hereask", "equipask", "campask", "strikeask", "eggask", "pageqr", "qrpath", "resume")
 
 
 def clear_attack_binding(user_id: int) -> str:
@@ -2636,7 +2700,9 @@ def _lock_card_cutoff() -> str:
 
 
 def _storm_day_cutoff() -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """今天北京时间 0 点，写成库存用的 UTC。过了 0 点，昨天的拒绝不再计入。"""
+    start = beijing_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def lock_cards_used(user_id: int = 0) -> int:
@@ -2856,7 +2922,7 @@ def note_storm_reject(name: str, user_id: int = 0, qq: str = "") -> None:
 
 
 def list_storm_rejects(user_id: int) -> list:
-    """这个登录账号最近 1 小时拒绝的超级强攻。新的在前。"""
+    """这个登录账号今天拒绝的超级强攻。北京时间 0 点起算，新的在前。"""
     user_id = int(user_id or 0)
     if not user_id:
         return []
@@ -2865,14 +2931,14 @@ def list_storm_rejects(user_id: int) -> list:
         rows = conn.execute(
             "SELECT name, at FROM storm_reject WHERE user_id=? AND at>=? "
             "ORDER BY at DESC, id DESC LIMIT 20",
-            (user_id, _lock_card_cutoff())).fetchall()
+            (user_id, _storm_day_cutoff())).fetchall()
     finally:
         conn.close()
     return [{"name": str(name or ""), "at": beijing_ts(at)} for name, at in rows]
 
 
 def storm_rejects_day(user_id: int) -> int:
-    """这个登录账号最近 1 天拒绝的超级强攻次数。"""
+    """这个登录账号今天拒绝的超级强攻次数。北京时间 0 点起算。"""
     user_id = int(user_id or 0)
     if not user_id:
         return 0
@@ -4124,7 +4190,7 @@ def set_attack_status(phase: str, task: str = "", note: str = "") -> None:
         if here:
             data["here"] = here
         for key in ("morale", "power", "blast", "pop", "metal", "oil", "credit",
-                    "camp_thew", "camp_score", "strike_left"):
+                    "camp_thew", "camp_score", "strike_left", "egg_left"):
             val = _kept_int(prev, key)
             if val is not None:
                 data[key] = val
@@ -4510,6 +4576,33 @@ def strike_live(user_id: int):
     return _kept_int(parsed, "strike_left")
 
 
+def note_egg(left) -> bool:
+    """记下还能砸的彩蛋。可以是 0。"""
+    if isinstance(left, bool) or not isinstance(left, int) or left < 0:
+        return False
+    if not attack_context_user() and not attack_context_qq():
+        return False
+    with _proc_lock:
+        name = _mark_name("proc")
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return False
+            if data.get("egg_left") == left:
+                return True
+            data["egg_left"] = left
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+            return True
+        except sqlite3.Error:
+            return False
+
+
+def egg_live(user_id: int):
+    """页面上还能砸的彩蛋。还没读到是 None。"""
+    parsed, _seen, _online = _read_user_proc(int(user_id))
+    return _kept_int(parsed, "egg_left")
+
+
 def request_camp_live(user_id: int) -> str:
     """进活动助手时读一次公会战役体力和当前积分。成功返回空字符串。"""
     user_id = int(user_id or 0)
@@ -4526,6 +4619,7 @@ def request_camp_live(user_id: int) -> str:
         return "还在登录，连上后再看体力和积分"
     _upsert_signal(_mark_name("campask", user_id), "1")
     _upsert_signal(_mark_name("strikeask", user_id), "1")
+    _upsert_signal(_mark_name("eggask", user_id), "1")
     return ""
 
 
@@ -4548,6 +4642,17 @@ def take_strike_live() -> bool:
     if _signal_value(_mark_name("strikeask", user_id)).strip() != "1":
         return False
     _delete_signal(_mark_name("strikeask", user_id))
+    return True
+
+
+def take_egg_live() -> bool:
+    """领走这一次查看砸彩蛋。领过就不再读第二次。"""
+    user_id = attack_context_user()
+    if not user_id or (shutdown_due(user_id) and shutdown_covers_context()):
+        return False
+    if _signal_value(_mark_name("eggask", user_id)).strip() != "1":
+        return False
+    _delete_signal(_mark_name("eggask", user_id))
     return True
 
 
@@ -5091,6 +5196,71 @@ def scan_quiet(start: str, end: str, now=None) -> bool:
     return cur >= a or cur < b
 
 
+def parse_page_spans(text):
+    """把「0-10; 20-30; 200-230」拆成页段。成功返回 ([(起, 止), ...], "")。
+
+    分号用英文或中文都行。挨着或重叠的段并成一段，并按起始页从小到大排。
+    """
+    parts = [p.strip() for p in str(text or "").replace("；", ";").split(";") if p.strip()]
+    if not parts:
+        return [], "写上页码段，例如 0-10; 20-30"
+    if len(parts) > 30:
+        return [], "一段城市最多 30 段页码"
+    spans = []
+    for part in parts:
+        if not re.fullmatch(r"\d+\s*-\s*\d+", part):
+            return [], f"页码段写成 起始-结束，多段用分号隔开。这一段认不出：{part}"
+        start_s, end_s = (p.strip() for p in part.split("-", 1))
+        start, end = int(start_s), int(end_s)
+        if end < start or end > 100000:
+            return [], f"页码段 {start}-{end} 无效"
+        spans.append((start, end))
+    spans.sort()
+    merged = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged, ""
+
+
+def format_page_spans(spans) -> str:
+    return "; ".join(f"{int(start)}-{int(end)}" for start, end in spans)
+
+
+def collapse_scan_ranges(ranges) -> list:
+    """同一座城的多段页码收成一行，给页面的页码段输入框用。"""
+    order, bucket = [], {}
+    for row in ranges or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            city = int(row.get("city_id") or 0)
+            start = int(row.get("start_page") or 0)
+            end = int(row.get("end_page"))
+        except (TypeError, ValueError):
+            continue
+        if city <= 0 or start < 0 or end < start:
+            continue
+        if city not in bucket:
+            order.append(city)
+            bucket[city] = []
+        bucket[city].append((start, end))
+    out = []
+    for city in order:
+        spans, _err = parse_page_spans(format_page_spans(bucket[city]))
+        if not spans:
+            continue
+        out.append({
+            "city_id": city,
+            "pages": format_page_spans(spans),
+            "start_page": spans[0][0],
+            "end_page": spans[0][1],
+        })
+    return out
+
+
 def get_scan_plan():
     """管理员在页面上保存过的扫描安排。还没保存过返回 None，调用方继续用 config。"""
     conn = connect(readonly=True)
@@ -5159,18 +5329,34 @@ def save_scan_plan(gap_sec, quiet_start, quiet_end, ranges) -> str:
             return "城市页范围有一条不是对象"
         try:
             city = int(str(item.get("city_id", "")).strip())
-            start_page = int(str(item.get("start_page", "")).strip())
-            end_page = int(str(item.get("end_page", "")).strip())
         except (TypeError, ValueError, AttributeError):
-            return "城市 ID 和页码要是数字"
+            return "城市 ID 要是数字"
         if city <= 0:
             return "城市 ID 要大于 0"
-        if start_page < 0 or end_page < start_page or end_page > 100000:
-            return f"城市 {city} 的页码无效"
         if city in seen:
-            return f"城市 {city} 写了两段，一座城只保留一段"
+            return f"城市 {city} 写了两行，多段页码写在同一格，用分号隔开"
         seen.add(city)
-        clean.append({"city_id": city, "start_page": start_page, "end_page": end_page})
+        pages = str(item.get("pages") or "").strip()
+        if pages:
+            spans, why = parse_page_spans(pages)
+            if why:
+                label = city_name(city) or str(city)
+                return f"{label}：{why}"
+        else:
+            try:
+                start_page = int(str(item.get("start_page", "")).strip())
+                end_page = int(str(item.get("end_page", "")).strip())
+            except (TypeError, ValueError, AttributeError):
+                return "城市 ID 和页码要是数字"
+            if start_page < 0 or end_page < start_page or end_page > 100000:
+                return f"城市 {city} 的页码无效"
+            spans = [(start_page, end_page)]
+        for start_page, end_page in spans:
+            clean.append({
+                "city_id": city, "start_page": start_page, "end_page": end_page,
+            })
+    if len(clean) > 300:
+        return "页码段太多"
     conn = connect()
     try:
         conn.execute(
@@ -5331,6 +5517,7 @@ DAILY_KIND_LABEL = {
     "guild_camp": "公会战役",
     "guild_claim": "公会任务领奖",
     "strike": "精准打击",
+    "egg": "欢乐砸彩蛋",
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "clean", "haoyin", "admiral", "admiral10", "agent10",
@@ -5740,7 +5927,7 @@ def enqueue_due_daily_jobs(guild_defaults=None) -> list:
                 continue
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job "
-                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike') "
+                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg') "
                 "AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
             if int(waiting or 0) >= 3:
@@ -5979,6 +6166,62 @@ def guild_task_board(user_id: int):
     finally:
         conn.close()
     return _clean_guild_board(saved.get(_GUILD_BOARD))
+
+
+_GUILD_ACCEPT = "_公会任务接受"
+
+
+def guild_task_accept(user_id: int) -> list:
+    """这个账号要接受的任务编号。没记过就用默认的 4 星、5 星。"""
+    conn = connect(readonly=True)
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+    finally:
+        conn.close()
+    raw = saved.get(_GUILD_ACCEPT)
+    from .guild import guild_accept_default, guild_task_catalog
+    known = {star["id"] for group in guild_task_catalog() for star in group["stars"]}
+    if not isinstance(raw, list):
+        return guild_accept_default()
+    out = []
+    for item in raw:
+        if isinstance(item, bool) or not isinstance(item, int) or item not in known:
+            continue
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def set_guild_task_accept(user_id: int, ids) -> str:
+    """记下要接受的任务编号。空列表表示一个都不接。成功返回空字符串。"""
+    from .guild import guild_task_catalog
+    known = {star["id"] for group in guild_task_catalog() for star in group["stars"]}
+    if not isinstance(ids, list):
+        return "要给出任务列表"
+    picked = []
+    for item in ids:
+        if isinstance(item, bool):
+            return "没有这项任务"
+        if isinstance(item, str) and item.strip().isdigit():
+            item = int(item.strip())
+        if not isinstance(item, int) or item not in known:
+            return "没有这项任务"
+        if item not in picked:
+            picked.append(item)
+    picked.sort()
+    conn = connect()
+    try:
+        saved = _saved_daily_switches(conn, user_id) or {}
+        saved[_GUILD_ACCEPT] = picked
+        cur = conn.execute(
+            "UPDATE app_user SET daily_switch=? WHERE id=?",
+            (json.dumps(saved, ensure_ascii=False), int(user_id)))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "账号不存在"
+        return ""
+    finally:
+        conn.close()
 
 
 def save_guild_task_board(user_id: int, board) -> None:
@@ -6304,7 +6547,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         else:
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
-                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike') AND status IN ('pending','running')",
+                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg') AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
             return "还有没做完的，先等这几项"
@@ -7184,14 +7427,16 @@ def remove_watch(user_id: int, city_id: int, uid: str) -> None:
 
 
 def watch_city_ids() -> list:
-    """网页里订阅过的城市。读失败时给空列表，不拖住游戏连接。"""
+    """管理员订阅过的城市。读失败时给空列表，不拖住游戏连接。"""
     try:
         conn = connect(readonly=True, timeout=1)
     except sqlite3.OperationalError:
         return []
     try:
         return [int(r[0]) for r in conn.execute(
-            "SELECT DISTINCT city_id FROM watch_sub ORDER BY city_id")]
+            "SELECT DISTINCT s.city_id FROM watch_sub s "
+            "JOIN app_user u ON u.id=s.user_id "
+            "WHERE IFNULL(u.admin,0)=1 ORDER BY s.city_id")]
     except sqlite3.OperationalError:
         return []
     finally:
@@ -7286,7 +7531,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
         rows = conn.execute(
             "SELECT s.user_id, s.uid, s.last_present, IFNULL(u.qq_target,''), "
             "IFNULL(u.expires_at,''), IFNULL(u.tier,'初级'), IFNULL(u.auto_lock,0), "
-            "IFNULL(s.lock_sent,0) "
+            "IFNULL(s.lock_sent,0), IFNULL(u.admin,0) "
             "FROM watch_sub s JOIN app_user u ON u.id=s.user_id "
             "WHERE s.city_id=?",
             (city_id,)).fetchall()
@@ -7296,7 +7541,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                              (city_id,)).fetchone()
         cname = cname[0] if cname else ""
         changes = []
-        for user_id, uid, last, qq_target, expires_at, tier, auto_lock, lock_sent in rows:
+        for user_id, uid, last, qq_target, expires_at, tier, auto_lock, lock_sent, admin in rows:
             if uid in seen:
                 now = 1
             elif finished:
@@ -7322,7 +7567,7 @@ def sync_watch(city_id: int, seen_uids, finished: bool) -> list:
                     "UPDATE watch_sub SET last_present=?, lock_sent=? "
                     "WHERE user_id=? AND city_id=? AND uid=?",
                     (now, 0 if now == 0 else sent, user_id, city_id, uid))
-            if account_expired(expires_at):
+            if account_expired(expires_at) or not admin:
                 continue
             armed = bool(auto_lock) and high_tier(tier or "") and not shutdown_due(user_id)
             if now == 1 and just:

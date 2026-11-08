@@ -50,6 +50,8 @@
   python main.py --pick lab --count 99        探索自选包换 99 张实验室探索卡
   python main.py --pick auto --count 99       探索自选包换 99 张军备自动化探索卡
   python main.py --lab50                      实验室探索 50 连，默认 1 次
+  python main.py --egg                        把剩余彩蛋全部砸开
+  python main.py --strike                     精准打击打一下
 """
 
 import argparse
@@ -83,13 +85,18 @@ STATE_FILE = paths.user_path("state.json")
 
 
 def load_json(path: str, required: bool = True) -> dict:
-    if not os.path.exists(path):
+    data, note = paths.load_json_dict(path)
+    if data is None:
+        if note:
+            log.error("%s", note)
         if required:
-            log.error("缺少文件: %s", path)
             sys.exit(1)
+        if note:
+            log.error("这份本地配置先不用，服务照常启动")
         return {}
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    if note:
+        log.error("%s", note)
+    return data
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -103,40 +110,54 @@ def _deep_merge(base: dict, over: dict) -> dict:
 
 
 def _cli_page_ranges(tokens, page, page_end):
-    """命令行上的页范围。一座城一段，返回 [(城市, 起始页, 结束页)]。"""
+    """命令行上的页范围。一座城可以有多段，返回 [(城市, 起始页, 结束页)]。"""
+    from tankstorm import citydb
+
     bare = [t for t in tokens if ":" not in t]
     if bare and len(tokens) > 1:
-        raise ValueError("多座城请每座都写成 城市:起始-结束，例如 1201:10-20 1301:0-8")
-    spans = []
+        raise ValueError("多座城请每座都写成 城市:起始-结束，例如 1201:0-10;20-30 1301:0-8")
+    raw = []
     if len(tokens) == 1 and bare:
         try:
             city = int(tokens[0])
         except ValueError:
-            raise ValueError(f"无法识别 {tokens[0]}，写成 城市:起始-结束，例如 1201:10-20")
+            raise ValueError(f"无法识别 {tokens[0]}，写成 城市:起始-结束，例如 1201:0-10;20-30")
         if page_end is None:
-            raise ValueError("单座城请带 --city-page-end，或写成 1201:10-20")
-        spans.append((city, page, page_end))
+            raise ValueError("单座城请带 --city-page-end，或写成 1201:0-10;20-30")
+        raw.append((city, page, page_end))
     else:
         for token in tokens:
             city_s, sep, span = token.partition(":")
-            start_s, dash, end_s = span.partition("-")
-            if not sep or not dash or not city_s or start_s == "" or end_s == "":
-                raise ValueError(f"无法识别 {token}，写成 城市:起始-结束，例如 1201:10-20")
+            bits = [p.strip() for p in span.replace("；", ";").split(";") if p.strip()]
+            if not sep or not city_s or not bits:
+                raise ValueError(f"无法识别 {token}，写成 1201:0-10;20-30")
             try:
-                spans.append((int(city_s), int(start_s), int(end_s)))
+                city = int(city_s)
             except ValueError:
-                raise ValueError(f"无法识别 {token}，写成 城市:起始-结束，例如 1201:10-20")
-    seen = set()
-    for city, start, end in spans:
+                raise ValueError(f"无法识别 {token}，写成 1201:0-10;20-30")
+            for bit in bits:
+                start_s, dash, end_s = bit.partition("-")
+                if not dash or start_s == "" or end_s == "":
+                    raise ValueError(f"无法识别 {token}，写成 1201:0-10;20-30")
+                try:
+                    raw.append((city, int(start_s), int(end_s)))
+                except ValueError:
+                    raise ValueError(f"无法识别 {token}，写成 1201:0-10;20-30")
+    order, grouped = [], {}
+    for city, start, end in raw:
         if city <= 0:
             raise ValueError("城市 ID 要大于 0")
-        if start < 0 or end < 0:
-            raise ValueError("页码从 0 起，不能是负数")
-        if end < start:
-            raise ValueError(f"城市 {city} 的结束页 {end} 小于起始页 {start}")
-        if city in seen:
-            raise ValueError(f"城市 {city} 写了两段页范围，一座城只对应一段")
-        seen.add(city)
+        if city not in grouped:
+            order.append(city)
+            grouped[city] = []
+        grouped[city].append((start, end))
+    spans = []
+    for city in order:
+        merged, why = citydb.parse_page_spans(citydb.format_page_spans(grouped[city]))
+        if why:
+            raise ValueError(f"城市 {city}：{why}")
+        for start, end in merged:
+            spans.append((city, start, end))
     return spans
 
 
@@ -351,7 +372,7 @@ def main() -> int:
     g5.add_argument("--watch-pages", nargs="*", default=None,
                     metavar="城市:起始-结束",
                     help="常驻：每 5 分钟按各自的页范围翻这些城。"
-                         "可写多座，一座城一段：1201:10-20 1301:0-8。"
+                         "可写多座。一座城多段用分号：1201:0-10;20-30 1301:0-8。"
                          "页码从 0 起，含结束页。只写一座城 ID 时仍用 "
                          "--city-page 和 --city-page-end。"
                          "不带参数则用 config「页范围监视.范围」。"
@@ -423,6 +444,12 @@ def main() -> int:
     g4.add_argument("--blast", nargs="?", const=1, type=int, default=None,
                     metavar="数量",
                     help="连上游戏造 N 个爆破兵（默认 1）。开工失败时把线上字段和生产槽打出来")
+    g4.add_argument("--egg", action="store_true",
+                    help="连上后把剩余彩蛋全部砸开再退出。"
+                         "每砸一个消耗 1 个物品 10015")
+    g4.add_argument("--strike", action="store_true",
+                    help="连上后打开精准打击并打一下再退出。"
+                         "只发 type=1，不带奖励编号")
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
                          "登录可选空间或大厅。游戏窗口仍是 flash_host，"
@@ -448,7 +475,7 @@ def main() -> int:
                 args.move is not None, args.orders,
                 args.capture, args.fund is not None,
                 args.pve is not None, args.draw, args.pick, args.lab50 is not None,
-                args.blast is not None)):
+                args.blast is not None, args.egg, args.strike)):
         parser.print_help()
         return 0
 
@@ -462,7 +489,7 @@ def main() -> int:
                               args.orders,
                               args.capture, args.fund is not None,
                               args.pve is not None, args.draw, args.pick, args.lab50 is not None,
-                              args.blast is not None)):
+                              args.blast is not None, args.egg, args.strike)):
         log.error("订阅页面已和游戏分开。另开一个进程：python3 web.py")
         return 1
 
@@ -632,7 +659,7 @@ def main() -> int:
         except Exception as exc:
             log.info("读扫描安排失败：%s", exc)
         if not _page_range_jobs(config)[0] and not (saved_plan and saved_plan.get("jobs")):
-            log.error("页范围监视没有可用的城市。写成 1201:10-20 1301:0-8，"
+            log.error("页范围监视没有可用的城市。写成 1201:0-10;20-30 1301:0-8，"
                       "或在订阅页面的扫描安排里加上，或填 config「页范围监视.范围」")
             return 1
         config.setdefault("保持活跃", {})["启用"] = True
@@ -714,6 +741,12 @@ def main() -> int:
             log.error("--blast 数量至少是 1")
             return 1
         return socket_keepalive.run_blast_once(qq, config, args.blast)
+
+    if args.egg:
+        return socket_keepalive.run_egg_once(qq, config)
+
+    if args.strike:
+        return socket_keepalive.run_strike_once(qq, config)
 
     if args.draw:
         return socket_keepalive.run_draw_once(qq, config, args.draw)

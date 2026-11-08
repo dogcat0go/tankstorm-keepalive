@@ -16,8 +16,10 @@ const props = defineProps({
   thew: { default: null },
   score: { default: null },
   strikeLeft: { default: null },
+  eggLeft: { default: null },
   fundBuildings: { type: Array, required: true },
   fundNote: { type: String, default: "" },
+  eggNote: { type: String, default: "" },
   err: { type: String, default: "" },
   errAt: { type: String, default: "" },
   saveLevel: { type: Function, required: true },
@@ -25,12 +27,14 @@ const props = defineProps({
   runFund: { type: Function, required: true },
   runGuildCamp: { type: Function, required: true },
   runStrike: { type: Function, required: true },
+  runEgg: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
 
 const guildTask = computed(() => props.tasks.find((it) => it.key === "公会战役") || null);
 const campJob = computed(() => props.jobs.find((it) => it.kind === "guild_camp") || null);
 const strikeJob = computed(() => props.jobs.find((it) => it.kind === "strike") || null);
+const eggJob = computed(() => props.jobs.find((it) => it.kind === "egg") || null);
 
 function liveText(n) {
   if (n === null || n === undefined || n === "") return "还没读到";
@@ -101,6 +105,17 @@ function liveText(n) {
       </form>
       <p v-if="fundNote" class="muted">{{ fundNote }}</p>
       <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>欢乐砸彩蛋</summary>
+      <form class="lock-row" @submit.prevent="runEgg().catch((e) => showErr(e.message))">
+        <span class="switch">欢乐砸彩蛋</span>
+        <button type="submit">全部砸开</button>
+      </form>
+      <p v-if="eggJob">{{ eggJob.status }} {{ eggJob.detail }}</p>
+      <p v-if="eggNote" class="muted">{{ eggNote }}</p>
+      <p>还可以开 {{ liveText(eggLeft) }} 个</p>
+      <p class="muted">进入这个页面会读一次剩余数量。点下去会一直砸，直到剩余变成 0。每砸一个消耗 1 个物品 10015，得到 1 张 200 万石油卡。</p>
     </details>
     <p v-if="err && errAt === 'activity'" class="err">{{ err }}</p>
   </section>

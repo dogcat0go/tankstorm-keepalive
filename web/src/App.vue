@@ -81,6 +81,10 @@ const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
 const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
 const dailyJobs = ref([]);
 const guildBoard = ref(null);
+const guildCatalog = ref([]);
+const guildAccept = ref([]);
+const guildAcceptNote = ref("");
+let guildAcceptReady = false;
 const baseCount = ref("1");
 const baseArmy = ref("");
 const baseFactoryCount = ref("1");
@@ -130,6 +134,8 @@ let guildLevelReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
 const fundNote = ref("");
+const eggNote = ref("");
+const eggLeft = ref(null);
 const fundBuildings = [
   { id: "10132", name: "比萨斜塔" },
   { id: "10133", name: "埃菲尔铁塔" },
@@ -207,6 +213,11 @@ async function api(path, body) {
 }
 
 async function refresh() {
+  if (!me.value || !me.value.admin) {
+    items.value = [];
+    cityCounts.value = [];
+    return;
+  }
   const data = await api("/api/subs");
   items.value = data.items || [];
   cityCounts.value = data.counts || [];
@@ -221,6 +232,10 @@ async function refreshDaily() {
     dailyTasks.value = [];
     dailyJobs.value = [];
     guildBoard.value = null;
+    guildCatalog.value = [];
+    guildAccept.value = [];
+    guildAcceptNote.value = "";
+    guildAcceptReady = false;
     pveStages.value = "";
     pveStagesReady = false;
     dailyAt.value = "";
@@ -235,7 +250,9 @@ async function refreshDaily() {
     guildThew.value = null;
     guildScore.value = null;
     strikeLeft.value = null;
+    eggLeft.value = null;
     fundNote.value = "";
+    eggNote.value = "";
     return;
   }
   const data = await api("/api/daily");
@@ -243,6 +260,11 @@ async function refreshDaily() {
   dailyTasks.value = data.tasks || [];
   dailyJobs.value = data.jobs || [];
   guildBoard.value = data.guild_tasks || null;
+  guildCatalog.value = data.guild_catalog || [];
+  if (!guildAcceptReady) {
+    guildAccept.value = (data.guild_accept || []).slice();
+    guildAcceptReady = true;
+  }
   if (!pveStagesReady) {
     pveStages.value = data.stages || "";
     pveStagesReady = true;
@@ -264,6 +286,16 @@ async function refreshDaily() {
   guildThew.value = data.guild_thew == null ? null : data.guild_thew;
   guildScore.value = data.guild_score == null ? null : data.guild_score;
   strikeLeft.value = data.strike_left == null ? null : data.strike_left;
+  eggLeft.value = data.egg_left == null ? null : data.egg_left;
+}
+
+async function saveGuildAccept() {
+  showErr("", "daily");
+  guildAcceptNote.value = "";
+  const data = await api("/api/daily/guild-accept", { ids: guildAccept.value });
+  guildAccept.value = (data.guild_accept || []).slice();
+  guildAcceptReady = true;
+  guildAcceptNote.value = "已保存，下一轮按这份接受";
 }
 
 async function saveGuildLevel() {
@@ -560,6 +592,17 @@ async function runFund(building, times) {
   await refreshAttacks();
 }
 
+async function runEgg() {
+  showErr("", "activity");
+  eggNote.value = "";
+  const ok = await confirmUse("把剩余彩蛋全部砸开，直到服务器上的数量变成 0。每个消耗 1 个物品 10015。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "egg" });
+  eggNote.value = "已交给绑定的攻打号";
+  await refreshDaily();
+  await refreshAttacks();
+}
+
 async function cancelBase(it) {
   showErr("", "base");
   await api("/api/daily/cancel", { id: it.id });
@@ -766,7 +809,10 @@ async function loadMe() {
 function takeUser(user) {
   me.value = user;
   if (!user.base_war && (tab.value === "base" || tab.value === "activity")) tab.value = "attack";
+  if (!user.admin && tab.value === "watch") tab.value = "attack";
   pveStagesReady = false;
+  guildAcceptReady = false;
+  guildAcceptNote.value = "";
   guildLevelReady = false;
   dailyAtReady = false;
   modoAtReady = false;
@@ -1183,6 +1229,10 @@ async function logout() {
   dailyTasks.value = [];
   dailyJobs.value = [];
   guildBoard.value = null;
+  guildCatalog.value = [];
+  guildAccept.value = [];
+  guildAcceptNote.value = "";
+  guildAcceptReady = false;
   pveStages.value = "";
   pveStagesReady = false;
   dailyAt.value = "";
@@ -1337,7 +1387,7 @@ onUnmounted(() => {
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item v-if="me && me.base_war" index="base">基地战助手</el-menu-item>
         <el-menu-item v-if="me && me.base_war" index="activity">活动助手</el-menu-item>
-        <el-menu-item index="watch">监控敌人</el-menu-item>
+        <el-menu-item v-if="me && me.admin" index="watch">监控敌人</el-menu-item>
       </el-menu>
       <ProfilePage
         v-show="tab === 'profile'"
@@ -1363,14 +1413,17 @@ onUnmounted(() => {
         :thew="guildThew"
         :score="guildScore"
         :strike-left="strikeLeft"
+        :egg-left="eggLeft"
         :run-strike="runStrike"
         :fund-buildings="fundBuildings"
         :fund-note="fundNote"
+        :egg-note="eggNote"
         :err="err"
         :err-at="errAt"
         :save-level="saveGuildLevel"
         :save-daily-switch="saveDailySwitch"
         :run-fund="runFund"
+        :run-egg="runEgg"
         :show-err="showErr"
       />
       <DailyPage
@@ -1383,6 +1436,10 @@ onUnmounted(() => {
         :progress-tasks="progressTasks"
         :daily-jobs="dailyJobs"
         :guild-board="guildBoard"
+        :guild-catalog="guildCatalog"
+        v-model:guild-accept="guildAccept"
+        :guild-accept-note="guildAcceptNote"
+        :save-guild-accept="saveGuildAccept"
         v-model:modo-at="modoAt"
         :daily-at-note="dailyAtNote"
         :modo-at-note="modoAtNote"
@@ -1409,6 +1466,7 @@ onUnmounted(() => {
         :show-err="showErr"
       />
       <WatchPage
+        v-if="me && me.admin"
         v-show="toolsOn && tab === 'watch'"
         v-model:city-id="cityId"
         v-model:uid="uid"

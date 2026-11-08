@@ -710,6 +710,7 @@ PushPlus 的 token 填在 `config.local.json`：
 | 「需要花钱才能做」 | 正常，免费次数用完了，脚本主动停手 |
 | 「没有可做的（已领过）」 | 正常，今天那份已经领过 |
 | 推送登录失败 | 已知问题，见[登录](#登录)，自动回退扫码 |
+| Datasette 报 `database disk image is malformed` | 旧的 `city_players.db-wal` 曾被提交，拉代码盖回后一打开就把主库截断。先停进程，把旁边的 `-wal`、`-shm` 改名；再对主库执行 `PRAGMA integrity_check`。结果是 `ok` 就重启 Datasette。仍是 malformed，主库已经坏了，从备份恢复 |
 
 日志在 `logs/`：
 

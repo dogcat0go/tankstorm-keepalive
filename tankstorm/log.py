@@ -24,6 +24,16 @@ LOG_DIR = user_path("logs")
 _log_listener = None
 _login_logger = None
 _console_handler = None
+_log_file_warned = False
+
+
+def _warn_log_file(path: str, exc: BaseException) -> None:
+    """日志文件写不了不能把进程带走。root 跑更新时会把当天日志建成 root 的。"""
+    global _log_file_warned
+    if _log_file_warned:
+        return
+    _log_file_warned = True
+    print(f"写不了日志 {path}：{exc}。服务继续跑。", file=sys.stderr, flush=True)
 
 
 def console_lock():
@@ -77,10 +87,15 @@ def get_login_logger() -> logging.Logger:
     logger = logging.getLogger("tankstorm.login")
     logger.setLevel(logging.INFO)
     logger.propagate = False
-    os.makedirs(LOG_DIR, exist_ok=True)
     path = os.path.join(LOG_DIR, "login.log")
-    fh = logging.handlers.TimedRotatingFileHandler(
-        path, when="midnight", backupCount=14, encoding="utf-8")
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        fh = logging.handlers.TimedRotatingFileHandler(
+            path, when="midnight", backupCount=14, encoding="utf-8")
+    except OSError as exc:
+        _warn_log_file(path, exc)
+        _login_logger = logger
+        return logger
     fh.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
     logger.addHandler(fh)
@@ -106,10 +121,14 @@ def task_log(qq: str, task: str, msg: str) -> None:
             logger.setLevel(logging.INFO)
             logger.propagate = False
             folder = os.path.join(LOG_DIR, "task", who)
-            os.makedirs(folder, exist_ok=True)
-            fh = logging.handlers.TimedRotatingFileHandler(
-                os.path.join(folder, safe + ".log"),
-                when="midnight", backupCount=14, encoding="utf-8")
+            path = os.path.join(folder, safe + ".log")
+            try:
+                os.makedirs(folder, exist_ok=True)
+                fh = logging.handlers.TimedRotatingFileHandler(
+                    path, when="midnight", backupCount=14, encoding="utf-8")
+            except OSError as exc:
+                _warn_log_file(path, exc)
+                return
             fh.setFormatter(logging.Formatter(
                 "%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
             logger.addHandler(fh)
@@ -124,12 +143,16 @@ def get_logger(name: str = "tankstorm") -> logging.Logger:
     logger.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S")
 
-    os.makedirs(LOG_DIR, exist_ok=True)
     logfile = os.path.join(LOG_DIR, f"{date.today().isoformat()}.log")
-    fh = logging.FileHandler(logfile, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    logger.addHandler(fh)
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        fh = logging.FileHandler(logfile, encoding="utf-8")
+    except OSError as exc:
+        _warn_log_file(logfile, exc)
+    else:
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(fh)
 
     # 控制台写到独立线程：点选窗口卡住的是打印，不能把打人线程一起堵住。
     global _console_handler

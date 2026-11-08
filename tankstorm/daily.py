@@ -1847,14 +1847,16 @@ TASKS = [
            "tankstorm.guild", fromlist=["daily_donate"]
        ).daily_donate(rec, sock, config)),
 
-    # 2026-10-23 23:14 抓包。4 星、5 星参加或发布，并领公会活跃。
+    # 2026-10-23 23:14 抓包。按页面勾的任务和星级参加或发布，并领公会活跃。
+    # 没在页面改过时仍是 4 星、5 星。
     # 跟定时执行同一条醒来线程。那次醒来里开关开着、并且距上次已满一小时，才再排一次。
     # 不另开线程干等。冷却记在每日状态的 last 里，整轮日常碰到一小时内看过的就跳过。
     _t("公会任务", "公会·参加任务", "04f3", "RceGuildBuildOpt",
        {}, "实测",
-       "开关开着时每小时看一次。今日参与没到 5 个，就参加或承接 4 星、5 星。"
+       "开关开着时每小时看一次。今日参与没到 5 个，就按页面勾的任务和星级参加或承接。"
+       "没勾过就接 4 星、5 星，不接摧毁基地、战争令牌、探索、消耗勋章、公会捐献。"
        "次数是面板上的今日参与任务次数，身上的任务已经算在里面。"
-       "到了 5 个，能领奖才领，没有可领的就不发。领奖不增加次数。"
+       "到了 5 个，能领奖才领，没有可领的就不发。领奖不增加次数，也不看勾选。"
        "活跃任务另算，不进这 5 个。付费刷新不发。"
        "公会活跃 type=350 开面板、type=351 按档领",
        max_per_day=5,
@@ -2016,9 +2018,10 @@ def task_board(uin: str, switches: dict) -> list:
         }
         if task.key == "公会任务":
             row["hint"] = (
-                "开着时每小时看一次。今日参与还没到 5 个就去领任务。"
+                "开着时每小时看一次。今日参与还没到 5 个，就按公会任务里勾的任务和星级去参加或承接。"
+                "没改过就接 4 星和 5 星，不接摧毁基地、战争令牌、探索、消耗勋章、公会捐献。"
                 "到了 5 个，能领奖才去领，没有可领的就不动。"
-                "身上的任务已经算进这个次数。活跃任务另算。"
+                "身上的任务已经算进这个次数。活跃任务另算。领奖不看勾选。"
             )
         elif task.key in ("将领授勋", "将领加强授勋"):
             row["hint"] = (
@@ -3402,6 +3405,102 @@ def _draw_send(rec, sock, opcode, fields, reply, kind):
     return _await_response(
         sock, rec, reply, mark, 6,
         want=lambda d, kind=kind: isinstance(d, dict) and d.get("type") == kind)
+
+
+_EGG_ITEM = 10015
+
+
+def _egg_open(rec, sock):
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "0434", encode_message(
+        {1: ("int32", 0), 2: ("int32", 4)}, omit_zero=False), rec.rc4_c2s)
+    return _await_response(sock, rec, "RseMoonOpen", mark, 6)
+
+
+def _egg_once(rec, sock):
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "0435", encode_message(
+        {1: ("int32", 1), 2: ("int32", 4)}, omit_zero=False), rec.rc4_c2s)
+    return _await_response(sock, rec, "RseMoonStake", mark, 6)
+
+
+def _egg_item(rec):
+    found = _draw_slot(rec, _EGG_ITEM)
+    if not found:
+        return None
+    return _one(found[1])
+
+
+def peek_eggs(rec, sock):
+    """打开砸彩蛋，把剩余数量记给页面。不砸。"""
+    from . import citydb
+    got = _egg_open(rec, sock)
+    if not isinstance(got, dict):
+        return None
+    left = _one(got.get("moonCnt"))
+    if left is None:
+        left = _egg_item(rec)
+    if left is not None:
+        citydb.note_egg(left)
+    return got
+
+
+def egg_probe(rec, sock, on_progress=None):
+    """把剩余彩蛋砸完。2026-11-05 19:35 抓包。
+
+    开面板 RceMoonOpen {type:0, activeFlag:4}，moonCnt 是面板上的剩余。
+    砸一下 RceMoonStake {nStakeCnt:1, activeFlag:4}。
+    每砸一下消耗 1 个物品 10015。砸完再开一次面板，按新的剩余接着砸，
+    直到剩余变成 0。面板数字不降、物品数量在降时，改按物品 10015 砸完。
+    """
+    from . import citydb
+    panel = peek_eggs(rec, sock)
+    if not isinstance(panel, dict):
+        return False, "失败：没打开砸彩蛋"
+    left = _one(panel.get("moonCnt"))
+    item = _egg_item(rec)
+    by_item = left is None
+    if by_item:
+        left = item
+    if left is None:
+        return False, "失败：读不到剩余彩蛋"
+    if left <= 0:
+        citydb.note_egg(0)
+        return True, "成功：没有剩余彩蛋"
+    done = 0
+    while left > 0:
+        raise_if_stopped()
+        got = _egg_once(rec, sock)
+        if not isinstance(got, dict):
+            head = f"已砸 {done} 个。" if done else ""
+            return False, head + f"砸彩蛋没有回包，剩余 {left}"
+        if _one(got.get("ret")) not in (0, None):
+            head = f"已砸 {done} 个。" if done else ""
+            return False, head + f"被拒 ret={got.get('ret')}，剩余 {left}"
+        fresh = _egg_open(rec, sock)
+        now = _one(fresh.get("moonCnt")) if isinstance(fresh, dict) else None
+        now_item = _egg_item(rec)
+        if not by_item and now is not None and now < left:
+            left = now
+        elif (item is not None and now_item is not None and now_item < item):
+            by_item = True
+            left = now_item
+            item = now_item
+        else:
+            if now is not None:
+                left = now
+                citydb.note_egg(left)
+            head = f"已砸 {done} 个。" if done else ""
+            return False, head + f"剩余 {left} 没有下降"
+        done += 1
+        item = now_item if now_item is not None else item
+        citydb.note_egg(left)
+        if on_progress:
+            on_progress(f"已砸 {done} 个，剩余 {left}")
+        if left <= 0:
+            break
+        _nap(0.4)
+    return True, f"成功：砸彩蛋 {done} 个，剩余 {left}"
 
 
 def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
