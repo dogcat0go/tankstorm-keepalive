@@ -438,7 +438,7 @@ class Recorder:
             wiremap.ACTIVE = wiremap.for_version("2026102901")
             page_ver = str((ctx or {}).get("version") or "")
             if page_ver and page_ver != "2026102901":
-                log.info("游戏页版本 %s，协议按 RedWar_2026102901", page_ver)
+                log.info("游戏页配置 %s，协议编号按 RedWar_2026102901", page_ver)
         except Exception as exc:
             log.warning("2026102901 协议对照没载入，收到的包仍按旧编号解读：%s", exc)
         if not self.live_decrypt:

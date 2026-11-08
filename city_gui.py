@@ -24,11 +24,14 @@ from tankstorm.qq_login import QQSession
 
 log = get_logger()
 
-# 打包前改这三行。打进 exe 之后，改旁边的 config.json、config.local.json 都不会换服务器、账号，也不会多放行 QQ。
+# 账号版打包前改这些。打进 exe 之后，改旁边的 config.json 不会换服务器、账号或 QQ。
+# 公会版不要改这里。编译时设 TANKSTORM_LOCK_GUILD，规格会清掉账号和有效期，只留下公会。
 LOCK_SERVER = "https://tankstorm.site"
 LOCK_IP = "101.33.228.207"
 LOCK_ACCOUNT = "wuliao"
 LOCK_QQS = (1785866691,807020971,470422983,972843421)
+LOCK_GUILD = ""
+LOCK_OPEN = False
 
 # 登录不走对方电脑的 DNS，TCP 直连上面这个地址。证书仍按域名校验。
 _login_host = LOCK_SERVER.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0]
@@ -44,6 +47,11 @@ def _direct_create_connection(address, *args, **kwargs):
 
 
 _u3conn.create_connection = _direct_create_connection
+
+
+def _guild_only() -> bool:
+    """公会版：不写登录账号，也不向服务器核对有效期。"""
+    return bool(LOCK_OPEN)
 
 
 def _locked():
@@ -600,6 +608,11 @@ class App(tk.Tk):
         self._expires_at = ""
         self._remain_until = None
         self._config = cli.load_config()
+        self._config.setdefault("录制", {})["自动拒绝超级强攻"] = True
+        self._config["_界面拒绝强攻"] = True
+        guild_id = str(LOCK_GUILD or "").strip()
+        if guild_id.isdigit() and int(guild_id) > 0:
+            self._config["_编译公会"] = str(int(guild_id))
         self._account_name, self._allowed = _locked()
         self._prio_rows = []
         self._scan_rows = []
@@ -607,32 +620,43 @@ class App(tk.Tk):
 
         gate = ttk.Frame(self, padding=(12, 12, 12, 0))
         gate.pack(fill="x")
-        ttk.Label(gate, text="账号").grid(row=0, column=0, sticky="w")
-        ttk.Label(gate, text=self._account_name or "未配置").grid(
-            row=0, column=1, sticky="w", padx=(8, 0))
-        ttk.Label(gate, text="密码").grid(row=0, column=2, sticky="w", padx=(8, 0))
         self.password = tk.StringVar()
-        ttk.Entry(gate, textvariable=self.password, show="*", width=18).grid(
-            row=0, column=3, sticky="w", padx=(8, 0))
-        self.acct_btn = ttk.Button(gate, text="登录账号", command=self._login_account)
-        self.acct_btn.grid(row=0, column=4, sticky="w", padx=(8, 0))
-        self.acct_note = tk.StringVar(value="请输入密码，再点登录账号")
+        self.acct_btn = None
+        qq_row = 1
+        if not _guild_only():
+            ttk.Label(gate, text="账号").grid(row=0, column=0, sticky="w")
+            ttk.Label(gate, text=self._account_name or "未配置").grid(
+                row=0, column=1, sticky="w", padx=(8, 0))
+            ttk.Label(gate, text="密码").grid(row=0, column=2, sticky="w", padx=(8, 0))
+            ttk.Entry(gate, textvariable=self.password, show="*", width=18).grid(
+                row=0, column=3, sticky="w", padx=(8, 0))
+            self.acct_btn = ttk.Button(gate, text="登录账号", command=self._login_account)
+            self.acct_btn.grid(row=0, column=4, sticky="w", padx=(8, 0))
+            qq_row = 2
+        self.acct_note = tk.StringVar(
+            value="公会版，登录任意 QQ。进游戏后核对公会" if _guild_only()
+            else "请输入密码，再点登录账号")
         ttk.Label(gate, textvariable=self.acct_note).grid(
-            row=1, column=1, columnspan=4, sticky="w", padx=(8, 0), pady=(6, 0))
-        ttk.Label(gate, text="QQ").grid(row=2, column=0, sticky="w", pady=(8, 0))
+            row=0 if _guild_only() else 1, column=1, columnspan=4, sticky="w", padx=(8, 0),
+            pady=(0, 0) if _guild_only() else (6, 0))
+        ttk.Label(gate, text="QQ").grid(row=qq_row, column=0, sticky="w", pady=(8, 0))
         self.qq_pick = tk.StringVar()
-        self.qq_box = ttk.Combobox(
-            gate, textvariable=self.qq_pick, state="readonly", width=16,
-            values=self._allowed)
-        self.qq_box.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
-        self.qq_box.bind("<<ComboboxSelected>>", self._on_qq_pick)
-        ttk.Label(gate, text="QQ密码").grid(row=2, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
+        if _guild_only():
+            self.qq_box = ttk.Entry(gate, textvariable=self.qq_pick, width=18)
+            self.qq_box.bind("<FocusOut>", self._on_qq_pick)
+        else:
+            self.qq_box = ttk.Combobox(
+                gate, textvariable=self.qq_pick, state="readonly", width=16,
+                values=self._allowed)
+            self.qq_box.bind("<<ComboboxSelected>>", self._on_qq_pick)
+        self.qq_box.grid(row=qq_row, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Label(gate, text="QQ密码").grid(row=qq_row, column=2, sticky="w", padx=(8, 0), pady=(8, 0))
         self.qq_password = tk.StringVar()
         ttk.Entry(gate, textvariable=self.qq_password, show="*", width=18).grid(
-            row=2, column=3, sticky="w", padx=(8, 0), pady=(8, 0))
+            row=qq_row, column=3, sticky="w", padx=(8, 0), pady=(8, 0))
         self.pwd_btn = ttk.Button(gate, text="密码登录", command=self._pwd_login)
-        self.pwd_btn.grid(row=2, column=4, sticky="w", padx=(8, 0), pady=(8, 0))
-        if self._allowed:
+        self.pwd_btn.grid(row=qq_row, column=4, sticky="w", padx=(8, 0), pady=(8, 0))
+        if self._allowed and not _guild_only():
             self.qq_pick.set(self._allowed[0])
 
         top = ttk.Frame(self, padding=12)
@@ -993,6 +1017,8 @@ class App(tk.Tk):
         tk.Button(win, text="删除选中", command=drop).grid(row=3, column=3, pady=(0, 12), sticky="w")
 
     def _account_ok(self):
+        if _guild_only():
+            return {"username": "", "expires_at": ""}
         if self._http is None or not self._account_name:
             return None
         if self._remain_until is not None and time.monotonic() >= self._remain_until:
@@ -1018,10 +1044,14 @@ class App(tk.Tk):
 
     def _picked_qq(self):
         uin = self.qq_pick.get().strip()
+        if _guild_only():
+            return uin if uin.isdigit() and 5 <= len(uin) <= 12 else ""
         return uin if uin in self._allowed else ""
 
     def _renew_expiry(self):
-        """再向服务器要一次最新有效期。过期或失败时返回说明。"""
+        """再向服务器要一次最新有效期。过期或失败时返回说明。公会版不核对。"""
+        if _guild_only():
+            return ""
         why, clock = _fetch_clock(self._http)
         if why:
             return why
@@ -1031,6 +1061,13 @@ class App(tk.Tk):
         return ""
 
     def _refresh_login(self):
+        if _guild_only():
+            uin = self._picked_qq()
+            self.acct_note.set("公会版，不校验账号和有效期")
+            self.status.set(
+                f"QQ {uin} 已登录" if uin and _saved_uin(uin) == uin
+                else "填写 QQ 后扫码或密码登录")
+            return
         if not _server():
             self.acct_note.set("这个版本编译时没有写入服务器")
             self.status.set("这个版本编译时没有写入服务器")
@@ -1061,13 +1098,16 @@ class App(tk.Tk):
             self._stop.clear()
         if busy:
             for btn in (self.go_btn, self.login_btn, self.pwd_btn, self.acct_btn):
-                btn.configure(state="disabled")
+                if btn is not None:
+                    btn.configure(state="disabled")
             self.qq_box.configure(state="disabled")
             self.stop_btn.configure(state="normal")
             return
         self.stop_btn.configure(state="disabled")
-        self.acct_btn.configure(state="normal" if self._account_name and _server() else "disabled")
-        self.qq_box.configure(state="readonly" if self._allowed else "disabled")
+        if self.acct_btn is not None:
+            self.acct_btn.configure(state="normal" if self._account_name and _server() else "disabled")
+        self.qq_box.configure(
+            state="normal" if _guild_only() else ("readonly" if self._allowed else "disabled"))
         state = "normal" if self._account_ok() else "disabled"
         self.go_btn.configure(state=state)
         self.login_btn.configure(state=state)
@@ -1117,22 +1157,23 @@ class App(tk.Tk):
         if self._busy:
             return
         expect = self._picked_qq()
-        if not self._account_ok():
+        if not _guild_only() and not self._account_ok():
             self.status.set("请先登录账号")
             return
-        if not expect:
+        if not expect and not _guild_only():
             self.status.set("先从指定 QQ 里选一个")
             return
         self._stop.clear()
         self._set_busy(True)
-        self.status.set(f"等待 QQ {expect} 扫码…")
+        self.status.set("正在取出二维码…" if not expect else f"等待 QQ {expect} 扫码…")
 
         def work():
             why = self._renew_expiry()
             if why:
                 self._ui(lambda w=why: self._clock_failed(w))
                 return
-            path = socket_keepalive.attack_cookie_file(expect)
+            slot = expect or "scan"
+            path = socket_keepalive.attack_cookie_file(slot)
             qr = (path[:-5] if path.endswith(".json") else path) + ".qrcode.png"
             os.makedirs(os.path.dirname(path), exist_ok=True)
             qq = QQSession(path, qrcode_file=qr)
@@ -1143,9 +1184,24 @@ class App(tk.Tk):
             def on_qr(qr_path, pushed=False):
                 self._ui(lambda p=qr_path, z=pushed: self._show_qr(p, z))
 
-            ok = qq.qr_login(on_qr=on_qr, push_uin=expect, stop=self._stop.is_set)
+            try:
+                ok = qq.qr_login(
+                    on_qr=on_qr, push_uin=False if _guild_only() else expect,
+                    stop=self._stop.is_set)
+            except Exception as exc:
+                log.exception("扫码登录失败")
+                self._ui(lambda e=exc: self._login_done(False, "", expect or ""))
+                self._ui(lambda e=exc: self.status.set(f"二维码没取到：{e}"))
+                return
             scanned = str(qq.uin or "").strip()
-            if ok and scanned != expect:
+            if ok and _guild_only() and scanned and scanned != slot:
+                dest = socket_keepalive.attack_cookie_file(scanned)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                try:
+                    os.replace(path, dest)
+                except OSError:
+                    log.exception("登录票据没能改到 QQ %s", scanned)
+            elif ok and scanned != expect:
                 log.error("扫到的 QQ 是 %s，配置允许的是 %s", scanned, expect)
                 try:
                     os.remove(path)
@@ -1156,19 +1212,50 @@ class App(tk.Tk):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _close_qr(self):
+        win = getattr(self, "_qr_win", None)
+        self._qr_win = None
+        if win is not None:
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
+
     def _show_qr(self, path, pushed):
+        if pushed:
+            self.status.set("请在手机 QQ 点确认")
+            return
+        win = getattr(self, "_qr_win", None)
+        if win is None or not win.winfo_exists():
+            win = tk.Toplevel(self)
+            win.title("扫码登录")
+            win.attributes("-topmost", True)
+            win.resizable(False, False)
+            self._qr_popup = ttk.Label(win)
+            self._qr_popup.pack(padx=12, pady=12)
+            self._qr_win = win
         try:
             self._photo = tk.PhotoImage(file=path)
+            self._qr_popup.configure(image=self._photo)
             self.qr.configure(image=self._photo)
         except tk.TclError as exc:
             log.info("二维码打不开：%s", exc)
-        self.status.set("请在手机 QQ 点确认" if pushed else "用另一台设备扫窗口里的码")
+            try:
+                os.startfile(path)
+            except OSError:
+                pass
+        self.status.set("用另一台设备扫弹出的二维码")
 
     def _login_done(self, ok, uin, expect):
         stopped = self._stop.is_set()
         self._stop.clear()
+        self._close_qr()
         self._set_busy(False)
         self.qr.configure(image="")
+        if _guild_only() and ok and uin:
+            self.qq_pick.set(uin)
+            self.status.set(f"已登录 QQ {uin}，填写城市后点开始")
+            return
         if stopped and not ok:
             self.status.set("已停止")
             return
@@ -1188,7 +1275,7 @@ class App(tk.Tk):
             self.status.set("请先登录账号")
             return
         if not expect:
-            self.status.set("先从指定 QQ 里选一个")
+            self.status.set("先填写 QQ" if _guild_only() else "先从指定 QQ 里选一个")
             return
         typed = self.qq_password.get()
         if typed:
@@ -1269,7 +1356,7 @@ class App(tk.Tk):
             self._set_busy(False)
             return
         if not uin or _saved_uin(uin) != uin:
-            self.status.set("先用指定的 QQ 扫码登录")
+            self.status.set("先填写 QQ 并登录" if _guild_only() else "先用指定的 QQ 扫码登录")
             return
         target = self._city_id()
         mode = self.mode.get()

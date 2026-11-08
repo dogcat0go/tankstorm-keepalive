@@ -63,9 +63,20 @@ TYPE_SELF = 0           # 打开自己的公会，回包里才有今日捐献次
 TYPE_LIST = 73          # 公会列表，回包带 dayHasPK 和自己的参战时刻
 TYPE_JOIN = 70          # 参加公会战
 
-# 上次参加公会战的时刻。名字是 field17.field1 —— schema 里这两层都没解出真名，
-# 含义靠 8/30 抓包的时刻对齐锁死（见模块开头的表）。
-F_JOINED_AT = "userGuild.field17.field1"
+# 上次参加公会战的时刻。2026-11-08 抓包：type:70 把 userGuild 里
+# 第 17 号消息的第 5 号整数从旧时刻刷新成请求的同一秒。
+# 对照表没有 userGuild 的线上字段号，解码后落在 field10013。
+_JOIN_PATHS = ("field10013.field17.field5", "userGuild.field17.field5")
+
+
+def _joined_at(panel):
+    if not isinstance(panel, dict):
+        return None
+    for path in _JOIN_PATHS:
+        value = _read_path(panel, path)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 10 ** 9:
+            return value
+    return None
 
 
 def _fields(type_):
@@ -85,6 +96,27 @@ def _send(sock, rec, type_, fields=None):
                           omit_zero=False)
     sender.send_frame(sock, OPCODE, body, rec.rc4_c2s)
     return before
+
+
+def own_id(rec, sock) -> int:
+    """打开自己的公会，返回公会 ID。读不到返回 0。
+
+    2026103001 的对照表没有 RseGuildOpt.userGuild 的线上字段号。
+    线上是 13 号，和已有字段撞号后记成 field10013。公会 ID 仍是里面的 1 号。
+    """
+    since = _send(sock, rec, TYPE_SELF)
+    panel = _wait(sock, rec, since, TYPE_SELF)
+    if not isinstance(panel, dict):
+        return 0
+    user = panel.get("userGuild")
+    if not isinstance(user, dict):
+        user = panel.get("field10013")
+    if not isinstance(user, dict):
+        return 0
+    gid = user.get("guildID", user.get("field1"))
+    if isinstance(gid, bool) or not isinstance(gid, int) or gid <= 0:
+        return 0
+    return gid
 
 
 def _wait(sock, rec, since, type_, timeout=6.0):
@@ -133,11 +165,11 @@ def daily_join(rec, sock, config):
     if has_pk is not True:
         return True, f"成功：今天没有公会战活动（dayHasPK={has_pk}），不用参加"
 
-    joined_at = _read_path(panel, F_JOINED_AT)
+    joined_at = _joined_at(panel)
     if joined_at is None:
         # 铁律：读不到依据就不做。这个字段是唯一能说明"参加过没有"的东西。
-        return False, (f"读不到上次参加时刻（{F_JOINED_AT}），"
-                       f"判断不了今天参加过没有，不发（读不到就不做）")
+        return False, ("读不到上次参加时刻（field10013.field17.field5），"
+                       "判断不了今天参加过没有，不发（读不到就不做）")
     if _same_day(joined_at):
         return True, (f"成功：今天已经参加过了"
                       f"（{time.strftime('%m-%d %H:%M', time.localtime(joined_at))}）")
@@ -158,9 +190,9 @@ def daily_join(rec, sock, config):
 
     # 成败以状态变化为准：时间戳必须被刷新到"刚刚"。type:70 的 ret 恒为 0，
     # 光看它等于没看（踩坑记录第 15 条）。留 5 秒余量给时钟差。
-    now_at = _read_path(r, F_JOINED_AT)
+    now_at = _joined_at(r)
     if not isinstance(now_at, int) or isinstance(now_at, bool):
-        return False, f"回包里读不到 {F_JOINED_AT}，认不出成败"
+        return False, "回包里读不到参加时刻，认不出成败"
     if now_at < sent_at - 5:
         return False, (f"参加时刻没有被刷新（还是 "
                        f"{time.strftime('%m-%d %H:%M', time.localtime(now_at))}），"

@@ -357,7 +357,11 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
         uin_now = _uin_now()
         user_id = citydb.storm_subject(bound_user, uin_now)
         day = citydb.beijing_day()
-        why = citydb.reserve_storm_reject(user_id, day, uin_now)
+        # 打城窗口没有网页登录账号，不走每日上限，收到就拒绝。
+        if (config or {}).get("_界面拒绝强攻"):
+            why = ""
+        else:
+            why = citydb.reserve_storm_reject(user_id, day, uin_now)
         if why:
             log.info("%s（进攻方 %s）", why, who or "未知玩家")
             return False
@@ -406,6 +410,20 @@ def _arm_storm_relogin(rec, sock) -> None:
         _force_close_socket(sock)
 
     rec.on_storm_drop = _drop
+
+
+# 2026-09 的 protocol.json 把登录写成当时的编号。现在这些号已经是别的消息。
+_OLD_LOGIN_OP = {"041c", "041d", "040e"}
+
+
+def _login_on_wire(frame: bytes) -> bytes:
+    """旧登录包按当前协议对照换成线上编号。已经是新编号的原样发出。"""
+    from . import wiremap
+    if wiremap.ACTIVE.identity or len(frame) < 8:
+        return frame
+    if frame[2:4].hex() not in _OLD_LOGIN_OP:
+        return frame
+    return wiremap.ACTIVE.frame_to_wire(frame)
 
 
 def _connect(host: str, port: int, timeout: float = 15) -> socket.socket:
@@ -527,6 +545,31 @@ def _region_from_login(user_id: int) -> None:
             _region_inflight.discard(user_id)
 
 
+def _compiled_guild(config) -> str:
+    """编译进打城窗口的公会。没写就是不限制。"""
+    raw = str((config or {}).get("_编译公会") or "").strip()
+    if not raw.isdigit() or int(raw) <= 0 or int(raw) > 2147483647:
+        return ""
+    return str(int(raw))
+
+
+def _refuse_other_guild(rec, sock, config) -> str:
+    """对不上编译时的公会就返回原因。没锁定返回空字符串。"""
+    want = _compiled_guild(config)
+    if not want:
+        return ""
+    from . import guild
+    gid = guild.own_id(rec, sock)
+    if not gid:
+        log.error("读不到所在公会，已停止")
+        return "公会校验失败：读不到所在公会"
+    if str(gid) != want:
+        log.error("此版本只允许公会 %s 使用，当前公会是 %s，已停止", want, gid)
+        return "公会校验失败：当前公会是 %s" % gid
+    log.info("公会校验通过：%s", gid)
+    return ""
+
+
 def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                  with_daily: bool = False) -> str:
     """跑一次完整连接，直到断开。返回断开原因（字符串）。"""
@@ -568,6 +611,16 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         rec.enable_crypto(ctx)
 
     sock = _LockedSock(sock)
+    uin = str(getattr(qq, "uin", "") or "")
+    with _hold_guard:
+        if uin and uin in _holds:
+            try:
+                sock.close()
+            except OSError:
+                pass
+            return "打城进行中，保活先让开"
+        if uin:
+            _keepalive_socks[uin] = sock
 
     _arm_storm_relogin(rec, sock)
     _mark_game_online(False)
@@ -578,6 +631,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
     try:
         steps = protocol.build_login_sequence(spec, ctx)
         for i, (data, delay) in enumerate(steps, 1):
+            data = _login_on_wire(data)
             sock.sendall(data)
             log.debug("登录步骤 %d/%d 已发送（%d 字节）", i, len(steps), len(data))
             if delay:
@@ -595,9 +649,12 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         # 混在一起的坏处是每次重连都会重跑一轮任务，而且任务出问题会牵连保活。
         # 需要"连上顺便领一轮"时显式传 with_daily=True（或 --keepalive --daily）。
         # 心跳包提前构造好：任务执行期间也要发，不能等进了心跳循环才开始
-        hb = protocol.build_heartbeat(spec, ctx)
+        hb = _login_on_wire(protocol.build_heartbeat(spec, ctx))
         heart = _open_heart(sock, hb, interval)
         restore_beat = daily.bind_beat(heart)
+        blocked = _refuse_other_guild(rec, sock, config)
+        if blocked:
+            return blocked
 
         if with_daily:
             try:
@@ -707,6 +764,9 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
     except OSError as exc:
         return f"连接中断: {exc}"
     finally:
+        with _hold_guard:
+            if uin and _keepalive_socks.get(uin) is sock:
+                _keepalive_socks.pop(uin, None)
         if restore_beat is not None:
             restore_beat()
         if heart is not None:
@@ -771,6 +831,36 @@ def _push_daily_summary(config: dict, results: dict, details: dict) -> None:
             "style='border-collapse:collapse;font-size:14px'>%s</table>"
             % (len(acted), "".join(rows)))
     notify.send(config, title, html, template="html")
+
+
+_hold_guard = threading.Lock()
+_holds = set()
+_keepalive_socks = {}
+
+
+def hold_keepalive(uin) -> None:
+    """这个 QQ 要单独连去打城。先掐掉保活，打完前不要重连。"""
+    uin = str(uin or "").strip()
+    if not uin:
+        return
+    with _hold_guard:
+        _holds.add(uin)
+        sock = _keepalive_socks.get(uin)
+    if sock is not None:
+        log.info("打城开始，先断开 QQ %s 的保活", uin)
+        _force_close_socket(sock)
+
+
+def release_keepalive(uin) -> None:
+    uin = str(uin or "").strip()
+    if not uin:
+        return
+    with _hold_guard:
+        _holds.discard(uin)
+
+
+def _keepalive_held(uin) -> bool:
+    return str(uin or "").strip() in _holds
 
 
 def _force_close_socket(sock) -> None:
@@ -3947,6 +4037,127 @@ def run_farm_city_once(qq, config: dict, city_id, times=1, sweep=False,
     return _connect_and(qq, config, _work)
 
 
+def run_priority_watch(qq, config: dict, spans, priority: dict,
+                       sweep: bool = False, stop=None, hit_gap=6,
+                       target: int = 0, move: bool = False, hits=None) -> tuple:
+    """先打上次扫到的优先 UID，再清空这座城，同时把配置的城扫一遍。
+
+    翻页、攻击、走路都走现在的国战协议。返回 (退出码, 这次匹配到的人)。
+    """
+    from . import citydb, country_war
+
+    plan = []
+    seen = set()
+    for raw in spans or []:
+        try:
+            city_id, start_page, end_page = (int(raw[0]), int(raw[1]), int(raw[2]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        if city_id <= 0 or city_id in seen:
+            continue
+        start_page = max(0, start_page)
+        end_page = max(start_page, end_page)
+        if end_page - start_page > 4:
+            end_page = start_page + 4
+        plan.append((city_id, start_page, end_page))
+        seen.add(city_id)
+        if len(plan) >= 6:
+            break
+    ranks = {str(uid): int(rank) for uid, rank in (priority or {}).items()
+             if str(uid).isdigit()}
+    try:
+        hit_gap = min(120.0, max(1.0, float(hit_gap)))
+    except (TypeError, ValueError):
+        hit_gap = 6.0
+    found = []
+
+    def _work(rec, sock, spec, ctx, beater):
+        brief = "、".join(
+            f"{city} 第{start + 1}-{end + 1}页" for city, start, end in plan)
+        log.info("[扫描] 指定 %d 座：%s", len(plan), brief or "无")
+        log.info("[优先] 攻击成功后等 %g 秒，失败 1 秒后再进攻", hit_gap)
+
+        def _hold(sec):
+            deadline = time.time() + float(sec)
+            while not (stop and stop()):
+                left = deadline - time.time()
+                if left <= 0:
+                    return
+                time.sleep(min(0.2, left))
+
+        citydb.set_attack_context(0, getattr(qq, "uin", "") or "")
+
+        def fight(city_id, uid, name, page, rank):
+            if (stop and stop()) or not uid or not city_id:
+                return
+            log.info("[优先] %s 在 %s，优先级 %s，过去打", name or uid, city_id, rank)
+            here = citydb.attack_here_id()
+            if not citydb.can_reach(here, city_id):
+                country_war.walk_to(
+                    rec, sock, config, city_id, sweep=sweep, beat=beater)
+            citydb.clear_atk_fail(uid)
+            hit = country_war.attack_player(
+                rec, sock, config, uid, sweep=sweep, city_id=city_id,
+                beat=beater, disp_name=name, page=page)
+            reason = str(hit.get("停止原因") or "")
+            if hit.get("成功") or hit.get("击退"):
+                log.info("[优先] 攻击成功，等 %g 秒", hit_gap)
+                _hold(hit_gap)
+                return
+            log.info("[优先] 攻击失败，1 秒后再打一次%s", f"：{reason}" if reason else "")
+            _hold(1)
+            if stop and stop():
+                return
+            country_war.attack_player(
+                rec, sock, config, uid, sweep=sweep, city_id=city_id,
+                beat=beater, disp_name=name, page=page)
+
+        queued = sorted(hits or [], key=lambda row: int(row.get("rank") or 99))
+        if queued:
+            log.info("[优先] 先打上次扫到的 %d 人", len(queued))
+        for row in queued:
+            if stop and stop():
+                return 0
+            fight(int(row.get("city") or 0), str(row.get("uid") or ""),
+                  str(row.get("name") or ""), int(row.get("page") or 0),
+                  int(row.get("rank") or 99))
+        if int(target or 0) > 0 and not (stop and stop()):
+            if move:
+                country_war.walk_to(
+                    rec, sock, config, int(target), sweep=True, beat=beater)
+            else:
+                country_war.farm_city(
+                    rec, sock, config, int(target), sweep=sweep, beat=beater)
+        seen_uid = set()
+        for city_id, start_page, end_page in plan:
+            if stop and stop():
+                break
+            listed = country_war.list_city_players(
+                rec, sock, config, city_id, beat=beater,
+                start_page=start_page, end_page=end_page)
+            why = listed.get("原因") or ""
+            log.info("[扫描] %s 第%d-%d页，%d 人%s",
+                     city_id, start_page + 1, end_page + 1,
+                     len(listed.get("玩家") or []), f"，{why}" if why else "")
+            for player in listed.get("玩家") or []:
+                uid = str(player.get("uid") or "")
+                if uid not in ranks or uid in seen_uid:
+                    continue
+                seen_uid.add(uid)
+                found.append({
+                    "uid": uid, "city": city_id,
+                    "page": int(player.get("page") or start_page),
+                    "rank": ranks[uid], "name": str(player.get("name") or ""),
+                })
+                log.info("[扫描] 匹配到 %s，在 %s，优先级 %s，留给下次攻打",
+                         player.get("name") or uid, city_id, ranks[uid])
+        log.info("[扫描] 这次匹配 %d 人，下次攻打先打他们", len(found))
+        return 0
+
+    code = _connect_and(qq, config, _work)
+    return code, found
+
+
 def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
     """等到自己的国家ID。手填了「国战.自己国家ID」则直接返回 True。
 
@@ -3956,6 +4167,29 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
     filled = int(((config or {}).get("国战") or {}).get("自己国家ID") or 0)
     if filled or daily.read_my_country(rec):
         return True
+    # 先把登录回包收掉再发国家面板。登录包刚写完就接着写，
+    # Windows 上对端已经回了数据或断开时，这次发送会报 10053。
+    sock.settimeout(0.3)
+    quiet = time.time() + 1.2
+    while time.time() < quiet:
+        if daily.read_my_country(rec):
+            log.info("国家ID=%s", daily.read_my_country(rec))
+            return True
+        try:
+            chunk = sock.recv(8192)
+        except socket.timeout:
+            break
+        except OSError as exc:
+            log.error("登录包发出后连接就断了：%s", exc)
+            raise
+        if not chunk:
+            raise OSError("服务器关闭连接")
+        reply = protocol.maybe_online_reply(spec, chunk, ctx)
+        if reply:
+            sock.sendall(reply)
+            log.info("收到在线探测，已回应")
+    if daily.read_my_country(rec):
+        return True
     try:
         from .proto_encode import encode_message
         flag = encode_message({2: ("int32", 100), 4: ("int32", 9)},
@@ -3963,6 +4197,9 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
         sender.send_frame(sock, "0481", flag, getattr(rec, "rc4_c2s", None))
         sender.send_frame(sock, "0462", b"", getattr(rec, "rc4_c2s", None))
         log.info("已请求国家面板")
+    except OSError as exc:
+        log.warning("请求国家面板失败：%s", exc)
+        raise
     except Exception as exc:
         log.warning("请求国家面板失败：%s", exc)
     sock.settimeout(1.0)
@@ -3989,6 +4226,19 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
 
 
 def _connect_and(qq, config: dict, work) -> int:
+    """连一次游戏、登录、把活交给 work，然后断开退出。
+
+    这个 QQ 若正在保活，先把保活断开，避免两条连接互相挤掉。
+    """
+    uin = str(getattr(qq, "uin", "") or "")
+    hold_keepalive(uin)
+    try:
+        return _connect_once(qq, config, work)
+    finally:
+        release_keepalive(uin)
+
+
+def _connect_once(qq, config: dict, work) -> int:
     """连一次游戏、登录、把活交给 work，然后断开退出。
 
     `--daily`、`--country-war`、`--city-players`、`--atk` / `--atk-city` 共用这一套：登录、建 RC4、
@@ -4054,7 +4304,7 @@ def _connect_and(qq, config: dict, work) -> int:
         _mark_game_online(False)
         _arm_super_storm(rec, sock, config, qq)
         for data, delay in protocol.build_login_sequence(spec, ctx):
-            sock.sendall(data)
+            sock.sendall(_login_on_wire(data))
             if delay:
                 time.sleep(delay)
         log.info("已登录，uid=%s sid=%s", ctx.get("uid"), ctx.get("sid"))
@@ -4063,7 +4313,7 @@ def _connect_and(qq, config: dict, work) -> int:
 
         interval = float(config.get("保持活跃", {}).get("心跳间隔秒")
                          or protocol.heartbeat_interval(spec))
-        heart = _open_heart(sock, protocol.build_heartbeat(spec, ctx), interval)
+        heart = _open_heart(sock, _login_on_wire(protocol.build_heartbeat(spec, ctx)), interval)
 
         # 没读到国家面板也保持这条连接。国战助手在 _attack_orders 里先停，
         # 日常、兵营和心跳照常。对端已经关掉连接时 _await_role 抛 OSError。
@@ -4079,6 +4329,8 @@ def _connect_and(qq, config: dict, work) -> int:
         if citydb.attack_context_user() or citydb.attack_context_qq():
             _clear_login_limit()
             citydb.clear_login_expired()
+        if _refuse_other_guild(rec, sock, config):
+            return 1
 
         return work(rec, sock, spec, ctx, heart)
     except OSError as exc:
@@ -4491,6 +4743,13 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
             reason = _one_session(qq, spec, conf, config, rec,
                                   with_daily=with_daily)
             log.warning("本次连接结束：%s", reason)
+            if str(reason).startswith("公会校验失败"):
+                break
+            if _keepalive_held(getattr(qq, "uin", "")):
+                log.info("打城进行中，保活先让开")
+                while _keepalive_held(getattr(qq, "uin", "")):
+                    time.sleep(0.5)
+                continue
             dropped = _take_storm_drop()
             keep, storm_started, timed_out = _storm_retry_decision(
                 dropped, storm_retry, _game_online(), storm_started, time.monotonic())

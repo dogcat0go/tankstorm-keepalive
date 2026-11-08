@@ -930,12 +930,15 @@ def _paint_qr_win(cells, quiet: int) -> bool:
     """直接给控制台格子上色。Windows 默认不解释 ANSI，转义码会原样印出来。"""
     if sys.platform != "win32":
         return False
+    out = sys.stdout
+    if out is None or not hasattr(out, "fileno"):
+        return False
     try:
         import ctypes
         import msvcrt
         from ctypes import wintypes
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-        handle = wintypes.HANDLE(msvcrt.get_osfhandle(sys.stdout.fileno()))
+        handle = wintypes.HANDLE(msvcrt.get_osfhandle(out.fileno()))
         kernel.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
         kernel.GetConsoleMode.restype = wintypes.BOOL
         if not kernel.GetConsoleMode(handle, ctypes.byref(wintypes.DWORD())):
@@ -992,7 +995,7 @@ def _paint_qr_win(cells, quiet: int) -> bool:
         finally:
             kernel.SetConsoleTextAttribute(handle, info.wAttributes)
         return True
-    except OSError:
+    except (AttributeError, OSError, ValueError):
         return False
 
 
@@ -2094,7 +2097,7 @@ class QQSession:
                 "msg": "check_sig 后游戏页仍不认这张票"}
 
     def qr_login(self, timeout_sec: int = 180, on_qr=None, push_uin=None,
-                 until: float = 0) -> bool:
+                 until: float = 0, stop=None) -> bool:
         """扫码登录。on_qr(qrcode_path) 在二维码生成后回调（用于推送到手机等）。
 
         push_uin 非空时启用**推送登录**：不用扫码，腾讯直接往该 QQ 号的手机客户端
@@ -2110,7 +2113,7 @@ class QQSession:
         if push_uin is None:
             push_uin = self.uin or None
         while True:
-            if until and time.time() >= until:
+            if (stop and stop()) or (until and time.time() >= until):
                 return False
             started = self.start_qr(push_uin=push_uin, on_qr=on_qr, announce=False)
             if not started.get("ok"):
@@ -2140,8 +2143,14 @@ class QQSession:
                 if until:
                     deadline = min(deadline, until)
             timed_out = True
+            next_poll = time.time() + 3
             while time.time() < deadline:
-                time.sleep(3)
+                if stop and stop():
+                    return False
+                time.sleep(0.2)
+                if time.time() < next_poll:
+                    continue
+                next_poll = time.time() + 3
                 result = self.poll_qr()
                 if result.get("scanned"):
                     deadline = max(deadline, time.time() + 120)

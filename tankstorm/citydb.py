@@ -10,6 +10,7 @@
 """
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -208,29 +209,48 @@ CREATE TABLE IF NOT EXISTS watch_sub (
 _schema_ready = False
 
 # Windows 上 sqlite3.connect 的 timeout 拦不住文件锁，会在任务线程里卡死。
-# 写库丢到短线程里，超过这个时间就放弃，让打人继续。
+# 写库放到单独线程，打人线程最多等一秒。这一次写入仍会做完再关连接，
+# 不能中途杀掉，否则库头会指向还没落盘的页。
 DB_OP_TIMEOUT = 1.0
+_db_lock = threading.Lock()
 
 
 def _run_timeout(fn, timeout=DB_OP_TIMEOUT, default=None):
     box = [default]
+    done = threading.Event()
 
     def run():
         try:
-            box[0] = fn()
+            with _db_lock:
+                box[0] = fn()
         except Exception as exc:
             box[0] = exc
+        finally:
+            done.set()
 
-    t = threading.Thread(target=run, daemon=True)
-    t.start()
-    t.join(timeout)
-    if t.is_alive():
-        log.info("sqlite 超过 %.0f 秒未完成，跳过本次写库", timeout)
+    # 非守护线程：进程正常退出时会等它提交并关闭，不会把 WAL 写一半掐掉。
+    threading.Thread(target=run, daemon=False).start()
+    if not done.wait(timeout):
+        log.info("sqlite 超过 %.0f 秒还没完，打人先继续，这次写入仍会做完", timeout)
         return default
     if isinstance(box[0], Exception):
         log.info("sqlite 失败，跳过：%s", box[0])
         return default
     return box[0]
+
+
+def _park_bad_db():
+    """库文件坏了就改名留着，下次打开时按空库重建。"""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    moved = False
+    for suffix in ("", "-wal", "-shm"):
+        src = DB_FILE + suffix
+        if not os.path.exists(src):
+            continue
+        os.replace(src, f"{DB_FILE}.bad-{stamp}{suffix}")
+        moved = True
+    if moved:
+        log.error("城市库已损坏，原文件已改名留在旁边，重新建一个空库")
 
 
 def connect(readonly=False, timeout=15):
@@ -244,6 +264,12 @@ def connect(readonly=False, timeout=15):
         setup = sqlite3.connect(DB_FILE, timeout=timeout)
         try:
             setup.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.DatabaseError:
+            setup.close()
+            _park_bad_db()
+            setup = sqlite3.connect(DB_FILE, timeout=timeout)
+            setup.execute("PRAGMA journal_mode=WAL")
+        try:
             setup.executescript(_SCHEMA)
             cols = {r[1] for r in setup.execute("PRAGMA table_info(player)")}
             if "page" not in cols:
@@ -7736,7 +7762,7 @@ def reset_atk_fail_uid(user_id: int, uid: str) -> tuple:
 
 
 def flush_atk_fail():
-    """战斗结束再写盘。超过 DB_OP_TIMEOUT 就放弃，不堵下一轮。只动记下时那个攻打号的记录。"""
+    """战斗结束再写盘。打人线程最多等 DB_OP_TIMEOUT，写入仍会做完再关库。只动记下时那个攻打号的记录。"""
     global _atk_q
     if not _atk_q:
         return
