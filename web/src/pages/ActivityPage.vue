@@ -1,7 +1,8 @@
 <script setup>
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { ElSwitch } from "element-plus";
 import "element-plus/es/components/switch/style/css";
+import itemRows from "../items.json";
 
 const guildLevel = defineModel("guildLevel", { type: String, required: true });
 const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
@@ -29,6 +30,20 @@ const props = defineProps({
   runStrike: { type: Function, required: true },
   runEgg: { type: Function, required: true },
   showErr: { type: Function, required: true },
+});
+
+const itemQuery = ref("");
+const itemHits = computed(() => {
+  const q = itemQuery.value.trim().toLowerCase();
+  if (!q) return [];
+  const out = [];
+  for (const [id, name, desc] of itemRows) {
+    if (String(id).includes(q) || name.toLowerCase().includes(q) || desc.toLowerCase().includes(q)) {
+      out.push({ id, name, desc });
+      if (out.length >= 40) break;
+    }
+  }
+  return out;
 });
 
 const guildTask = computed(() => props.tasks.find((it) => it.key === "公会战役") || null);
@@ -116,6 +131,15 @@ function liveText(n) {
       <p v-if="eggNote" class="muted">{{ eggNote }}</p>
       <p>还可以开 {{ liveText(eggLeft) }} 个</p>
       <p class="muted">进入这个页面会读一次剩余数量。点下去会一直砸，直到剩余变成 0。每砸一个消耗 1 个物品 10015，得到 1 张 200 万石油卡。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>道具表</summary>
+      <form class="lock-row" @submit.prevent>
+        <label>查找<input v-model="itemQuery" placeholder="编号或名称" /></label>
+      </form>
+      <p class="muted">共 {{ itemRows.length }} 条。输入编号或名称后列出，一次最多 40 条。自选包后面写着可以开出的道具。</p>
+      <p v-if="itemQuery.trim() && !itemHits.length" class="muted">没有这个道具</p>
+      <p v-for="it in itemHits" :key="it.id"><b>{{ it.id }}</b> {{ it.name }}<span class="muted"> {{ it.desc }}</span></p>
     </details>
     <p v-if="err && errAt === 'activity'" class="err">{{ err }}</p>
   </section>
