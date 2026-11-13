@@ -35,8 +35,9 @@ type:70 的回包顶层只有 `type / ret / userGuild` 三个字段，看着就�
 报名只发一条包
 --------------
 `RceGuildOpt{type:70}`。不先发 type:73（公会列表，也就是开面板）。
-成败仍看这条回包里的 `userGuild.field17.field1`：必须被刷新到"刚刚"。
-时刻已经是今天，说明今天参加过，也算成功。不看 `ret`
+已经收到的回包里若能读到 `userGuild.field17.field1` 且是今天，就不发。
+读不到这个时刻，或读到的不是今天，就发这一次报名，不因为读不到而跳过。
+成败仍看报名回包里的同一字段有没有被刷新到"刚刚"。不看 `ret`
 （type:70 的 ret 恒为 0，看它等于没看）。这是踩坑记录第 15 条的做法：
 一个请求"成功"不等于这件事做成了。
 
@@ -109,6 +110,30 @@ def _same_day(ts, now=None):
     return time.localtime(ts)[:3] == time.localtime(now)[:3]
 
 
+def _joined_today(rec):
+    """已收到的 RseGuildOpt 里，上次参加时刻是不是今天。
+
+    只看录制器里已经有的回包，不再为了读它去开面板。
+    读不到、或读到的不是今天，都返回 None，调用方照发报名包。
+    """
+    if rec is None:
+        return None
+    blobs = []
+    latest = (getattr(rec, "latest", None) or {}).get(RSE)
+    if isinstance(latest, tuple) and len(latest) == 2:
+        blobs.append(latest[1])
+    for item in (getattr(rec, "recent", None) or {}).get(RSE) or ():
+        if isinstance(item, tuple) and len(item) == 2:
+            blobs.append(item[1])
+    for data in blobs:
+        if not isinstance(data, dict):
+            continue
+        ts = _read_path(data, F_JOINED_AT)
+        if _same_day(ts):
+            return ts
+    return None
+
+
 def daily_join(rec, sock, config):
     """每日任务用：直接发报名包，不先开公会战面板。
 
@@ -118,7 +143,13 @@ def daily_join(rec, sock, config):
     if not conf.get("自动参加", True):
         return True, "成功：未开启自动参加公会战，什么都没做"
 
-    log.info("[公会战] 直接报名，发送 RceGuildOpt type:%s", TYPE_JOIN)
+    joined_at = _joined_today(rec)
+    if joined_at is not None:
+        return True, (f"成功：今天已经参加过了"
+                      f"（{time.strftime('%m-%d %H:%M', time.localtime(joined_at))}），不发")
+
+    log.info("[公会战] 读不到今天的参加时刻，先发一次报名 RceGuildOpt type:%s",
+             TYPE_JOIN)
     sent_at = time.time()
     since = _send(sock, rec, TYPE_JOIN)
     r = _wait(sock, rec, since, TYPE_JOIN)

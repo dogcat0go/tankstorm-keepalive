@@ -1029,13 +1029,12 @@ TASKS = [
        followup=Followup("0463", _next_country_box, max_rounds=3,
                          desc="领取并开箱")),
 
-    # 参加公会战。直接发 type:70，不先开面板。2026-08-30 抓包：type:70 把
-    # userGuild.field17.field1 刷新到发出的同一秒；type:73 只是开公会列表。
-    # 回包里这个时刻已经是今天，则今天参加过。形状不合流水线，走 runner。
+    # 参加公会战。不先开面板。已收到的回包里能读到参加时刻且是今天，就不发；
+    # 读不到就不跳过，直接发一次 type:70。形状不合流水线，走 runner。
     _t("公会战参加", "公会战·参加", "0479", "RceGuildOpt",
        {}, "实测",
-       "直接发 RceGuildOpt type:70 报名，不先开公会战面板（不发 type:73）。"
-       "成败看回包 userGuild.field17.field1 是否刷新到刚刚；时刻已是今天则已参加过",
+       "不先开公会战面板。已收到的回包里 userGuild.field17.field1 是今天则不发；"
+       "读不到这个时刻就发一次 RceGuildOpt type:70（opcode 0479）",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_join"]
        ).daily_join(rec, sock, config)),
