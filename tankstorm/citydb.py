@@ -1546,26 +1546,34 @@ def login_user(username: str, password: str):
         conn.close()
 
 
-def change_password(user_id: int, current, new, keep_token: str = "") -> str:
-    """改登录密码。成功返回空字符串。别的登录态作废，这一次留下。"""
+def change_password(user_id: int, current, new, keep_token: str = "", reset: bool = False) -> str:
+    """改登录密码。成功返回空字符串。别的登录态作废，这一次留下。
+
+    reset 为真时不核对当前密码，只给管理页重置成员密码。
+    """
     import secrets
     current = "" if current is None else str(current)
     new = "" if new is None else str(new)
     if len(new) < 6 or len(new) > 72:
         return "密码至少 6 位"
-    user_id = int(user_id)
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号" if reset else "当前密码不对"
     conn = connect()
     try:
         row = conn.execute(
             "SELECT password_hash FROM app_user WHERE id=?",
             (user_id,)).fetchone()
-        if not row or "$" not in str(row[0] or ""):
-            return "当前密码不对"
-        salt, digest = str(row[0]).split("$", 1)
-        if not secrets.compare_digest(_password_hash(current, salt).split("$", 1)[1], digest):
-            return "当前密码不对"
-        if secrets.compare_digest(_password_hash(new, salt).split("$", 1)[1], digest):
-            return "新密码要和当前密码不一样"
+        stored = str(row[0] or "") if row else ""
+        if not row or (not reset and "$" not in stored):
+            return "没有这个账号" if reset and not row else "当前密码不对"
+        if "$" in stored:
+            salt, digest = stored.split("$", 1)
+            if not reset and not secrets.compare_digest(
+                    _password_hash(current, salt).split("$", 1)[1], digest):
+                return "当前密码不对"
+            if secrets.compare_digest(_password_hash(new, salt).split("$", 1)[1], digest):
+                return "新密码要和当前密码不一样"
         conn.execute(
             "UPDATE app_user SET password_hash=? WHERE id=?",
             (_password_hash(new), user_id))
@@ -1579,6 +1587,8 @@ def change_password(user_id: int, current, new, keep_token: str = "") -> str:
         conn.commit()
     finally:
         conn.close()
+    if reset:
+        log.info("管理员改了登录账号 %s 的密码", username_of(user_id))
     return ""
 
 
