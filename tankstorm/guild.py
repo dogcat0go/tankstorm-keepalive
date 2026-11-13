@@ -32,16 +32,13 @@ type:70 的回包顶层只有 `type / ret / userGuild` 三个字段，看着就�
 公会战是**一天一场**（用户确认）。所以限流按自然日算就对了，
 别把这个间隔当成什么周期性依据。
 
-限流依据
---------
-两个条件都要满足才发：
-
-  · `dayHasPK`（来自 type:73 的回包）为 true —— 今天有公会战活动
-  · `userGuild.field17.field1` 不在今天之内 —— 今天还没参加过
-
-判成败也落在同一个字段上：回包里的时间戳必须被刷新到"刚刚"，
-而不是看 `ret`（type:70 的 ret 恒为 0，看它等于没看）。这是踩坑记录
-第 15 条的做法：一个请求"成功"不等于这件事做成了。
+报名只发一条包
+--------------
+`RceGuildOpt{type:70}`。不先发 type:73（公会列表，也就是开面板）。
+成败仍看这条回包里的 `userGuild.field17.field1`：必须被刷新到"刚刚"。
+时刻已经是今天，说明今天参加过，也算成功。不看 `ret`
+（type:70 的 ret 恒为 0，看它等于没看）。这是踩坑记录第 15 条的做法：
+一个请求"成功"不等于这件事做成了。
 
 ⚠️ 与国战无关。这里是公会之间的战斗，走 RceGuildOpt；国战打魔多军团走的是
 RceCountryOpt，两回事。
@@ -50,7 +47,7 @@ RceCountryOpt，两回事。
 import time
 
 from . import sender
-from .daily import _await_response, _nap, _read_path
+from .daily import _await_response, _read_path
 from .log import get_logger
 from .proto_encode import encode_message
 
@@ -59,8 +56,7 @@ log = get_logger()
 OPCODE = "0479"
 RSE = "RseGuildOpt"
 
-TYPE_LIST = 73          # 公会列表，回包带 dayHasPK 和自己的参战时刻
-TYPE_JOIN = 70          # 参加公会战
+TYPE_JOIN = 70          # 参加公会战。不先发 type:73 开面板
 
 # 上次参加公会战的时刻。名字是 field17.field1 —— schema 里这两层都没解出真名，
 # 含义靠 8/30 抓包的时刻对齐锁死（见模块开头的表）。
@@ -114,7 +110,7 @@ def _same_day(ts, now=None):
 
 
 def daily_join(rec, sock, config):
-    """每日任务用：今天有公会战、且还没参加过，就参加。
+    """每日任务用：直接发报名包，不先开公会战面板。
 
     返回 (是否成功, 说明)，签名符合 daily.Task 的 runner 约定。
     """
@@ -122,30 +118,7 @@ def daily_join(rec, sock, config):
     if not conf.get("自动参加", True):
         return True, "成功：未开启自动参加公会战，什么都没做"
 
-    # 前置：开公会列表。dayHasPK 和"上次参加时刻"都在这条回包里。
-    since = _send(sock, rec, TYPE_LIST)
-    panel = _wait(sock, rec, since, TYPE_LIST)
-    if not isinstance(panel, dict):
-        return False, "读不到公会面板（type:73 没回包），不参加"
-
-    has_pk = panel.get("dayHasPK")
-    if has_pk is not True:
-        return True, f"成功：今天没有公会战活动（dayHasPK={has_pk}），不用参加"
-
-    joined_at = _read_path(panel, F_JOINED_AT)
-    if joined_at is None:
-        # 铁律：读不到依据就不做。这个字段是唯一能说明"参加过没有"的东西。
-        return False, (f"读不到上次参加时刻（{F_JOINED_AT}），"
-                       f"判断不了今天参加过没有，不发（读不到就不做）")
-    if _same_day(joined_at):
-        return True, (f"成功：今天已经参加过了"
-                      f"（{time.strftime('%m-%d %H:%M', time.localtime(joined_at))}）")
-
-    log.info("[公会战] 今天有活动，上次参加是 %s，准备报名",
-             time.strftime("%m-%d %H:%M", time.localtime(joined_at))
-             if joined_at else "（没有记录）")
-
-    _nap(0.6)
+    log.info("[公会战] 直接报名，发送 RceGuildOpt type:%s", TYPE_JOIN)
     sent_at = time.time()
     since = _send(sock, rec, TYPE_JOIN)
     r = _wait(sock, rec, since, TYPE_JOIN)
@@ -157,10 +130,16 @@ def daily_join(rec, sock, config):
 
     # 成败以状态变化为准：时间戳必须被刷新到"刚刚"。type:70 的 ret 恒为 0，
     # 光看它等于没看（踩坑记录第 15 条）。留 5 秒余量给时钟差。
+    # 时刻已经是今天、但不是刚刚写上的：今天参加过，报名包没有再改它。
     now_at = _read_path(r, F_JOINED_AT)
     if not isinstance(now_at, int) or isinstance(now_at, bool):
         return False, f"回包里读不到 {F_JOINED_AT}，认不出成败"
     if now_at < sent_at - 5:
+        if _same_day(now_at):
+            return True, (f"成功：今天已经参加过了"
+                          f"（{time.strftime('%m-%d %H:%M', time.localtime(now_at))}）")
+        if r.get("dayHasPK") is False:
+            return True, "成功：今天没有公会战活动（dayHasPK=false），不用参加"
         return False, (f"参加时刻没有被刷新（还是 "
                        f"{time.strftime('%m-%d %H:%M', time.localtime(now_at))}），"
                        f"没报上名")
