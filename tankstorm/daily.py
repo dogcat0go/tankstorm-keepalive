@@ -28,8 +28,9 @@
 
 任务顺序
 --------
-"每日任务领奖"(RceDailyTask) 必须排在最后 —— 前面那些操作本身会推进每日任务
-进度，先领就漏了。TASKS 表的顺序即执行顺序，ORDER_LAST 里的排到末尾。
+"每日任务领奖"(RceDailyTask) 必须排在会产生活跃度的任务之后 —— 前面那些操作
+本身会推进每日任务进度，先领就漏了。清理背包再排在领奖之后。
+TASKS 表的顺序即执行顺序，ORDER_LAST 里的排到末尾。
 
 参数来源
 --------
@@ -108,8 +109,9 @@ DANGER_FIELD = re.compile(
 #   拿 "field2" 去匹配危险词自然不命中，等于一直在裸奔。
 SAFE_FIELDS = {("0463", "count")}
 
-# 这些任务放到最后执行（它们领的是"前面动作累积出来的"奖励）
-ORDER_LAST = {"每日任务", "周任务"}
+# 这些任务放到最后执行。周任务、每日任务领的是前面动作累积的奖励；
+# 清理背包放在领奖之后，把这一轮新进背包的箱子和卡一起用掉。
+ORDER_LAST = {"每日任务", "周任务", "清理背包"}
 
 # 连续多少轮收不到响应就放弃该任务（当天）。
 # 设 3 是为了容忍偶发的网络抖动/响应慢，又不至于无限期地空发。
@@ -1081,6 +1083,16 @@ TASKS = [
                "getGift=[{档位, 是否已领}]。一轮把所有达标档位领完",
        followup=Followup("043d", _next_daily_gift, max_rounds=5,
                          desc="继续领剩下达标的档位")),
+
+    # 清理背包。形状不合流水线（先读背包数量、整叠使用、自选再均分），走 runner。
+    # 不进默认配置：每日任务.任务 里没有这个键时，上面的开关读取按未开启跳过。
+    _t("清理背包", "清理背包", "0440", "RceBagItemUse",
+       {}, "实测",
+       "2026-10-25 抓包：RceBagItemUse optType:0，count 为背包里的整叠数量。"
+       "自选宝箱才带 selectID，按选项平均分。默认配置没有这个开关",
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.bag_clean", fromlist=["daily_clean"]
+       ).daily_clean(rec, sock, config)),
 ]
 
 # 白名单：动作 opcode 和前置 opcode 都要在内 —— 前置请求同样是真实发出的包，
@@ -1093,8 +1105,8 @@ def ordered_tasks():
     """按执行顺序返回任务：普通任务在前，ORDER_LAST 里的排到最后。"""
     head = [t for t in TASKS if t.key not in ORDER_LAST]
     tail = [t for t in TASKS if t.key in ORDER_LAST]
-    # 尾部内部再排：周任务 → 每日任务（每日任务绝对最后）
-    tail.sort(key=lambda t: 0 if t.key == "周任务" else 1)
+    # 尾部内部再排：周任务 → 每日任务领奖 → 清理背包
+    tail.sort(key=lambda t: {"周任务": 0, "每日任务": 1}.get(t.key, 2))
     return head + tail
 
 

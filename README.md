@@ -507,7 +507,7 @@ python main.py --reset      # 清空今日计数
 - **实测** —— 参数来自真实抓包，可放心开
 - **待确认** —— 默认跳过，需先抓包核对
 
-29 个任务都能在 `config.json` 的 `每日任务.任务` 里单独开关。
+`config.json` 里列出的任务都能在 `每日任务.任务` 里单独开关。「清理背包」没有写进默认配置，缺这个键就跳过；要开就在 `config.local.json` 的 `每日任务.任务` 里写 `"清理背包": true`。
 
 ### 尚未实现的
 
@@ -739,6 +739,7 @@ tankstorm/
   arena.py                   争霸战自动挑战 + 内置 NPC 名字表（同上）
   guild.py                   公会战参加（type:70，判据是"上次参加时刻"被刷新）
   shop.py                    功勋商城补支援兵——唯一会花钱的模块，默认关闭
+  bag_clean.py               清理背包（RceBagItemUse 整叠使用；每日任务默认不跑）
   sender.py                  组帧与发送，含超级强攻拒绝包的构造
   crypto.py                  RC4 双向实现，密钥由 FlashVars 推导
   recorder.py                收发录制、实时解密、事件告警、自动拒绝回调
