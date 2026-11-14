@@ -254,33 +254,52 @@ def _park_bad_db():
         log.error("城市库已损坏，原文件已改名留在旁边，重新建一个空库")
 
 
-def sideline_poison_wal():
-    """挪走 2026-09-26 误提交的那份 wal。
+# 仓库里提交过的三份 wal。末帧提交页数分别是 391、381、382。
+# 盐对得上时，SQLite 会按这个页数截短主库，Datasette 报 database disk image is malformed。
+_POISON_WAL = {
+    (8272, 0x21506018, 0x222353DB, 391),
+    (8272, 0x0FDE2027, 0xF315CFB1, 381),
+    (1948792, 0x321786B9, 0x78888D51, 382),
+}
 
-    两帧都写第 380 页，提交后库被收成 391 页。线上库如果还是同一套盐，
-    下次打开会按这个尺寸截断主库，Datasette 就报
-    database disk image is malformed。活着的 wal 帧数和页号对不上，不会动。
+
+def sideline_poison_wal():
+    """挪走会把主库截短的 wal。
+
+    末帧的盐必须和文件头一致，提交页数还得小于主库文件头里的页数。
+    正在用的 wal 提交页数不会比主库小，不会动。帧数对不齐（写到一半）也不动。
+    上面三份已提交的快照按大小和盐认，主库已经被截短也一样挪走。
     """
     wal = DB_FILE + "-wal"
     try:
-        if not os.path.isfile(wal) or os.path.getsize(wal) != 8272:
+        if not os.path.isfile(wal):
             return False
+        size = os.path.getsize(wal)
         with open(wal, "rb") as f:
             hdr = f.read(32)
-            if hdr[:4] not in (b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83"):
+            if len(hdr) < 32 or hdr[:4] not in (b"\x37\x7f\x06\x82", b"\x37\x7f\x06\x83"):
                 return False
-            if int.from_bytes(hdr[8:12], "big") != 4096:
+            page = int.from_bytes(hdr[8:12], "big")
+            if page < 512 or page > 65536 or page & (page - 1):
                 return False
-            marks = []
-            for _ in range(2):
-                frame = f.read(24)
-                if len(frame) != 24:
-                    return False
-                marks.append((int.from_bytes(frame[0:4], "big"),
-                              int.from_bytes(frame[4:8], "big")))
-                if len(f.read(4096)) != 4096:
-                    return False
-        if marks != [(380, 391), (380, 391)]:
+            frame = 24 + page
+            if size < 32 + frame or (size - 32) % frame:
+                return False
+            f.seek(size - frame)
+            last = f.read(24)
+        if len(last) != 24 or last[8:16] != hdr[16:24]:
+            return False
+        salt1 = int.from_bytes(hdr[16:20], "big")
+        salt2 = int.from_bytes(hdr[20:24], "big")
+        dbsize = int.from_bytes(last[4:8], "big")
+        poison = (size, salt1, salt2, dbsize) in _POISON_WAL
+        if not poison and dbsize:
+            with open(DB_FILE, "rb") as f:
+                dbh = f.read(100)
+            if dbh.startswith(b"SQLite format 3\x00") and len(dbh) >= 32:
+                pages = int.from_bytes(dbh[28:32], "big")
+                poison = pages > dbsize
+        if not poison:
             return False
         stamp = datetime.now().strftime("%Y%m%d%H%M%S")
         for suf in ("-wal", "-shm"):
