@@ -477,52 +477,182 @@ def _trim_done_prefix(text):
     return text
 
 
+_MONTH_INDEX = {"超值月卡": 0, "VIP月卡": 1, "福利月卡": 2}
+
+# 页面分组用。跑任务时的 _is_failure 不改，避免把「没到账」当成要停手的失败。
+_BRIEF_FAIL = ("没有到账", "没到账", "执行出错", "没领到")
+
+
+def _brief_failure(text) -> bool:
+    text = str(text or "")
+    if _is_failure(text):
+        return True
+    return any(mark in text for mark in _BRIEF_FAIL)
+
+
+def _month_card_brief(key, text):
+    """月卡说明常常只剩协议数组。按这一张自己的已领标记归类。"""
+    found = re.search(r"threeMonthCardGetAwd=\[([^\]]*)\]", str(text or ""))
+    if not found:
+        return ""
+    flags = [part.strip() for part in found.group(1).split(",")]
+    index = _MONTH_INDEX.get(key)
+    if index is None or index >= len(flags):
+        return ""
+    if flags[index] == "True":
+        return "done"
+    counts = []
+    got = re.search(r"threeMonthCardCnt=\[([^\]]*)\]", str(text or ""))
+    if got:
+        counts = [part.strip() for part in got.group(1).split(",")]
+    day = counts[index] if index < len(counts) else ""
+    if day in ("", "0"):
+        return "skip"
+    return "open"
+
+
+def _occupy_note(text) -> bool:
+    return bool(re.fullmatch(r"占用至\s*\d+\s*分钟后", str(text or "").strip()))
+
+
+def _skip_marks(text) -> bool:
+    marks = (
+        "跳过", "未开启", "不领", "什么都没做", "没有到点", "不在周",
+        "冷却", "暂不执行", "先不做", "未实测", "没有剩余",
+    )
+    return any(mark in str(text or "") for mark in marks)
+
+
+def _looks_done(text) -> bool:
+    """做成了，或今天已经没有可做的次数。明细不进总览。"""
+    text = str(text or "")
+    if "没打完" in text:
+        return False
+    body = _trim_done_prefix(text)
+    # 「成功：不领」这种是故意没做，不要算进已完成。
+    if _skip_marks(body):
+        acted = (
+            "领到", "领取了", "领取激战", "领了", "已领", "已经领过",
+            "已参加", "已合成", "打完", "今日已满", "培养了", "打下",
+            "拨款", "挑战", "已过指定", "已用完", "用了",
+        )
+        if not any(mark in body for mark in acted) and not re.search(
+                r"今日\s*\d+\s*/\s*\d+", body):
+            return False
+    marks = (
+        "成功", "已做过", "领到", "领取了", "领取激战", "领了", "已领",
+        "已经领过", "今日已领", "已参加", "已合成", "打完", "今日已满",
+        "培养了", "打下", "拨款", "挑战", "已过指定", "已用完", "用了",
+    )
+    if any(mark in text for mark in marks):
+        return True
+    return bool(re.search(r"今日\s*\d+\s*/\s*\d+", body))
+
+
+def _looks_skip(text) -> bool:
+    """这轮故意没做。不是失败。"""
+    if _looks_done(text):
+        return False
+    return _skip_marks(_trim_done_prefix(text)) or _skip_marks(text)
+
+
+def _short_fail(text) -> str:
+    """失败原因留一句。协议名、错误码、字段和异常原文都不进总览。"""
+    raw = str(text or "")
+    if "执行异常" in raw or "not supported" in raw or "NoneType" in raw:
+        return "执行异常"
+    if "安全检查" in raw or "危险字段" in raw or "useItemID" in raw:
+        return "会扣道具，已拦截"
+    if "没有到账" in raw or "没到账" in raw:
+        return "没有到账"
+    if "没领到" in raw:
+        return "没领到"
+    if "被拒" in raw and "没有奖励" in raw:
+        return "被拒，没有奖励"
+    if "被拒" in raw:
+        return "被拒"
+    if any(mark in raw for mark in ("没收到", "未收到", "没有回包", "没等到")):
+        return "没收到回包"
+    if "需要花钱" in raw:
+        return "需要花钱"
+    text = re.sub(r"[（(][^）)]*[）)]", "", raw)
+    text = re.sub(r"\b(?:Rse|Rce)[A-Za-z0-9_]*\b", "", text)
+    text = re.sub(
+        r"(?:nRet|nResult|ret|result|error|useItemID)\s*=\s*\S+", "", text)
+    text = re.sub(r"类型\s*\d+", "", text)
+    text = re.sub(r"\d+(?:\.\d+)?\s*s\s*内", "", text)
+    text = re.sub(r"\d{3,}", "", text)
+    for noise in ("闸门拦截：", "失败：", "安全检查拦截：", "这一轮不做", "执行异常："):
+        text = text.replace(noise, "")
+    text = re.sub(r"\s+", "", text).strip("，。；、:：")
+    if not text:
+        return "没做成"
+    text = re.split(r"[。；]", text)[0]
+    if len(text) > 16:
+        text = text[:16]
+    return text
+
+
 def _group_brief(items) -> str:
-    """已做过、成功收成一行名字。没做成的收成一行，并带上原因。"""
+    """做成的只留名字。跳过的只留名字。没做成的留一句短原因。"""
     done = []
     failed = []
+    skipped = []
     held = []
     other = []
     for key, text in items:
-        pieces = [part.strip() for part in re.split(r"[；;]", str(text or "")) if part.strip()]
-        rest = [part for part in pieces if part not in ("已做过", "成功")]
-        if not pieces:
+        raw = str(text or "")
+        month = _month_card_brief(key, raw)
+        pieces = [part.strip() for part in re.split(r"[；;]", raw) if part.strip()]
+        pieces = [part for part in pieces if not _occupy_note(part)]
+        if not pieces and not month:
             continue
-        if all(part.startswith("暂不执行") for part in pieces):
+        if pieces and all(part.startswith("暂不执行") for part in pieces):
             held.append(key)
             continue
-        if not rest:
+        if month == "done":
             done.append(key)
             continue
-        if key in ("征战第三次", "征战第4次"):
-            joined = "；".join(rest)
-            if ("打完" in joined and "没打完" not in joined
-                    and not any(_is_failure(part) for part in rest)):
-                done.append(key)
-                continue
-        shown_parts = []
-        for part in rest:
-            part = _trim_done_prefix(part).strip()
-            if part and part not in ("成功", "已做过"):
-                shown_parts.append(part)
-        if not shown_parts:
+        if month == "skip":
+            skipped.append(key)
+            continue
+        if month == "open" and not _brief_failure(raw) and not _looks_done(raw):
+            failed.append(f"{key}：没领到")
+            continue
+        if any(_brief_failure(part) for part in pieces):
+            reasons = []
+            for part in pieces:
+                if not _brief_failure(part):
+                    continue
+                short = _short_fail(part)
+                if short and short not in reasons:
+                    reasons.append(short)
+            failed.append(f"{key}：" + "，".join(reasons or ["没做成"]))
+            continue
+        joined = "；".join(pieces)
+        if _looks_done(joined) or (pieces and all(
+                part in ("成功", "已做过") for part in pieces)):
             done.append(key)
             continue
-        shown = "；".join(shown_parts)
-        line = f"{key}：{shown}"
-        if any(_is_failure(part) for part in rest):
-            failed.append(line)
-        else:
-            other.append(line)
+        if _looks_skip(joined):
+            skipped.append(key)
+            continue
+        shown = _trim_done_prefix(joined).strip(" ；，。")
+        if not shown or shown in ("成功", "已做过"):
+            done.append(key)
+            continue
+        other.append(f"{key}：{shown}")
     lines = []
     if done:
         lines.append("已完成：" + "、".join(done))
     if failed:
         lines.append("失败：" + "；".join(failed))
+    if skipped:
+        lines.append("跳过：" + "、".join(skipped))
     if held:
         lines.append("未执行：" + "、".join(held) + "。反复被拒会打断连接，先不做")
     if other:
-        if done or failed or len(other) > 1:
+        if done or failed or skipped or len(other) > 1:
             lines.append("其他：" + "；".join(other))
         else:
             lines.append(other[0])
@@ -550,9 +680,22 @@ def page_task(key, text) -> str:
     return f"{key}：{shown}"
 
 
+def _names_from(line, prefix) -> list:
+    body = line[len(prefix):]
+    body = body.split("。", 1)[0]
+    names = []
+    for part in re.split(r"[、,，]", body):
+        name = part.strip()
+        if name:
+            names.append(name)
+    return names
+
+
 def _clean_grouped(raw) -> str:
     """已经分过组的旧说明，去掉字段后再分一次。"""
     done = []
+    skipped = []
+    held = []
     items = []
     seen = set()
     for line in raw.split("\n"):
@@ -560,10 +703,21 @@ def _clean_grouped(raw) -> str:
         if not line:
             continue
         if line.startswith("已完成："):
-            for part in re.split(r"[、,，]", line[len("已完成："):]):
-                name = part.strip()
-                if name and name not in seen:
+            for name in _names_from(line, "已完成："):
+                if name not in seen:
                     done.append(name)
+                    seen.add(name)
+            continue
+        if line.startswith("跳过："):
+            for name in _names_from(line, "跳过："):
+                if name not in seen:
+                    skipped.append(name)
+                    seen.add(name)
+            continue
+        if line.startswith("未执行："):
+            for name in _names_from(line, "未执行："):
+                if name not in seen:
+                    held.append(name)
                     seen.add(name)
             continue
         body = line
@@ -580,6 +734,8 @@ def _clean_grouped(raw) -> str:
             items.append((key, text))
             seen.add(key)
     ordered = [(key, "成功") for key in done]
+    ordered.extend((key, "跳过") for key in skipped)
+    ordered.extend((key, "暂不执行") for key in held)
     ordered.extend(items)
     return _group_brief(ordered) or raw
 
@@ -589,7 +745,7 @@ def compact_detail(text) -> str:
     raw = str(text or "").strip()
     if not raw:
         return raw
-    if raw.startswith(("已完成：", "失败：", "其他：")):
+    if raw.startswith(("已完成：", "失败：", "跳过：", "未执行：", "其他：")):
         return _clean_grouped(raw)
     items = _split_named(raw)
     if not items:
@@ -602,12 +758,12 @@ def display_job_detail(status, detail) -> str:
     raw = str(detail or "").strip()
     if status != "running":
         return compact_detail(raw)
-    if not raw.startswith(("已完成：", "失败：", "其他：")):
+    if not raw.startswith(("已完成：", "失败：", "跳过：", "未执行：", "其他：")):
         return raw
     items = []
     for line in raw.split("\n"):
         body = line.strip()
-        for prefix in ("已完成：", "失败：", "其他："):
+        for prefix in ("已完成：", "失败：", "跳过：", "未执行：", "其他："):
             if body.startswith(prefix):
                 body = body[len(prefix):]
                 break
