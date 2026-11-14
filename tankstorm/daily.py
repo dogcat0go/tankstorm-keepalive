@@ -1799,24 +1799,12 @@ TASKS = [
            "tankstorm.country_war", fromlist=["daily_chest"]
        ).daily_chest(rec, sock, config)),
 
-    # 参加公会战。2026-08-30 抓包定案：**type:70 就是"参加"**，判据是回包里的
-    # userGuild.field17.field1（上次参加时刻）被刷新到"刚刚"。
-    #
-    # 这一项欠了很久，之前两次都判错，原因值得记下来：type:70 的回包顶层只有
-    # type/ret/userGuild，看着就是"查看自己的公会"，于是被归进浏览类放过了。
-    # 真正的状态变化埋在两层嵌套加一个通用字段名里。8/30 抓包按 pcap 包时间还原：
-    #   type:73 发于 …602.4 → 回包 field17.field1 = 1787556135（六天前的旧值）
-    #   type:80 发于 …603.5 → 回包 还是 1787556135
-    #   type:70 发于 …607.7 → 回包 **1788068608**，同一秒
-    # 前后差 0.3 秒，而它前面两条读到的都还是旧值 —— 只可能是 type:70 写的。
-    # 公会战**一天一场**（用户确认），所以按自然日限流：今天参加过就不再发。
-    #
-    # 形状不合流水线（闸门要同时看 dayHasPK 和那个时间戳是不是今天），走 runner。
+    # 参加公会战。直接发 type:70，不先开面板。读不到参加时刻也发这一次。
+    # 回包里这个时刻已经是今天，则今天参加过。形状不合流水线，走 runner。
     _t("公会战参加", "公会战·参加", "0479", "RceGuildOpt",
        {}, "实测",
-       "8/30 抓包实测：type:73 读 dayHasPK 和上次参加时刻 → type:70 参加。"
-       "回包里 userGuild.field17.field1 被刷新成请求发出的同一秒。"
-       "公会战一天一场，故按自然日限流",
+       "直接发 RceGuildOpt type:70 报名，不先开公会战面板（不发 type:73）。"
+       "读不到上次参加时刻也发。成败看回包里的参加时刻是否刷新到刚刚",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_join"]
        ).daily_join(rec, sock, config)),

@@ -140,9 +140,11 @@ class WireMap:
             if hit is None:
                 if out:
                     raise Unmapped(f"字段 {tag} 在游戏版本 {self.version} 里没有对应")
-                # 新版多出来的整数和短消息留下。月卡的天数、领取标记
+                # 新版多出来的整数和消息留下。月卡的天数、领取标记
                 # 和生产槽都不在旧字段号上，丢掉就读成没领、没进队列。
-                if (wt == 2 and 0 < len(val) <= 512) or wt == 0:
+                # 公会的 userGuild 对照表没列，整段常常超过 512 字节，
+                # 太小的上限会把参加时刻一起丢掉。
+                if (wt == 2 and 0 < len(val) <= 16384) or wt == 0:
                     used = set(self._out[cls])
                     kept = tag if tag not in used else 10000 + tag
                     extra = _put_varint(len(val)) + val if wt == 2 else val
