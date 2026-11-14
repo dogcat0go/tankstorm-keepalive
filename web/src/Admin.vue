@@ -19,6 +19,11 @@ const tierDraft = ref({});
 const tierBusy = ref(0);
 const tierErr = ref({});
 const tierNote = ref({});
+const openPwd = ref(0);
+const pwdDraft = ref({});
+const pwdBusy = ref(0);
+const pwdErr = ref({});
+const pwdNote = ref({});
 const TIERS = ["初级", "中级", "高级", "高级pro"];
 const clearing = ref(0);
 const deleting = ref(0);
@@ -43,7 +48,7 @@ const memberQ = ref("");
 const memberRegion = ref("");
 const memberOnline = ref("");
 const memberTier = ref("");
-const memberUnbound = ref(false);
+const memberBind = ref("");
 const memberSort = ref("id");
 const memberDir = ref("asc");
 const fighterQ = ref("");
@@ -244,11 +249,12 @@ function memberBound(m) {
 }
 
 function memberPasses(m) {
+  const bind = memberBind.value;
   return hitQuery(memberQ.value, m.username, m.attack_qq, m.qq_target)
     && hitRegion(memberRegion.value, m.region)
     && hitOnline(memberOnline.value, onlineOf(m))
     && (!memberTier.value || (m.tier || "初级") === memberTier.value)
-    && (!memberUnbound.value || !memberBound(m));
+    && (!bind || (bind === "only" ? !memberBound(m) : memberBound(m)));
 }
 
 function fighterPasses(f) {
@@ -297,7 +303,7 @@ function pageOf(rows, page) {
 const memberView = computed(() => pageOf(shownMembers.value, memberPage.value));
 const fighterView = computed(() => pageOf(shownFighters.value, fighterPage.value));
 
-watch([memberQ, memberRegion, memberOnline, memberTier, memberUnbound, memberSort, memberDir, showExpired], () => {
+watch([memberQ, memberRegion, memberOnline, memberTier, memberBind, memberSort, memberDir, showExpired], () => {
   memberPage.value = 1;
 });
 watch([fighterQ, fighterRegion, fighterOnline, fighterSort, fighterDir, showExpired], () => {
@@ -305,7 +311,7 @@ watch([fighterQ, fighterRegion, fighterOnline, fighterSort, fighterDir, showExpi
 });
 
 const memberFilterOn = computed(() =>
-  !!(memberQ.value || memberRegion.value || memberOnline.value || memberTier.value || memberUnbound.value));
+  !!(memberQ.value || memberRegion.value || memberOnline.value || memberTier.value || memberBind.value));
 const fighterFilterOn = computed(() =>
   !!(fighterQ.value || fighterRegion.value || fighterOnline.value));
 
@@ -314,7 +320,7 @@ function clearMemberFilters() {
   memberRegion.value = "";
   memberOnline.value = "";
   memberTier.value = "";
-  memberUnbound.value = false;
+  memberBind.value = "";
   showExpired.value = false;
 }
 
@@ -546,6 +552,41 @@ async function saveTier(m) {
   }
 }
 
+function togglePwd(m) {
+  if (openPwd.value === m.id) {
+    openPwd.value = 0;
+    return;
+  }
+  openPwd.value = m.id;
+  pwdErr.value = { ...pwdErr.value, [m.id]: "" };
+}
+
+async function saveMemberPassword(m) {
+  if (pwdBusy.value) return;
+  const password = String(pwdDraft.value[m.id] || "");
+  pwdErr.value = { ...pwdErr.value, [m.id]: "" };
+  pwdNote.value = { ...pwdNote.value, [m.id]: "" };
+  if (password.length < 6 || password.length > 72) {
+    pwdErr.value = { ...pwdErr.value, [m.id]: "密码至少 6 位" };
+    return;
+  }
+  if (!window.confirm("把 " + m.username + " 的登录密码改掉？这个账号已有的登录会退出，之后用新密码登录。")) return;
+  err.value = "";
+  pwdBusy.value = m.id;
+  try {
+    const data = await api("/api/admin/members/password", { user_id: m.id, password });
+    paintMembers(data.members);
+    pwdDraft.value = { ...pwdDraft.value, [m.id]: "" };
+    pwdNote.value = { ...pwdNote.value, [m.id]: "密码已改，请用新密码登录" };
+  } catch (e) {
+    const message = e.message || "请求失败";
+    err.value = message;
+    pwdErr.value = { ...pwdErr.value, [m.id]: message };
+  } finally {
+    pwdBusy.value = 0;
+  }
+}
+
 function toggleExpiry(m) {
   if (openExpiry.value === m.id) {
     openExpiry.value = 0;
@@ -643,6 +684,7 @@ async function deleteMember(m) {
     if (openMember.value === m.id) openMember.value = 0;
     if (openTier.value === m.id) openTier.value = 0;
     if (openExpiry.value === m.id) openExpiry.value = 0;
+    if (openPwd.value === m.id) openPwd.value = 0;
   } finally {
     deleting.value = 0;
   }
@@ -714,6 +756,7 @@ async function logout() {
   openMember.value = 0;
   openExpiry.value = 0;
   openTier.value = 0;
+  openPwd.value = 0;
   fighters.value = [];
   scanRanges.value = [];
   clearMemberFilters();
@@ -776,7 +819,7 @@ onUnmounted(() => {
         <button type="button" role="tab" :aria-selected="sheet === 'scan'" :class="{ ghost: sheet !== 'scan' }" @click="sheet = 'scan'">扫描号</button>
       </div>
       <template v-if="sheet === 'members'">
-      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。创建账号不带管理权限，有效期留空就是不限期。删除会连订单、订阅和登录一起去掉，当前登录的管理员不能删自己。</p>
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。点「改密码」给忘记密码的成员设一个新密码，这个账号已有的登录会退出，之后用新密码登录。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。创建账号不带管理权限，有效期留空就是不限期。删除会连订单、订阅和登录一起去掉，当前登录的管理员不能删自己。</p>
       <form class="filters" @submit.prevent="createMember()">
         <label>用户名<input v-model="newName" autocomplete="off" required /></label>
         <label>密码<input v-model="newPassword" type="password" autocomplete="new-password" required /></label>
@@ -812,9 +855,12 @@ onUnmounted(() => {
             <option v-for="t in TIERS" :key="'ft' + t">{{ t }}</option>
           </select>
         </label>
-        <label class="choice" title="只看攻打 QQ 还是空的登录账号。">
-          <input type="checkbox" v-model="memberUnbound" />
-          还没有绑定QQ
+        <label>绑定
+          <select v-model="memberBind">
+            <option value="">全部</option>
+            <option value="hide">不看未绑定</option>
+            <option value="only">只看未绑定</option>
+          </select>
         </label>
         <label class="choice" title="有效期按北京时间。到期当天仍显示，没填有效期的一直显示。">
           <input type="checkbox" v-model="showExpired" />
@@ -858,6 +904,7 @@ onUnmounted(() => {
                   <button type="button" class="ghost" :disabled="clearing === m.id" @click="clearMember(m).catch((e) => (err = e.message))">清空</button>
                   <button type="button" class="ghost" :class="{ here: openTier === m.id }" :aria-expanded="openTier === m.id" @click="toggleTier(m)">{{ openTier === m.id ? "收起" : "会员等级" }}</button>
                   <button type="button" class="ghost" :class="{ here: openExpiry === m.id }" :aria-expanded="openExpiry === m.id" @click="toggleExpiry(m)">{{ openExpiry === m.id ? "收起" : "有效期" }}</button>
+                  <button type="button" class="ghost" :class="{ here: openPwd === m.id }" :aria-expanded="openPwd === m.id" @click="togglePwd(m)">{{ openPwd === m.id ? "收起" : "改密码" }}</button>
                   <button type="button" class="ghost" :disabled="deleting === m.id" @click="deleteMember(m).catch((e) => (err = e.message))">删除</button>
                 </td>
               </tr>
@@ -874,6 +921,19 @@ onUnmounted(() => {
                   </form>
                   <p v-if="tierErr[m.id]" class="err">{{ tierErr[m.id] }}</p>
                   <p v-else-if="tierNote[m.id]" class="muted">{{ tierNote[m.id] }}</p>
+                </td>
+              </tr>
+              <tr v-if="openPwd === m.id">
+                <td colspan="7" class="member-cfg member-expiry">
+                  <p>给 {{ m.username }} 设一个新密码。至少 6 位。保存后这个账号已有的登录会退出，再用新密码登录。</p>
+                  <form class="expiry-actions" @submit.prevent="saveMemberPassword(m)">
+                    <label>新密码
+                      <input v-model="pwdDraft[m.id]" type="password" autocomplete="new-password" required />
+                    </label>
+                    <button type="submit" :disabled="pwdBusy === m.id">保存</button>
+                  </form>
+                  <p v-if="pwdErr[m.id]" class="err">{{ pwdErr[m.id] }}</p>
+                  <p v-else-if="pwdNote[m.id]" class="muted">{{ pwdNote[m.id] }}</p>
                 </td>
               </tr>
               <tr v-if="openExpiry === m.id">
