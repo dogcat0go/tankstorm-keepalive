@@ -1234,6 +1234,7 @@ def _handler(config: dict):
             action = str(data.get("action") or data.get("动作") or "cookies").strip().lower()
             if action in ("qr", "status", "二维码", "状态"):
                 web, web_token = napcat_webui_for_user(config, user["id"])
+                uin = ""
                 if user.get("admin"):
                     uin = str(data.get("qq") or "").strip()
                     cfg_web, cfg_token = attack_napcat_webui(config, uin)
@@ -1248,7 +1249,7 @@ def _handler(config: dict):
                     if str(typed_token or "").strip():
                         web_token = str(typed_token).strip()
                 try:
-                    _json(self, 200, napcat_login_qr(web, web_token))
+                    _json(self, 200, napcat_login_qr(web, web_token, uin))
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                 return
@@ -1258,6 +1259,22 @@ def _handler(config: dict):
             if action in ("list", "列表"):
                 try:
                     _json(self, 200, list_attack_napcat(config, citydb.list_attack_fighters()))
+                except Exception as exc:
+                    _json(self, 500, {"error": str(exc)})
+                return
+            if action in ("logs", "日志"):
+                from .log import napcat_log_tail
+                from .napcat_up import napcat_console_lines, napcat_own_logs
+                uin = "".join(ch for ch in str(data.get("qq") or "") if ch.isdigit())
+                try:
+                    _json(self, 200, {
+                        "qq": uin,
+                        "lines": napcat_log_tail(uin),
+                        "files": napcat_own_logs(uin),
+                        "console": napcat_console_lines(uin),
+                        "app_log": f"logs/napcat/{uin}.log" if uin else "",
+                        "own_dir": f"napcat/{uin}/logs" if uin else "",
+                    })
                 except Exception as exc:
                     _json(self, 500, {"error": str(exc)})
                 return

@@ -103,6 +103,56 @@ def get_login_logger() -> logging.Logger:
     return logger
 
 
+_napcat_loggers = {}
+_napcat_log_lock = threading.Lock()
+
+
+def _napcat_who(qq: str) -> str:
+    digits = "".join(ch for ch in str(qq or "") if ch.isdigit())
+    return digits or "未知"
+
+
+def napcat_log(qq: str, msg: str) -> None:
+    """NapCat 单独一份日志，不进运行日志。文件在 logs/napcat/QQ号.log。"""
+    who = _napcat_who(qq)
+    text = " ".join(str(msg or "").split())
+    if not text:
+        return
+    with _napcat_log_lock:
+        logger = _napcat_loggers.get(who)
+        if logger is None:
+            logger = logging.getLogger(f"tankstorm.napcat.{who}")
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+            folder = os.path.join(LOG_DIR, "napcat")
+            path = os.path.join(folder, who + ".log")
+            try:
+                os.makedirs(folder, exist_ok=True)
+                fh = logging.handlers.TimedRotatingFileHandler(
+                    path, when="midnight", backupCount=14, encoding="utf-8")
+            except OSError as exc:
+                _warn_log_file(path, exc)
+                return
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+            logger.addHandler(fh)
+            _napcat_loggers[who] = logger
+    logger.info("%s", text)
+
+
+def napcat_log_tail(qq: str, limit: int = 160) -> list:
+    """logs/napcat/QQ号.log 的末尾。只读这个号自己的文件。"""
+    who = _napcat_who(qq)
+    path = _inside_logs(os.path.join(LOG_DIR, "napcat", who + ".log"))
+    if not path:
+        return []
+    limit = max(1, min(int(limit or 160), 400))
+    lines = [_clip_line(line) for line in _tail_lines(path, 400_000)]
+    if len(lines) > limit:
+        lines = lines[-limit:]
+    return lines
+
+
 _task_loggers = {}
 _task_log_lock = threading.Lock()
 
