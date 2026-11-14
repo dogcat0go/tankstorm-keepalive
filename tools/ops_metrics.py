@@ -164,7 +164,7 @@ def _cpu_sample(pids, wait=0.2):
 def _bucket(rel):
     name = os.path.basename(rel)
     head = rel.split("/", 1)[0]
-    if head in ("streams", "task", "enc", "packets"):
+    if head in ("streams", "task", "enc", "packets", "napcat"):
         return head
     if name == "ops-metrics.jsonl":
         return "metrics"

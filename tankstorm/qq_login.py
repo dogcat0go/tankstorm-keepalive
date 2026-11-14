@@ -80,7 +80,7 @@ import requests
 from . import (PLATFORM_COOKIE, PLAT_HALL, PLAT_QZONE,
                config_platform, normalize_platform, platform_spec)
 from . import paths
-from .log import console_lock, get_logger
+from .log import console_lock, get_logger, napcat_log
 from .qzone import fetch_hall_launch, hall_logged_in
 
 log = get_logger()
@@ -223,11 +223,15 @@ def attack_napcat_webui(config: dict | None, uin: str) -> tuple:
     return web, token
 
 
-def pull_napcat_cookies(api: str, token: str, domain: str):
+def pull_napcat_cookies(api: str, token: str, domain: str, qq: str = ""):
     """只 POST /get_cookies。不带网页票据，不发消息。成功返回 (True, cookie 字典)。"""
     api = str(api or "").strip().rstrip("/")
+    who = str(qq or "").strip() or napcat_host(api) or "未知"
+    host = napcat_host(api)
     if not api:
+        napcat_log(who, "没有 NapCat 地址")
         return False, "没有 NapCat 地址"
+    napcat_log(who, f"POST /get_cookies {host} domain={domain}")
     headers = {}
     if token:
         headers["Authorization"] = "Bearer " + token
@@ -240,12 +244,18 @@ def pull_napcat_cookies(api: str, token: str, domain: str):
         )
         data = r.json()
     except Exception as exc:
-        return False, f"向 NapCat 要票据失败：{exc}"
+        text = f"向 NapCat 要票据失败：{exc}"
+        napcat_log(who, text)
+        return False, text
     if not isinstance(data, dict):
-        return False, "NapCat 返回的不是票据"
+        text = "NapCat 返回的不是票据"
+        napcat_log(who, text)
+        return False, text
     if data.get("status") != "ok" and data.get("retcode") != 0:
         why = data.get("message") or data.get("wording") or data.get("status") or "没有交出票据"
-        return False, f"NapCat 没有交出票据：{why}"
+        text = f"NapCat 没有交出票据：{why}"
+        napcat_log(who, text)
+        return False, text
     raw = ((data.get("data") or {}).get("cookies") or "")
     pairs = {}
     for part in str(raw).split(";"):
@@ -253,7 +263,10 @@ def pull_napcat_cookies(api: str, token: str, domain: str):
         if sep and key and key != "domain_id":
             pairs[key] = val
     if not pairs.get("skey") or not pairs.get("p_skey"):
-        return False, "NapCat 票据里没有 skey 或 p_skey"
+        text = "NapCat 票据里没有 skey 或 p_skey"
+        napcat_log(who, f"{text}，字段 {','.join(sorted(pairs)) or '空'}")
+        return False, text
+    napcat_log(who, f"POST /get_cookies {host} 拿到 {','.join(sorted(pairs))}")
     return True, pairs
 
 
@@ -319,6 +332,48 @@ def _webui_post(base: str, path: str, token: str, retry: bool = True):
     return True, data
 
 
+def _qr_mark(text: str) -> str:
+    """登录码只记种类、长度和短摘要。不把网址或图片写进日志。"""
+    raw = str(text or "").strip()
+    if not raw:
+        return "无"
+    if raw.startswith("data:image"):
+        kind = "图片"
+    elif raw.startswith("http://") or raw.startswith("https://"):
+        kind = "网址"
+    else:
+        kind = "文本"
+    digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:8]
+    return f"{kind}{len(raw)}字#{digest}"
+
+
+def _hide_url(text: str) -> str:
+    return re.sub(r"https?://\S+", "网址", text)
+
+
+def _webui_brief(data) -> str:
+    """界面返回里和登录码有关的字段。不含凭证，不含码本身。"""
+    if isinstance(data, str):
+        return _hide_url(" ".join(data.split()))[:300]
+    if not isinstance(data, dict):
+        return "不是登录信息"
+    parts = [f"code={data.get('code')}"]
+    message = _hide_url(" ".join(str(data.get("message") or "").split()))
+    if message:
+        parts.append("message=" + message[:200])
+    body = data.get("data") if isinstance(data.get("data"), dict) else {}
+    if "isLogin" in body:
+        parts.append("isLogin=" + ("是" if body.get("isLogin") else "否"))
+    if "isOffline" in body:
+        parts.append("isOffline=" + ("是" if body.get("isOffline") else "否"))
+    err = _hide_url(" ".join(str(body.get("loginError") or "").split()))
+    if err:
+        parts.append("loginError=" + err[:200])
+    if "qrcodeurl" in body or "qrcode" in body:
+        parts.append("码=" + _qr_mark(body.get("qrcodeurl") or body.get("qrcode") or ""))
+    return " ".join(parts)
+
+
 def _webui_qrcode(data: dict) -> str:
     if not isinstance(data, dict) or data.get("code") not in (0, "0"):
         return ""
@@ -353,67 +408,104 @@ def _webui_already_in(data: dict) -> bool:
     return "logined" in str((data or {}).get("message") or "").lower()
 
 
-def napcat_login_qr(base: str, token: str) -> dict:
-    """向 NapCat 界面要它自己的登录二维码。已经登录就不再要码。不收发消息。"""
+def napcat_login_qr(base: str, token: str, uin: str = "") -> dict:
+    """向 NapCat 界面要它自己的登录二维码。已经登录就不再要码。不收发消息。
+
+    每一步写到 logs/napcat/QQ号.log。登录码本身不落盘，只记种类和摘要。
+    """
     base = str(base or "").strip().rstrip("/")
     token = str(token or "").strip()
+    who = "".join(ch for ch in str(uin or "") if ch.isdigit()) or napcat_host(base) or "未知"
     out = {
         "ok": False, "logged_in": False, "offline": False, "qrcode": "",
         "host": napcat_host(base), "msg": "",
     }
+
+    def note(text: str) -> None:
+        napcat_log(who, text)
+
     if not base:
         out["msg"] = "没有 NapCat 界面地址。写在登录.账号的 NapCat.界面"
+        note(out["msg"])
         return out
     if not token:
         out["msg"] = "没有 NapCat 界面 Token"
+        note(out["msg"])
         return out
+    note(f"看登录状态 {napcat_host(base)}")
     ok, data = _webui_post(base, "/api/QQLogin/CheckLoginStatus", token)
     if not ok:
         out["msg"] = data
+        note(f"CheckLoginStatus {data}")
         return out
+    note("CheckLoginStatus " + _webui_brief(data))
     if data.get("code") not in (0, "0"):
         out["msg"] = str(data.get("message") or "看不了 NapCat 登录状态")
+        note(out["msg"])
         return out
     info = data.get("data") if isinstance(data.get("data"), dict) else {}
     if info.get("isLogin"):
         out["ok"] = True
         out["logged_in"] = True
         out["msg"] = "NapCat 已经登录，不用再扫码"
+        note(out["msg"])
         return out
     out["offline"] = bool(info.get("isOffline"))
     qr = str(info.get("qrcodeurl") or "")
     err = str(info.get("loginError") or "")
+    if qr and err:
+        note(f"状态里已经有登录码，同时写着：{err}。这次沿用这张码，没有刷新")
     if not qr:
+        note("状态里没有登录码，改向 GetQQLoginQrcode 要")
         ok, got = _webui_post(base, "/api/QQLogin/GetQQLoginQrcode", token)
+        if ok:
+            note("GetQQLoginQrcode " + _webui_brief(got))
+        else:
+            note(f"GetQQLoginQrcode {got}")
         if ok and _webui_already_in(got):
             out["ok"] = True
             out["logged_in"] = True
             out["msg"] = "NapCat 已经登录，不用再扫码"
+            note(out["msg"])
             return out
         qr = _webui_qrcode(got) if ok else ""
     if not qr:
-        _webui_post(base, "/api/QQLogin/RefreshQRcode", token)
+        note("还是没有登录码，先 RefreshQRcode 再要一次")
+        refreshed_ok, refreshed = _webui_post(base, "/api/QQLogin/RefreshQRcode", token)
+        if refreshed_ok:
+            note("RefreshQRcode " + _webui_brief(refreshed))
+        else:
+            note(f"RefreshQRcode {refreshed}")
         ok, got = _webui_post(base, "/api/QQLogin/GetQQLoginQrcode", token)
+        if ok:
+            note("GetQQLoginQrcode " + _webui_brief(got))
+        else:
+            note(f"GetQQLoginQrcode {got}")
         if ok and _webui_already_in(got):
             out["ok"] = True
             out["logged_in"] = True
             out["msg"] = "NapCat 已经登录，不用再扫码"
+            note(out["msg"])
             return out
         qr = _webui_qrcode(got) if ok else ""
     if not qr:
         out["msg"] = err or "NapCat 还没有登录二维码"
+        note(out["msg"])
         return out
     try:
         image = _as_qr_image(qr)
     except Exception as exc:
         out["msg"] = f"没能把 NapCat 登录码画成图片：{exc}"
+        note(out["msg"])
         return out
     if not image:
         out["msg"] = "NapCat 没有给出可以显示的登录码"
+        note(f"{out['msg']} {_qr_mark(qr)}")
         return out
     out["ok"] = True
     out["qrcode"] = image
     out["msg"] = err or "用这个攻打号的手机 QQ 扫网页上的这张 NapCat 登录码"
+    note(f"页面显示登录码 {_qr_mark(qr)}。{out['msg']}")
     return out
 
 
@@ -426,6 +518,7 @@ def probe_attack_napcat(config: dict | None, uin: str, api: str = "",
     """
     uin = str(uin or "").strip()
     if not uin.isdigit() or not 5 <= len(uin) <= 12:
+        napcat_log(uin or "未知", "QQ 号要是 5 到 12 位数字")
         return {"ok": False, "busy": False, "msg": "QQ 号要是 5 到 12 位数字"}
     cfg_api, cfg_token = attack_napcat_endpoint(config, uin)
     api = str(api or cfg_api).strip().rstrip("/")
@@ -438,16 +531,18 @@ def probe_attack_napcat(config: dict | None, uin: str, api: str = "",
     }
     if not api:
         base["msg"] = "这个攻打号没有 NapCat 地址。写在登录.账号的 NapCat.地址，或这次请求里带上地址"
+        napcat_log(uin, base["msg"])
         return base
     if not napcat_begin(limit, 0):
         base["busy"] = True
         base["inflight"] = napcat_inflight()
         base["msg"] = "已有取票在进行，这次没有另开"
+        napcat_log(uin, base["msg"])
         return base
     tmp = ""
     try:
         plat = normalize_platform(platform) if str(platform or "").strip() else config_platform(config)
-        ok, got = pull_napcat_cookies(api, token, platform_spec(plat)["napcat_domain"])
+        ok, got = pull_napcat_cookies(api, token, platform_spec(plat)["napcat_domain"], uin)
         if not ok:
             base["msg"] = got
             base["inflight"] = napcat_inflight()
@@ -468,19 +563,23 @@ def probe_attack_napcat(config: dict | None, uin: str, api: str = "",
         })
         if qq.uin != uin:
             base["msg"] = f"NapCat 登录的是 {qq.uin or '空'}，不是这个攻打号"
+            napcat_log(uin, base["msg"])
             return base
         game_ok = qq.is_valid()
         base["game_ok"] = bool(game_ok)
         if not game_ok:
             base["msg"] = "游戏页不认这张票，没有写入"
+            napcat_log(uin, base["msg"])
             return base
         if not apply:
             base["ok"] = True
             base["msg"] = "游戏页认这张票，没有写入"
+            napcat_log(uin, base["msg"])
             return base
         if worker:
             base["ok"] = True
             base["msg"] = "游戏页认这张票。攻打线程在跑，没有改它正在用的 cookie"
+            napcat_log(uin, base["msg"])
             return base
         dest = paths.user_path(f"accounts/qq-{uin}.json")
         qq.cookie_file = dest
@@ -488,6 +587,7 @@ def probe_attack_napcat(config: dict | None, uin: str, api: str = "",
         base["ok"] = True
         base["applied"] = True
         base["msg"] = "游戏页认这张票，已写入攻打号 cookie"
+        napcat_log(uin, base["msg"])
         return base
     finally:
         napcat_end()
@@ -543,8 +643,10 @@ def accept_napcat_cookies(config: dict | None, api: str, token: str = "",
     token = str(token or "").strip()
     limit = napcat_limit(config)
     if not api:
+        napcat_log("未绑定", "没有 NapCat 地址")
         return {"ok": False, "msg": "没有 NapCat 地址", "uin": ""}
     if not napcat_begin(limit, 0):
+        napcat_log("未绑定", "已有取票在进行")
         return {"ok": False, "busy": True, "msg": "已有取票在进行", "uin": ""}
     tmp = ""
     try:
@@ -558,15 +660,19 @@ def accept_napcat_cookies(config: dict | None, api: str, token: str = "",
         qq._apply_napcat_pairs(got)
         uin = str(qq.uin or "").strip()
         if not uin.isdigit():
+            napcat_log("未绑定", "NapCat 票据里没有 QQ 号")
             return {"ok": False, "msg": "NapCat 票据里没有 QQ 号", "uin": ""}
         if not qq.is_valid():
+            napcat_log(uin, "游戏页不认这张票")
             return {"ok": False, "msg": "游戏页不认这张票", "uin": uin}
         scan_uin = str(ticket_report_file(paths.user_path("cookies.json")).get("uin") or "")
         if scan_uin and scan_uin == uin:
+            napcat_log(uin, "这个号是扫描号，不能当攻打号")
             return {"ok": False, "msg": "这个号是扫描号，不能当攻打号", "uin": uin}
         dest = paths.user_path(f"accounts/qq-{uin}.json")
         qq.cookie_file = dest
         qq._save_cookies()
+        napcat_log(uin, "已用 NapCat 登录")
         return {"ok": True, "msg": "已用 NapCat 登录", "uin": uin}
     finally:
         napcat_end()
@@ -1391,6 +1497,8 @@ class QQSession:
         if not napcat_begin(napcat_limit(config), wait):
             self.note_login("NapCat 取票已有 %d 路在进行，这次跳过", napcat_inflight())
             log.info("NapCat 取票已有 %d 路在进行，这次跳过", napcat_inflight())
+            napcat_log(self._attack_uin() or "未知",
+                       "NapCat 取票已有 %d 路在进行，这次跳过" % napcat_inflight())
             return False
         try:
             return self._adopt_napcat_once(api, token)
@@ -1415,8 +1523,9 @@ class QQSession:
             self._set_cookie(key, val, domain=domain)
 
     def _adopt_napcat_once(self, api: str, token: str) -> bool:
+        who = self._attack_uin() or str(getattr(self, "bound_uin", "") or "") or "未知"
         self.note_login("向 NapCat 要票据 %s", napcat_host(api))
-        ok, got = pull_napcat_cookies(api, token, self._pt()["napcat_domain"])
+        ok, got = pull_napcat_cookies(api, token, self._pt()["napcat_domain"], who)
         if not ok:
             log.info("%s", got)
             self.note_login("%s", got)
@@ -1428,18 +1537,22 @@ class QQSession:
             self._restore_cookies(snap)
             log.info("NapCat 登录的是 %s，不是绑定的攻打号 %s", self.uin or "空", want)
             self.note_login("NapCat 登录的是 %s，不是绑定的 %s", self.uin or "空", want)
+            napcat_log(who, "NapCat 登录的是 %s，不是绑定的 %s" % (self.uin or "空", want))
             return False
         if self.shares_blocked_uin():
             self._restore_cookies(snap)
+            napcat_log(who, "这个号和扫描号或其他攻打号重复，没有写入")
             return False
         if not self.is_valid():
             self._restore_cookies(snap)
             log.info("NapCat 票据打开游戏页未通过")
             self.note_login("NapCat 票据游戏页不认，已还原。%s", self.ticket_brief())
+            napcat_log(who, "NapCat 票据游戏页不认，已还原。%s" % self.ticket_brief())
             return False
         self._save_cookies()
         log.info("已用 NapCat 当前登录的票据续上，uin=%s", self.uin)
         self.note_login("已用 NapCat 票据续上。%s", self.ticket_brief())
+        napcat_log(self.uin or who, "已用 NapCat 票据续上。%s" % self.ticket_brief())
         return True
 
     def shares_blocked_uin(self) -> bool:

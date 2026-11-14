@@ -8,6 +8,8 @@
 """给一个攻打 QQ 起一台 NapCat。
 
 一台容器只登一个 QQ。容器名 napcat-<QQ号>，数据在 napcat/<QQ号>/。
+NapCat 自己的文件日志单独挂在 napcat/<QQ号>/logs/，不和 QQ 数据、配置混在一起。
+程序这边的记录在 logs/napcat/<QQ号>.log。
 OneBot 映射到 127.0.0.1 上的空闲端口（从 3333 起），界面从 6099 起。
 地址和两份 Token 写入 config.local.json。已经手写过配置的号不会再起第二台。
 """
@@ -15,6 +17,7 @@ OneBot 映射到 127.0.0.1 上的空闲端口（从 3333 起），界面从 6099
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -22,7 +25,7 @@ import subprocess
 import threading
 
 from . import citydb
-from .log import get_logger
+from .log import get_logger, napcat_log
 from .paths import user_path
 
 log = get_logger()
@@ -35,7 +38,10 @@ _lock = threading.Lock()
 
 def ensure_napcat(uin: str, username: str = "", config: dict | None = None) -> dict:
     with _lock:
-        return _ensure(uin, username, config)
+        result = _ensure(uin, username, config)
+    if result.get("msg"):
+        napcat_log(result.get("qq") or "", result["msg"])
+    return result
 
 
 def _ensure(uin: str, username: str = "", config: dict | None = None) -> dict:
@@ -51,11 +57,17 @@ def _ensure(uin: str, username: str = "", config: dict | None = None) -> dict:
         return out
     name = f"napcat-{uin}"
     try:
-        found, running, http_port, web_port = _container(name)
+        found, running, http_port, web_port, logs_on = _container(name)
     except OSError as exc:
         out["msg"] = _docker_hint(str(exc))
         return out
     if found:
+        config_dir, qq_dir, log_dir = _dirs(uin)
+        log_state = _enable_file_log(config_dir, uin)
+        if not logs_on or log_state == "changed":
+            return _separate_logs(
+                out, name, uin, username, config,
+                http_port, web_port, config_dir, qq_dir, log_dir, log_state)
         if not running:
             code, stdout, stderr = _docker(["start", name], 60)
             if code != 0:
@@ -63,7 +75,7 @@ def _ensure(uin: str, username: str = "", config: dict | None = None) -> dict:
                 return out
             running = True
         try:
-            _, running, http_port, web_port = _container(name)
+            _, running, http_port, web_port, _logs_on = _container(name)
         except OSError as exc:
             out["msg"] = _docker_hint(str(exc))
             return out
@@ -97,21 +109,11 @@ def _ensure(uin: str, username: str = "", config: dict | None = None) -> dict:
         return out
     http_token = secrets.token_urlsafe(18)
     web_token = secrets.token_urlsafe(18)
-    config_dir, qq_dir = _dirs(uin)
+    config_dir, qq_dir, log_dir = _dirs(uin)
     _write_volume(config_dir, uin, http_token, web_token)
-    uid = getattr(os, "getuid", lambda: 0)()
-    gid = getattr(os, "getgid", lambda: 0)()
-    mac = "02:42:" + ":".join(f"{b:02x}" for b in hashlib.sha256(uin.encode()).digest()[:4])
-    code, stdout, stderr = _docker([
-        "run", "-d", "--name", name, "--restart=always", "--mac-address", mac,
-        "-p", f"127.0.0.1:{web_port}:6099",
-        "-p", f"127.0.0.1:{http_port}:3000",
-        "-e", f"NAPCAT_UID={uid}", "-e", f"NAPCAT_GID={gid}",
-        "-e", f"WEBUI_TOKEN={web_token}",
-        "-v", f"{config_dir}:/app/napcat/config",
-        "-v", f"{qq_dir}:/app/.config/QQ",
-        _IMAGE,
-    ], 300)
+    _enable_file_log(config_dir, uin)
+    code, stdout, stderr = _run_container(
+        name, uin, http_port, web_port, web_token, config_dir, qq_dir, log_dir)
     if code != 0:
         out["msg"] = _docker_hint(stderr or stdout)
         return out
@@ -124,6 +126,145 @@ def _ensure(uin: str, username: str = "", config: dict | None = None) -> dict:
     )
     log.info("已起 %s，OneBot 127.0.0.1:%s，界面 127.0.0.1:%s", name, http_port, web_port)
     return out
+
+
+def _separate_logs(out, name, uin, username, config,
+                   http_port, web_port, config_dir, qq_dir, log_dir, log_state) -> dict:
+    """给已经在跑的容器补上独立日志目录。端口和 Token 不变，容器会重启一次。"""
+    if not http_port or not web_port:
+        out["msg"] = f"{name} 已在，但没有读到 3000 和 6099 的端口映射，没法把日志目录挂进去"
+        return out
+    http_token, web_token = _tokens_from_volume(uin)
+    if not http_token or not web_token:
+        saved_http, saved_web = _tokens_from_config(uin)
+        http_token = http_token or saved_http
+        web_token = web_token or saved_web
+    if not http_token or not web_token:
+        out["msg"] = f"{name} 已在，但没有 Token。看 napcat/{uin}/config"
+        return out
+    err = _recreate(name, uin, http_port, web_port, web_token, config_dir, qq_dir, log_dir)
+    if err:
+        out["msg"] = err
+        return out
+    try:
+        _, running, http_port, web_port, _logs_on = _container(name)
+    except OSError as exc:
+        out["msg"] = _docker_hint(str(exc))
+        return out
+    note = _remember(uin, username, http_port, web_port, http_token, web_token, config)
+    unread = ""
+    if log_state == "unreadable":
+        unread = f" napcat/{uin}/config 里的 napcat.json 读不了，没有改日志开关。"
+    out.update(
+        ok=True, running=running, host=f"127.0.0.1:{http_port}",
+        web_host=f"127.0.0.1:{web_port}",
+        msg=(f"{name} 已把 NapCat 日志挂到 napcat/{uin}/logs，文件日志已打开。"
+             f"容器按原来的端口重启了一次。{unread}{note}"),
+    )
+    log.info("%s", out["msg"])
+    return out
+
+
+def _run_container(name, uin, http_port, web_port, web_token, config_dir, qq_dir, log_dir) -> tuple:
+    uid = getattr(os, "getuid", lambda: 0)()
+    gid = getattr(os, "getgid", lambda: 0)()
+    mac = "02:42:" + ":".join(f"{b:02x}" for b in hashlib.sha256(uin.encode()).digest()[:4])
+    return _docker([
+        "run", "-d", "--name", name, "--restart=always", "--mac-address", mac,
+        "-p", f"127.0.0.1:{web_port}:6099",
+        "-p", f"127.0.0.1:{http_port}:3000",
+        "-e", f"NAPCAT_UID={uid}", "-e", f"NAPCAT_GID={gid}",
+        "-e", f"WEBUI_TOKEN={web_token}",
+        "-v", f"{config_dir}:/app/napcat/config",
+        "-v", f"{qq_dir}:/app/.config/QQ",
+        "-v", f"{log_dir}:/app/napcat/logs",
+        _IMAGE,
+    ], 300)
+
+
+def _recreate(name, uin, http_port, web_port, web_token, config_dir, qq_dir, log_dir) -> str:
+    """先把旧容器改名留着。新的起不来就改回去再启动。"""
+    old = name + "-bak"
+    _drop_stopped(old)
+    try:
+        code, stdout, stderr = _docker(["stop", name], 90)
+    except OSError as exc:
+        return _docker_hint(str(exc))
+    if code != 0:
+        return _docker_hint(stderr or stdout)
+    try:
+        code, stdout, stderr = _docker(["rename", name, old], 30)
+    except OSError as exc:
+        _docker(["start", name], 60)
+        return _docker_hint(str(exc))
+    if code != 0:
+        _docker(["start", name], 60)
+        return _docker_hint(stderr or stdout)
+    try:
+        code, stdout, stderr = _run_container(
+            name, uin, http_port, web_port, web_token, config_dir, qq_dir, log_dir)
+    except OSError as exc:
+        _docker(["rename", old, name], 30)
+        _docker(["start", name], 60)
+        return _docker_hint(str(exc))
+    if code != 0:
+        _docker(["rename", old, name], 30)
+        _docker(["start", name], 60)
+        return _docker_hint(stderr or stdout)
+    _docker(["rm", "-f", old], 30)
+    return ""
+
+
+def _drop_stopped(name: str) -> None:
+    try:
+        code, stdout, _stderr = _docker(["inspect", "-f", "{{.State.Running}}", name], 20)
+    except OSError:
+        return
+    if code == 0 and stdout.strip() == "false":
+        _docker(["rm", "-f", name], 30)
+
+
+def _enable_file_log(config_dir: str, uin: str) -> str:
+    """打开 NapCat 文件日志。返回 changed、same 或 unreadable。"""
+    states = [
+        _touch_file_log(os.path.join(config_dir, "napcat.json"), True),
+        _touch_file_log(os.path.join(config_dir, f"napcat_{uin}.json"), False),
+    ]
+    if "changed" in states:
+        return "changed"
+    if "unreadable" in states:
+        return "unreadable"
+    return "same"
+
+
+def _touch_file_log(path: str, create: bool) -> str:
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                loaded = json.load(f)
+        except (OSError, ValueError):
+            return "unreadable"
+        if not isinstance(loaded, dict):
+            return "unreadable"
+        data = loaded
+    elif create:
+        data = {}
+    else:
+        return "same"
+    changed = False
+    if data.get("fileLog") is not True:
+        data["fileLog"] = True
+        changed = True
+    if not str(data.get("fileLogLevel") or "").strip():
+        data["fileLogLevel"] = "debug"
+        changed = True
+    if "consoleLog" not in data:
+        data["consoleLog"] = True
+        changed = True
+    if not changed:
+        return "same"
+    _write_json(path, data)
+    return "changed"
 
 
 def _remember(uin, username, http_port, web_port, http_token, web_token, config) -> str:
@@ -232,9 +373,11 @@ def _dirs(uin: str) -> tuple:
     root = user_path(os.path.join("napcat", uin))
     config_dir = os.path.join(root, "config")
     qq_dir = os.path.join(root, "qq")
+    log_dir = os.path.join(root, "logs")
     os.makedirs(config_dir, exist_ok=True)
     os.makedirs(qq_dir, exist_ok=True)
-    return config_dir, qq_dir
+    os.makedirs(log_dir, exist_ok=True)
+    return config_dir, qq_dir, log_dir
 
 
 def _write_volume(config_dir: str, uin: str, http_token: str, web_token: str) -> None:
@@ -343,7 +486,7 @@ def _container(name: str) -> tuple:
     if code != 0:
         text = f"{stdout}\n{stderr}"
         if "No such object" in text or "no such object" in text.lower():
-            return False, False, 0, 0
+            return False, False, 0, 0, False
         raise OSError(text.strip() or "docker inspect 失败")
     try:
         info = json.loads(stdout)
@@ -355,7 +498,18 @@ def _container(name: str) -> tuple:
         raise OSError("docker inspect 返回的不是容器信息")
     running = bool((info.get("State") or {}).get("Running"))
     http_port, web_port = _published((info.get("HostConfig") or {}).get("PortBindings"))
-    return True, running, http_port, web_port
+    return True, running, http_port, web_port, _logs_mounted(info)
+
+
+def _logs_mounted(info: dict) -> bool:
+    for item in info.get("Mounts") or []:
+        if isinstance(item, dict) and str(item.get("Destination") or "").rstrip("/") == "/app/napcat/logs":
+            return True
+    binds = (info.get("HostConfig") or {}).get("Binds") or []
+    for item in binds:
+        if ":/app/napcat/logs" in str(item or ""):
+            return True
+    return False
 
 
 def _published(bindings) -> tuple:
@@ -444,6 +598,94 @@ def _docker(args: list, timeout: int) -> tuple:
     except subprocess.TimeoutExpired as exc:
         raise OSError("docker 超时") from exc
     return proc.returncode, proc.stdout or "", proc.stderr or ""
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_SECRET_RE = re.compile(
+    r"(?i)(token|authorization|bearer|credential|password|secret|hash)"
+    r"(\s*[\"':=]\s*[\"']?)([A-Za-z0-9._~+/-]{6,})"
+)
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _plain_log_line(line: str) -> str:
+    text = _ANSI_RE.sub("", str(line or "")).rstrip()
+    text = _SECRET_RE.sub(r"\1\2…", text)
+    text = _URL_RE.sub("网址", text)
+    if len(text) > 500:
+        text = text[:500] + "…"
+    return text
+
+
+def napcat_own_logs(uin: str, per_file: int = 80) -> list:
+    """napcat/QQ号/logs/ 里 NapCat 自己写的文件。只读这个号的目录。"""
+    from .log import _clip_line, _tail_lines
+    digits = "".join(ch for ch in str(uin or "") if ch.isdigit())
+    if not digits:
+        return []
+    root = os.path.realpath(user_path("napcat"))
+    folder = os.path.realpath(user_path(os.path.join("napcat", digits, "logs")))
+    if folder != root and not folder.startswith(root + os.sep):
+        return []
+    if not os.path.isdir(folder):
+        return []
+    found = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return []
+    for name in names:
+        if not name or name.startswith(".") or "/" in name or "\\" in name:
+            continue
+        if not (name.endswith(".log") or ".log." in name):
+            continue
+        path = os.path.realpath(os.path.join(folder, name))
+        if not path.startswith(folder + os.sep) or not os.path.isfile(path):
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        found.append((mtime, name, path))
+    found.sort(reverse=True)
+    per_file = max(1, min(int(per_file or 80), 200))
+    out = []
+    for _mtime, name, path in found[:2]:
+        lines = []
+        for line in _tail_lines(path, 300_000):
+            text = _plain_log_line(_clip_line(line))
+            if text.strip():
+                lines.append(text)
+        if len(lines) > per_file:
+            lines = lines[-per_file:]
+        out.append({"name": name, "lines": lines})
+    return out
+
+
+def napcat_console_lines(uin: str, limit: int = 120) -> list:
+    """容器控制台最近这些行。容器不在就空着。"""
+    digits = "".join(ch for ch in str(uin or "") if ch.isdigit())
+    if not digits or not shutil.which("docker"):
+        return []
+    limit = max(1, min(int(limit or 120), 200))
+    try:
+        code, stdout, stderr = _docker(
+            ["logs", "--timestamps", "--tail", str(limit), f"napcat-{digits}"], 20)
+    except OSError as exc:
+        return [_plain_log_line(str(exc))]
+    if code != 0:
+        text = f"{stdout}\n{stderr}"
+        if "No such" in text or "no such" in text.lower():
+            return []
+        return [_plain_log_line(_docker_hint(stderr or stdout))]
+    lines = []
+    for line in ((stdout or "") + ("\n" + stderr if stderr else "")).splitlines():
+        text = _plain_log_line(line)
+        if text.strip():
+            lines.append(text)
+    if len(lines) > limit:
+        lines = lines[-limit:]
+    return lines
 
 
 def _docker_hint(text: str) -> str:
