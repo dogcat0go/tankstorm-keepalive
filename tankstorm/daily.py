@@ -1513,10 +1513,11 @@ TASKS = [
     # 一天 15 次。付不起的留下，定时公会任务没满再拨。
     _t("将领加强授勋", "将领·加强授勋拨款", "04c1", "RceMedalHonorOpt",
        {}, "实测",
-       "2026-10-11：同一条查询 {type:1}，nStrongCastNum>0 才发 {type:17}。"
-       "一天 15 次，按 nStrongCastNum 的减少来记。没到 15，定时公会任务再拨一次。"
-       "不带点券、不用道具。每枚加强代币扣 500 万金属和 500 万石油，"
-       "付不起的次数留下。回包看 nType 和 nResult",
+       "2026-11-14：不打开将领面板，也不发 type=1 查询。直接 {type:17}。"
+       "一天 15 次，按回包里铸造次数的减少来记，读不到就按领到的枚数记。"
+       "没到 15，定时公会任务再拨一次。不带点券、不用道具。"
+       "每枚加强代币扣 500 万金属和 500 万石油，付不起的次数留下。"
+       "回包看 nType 和 nResult",
        max_per_day=15,
        counts_itself=True,
        runner=lambda rec, sock, config: daily_medal(rec, sock, config, strong=True)),
@@ -4246,8 +4247,9 @@ def daily_fierce(rec, sock, config):
 def daily_medal(rec, sock, config, strong=False):
     """将领授勋拨款。普通发 type=11，加强发 type=17。
 
-    先开将领面板，再 type=1 查询。普通看 nCastNum，加强看 nStrongCastNum，
-    大于 0 才拨款。拨款包只写 type，不带点券、不用道具。
+    普通先开将领面板，再 type=1 查询，nCastNum 大于 0 才发 type=11。
+    加强不打开面板，也不发 type=1。2026-11-14 抓包只有 {type:17}。
+    拨款包只写 type，不带点券、不用道具。
     一次请求只兑掉付得起的那一部分。普通一天 50 次，加强一天 15 次，
     按铸造次数减少来记。没到上限时，定时公会任务还会再拨一次。
     回包步骤是 nType，nResult=0 才算成。
@@ -4277,29 +4279,43 @@ def daily_medal(rec, sock, config, strong=False):
     if prev >= cap:
         return True, f"成功：今日已拨款 {prev}/{cap}"
 
-    before = rec.seq_mark() if rec else 0
-    sender.send_frame(sock, "044e",
-                      encode_message({3: ("int32", 0)}, omit_zero=False),
-                      rec.rc4_c2s)
-    _nap(0.4)
-    sender.send_frame(
-        sock, "04c1",
-        encode_message({2: ("int32", 1), 5: ("int32", 0), 6: ("bool", False)},
-                       omit_zero=False),
-        rec.rc4_c2s)
-    panel = _await_response(
-        sock, rec, "RseMedalHonorOpt", before, 6.0,
-        want=lambda d: isinstance(d, dict) and d.get("nType") == 1)
-    left = _num(panel, cast_key)
-    tokens = _num(panel, token_key)
-    if panel is None or left is None:
-        return False, f"失败：未收到授勋面板，读不到{kind}铸造次数"
-    if left <= 0:
-        return True, f"成功：没有可拨款的{kind}铸造次数，今日 {prev}/{cap}"
+    def _ones(data):
+        if not isinstance(data, dict):
+            return None
+        found = None
+        for value in data.values():
+            if (isinstance(value, list) and value
+                    and all(isinstance(x, int) and not isinstance(x, bool) and x == 1
+                            for x in value)):
+                found = len(value)
+        return found
+
+    left = None
+    tokens = None
+    if not strong:
+        before = rec.seq_mark() if rec else 0
+        sender.send_frame(sock, "044e",
+                          encode_message({3: ("int32", 0)}, omit_zero=False),
+                          rec.rc4_c2s)
+        _nap(0.4)
+        sender.send_frame(
+            sock, "04c1",
+            encode_message({2: ("int32", 1), 5: ("int32", 0), 6: ("bool", False)},
+                           omit_zero=False),
+            rec.rc4_c2s)
+        panel = _await_response(
+            sock, rec, "RseMedalHonorOpt", before, 6.0,
+            want=lambda d: isinstance(d, dict) and d.get("nType") == 1)
+        left = _num(panel, cast_key)
+        tokens = _num(panel, token_key)
+        if panel is None or left is None:
+            return False, f"失败：未收到授勋面板，读不到{kind}铸造次数"
+        if left <= 0:
+            return True, f"成功：没有可拨款的{kind}铸造次数，今日 {prev}/{cap}"
     start = tokens
     rounds = 0
     consumed = 0
-    while left > 0 and prev + consumed < cap and rounds < cap:
+    while prev + consumed < cap and rounds < cap and (left is None or left > 0):
         raise_if_stopped()
         mark = rec.seq_mark() if rec else 0
         sender.send_frame(sock, "04c1",
@@ -4319,13 +4335,30 @@ def daily_medal(rec, sock, config, strong=False):
             if rounds:
                 break
             return False, f"失败：拨款被拒 nResult={result}"
-        if now is None or now >= left:
-            break
-        consumed += left - now
+        if now is not None and left is not None and now < left:
+            got_n = left - now
+        else:
+            got_n = _ones(got)
+        if got_n is None and now_tokens is not None and isinstance(tokens, int):
+            if now_tokens > tokens:
+                got_n = now_tokens - tokens
+        blind = False
+        if not got_n:
+            if strong and rounds == 0:
+                got_n = 1
+                blind = True
+            else:
+                break
+        consumed += got_n
         rounds += 1
-        left = now
+        if now is not None:
+            left = now
+        elif blind:
+            left = 0
         if now_tokens is not None:
             tokens = now_tokens
+        if blind or (left is not None and left <= 0):
+            break
         _nap(0.4)
     noted = prev
     if consumed:
