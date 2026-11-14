@@ -29,9 +29,10 @@
 任务顺序
 --------
 "每日任务领奖"(RceDailyTask) 排在会产生进度的任务之后，先领就漏了。
-第三次、第4次征战排在领奖后面。将领授勋和加强授勋不推进领奖，
-再排在这两次征战之后。TASKS 表的顺序即普通任务的顺序，
-ORDER_LAST 里的排到表尾；其中授勋两项由 iter_run() 挪到征战加次之后。
+第三次、第4次征战排在领奖后面。清理背包再排在这两次后面，
+把这一轮新进背包的箱子和卡用掉。将领授勋和加强授勋不推进领奖，
+再排在清理背包之后。TASKS 表的顺序即普通任务的顺序，
+ORDER_LAST 里的排到表尾；其中清理背包和授勋由 iter_run() 挪到征战加次之后。
 
 参数来源
 --------
@@ -660,10 +661,11 @@ DANGER_FIELD = re.compile(
 SAFE_FIELDS = {("0463", "count")}
 
 # 周任务、每日任务领的是前面动作累积出来的奖励，所以排在后面。
-# 将领授勋和加强授勋不推进这两项。第三次、第4次征战排在领奖之后，
-# 授勋再排在这两次后面：加强授勋要扣金属和石油。
-ORDER_LAST = {"每日任务", "周任务", "将领授勋", "将领加强授勋"}
-ORDER_AFTER_CAMPAIGN = frozenset({"将领授勋", "将领加强授勋"})
+# 将领授勋和加强授勋不推进这两项。第三次、第4次征战排在领奖之后。
+# 清理背包排在这两次征战之后、授勋之前：这一轮新进背包的箱子和卡在这里用掉，
+# 开出来的金属和石油留给加强授勋。加强授勋要扣金属和石油。
+ORDER_LAST = {"每日任务", "周任务", "将领授勋", "将领加强授勋", "清理背包"}
+ORDER_AFTER_CAMPAIGN = frozenset({"将领授勋", "将领加强授勋", "清理背包"})
 
 HELD_TASKS = ()
 HELD_STATUS = "暂不执行，反复被拒会打断连接"
@@ -1872,6 +1874,16 @@ TASKS = [
        max_per_day=len(_GIFT_TIERS),
        followup=Followup("043d", _next_daily_gift, max_rounds=5,
                          desc="继续领剩下达标的档位")),
+
+    # 清理背包。形状不合流水线（先读背包数量、整叠使用、自选再均分），走 runner。
+    # 不进默认配置：每日任务.任务 里没有这个键时，开关按未开启跳过，什么都不发。
+    _t("清理背包", "清理背包", "0440", "RceBagItemUse",
+       {}, "实测",
+       "2026-10-25 抓包：RceBagItemUse optType:0，count 为背包里的整叠数量。"
+       "自选宝箱才带 selectID，按选项平均分。默认配置没有这个开关",
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.bag_clean", fromlist=["daily_clean"]
+       ).daily_clean(rec, sock, config)),
 ]
 
 # 白名单：动作 opcode 和前置 opcode 都要在内 —— 前置请求同样是真实发出的包，
@@ -1881,11 +1893,11 @@ ALLOWED_OPCODES = ({t.opcode for t in TASKS}
 
 
 def ordered_tasks():
-    """页面上的顺序：普通任务在前，领奖和授勋排到最后。"""
+    """页面上的顺序：普通任务在前，领奖、清理背包和授勋排到最后。"""
     head = [t for t in TASKS if t.key not in ORDER_LAST]
     tail = [t for t in TASKS if t.key in ORDER_LAST]
-    # 尾部内部再排：周任务 → 每日任务 → 将领授勋 → 将领加强授勋
-    rank = {"周任务": 0, "每日任务": 1, "将领授勋": 2, "将领加强授勋": 3}
+    # 尾部内部再排：周任务 → 每日任务 → 清理背包 → 将领授勋 → 将领加强授勋
+    rank = {"周任务": 0, "每日任务": 1, "清理背包": 2, "将领授勋": 3, "将领加强授勋": 4}
     tail.sort(key=lambda t: rank.get(t.key, 9))
     return head + tail
 
@@ -1893,7 +1905,7 @@ def ordered_tasks():
 def iter_run():
     """一轮的执行顺序。None 表示这里做第三次、第4次征战。
 
-    领奖之后做这两次征战，将领授勋和加强授勋再排在征战之后。
+    领奖之后做这两次征战，清理背包再做，将领授勋和加强授勋排在最后。
     """
     before, after = [], []
     for task in ordered_tasks():
@@ -2021,6 +2033,8 @@ def task_board(uin: str, switches: dict) -> list:
                 row["hint"] += "每枚扣 500 万金属和 500 万石油，付不起的留下。"
             else:
                 row["hint"] += "不花点券、不用道具。"
+        elif task.key == "清理背包":
+            row["hint"] = "第三次、第4次征战之后做，授勋之前。把背包里的宝箱和卡整叠用掉。"
         rows.append(row)
     for key, name in CAMPAIGN_EXTRAS:
         try:

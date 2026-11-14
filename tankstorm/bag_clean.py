@@ -178,3 +178,15 @@ def clean_bag(rec, sock, item_ids, on_progress=None):
     if failed:
         return False, text
     return True, "成功：" + text
+
+
+def daily_clean(rec, sock, config):
+    """每日任务用。返回 (是否成功, 说明)。
+
+    开关是「每日任务.任务.清理背包」。默认配置里没有这个键，
+    缺省按未开启处理，什么都不发。
+    """
+    switches = ((config or {}).get("每日任务") or {}).get("任务") or {}
+    if not switches.get("清理背包", False):
+        return True, "成功：未开启清理背包，什么都没做"
+    return clean_bag(rec, sock, default_ids())
