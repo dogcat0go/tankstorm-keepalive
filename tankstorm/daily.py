@@ -1628,11 +1628,25 @@ TASKS = [
        "RceArenaRankInfo{type:2,nIndex,nCountry} 取可挑战名单 → "
        "RceArenaOpt{type:1,uidself,uidfight,indexself,indexfight,"
        "countryidself} 挑战。打到 nCanFightTimes 归零，不留剩余。"
-       "优先打 NPC（短 uid）；已经是第一名时改打后面的人。名次写成 0 和写成 1 都是第一名。"
-       "成败以面板变化为准",
+       "「最高名次优先」按窗口里的名次从高到低打，真人也按这个顺序，"
+       "不再改成离自己最近的。已经是第一名时改打后面的人。"
+       "名次写成 0 和写成 1 都是第一名。成败以面板变化为准",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.arena", fromlist=["daily_challenge"]
        ).daily_challenge(rec, sock, config)),
+
+    # 超级争霸战。2026-11-14 22:03 抓包，协议是世界争霸那一套，
+    # 步骤和国家争霸战相同：开面板、取自己前面的窗口、从最高名次往下打。
+    _t("超级争霸战挑战", "超级争霸战·把剩余次数打完", "0475", "RceWorldArenaOpt",
+       {}, "实测",
+       "2026-11-14 抓包：RceWorldArenaInfo{type:1} 读 canFightTimes、rankSelf → "
+       "RceWorldArenaRankInfo{type:2,nIndex} 取前面的窗口（nCountry 不写）→ "
+       "RceWorldArenaOpt{type:1,uidself,uidfight,indexself,indexfight,"
+       "countryidself} 挑战。名单不分国家。从最高名次往下打，不买次数。"
+       "成败以面板上的剩余次数为准",
+       runner=lambda rec, sock, config: __import__(
+           "tankstorm.arena", fromlist=["daily_world"]
+       ).daily_world(rec, sock, config)),
 
     # 锦鲤心愿宝箱（限时活动）。8/30 抓包实测：
     #   {optype:0, activetype:1} 查询 → ngetdailyawd=false
