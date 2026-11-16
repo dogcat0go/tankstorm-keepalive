@@ -21,6 +21,10 @@ const result = ref(null);
 const qrcode = ref("");
 const loginMsg = ref("");
 const loggedIn = ref(false);
+const logText = ref("");
+const logFiles = ref([]);
+const logConsole = ref("");
+const logWhere = ref({ app_log: "", own_dir: "" });
 let qrTimer = 0;
 
 async function apiCall(path, body) {
@@ -84,6 +88,7 @@ function useRow(row) {
   webToken.value = "";
   result.value = null;
   err.value = "";
+  loadLog().catch((e) => (err.value = e.message));
 }
 
 function napcatBody(action) {
@@ -110,7 +115,17 @@ async function askQr() {
     else if (!qrTimer) qrTimer = setInterval(() => askQr().catch((e) => (err.value = e.message)), 3000);
   } finally {
     qrBusy.value = false;
+    loadLog().catch(() => {});
   }
+}
+
+async function loadLog() {
+  if (!qq.value) return;
+  const data = await apiCall("/api/test", { action: "logs", qq: qq.value });
+  logText.value = (data.lines || []).join("\n");
+  logFiles.value = data.files || [];
+  logConsole.value = (data.console || []).join("\n");
+  logWhere.value = { app_log: data.app_log || "", own_dir: data.own_dir || "" };
 }
 
 async function upBox(row) {
@@ -195,6 +210,8 @@ onUnmounted(stopQr);
         名额满了这次直接返回，不会排队再开一条。
         勾选写入时，攻打线程正在跑就不会改它手里的 cookie。
         还没有 NapCat 的号，点「起 NapCat」。程序拉起容器并写好地址和 Token，不用自己起 Docker。接着再取登录码。
+        NapCat 的记录单独写在 logs/napcat/QQ号.log，不进运行日志。容器自己的文件在 napcat/QQ号/logs/。
+        已经在跑、还没挂出这个目录的，点一次「起 NapCat」会补上挂载并打开文件日志，端口和 Token 不变，容器重启一次。
       </p>
       <form class="stack" @submit.prevent="pull().catch((e) => (err = e.message))">
         <label>攻打 QQ<input v-model="qq" inputmode="numeric" autocomplete="off" /></label>
@@ -218,6 +235,7 @@ onUnmounted(stopQr);
           <button type="button" :disabled="qrBusy" @click="askQr().catch((e) => (err = e.message))">取 NapCat 登录码</button>
           <button type="submit" :disabled="busy">{{ busy ? "取票中…" : "向 NapCat 要票据" }}</button>
           <button type="button" class="ghost" @click="refresh().catch((e) => (err = e.message))">刷新列表</button>
+          <button type="button" class="ghost" @click="loadLog().catch((e) => (err = e.message))">看日志</button>
         </p>
       </form>
       <p v-if="loginMsg" class="muted">{{ loginMsg }}</p>
@@ -245,6 +263,23 @@ onUnmounted(stopQr);
           </tbody>
         </table>
       </div>
+      <h2>NapCat 日志</h2>
+      <p class="muted">
+        程序记录 {{ logWhere.app_log || "logs/napcat/QQ号.log" }}。
+        NapCat 自己的文件在 {{ logWhere.own_dir || "napcat/QQ号/logs" }}。
+        取登录码时会跟着刷新。下面三块都只属于上面填的这个 QQ。发出去前看一眼，别把 Token 一起贴出来。
+      </p>
+      <p class="muted">程序记录</p>
+      <pre class="napcat-log">{{ logText || "还没有这个号的记录。取一次登录码就会写下来。" }}</pre>
+      <template v-if="logFiles.length">
+        <template v-for="file in logFiles" :key="file.name">
+          <p class="muted">NapCat 文件 {{ file.name }}</p>
+          <pre class="napcat-log">{{ (file.lines || []).join("\n") || "这个文件是空的。" }}</pre>
+        </template>
+      </template>
+      <p v-else class="muted">还没有 NapCat 自己的文件。点一次「起 NapCat」把日志目录挂出来，容器重启后才会往里写。</p>
+      <p class="muted">容器控制台</p>
+      <pre class="napcat-log">{{ logConsole || "没有读到这个容器的控制台。容器还没起，或这台机器没有 docker。" }}</pre>
       <h2>已绑定的攻打号</h2>
       <p v-if="!info || !info.items.length" class="muted">还没有绑定的攻打 QQ。</p>
       <div class="wide" v-for="row in (info && info.items) || []" :key="row.qq">
@@ -265,3 +300,16 @@ onUnmounted(stopQr);
     <p class="err">{{ err }}</p>
   </main>
 </template>
+
+<style scoped>
+pre.napcat-log {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 280px;
+  overflow: auto;
+  background: #f4f4f4;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+</style>

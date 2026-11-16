@@ -138,6 +138,7 @@ const soulTimes = ref("1");
 const fundNote = ref("");
 const eggNote = ref("");
 const eggLeft = ref(null);
+const wargame = ref({ token: null, sites: [], result: "", occupy: null, partial: false, empty: 0 });
 const fundBuildings = [
   { id: "10132", name: "比萨斜塔" },
   { id: "10133", name: "埃菲尔铁塔" },
@@ -253,6 +254,7 @@ async function refreshDaily() {
     guildScore.value = null;
     strikeLeft.value = null;
     eggLeft.value = null;
+    wargame.value = { token: null, sites: [], result: "", occupy: null, partial: false, empty: 0 };
     fundNote.value = "";
     eggNote.value = "";
     return;
@@ -289,6 +291,7 @@ async function refreshDaily() {
   guildScore.value = data.guild_score == null ? null : data.guild_score;
   strikeLeft.value = data.strike_left == null ? null : data.strike_left;
   eggLeft.value = data.egg_left == null ? null : data.egg_left;
+  wargame.value = data.wargame || { token: null, sites: [], result: "", occupy: null, partial: false, empty: 0 };
 }
 
 async function saveGuildAccept() {
@@ -657,6 +660,30 @@ async function runDrop() {
   const ok = await confirmUse("把背包里的建筑修复卡 10127 全部摧毁，不修复建筑。");
   if (!ok) return;
   await api("/api/daily", { kind: "repair_drop" });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runWargame(site) {
+  showErr("", "activity");
+  if (site && site.uid) {
+    const power = Number(site.power) > 0
+      ? Number(site.power).toLocaleString("zh-CN")
+      : "未知";
+    const lv = site.lv ? `${site.lv}级` : "";
+    const ok = await confirmUse(`进攻 ${site.name || "这个玩家"}（战力 ${power}）的${lv}演习场。`);
+    if (!ok) return;
+    await api("/api/daily", {
+      kind: "wargame",
+      action: "attack",
+      site_id: site.id,
+      uid: site.uid,
+      name: site.name || "",
+      power: site.power || 0,
+    });
+  } else {
+    await api("/api/daily", { kind: "wargame", action: "list" });
+  }
   await refreshDaily();
   await refreshAttacks();
 }
@@ -1489,6 +1516,8 @@ onUnmounted(() => {
         :fund-buildings="fundBuildings"
         :fund-note="fundNote"
         :egg-note="eggNote"
+        :wargame="wargame"
+        :run-wargame="runWargame"
         :err="err"
         :err-at="errAt"
         :save-level="saveGuildLevel"

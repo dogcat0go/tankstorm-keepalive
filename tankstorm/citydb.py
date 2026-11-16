@@ -4632,6 +4632,103 @@ def egg_live(user_id: int):
     return _kept_int(parsed, "egg_left")
 
 
+def note_wargame(board=None, result=None) -> None:
+    """记下军事演习场地和最近一次进攻结果。没绑攻打号就不写。"""
+    if not attack_context_user() and not attack_context_qq():
+        return
+    name = _mark_name("wargame")
+    try:
+        prev = json.loads(_signal_value(name) or "{}")
+    except ValueError:
+        prev = {}
+    if not isinstance(prev, dict):
+        prev = {}
+    if isinstance(board, dict):
+        lands = {}
+        sites = []
+        for row in board.get("sites") or []:
+            if not isinstance(row, dict):
+                continue
+            uid = str(row.get("uid") or "")
+            vacant = not uid
+            try:
+                land = int(row.get("country") or 0)
+            except (TypeError, ValueError):
+                land = 0
+            if land not in lands:
+                lands[land] = country_name(land) or (str(land) if land else "")
+            try:
+                power = int(row.get("power") or 0)
+            except (TypeError, ValueError):
+                power = 0
+            try:
+                sid = int(row.get("id") or 0)
+                lv = int(row.get("lv") or 0)
+            except (TypeError, ValueError):
+                continue
+            if sid <= 0:
+                continue
+            sites.append({
+                "id": sid,
+                "lv": lv,
+                "uid": uid[:64],
+                "name": str(row.get("name") or ("" if vacant else uid))[:32],
+                "power": 0 if vacant or power <= 0 else power,
+                "country": lands[land],
+                "truce": bool(row.get("truce")) and not vacant,
+                "mine": bool(row.get("mine")) and not vacant,
+                "home": bool(row.get("home")) and not vacant,
+                "empty": vacant,
+            })
+        if sites or not isinstance(prev.get("sites"), list):
+            prev["sites"] = sites
+        token = board.get("token")
+        prev["token"] = token if isinstance(token, int) and not isinstance(token, bool) else None
+        prev["partial"] = bool(board.get("partial"))
+        prev["empty"] = int(board.get("empty") or 0) if not isinstance(board.get("empty"), bool) else 0
+        occ = board.get("occupy") if isinstance(board.get("occupy"), dict) else None
+        if occ:
+            try:
+                prev["occupy"] = {
+                    "id": int(occ.get("id") or 0),
+                    "lv": int(occ.get("lv") or 0),
+                    "end": int(occ.get("end") or 0),
+                }
+            except (TypeError, ValueError):
+                prev["occupy"] = None
+        else:
+            prev["occupy"] = None
+    if result is not None:
+        prev["result"] = " ".join(str(result or "").split())[:500]
+    _upsert_signal(name, json.dumps(prev, ensure_ascii=False))
+
+
+def wargame_live(user_id: int) -> dict:
+    """页面上的演习场名单和最近一次结果。还没拉过就是空名单。"""
+    raw = _signal_value(_mark_name("wargame", int(user_id)))
+    try:
+        data = json.loads(raw) if raw else {}
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    sites = []
+    for row in data.get("sites") or []:
+        if isinstance(row, dict) and row.get("id") and (row.get("uid") or row.get("empty")):
+            sites.append(row)
+    token = data.get("token")
+    occ = data.get("occupy") if isinstance(data.get("occupy"), dict) else None
+    empty = data.get("empty")
+    return {
+        "token": token if isinstance(token, int) and not isinstance(token, bool) else None,
+        "partial": bool(data.get("partial")),
+        "occupy": occ,
+        "sites": sites,
+        "empty": empty if isinstance(empty, int) and not isinstance(empty, bool) else 0,
+        "result": str(data.get("result") or ""),
+    }
+
+
 def request_camp_live(user_id: int) -> str:
     """进活动助手时读一次公会战役体力和当前积分。成功返回空字符串。"""
     user_id = int(user_id or 0)
@@ -5554,6 +5651,7 @@ DAILY_KIND_LABEL = {
     "badge": "开启献礼徽章宝箱",
     "donate": "捐献献礼徽章",
     "tribute": "一键献礼",
+    "wargame": "军事演习",
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "clean", "haoyin", "admiral", "admiral10", "agent10",
@@ -5963,7 +6061,7 @@ def enqueue_due_daily_jobs(guild_defaults=None) -> list:
                 continue
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job "
-                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg') "
+                "WHERE user_id=? AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg','wargame') "
                 "AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
             if int(waiting or 0) >= 3:
@@ -6593,6 +6691,27 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "数量要在 1 到 399"
         clean["count"] = count
         clean["army"] = army
+    elif kind == "wargame":
+        action = str(params.get("action") or "list").strip()
+        if action not in ("list", "attack"):
+            return "没有这项"
+        clean["action"] = action
+        if action == "attack":
+            try:
+                sid = int(str(params.get("site_id") or "").strip())
+            except (TypeError, ValueError):
+                return "场地不对"
+            uid = str(params.get("uid") or "").strip()
+            if sid <= 0 or not uid or len(uid) > 64:
+                return "要选一个有人的演习场"
+            try:
+                power = int(params.get("power") or 0)
+            except (TypeError, ValueError):
+                power = 0
+            clean["site_id"] = sid
+            clean["uid"] = uid
+            clean["name"] = str(params.get("name") or "").strip()[:32]
+            clean["power"] = power if power > 0 else 0
     conn = connect()
     try:
         if kind in _BASE_LANE:
@@ -6603,7 +6722,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         else:
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
-                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg','wish','gift','repair_drop','soul','badge','donate','tribute') AND status IN ('pending','running')",
+                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg','wargame','wish','gift','repair_drop','soul','badge','donate','tribute') AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
             return "还有没做完的，先等这几项"

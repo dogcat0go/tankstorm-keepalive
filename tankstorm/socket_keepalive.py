@@ -2828,13 +2828,22 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     ok, why = daily.wish_once(rec, sock, params.get("times") or 1)
                 elif kind == "soul":
                     ok, why = daily.soul_exchange(rec, sock, params.get("times") or 1)
+                elif kind == "tribute":
+                    ok, why = daily.tribute_pack(rec, sock, params.get("ids"))
                 else:
-                    if kind == "tribute":
-                        ok, why = daily.tribute_pack(rec, sock, params.get("ids"))
-                    else:
-                        fn = {"gift": daily.open_gift, "repair_drop": daily.drop_repair,
-                              "badge": daily.open_badge, "donate": daily.donate_badge}[kind]
-                        ok, why = fn(rec, sock)
+                    fn = {"gift": daily.open_gift, "repair_drop": daily.drop_repair,
+                          "badge": daily.open_badge, "donate": daily.donate_badge}[kind]
+                    ok, why = fn(rec, sock)
+            elif kind == "wargame":
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
+                    return
+                if str(params.get("action") or "") == "attack":
+                    ok, why = daily.wargame_attack(
+                        rec, sock, config, params.get("site_id"), params.get("uid"),
+                        params.get("name") or "", params.get("power") or 0)
+                else:
+                    ok, why = daily.wargame_list(rec, sock, config)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_claim":
@@ -3004,7 +3013,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     move_told = 0
     side_kinds = (
         "blast", "factory",
-        "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg",
+        "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame",
         "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute",
         "chest", "cards", "clean",
         "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high",
@@ -3012,7 +3021,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     )
 
     def _lane_for(kind):
-        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg",
+        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame",
                     "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute", "chest"):
             return "daily"
         if kind == "blast":
