@@ -1591,7 +1591,9 @@ def change_password(user_id: int, current, new, keep_token: str = "", reset: boo
             if not reset and not secrets.compare_digest(
                     _password_hash(current, salt).split("$", 1)[1], digest):
                 return "当前密码不对"
-            if secrets.compare_digest(_password_hash(new, salt).split("$", 1)[1], digest):
+            # 管理页是把密码设成指定的值。管理员不知道旧密码，和原来一样也照样写入。
+            if not reset and secrets.compare_digest(
+                    _password_hash(new, salt).split("$", 1)[1], digest):
                 return "新密码要和当前密码不一样"
         conn.execute(
             "UPDATE app_user SET password_hash=? WHERE id=?",
