@@ -11,6 +11,7 @@ const wishTimes = defineModel("wishTimes", { type: String, required: true });
 const soulTimes = defineModel("soulTimes", { type: String, required: true });
 const trainCount = defineModel("trainCount", { type: String, required: true });
 const skillLevel = defineModel("skillLevel", { type: String, required: true });
+const stoneTimes = defineModel("stoneTimes", { type: String, required: true });
 
 const props = defineProps({
   dailyQq: { type: String, default: "" },
@@ -43,6 +44,7 @@ const props = defineProps({
   runTrain: { type: Function, required: true },
   runTrainAll: { type: Function, required: true },
   runSkill: { type: Function, required: true },
+  runStone: { type: Function, required: true },
   wargame: { type: Object, default: () => ({}) },
   runWargame: { type: Function, required: true },
   showErr: { type: Function, required: true },
@@ -75,6 +77,7 @@ const donateJob = computed(() => props.jobs.find((it) => it.kind === "donate") |
 const tributeJob = computed(() => props.jobs.find((it) => it.kind === "tribute") || null);
 const trainJob = computed(() => props.jobs.find((it) => it.kind === "train_book") || null);
 const skillJob = computed(() => props.jobs.find((it) => it.kind === "skill_book") || null);
+const stoneJob = computed(() => props.jobs.find((it) => it.kind === "stone") || null);
 const wgJob = computed(() => props.jobs.find((it) => it.kind === "wargame") || null);
 const wgQuery = ref("");
 const wgLevel = ref("0");
@@ -368,6 +371,16 @@ function occupyText(occ) {
       </form>
       <p v-if="skillJob">{{ skillJob.status }} {{ skillJob.detail }}</p>
       <p class="muted">按背包里这一级的一半合成。等级 1 到 10，1 到 7 级是 10143 起，8 到 10 级是 10245 起。不足两本不发。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>购买保护石</summary>
+      <form class="lock-row" @submit.prevent="runStone(stoneTimes).catch((e) => showErr(e.message))">
+        <span class="switch">购买保护石</span>
+        <label>次数<input v-model="stoneTimes" class="mins" inputmode="numeric" required /></label>
+        <button type="submit">购买</button>
+      </form>
+      <p v-if="stoneJob">{{ stoneJob.status }} {{ stoneJob.detail }}</p>
+      <p class="muted">按填写的次数一次买完。商店 1112，每个花费 2，得到物品 50009。次数 1 到 999。这次抓包里勋章和功勋没有变化。</p>
     </details>
     <details class="campaign-box">
       <summary>道具表</summary>

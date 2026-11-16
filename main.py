@@ -54,6 +54,7 @@
   python main.py --wish 5                     许愿树抽 5 次。不写次数就是 1 次
   python main.py --train-book                 给正在训练的英雄用 1 本训练册
   python main.py --skill-book 4               按背包一半合成 4 级参谋技能书
+  python main.py --stone 1                    买 1 个保护石。不写次数就是 1 次
   python main.py --gift                       打开背包里的献礼宝箱
   python main.py --drop-repair                摧毁背包里的建筑修复卡
   python main.py --soul 10                    将魂兑换 10 次，兑完就停
@@ -466,6 +467,10 @@ def main() -> int:
                     metavar="本数",
                     help="连上后给一个正在训练的英雄用 N 本训练册再退出，默认 1，最多 999。"
                          "协议物品号 1057，类型 78")
+    g4.add_argument("--stone", nargs="?", const=1, type=int, default=None,
+                    metavar="次数",
+                    help="连上后购买 N 个保护石再退出，默认 1，最多 999。"
+                         "商店 1112，单价 2，credittype=4")
     g4.add_argument("--skill-book", type=int, metavar="等级",
                     help="连上后合成这一级参谋技能书再退出。"
                          "等级 1 到 10。数量是背包里这一级的一半。"
@@ -530,6 +535,7 @@ def main() -> int:
                 args.blast is not None, args.egg, args.strike,
                 args.wish is not None, args.gift, args.drop_repair,
                 args.train_book is not None, args.skill_book is not None,
+                args.stone is not None,
                 args.soul is not None, args.badge, args.donate, args.tribute,
                 args.soul_roll, args.soul_reset is not None)):
         parser.print_help()
@@ -810,6 +816,12 @@ def main() -> int:
             log.error("训练册本数要在 1 到 999")
             return 1
         return socket_keepalive.run_train_book_once(qq, config, args.train_book)
+
+    if args.stone is not None:
+        if not 1 <= args.stone <= 999:
+            log.error("保护石次数要在 1 到 999")
+            return 1
+        return socket_keepalive.run_stone_once(qq, config, args.stone)
 
     if args.skill_book is not None:
         if not 1 <= args.skill_book <= 10:

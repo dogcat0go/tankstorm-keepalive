@@ -137,6 +137,7 @@ const wishTimes = ref("1");
 const soulTimes = ref("1");
 const trainCount = ref("1");
 const skillLevel = ref("4");
+const stoneTimes = ref("1");
 const fundNote = ref("");
 const eggNote = ref("");
 const eggLeft = ref(null);
@@ -673,6 +674,17 @@ async function runTrainAll() {
   const ok = await confirmUse("把背包里的训练册全部用在正在训练的英雄上。一次最多 999 本，还有就接着用。");
   if (!ok) return;
   await api("/api/daily", { kind: "train_book", all: true });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runStone(times) {
+  showErr("", "activity");
+  const n = Number(String(times || "").trim());
+  if (!Number.isInteger(n) || n < 1 || n > 999) throw new Error("次数要在 1 到 999");
+  const ok = await confirmUse(`购买 ${n} 个保护石。每个花费 2。`);
+  if (!ok) return;
+  await api("/api/daily", { kind: "stone", times: n });
   await refreshDaily();
   await refreshAttacks();
 }
@@ -1537,6 +1549,7 @@ onUnmounted(() => {
         v-model:soul-times="soulTimes"
         v-model:train-count="trainCount"
         v-model:skill-level="skillLevel"
+        v-model:stone-times="stoneTimes"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"
         :jobs="dailyJobs"
@@ -1569,6 +1582,7 @@ onUnmounted(() => {
         :run-train="runTrain"
         :run-train-all="runTrainAll"
         :run-skill="runSkill"
+        :run-stone="runStone"
         :show-err="showErr"
       />
       <DailyPage

@@ -2821,7 +2821,7 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind in ("wish", "gift", "repair_drop", "soul", "badge", "donate",
-                          "tribute", "train_book", "skill_book"):
+                          "tribute", "train_book", "skill_book", "stone"):
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
                     return
@@ -2837,6 +2837,8 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                         rec, sock, params.get("count") or 1, all=bool(params.get("all")))
                 elif kind == "skill_book":
                     ok, why = daily.combine_skill_book(rec, sock, params.get("level"))
+                elif kind == "stone":
+                    ok, why = daily.buy_stone(rec, sock, params.get("times") or 1)
                 else:
                     fn = {"gift": daily.open_gift, "repair_drop": daily.drop_repair,
                           "badge": daily.open_badge, "donate": daily.donate_badge}[kind]
@@ -3024,7 +3026,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         "blast", "factory",
         "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame",
         "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute",
-        "train_book", "skill_book",
+        "train_book", "skill_book", "stone",
         "chest", "cards", "clean",
         "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
@@ -3033,7 +3035,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     def _lane_for(kind):
         if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame",
                     "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute",
-                    "train_book", "skill_book", "chest"):
+                    "train_book", "skill_book", "stone", "chest"):
             return "daily"
         if kind == "blast":
             return "blast"
@@ -4747,6 +4749,17 @@ def run_train_book_once(qq, config: dict, count: int = 1) -> int:
     def _work(rec, sock, spec, ctx, beater):
         ok, why = daily.use_train_book(rec, sock, count)
         log.info("[训练册] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_stone_once(qq, config: dict, times: int = 1) -> int:
+    """连一次，购买指定次数的保护石，看回包后退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.buy_stone(rec, sock, times)
+        log.info("[保护石] %s", why)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         return 0 if ok else 1
 

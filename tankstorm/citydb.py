@@ -5655,6 +5655,7 @@ DAILY_KIND_LABEL = {
     "tribute": "一键献礼",
     "train_book": "英雄训练册",
     "skill_book": "合成参谋技能书",
+    "stone": "购买保护石",
     "wargame": "军事演习",
 }
 _BASE_LANE = (
@@ -6645,6 +6646,14 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         if not 1 <= level <= 10:
             return "等级要在 1 到 10"
         clean["level"] = level
+    elif kind == "stone":
+        try:
+            times = int(str(params.get("times") or "1").strip())
+        except (TypeError, ValueError):
+            return "次数要是数字"
+        if not 1 <= times <= 999:
+            return "次数要在 1 到 999"
+        clean["times"] = times
     elif kind == "tribute":
         from .bag_clean import default_ids
         raw = clean_items_of(user_id) or default_ids()
@@ -6745,7 +6754,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         else:
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
-                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg','wargame','wish','gift','repair_drop','soul','badge','donate','tribute','train_book','skill_book') AND status IN ('pending','running')",
+                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg','wargame','wish','gift','repair_drop','soul','badge','donate','tribute','train_book','skill_book','stone') AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
             return "还有没做完的，先等这几项"

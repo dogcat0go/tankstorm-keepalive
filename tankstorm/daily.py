@@ -3976,6 +3976,48 @@ def combine_skill_book(rec, sock, level):
     return True, f"成功：{level}级参谋技能书 {item_id} 合成 {times} 次（背包 {have} 本）"
 
 
+def buy_stone(rec, sock, times=1):
+    """购买保护石。2026-11-17 00:37 抓包。
+
+    RcePurchase：type=SHOP，shopID=1112，credittype=4，单价 2，buynum 是次数。
+    回包 itemID=50009。这次抓包勋章、功勋、点券都没变。
+    """
+    try:
+        times = int(times)
+    except (TypeError, ValueError):
+        return False, "次数要是数字"
+    if not 1 <= times <= 999:
+        return False, "次数要在 1 到 999"
+    wallet = (rec.latest.get("RseUserInfo") or (None, None))[1] if rec else None
+    medal = wallet.get("credit") if isinstance(wallet, dict) else None
+    if isinstance(medal, bool) or not isinstance(medal, int):
+        medal = None
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "041f", encode_message({
+        2: ("string", str(2 * times)), 3: ("string", "SHOP"),
+        5: ("int32", 1112), 6: ("int32", 4), 7: ("int32", times),
+    }, omit_zero=False), rec.rc4_c2s)
+    got = _await_response(sock, rec, "RsePurchase", mark, 8,
+                          want=lambda d: d.get("shopID") == 1112)
+    if not isinstance(got, dict):
+        return False, "失败：购买没有回包"
+    if got.get("error") not in (0, None):
+        return False, f"失败：被拒 error={got.get('error')}"
+    if got.get("itemID") not in (50009, None):
+        return False, f"失败：回包物品是 {got.get('itemID')}"
+    after = got.get("credit")
+    try:
+        after = int(after)
+    except (TypeError, ValueError):
+        after = None
+    if medal is not None and after is not None and after != medal:
+        return False, f"失败：勋章从 {medal} 变成 {after}，已停"
+    got_n = got.get("count")
+    if isinstance(got_n, bool) or not isinstance(got_n, int):
+        got_n = times
+    return True, f"成功：买了 {got_n} 个保护石"
+
+
 def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
     """抽指定次数。by_card 时 count 是卡的张数，十连次数为张数除以 10 向下取整。
 

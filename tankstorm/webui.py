@@ -834,7 +834,7 @@ def _handler(config: dict):
                         raise ValueError("账号已过期")
                     if str(data.get("kind") or "") in (
                             "guild_camp", "strike", "egg", "wargame", "wish", "gift", "repair_drop",
-                            "soul", "badge", "donate", "tribute", "train_book", "skill_book"
+                            "soul", "badge", "donate", "tribute", "train_book", "skill_book", "stone"
                     ) and not citydb.base_tier(user.get("tier") or ""):
                         raise ValueError("活动助手需要高级pro订阅")
                     why = citydb.enqueue_daily_job(user["id"], data.get("kind"), data)
