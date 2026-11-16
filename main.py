@@ -464,7 +464,7 @@ def main() -> int:
                          "每砸一个消耗 1 个物品 10015")
     g4.add_argument("--train-book", nargs="?", const=1, type=int, default=None,
                     metavar="本数",
-                    help="连上后给一个正在训练的英雄用 N 本训练册再退出，默认 1。"
+                    help="连上后给一个正在训练的英雄用 N 本训练册再退出，默认 1，最多 999。"
                          "协议物品号 1057，类型 78")
     g4.add_argument("--skill-book", type=int, metavar="等级",
                     help="连上后合成这一级参谋技能书再退出。"
@@ -806,8 +806,8 @@ def main() -> int:
         return socket_keepalive.run_egg_once(qq, config)
 
     if args.train_book is not None:
-        if args.train_book < 1:
-            log.error("训练册本数至少是 1")
+        if not 1 <= args.train_book <= 999:
+            log.error("训练册本数要在 1 到 999")
             return 1
         return socket_keepalive.run_train_book_once(qq, config, args.train_book)
 

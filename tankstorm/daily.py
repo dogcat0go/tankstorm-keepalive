@@ -3845,18 +3845,38 @@ def drop_repair(rec, sock):
     return drain_item(rec, sock, 10127, 1, 99, "建筑修复卡")
 
 
-def use_train_book(rec, sock, count=1):
+def use_train_book(rec, sock, count=1, all=False):
     """给一个正在训练的英雄用训练册。2026-11-16 23:08 抓包。
 
     RceBuildingModify type=78。物品号是 1057，道具表里的训练册是 10058，两号对不上，
     按抓包发 1057。英雄和槽位从培养面板读，建筑号从英雄中心读。
+    一次最多 999 本。all 时按背包里 10058 或 1057 的数量用完，用完再发下一批。
     """
-    try:
-        count = int(count)
-    except (TypeError, ValueError):
-        return False, "本数要是数字"
-    if not 1 <= count <= 99:
-        return False, "本数要在 1 到 99"
+    bag_id = None
+    if all:
+        seen = False
+        have = 0
+        for item_id in (10058, 1057):
+            one = latest_card(rec, item_id)
+            if one is None:
+                continue
+            seen = True
+            if one[0] > 0:
+                bag_id = item_id
+                have = one[0]
+                break
+        if not seen:
+            return False, "登录包里没有背包"
+        if have <= 0:
+            return True, "成功：背包里没有训练册"
+    else:
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            return False, "本数要是数字"
+        if not 1 <= count <= 999:
+            return False, "本数要在 1 到 999"
+        have = count
     load = (rec.latest.get("RseLoad") or (None, None))[1] if rec else None
     buildings = _rows(load.get("buildingdata")) if isinstance(load, dict) else None
     bid = None
@@ -3880,19 +3900,42 @@ def use_train_book(rec, sock, count=1):
     if not busy:
         return False, "失败：没有正在训练的英雄"
     index, hid = busy[0]
-    mark = rec.seq_mark()
-    sender.send_frame(sock, "0414", encode_message({
-        2: ("int32", bid), 3: ("int32", 78),
-        15: ("int32", hid), 16: ("int32", index),
-        17: ("int32", 1057), 18: ("int32", count),
-    }, omit_zero=False), rec.rc4_c2s)
-    got = _await_response(sock, rec, "RseBuildingModify", mark, 6,
-                          want=lambda d: d.get("type") == 78)
-    if not isinstance(got, dict):
-        return False, "失败：训练册没有回包"
-    if got.get("error") not in (0, None):
-        return False, f"失败：被拒 error={got.get('error')}"
-    return True, f"成功：槽 {index} 的英雄 {hid} 用了 {count} 本训练册"
+    done = 0
+    while have > 0:
+        raise_if_stopped()
+        batch = min(have, 999)
+        mark = rec.seq_mark()
+        sender.send_frame(sock, "0414", encode_message({
+            2: ("int32", bid), 3: ("int32", 78),
+            15: ("int32", hid), 16: ("int32", index),
+            17: ("int32", 1057), 18: ("int32", batch),
+        }, omit_zero=False), rec.rc4_c2s)
+        got = _await_response(sock, rec, "RseBuildingModify", mark, 6,
+                              want=lambda d: d.get("type") == 78)
+        if not isinstance(got, dict):
+            head = f"已用 {done} 本。" if done else ""
+            return False, head + "失败：训练册没有回包"
+        if got.get("error") not in (0, None):
+            head = f"已用 {done} 本。" if done else ""
+            return False, head + f"失败：被拒 error={got.get('error')}"
+        if bag_id is None:
+            done += batch
+            break
+        _drain_incoming()
+        now = latest_card(rec, bag_id)
+        left = have if now is None else now[0]
+        if left >= have:
+            _await_response(sock, rec, "RseBagItemLst", mark, 1.0)
+            now = latest_card(rec, bag_id)
+            left = have if now is None else now[0]
+        if left >= have:
+            head = f"已用 {done} 本。" if done else ""
+            return False, head + f"数量 {have} 没有下降"
+        done += have - left
+        have = left
+        if have > 0:
+            _nap(0.3)
+    return True, f"成功：槽 {index} 的英雄 {hid} 用了 {done} 本训练册"
 
 
 def combine_skill_book(rec, sock, level):

@@ -6627,13 +6627,16 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "次数要在 1 到 999"
         clean["times"] = times
     elif kind == "train_book":
-        try:
-            count = int(str(params.get("count") or "1").strip())
-        except (TypeError, ValueError):
-            return "本数要是数字"
-        if not 1 <= count <= 99:
-            return "本数要在 1 到 99"
-        clean["count"] = count
+        if params.get("all") in (True, 1, "1", "true", "True"):
+            clean["all"] = True
+        else:
+            try:
+                count = int(str(params.get("count") or "1").strip())
+            except (TypeError, ValueError):
+                return "本数要是数字"
+            if not 1 <= count <= 999:
+                return "本数要在 1 到 999"
+            clean["count"] = count
     elif kind == "skill_book":
         try:
             level = int(str(params.get("level") or "").strip())

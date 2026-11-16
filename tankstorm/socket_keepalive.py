@@ -2833,7 +2833,8 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     ok, why = daily.tribute_pack(
                         rec, sock, params.get("ids"), on_progress=_show)
                 elif kind == "train_book":
-                    ok, why = daily.use_train_book(rec, sock, params.get("count") or 1)
+                    ok, why = daily.use_train_book(
+                        rec, sock, params.get("count") or 1, all=bool(params.get("all")))
                 elif kind == "skill_book":
                     ok, why = daily.combine_skill_book(rec, sock, params.get("level"))
                 else:

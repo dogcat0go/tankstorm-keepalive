@@ -41,6 +41,7 @@ const props = defineProps({
   runDonate: { type: Function, required: true },
   runTribute: { type: Function, required: true },
   runTrain: { type: Function, required: true },
+  runTrainAll: { type: Function, required: true },
   runSkill: { type: Function, required: true },
   wargame: { type: Object, default: () => ({}) },
   runWargame: { type: Function, required: true },
@@ -353,9 +354,10 @@ function occupyText(occ) {
         <span class="switch">英雄训练册</span>
         <label>本数<input v-model="trainCount" class="mins" inputmode="numeric" required /></label>
         <button type="submit">使用</button>
+        <button type="button" @click="runTrainAll().catch((e) => showErr(e.message))">抽光</button>
       </form>
       <p v-if="trainJob">{{ trainJob.status }} {{ trainJob.detail }}</p>
-      <p class="muted">给一个正在训练的英雄用填写的本数。没有正在训练的英雄不发。本数 1 到 99。</p>
+      <p class="muted">给一个正在训练的英雄用填写的本数，1 到 999。抽光会把背包里的训练册用完，一次最多 999 本。没有正在训练的英雄不发。</p>
     </details>
     <details class="campaign-box">
       <summary>参谋技能书</summary>

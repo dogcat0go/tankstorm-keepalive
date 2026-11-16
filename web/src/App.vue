@@ -660,10 +660,19 @@ async function runDonate() {
 async function runTrain(count) {
   showErr("", "activity");
   const n = Number(String(count || "").trim());
-  if (!Number.isInteger(n) || n < 1 || n > 99) throw new Error("本数要在 1 到 99");
+  if (!Number.isInteger(n) || n < 1 || n > 999) throw new Error("本数要在 1 到 999");
   const ok = await confirmUse(`给正在训练的英雄用 ${n} 本训练册。`);
   if (!ok) return;
   await api("/api/daily", { kind: "train_book", count: n });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runTrainAll() {
+  showErr("", "activity");
+  const ok = await confirmUse("把背包里的训练册全部用在正在训练的英雄上。一次最多 999 本，还有就接着用。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "train_book", all: true });
   await refreshDaily();
   await refreshAttacks();
 }
@@ -1558,6 +1567,7 @@ onUnmounted(() => {
         :run-donate="runDonate"
         :run-tribute="runTribute"
         :run-train="runTrain"
+        :run-train-all="runTrainAll"
         :run-skill="runSkill"
         :show-err="showErr"
       />
