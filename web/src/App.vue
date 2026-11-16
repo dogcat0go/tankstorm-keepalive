@@ -135,6 +135,8 @@ const fundBuilding = ref("");
 const fundTimes = ref("1");
 const wishTimes = ref("1");
 const soulTimes = ref("1");
+const trainCount = ref("1");
+const skillLevel = ref("4");
 const fundNote = ref("");
 const eggNote = ref("");
 const eggLeft = ref(null);
@@ -651,6 +653,28 @@ async function runDonate() {
   const ok = await confirmUse("捐献献礼徽章。");
   if (!ok) return;
   await api("/api/daily", { kind: "donate" });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runTrain(count) {
+  showErr("", "activity");
+  const n = Number(String(count || "").trim());
+  if (!Number.isInteger(n) || n < 1 || n > 99) throw new Error("本数要在 1 到 99");
+  const ok = await confirmUse(`给正在训练的英雄用 ${n} 本训练册。`);
+  if (!ok) return;
+  await api("/api/daily", { kind: "train_book", count: n });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runSkill(level) {
+  showErr("", "activity");
+  const n = Number(String(level || "").trim());
+  if (!Number.isInteger(n) || n < 1 || n > 10) throw new Error("等级要在 1 到 10");
+  const ok = await confirmUse(`按背包数量的一半合成 ${n} 级参谋技能书。`);
+  if (!ok) return;
+  await api("/api/daily", { kind: "skill_book", level: n });
   await refreshDaily();
   await refreshAttacks();
 }
@@ -1502,6 +1526,8 @@ onUnmounted(() => {
         v-model:fund-times="fundTimes"
         v-model:wish-times="wishTimes"
         v-model:soul-times="soulTimes"
+        v-model:train-count="trainCount"
+        v-model:skill-level="skillLevel"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"
         :jobs="dailyJobs"
@@ -1531,6 +1557,8 @@ onUnmounted(() => {
         :run-badge="runBadge"
         :run-donate="runDonate"
         :run-tribute="runTribute"
+        :run-train="runTrain"
+        :run-skill="runSkill"
         :show-err="showErr"
       />
       <DailyPage

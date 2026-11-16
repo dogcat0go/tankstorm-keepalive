@@ -52,6 +52,8 @@
   python main.py --lab50                      实验室探索 50 连，默认 1 次
   python main.py --egg                        把剩余彩蛋全部砸开
   python main.py --wish 5                     许愿树抽 5 次。不写次数就是 1 次
+  python main.py --train-book                 给正在训练的英雄用 1 本训练册
+  python main.py --skill-book 4               按背包一半合成 4 级参谋技能书
   python main.py --gift                       打开背包里的献礼宝箱
   python main.py --drop-repair                摧毁背包里的建筑修复卡
   python main.py --soul 10                    将魂兑换 10 次，兑完就停
@@ -460,6 +462,14 @@ def main() -> int:
     g4.add_argument("--egg", action="store_true",
                     help="连上后把剩余彩蛋全部砸开再退出。"
                          "每砸一个消耗 1 个物品 10015")
+    g4.add_argument("--train-book", nargs="?", const=1, type=int, default=None,
+                    metavar="本数",
+                    help="连上后给一个正在训练的英雄用 N 本训练册再退出，默认 1。"
+                         "协议物品号 1057，类型 78")
+    g4.add_argument("--skill-book", type=int, metavar="等级",
+                    help="连上后合成这一级参谋技能书再退出。"
+                         "等级 1 到 10。数量是背包里这一级的一半。"
+                         "这次抓到的是 4 级（物品 10146）")
     g4.add_argument("--wish", nargs="?", const=1, type=int, default=None,
                     metavar="次数",
                     help="连上后许愿树抽 N 次再退出，默认 1。"
@@ -519,6 +529,7 @@ def main() -> int:
                 args.pve is not None, args.draw, args.pick, args.lab50 is not None,
                 args.blast is not None, args.egg, args.strike,
                 args.wish is not None, args.gift, args.drop_repair,
+                args.train_book is not None, args.skill_book is not None,
                 args.soul is not None, args.badge, args.donate, args.tribute,
                 args.soul_roll, args.soul_reset is not None)):
         parser.print_help()
@@ -793,6 +804,18 @@ def main() -> int:
 
     if args.egg:
         return socket_keepalive.run_egg_once(qq, config)
+
+    if args.train_book is not None:
+        if args.train_book < 1:
+            log.error("训练册本数至少是 1")
+            return 1
+        return socket_keepalive.run_train_book_once(qq, config, args.train_book)
+
+    if args.skill_book is not None:
+        if not 1 <= args.skill_book <= 10:
+            log.error("参谋技能书等级要在 1 到 10")
+            return 1
+        return socket_keepalive.run_skill_book_once(qq, config, args.skill_book)
 
     if args.wish is not None:
         if args.wish < 1:

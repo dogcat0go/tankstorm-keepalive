@@ -9,6 +9,8 @@ const fundBuilding = defineModel("fundBuilding", { type: String, required: true 
 const fundTimes = defineModel("fundTimes", { type: String, required: true });
 const wishTimes = defineModel("wishTimes", { type: String, required: true });
 const soulTimes = defineModel("soulTimes", { type: String, required: true });
+const trainCount = defineModel("trainCount", { type: String, required: true });
+const skillLevel = defineModel("skillLevel", { type: String, required: true });
 
 const props = defineProps({
   dailyQq: { type: String, default: "" },
@@ -38,6 +40,8 @@ const props = defineProps({
   runBadge: { type: Function, required: true },
   runDonate: { type: Function, required: true },
   runTribute: { type: Function, required: true },
+  runTrain: { type: Function, required: true },
+  runSkill: { type: Function, required: true },
   wargame: { type: Object, default: () => ({}) },
   runWargame: { type: Function, required: true },
   showErr: { type: Function, required: true },
@@ -68,6 +72,8 @@ const soulJob = computed(() => props.jobs.find((it) => it.kind === "soul") || nu
 const badgeJob = computed(() => props.jobs.find((it) => it.kind === "badge") || null);
 const donateJob = computed(() => props.jobs.find((it) => it.kind === "donate") || null);
 const tributeJob = computed(() => props.jobs.find((it) => it.kind === "tribute") || null);
+const trainJob = computed(() => props.jobs.find((it) => it.kind === "train_book") || null);
+const skillJob = computed(() => props.jobs.find((it) => it.kind === "skill_book") || null);
 const wgJob = computed(() => props.jobs.find((it) => it.kind === "wargame") || null);
 const wgQuery = ref("");
 const wgLevel = ref("0");
@@ -340,6 +346,26 @@ function occupyText(occ) {
       </form>
       <p v-if="donateJob">{{ donateJob.status }} {{ donateJob.detail }}</p>
       <p class="muted">直接发 type=2、activeType=1，不先开面板。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>英雄训练册</summary>
+      <form class="lock-row" @submit.prevent="runTrain(trainCount).catch((e) => showErr(e.message))">
+        <span class="switch">英雄训练册</span>
+        <label>本数<input v-model="trainCount" class="mins" inputmode="numeric" required /></label>
+        <button type="submit">使用</button>
+      </form>
+      <p v-if="trainJob">{{ trainJob.status }} {{ trainJob.detail }}</p>
+      <p class="muted">给一个正在训练的英雄用填写的本数。没有正在训练的英雄不发。本数 1 到 99。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>参谋技能书</summary>
+      <form class="lock-row" @submit.prevent="runSkill(skillLevel).catch((e) => showErr(e.message))">
+        <span class="switch">合成参谋技能书</span>
+        <label>等级<input v-model="skillLevel" class="mins" inputmode="numeric" required /></label>
+        <button type="submit">合成</button>
+      </form>
+      <p v-if="skillJob">{{ skillJob.status }} {{ skillJob.detail }}</p>
+      <p class="muted">按背包里这一级的一半合成。等级 1 到 10，1 到 7 级是 10143 起，8 到 10 级是 10245 起。不足两本不发。</p>
     </details>
     <details class="campaign-box">
       <summary>道具表</summary>

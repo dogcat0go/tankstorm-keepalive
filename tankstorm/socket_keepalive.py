@@ -2820,7 +2820,8 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 ok, why = daily.egg_probe(rec, sock, on_progress=_show)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
-            elif kind in ("wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute"):
+            elif kind in ("wish", "gift", "repair_drop", "soul", "badge", "donate",
+                          "tribute", "train_book", "skill_book"):
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
                     return
@@ -2831,10 +2832,16 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 elif kind == "tribute":
                     ok, why = daily.tribute_pack(
                         rec, sock, params.get("ids"), on_progress=_show)
+                elif kind == "train_book":
+                    ok, why = daily.use_train_book(rec, sock, params.get("count") or 1)
+                elif kind == "skill_book":
+                    ok, why = daily.combine_skill_book(rec, sock, params.get("level"))
                 else:
                     fn = {"gift": daily.open_gift, "repair_drop": daily.drop_repair,
                           "badge": daily.open_badge, "donate": daily.donate_badge}[kind]
                     ok, why = fn(rec, sock)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "wargame":
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
@@ -3016,6 +3023,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         "blast", "factory",
         "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame",
         "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute",
+        "train_book", "skill_book",
         "chest", "cards", "clean",
         "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
@@ -3023,7 +3031,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
 
     def _lane_for(kind):
         if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame",
-                    "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute", "chest"):
+                    "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute",
+                    "train_book", "skill_book", "chest"):
             return "daily"
         if kind == "blast":
             return "blast"
@@ -4726,6 +4735,28 @@ def _run_one(qq, config: dict, fn, title: str) -> int:
     def _work(rec, sock, spec, ctx, beater):
         ok, why = fn(rec, sock)
         log.info("[%s] %s", title, why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_train_book_once(qq, config: dict, count: int = 1) -> int:
+    """连一次，给正在训练的英雄用训练册，看回包后退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.use_train_book(rec, sock, count)
+        log.info("[训练册] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_skill_book_once(qq, config: dict, level: int) -> int:
+    """连一次，按背包数量的一半合成这一级参谋技能书。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.combine_skill_book(rec, sock, level)
+        log.info("[参谋技能书] %s", why)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         return 0 if ok else 1
 
