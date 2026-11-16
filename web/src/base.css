@@ -272,6 +272,10 @@ table.daily-jobs td { white-space: nowrap; }
 table.fail-list button.ghost { margin-left: 0; padding: 4px 10px; }
 form.fail-one { margin-top: 8px; }
 table.daily-jobs button.ghost { margin-left: 8px; padding: 4px 10px; }
+table.wg { margin-top: 8px; min-width: 720px; }
+table.wg th, table.wg td { white-space: nowrap; }
+table.wg button { margin: 0; padding: 4px 10px; }
+table.wg button:disabled { opacity: 0.45; }
 table.daily-jobs td.reason {
   white-space: pre-line;
   word-break: break-word;

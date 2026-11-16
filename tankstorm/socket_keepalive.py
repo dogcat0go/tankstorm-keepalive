@@ -2820,6 +2820,18 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 ok, why = daily.egg_probe(rec, sock, on_progress=_show)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "wargame":
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
+                    return
+                if str(params.get("action") or "") == "attack":
+                    ok, why = daily.wargame_attack(
+                        rec, sock, config, params.get("site_id"), params.get("uid"),
+                        params.get("name") or "", params.get("power") or 0)
+                else:
+                    ok, why = daily.wargame_list(rec, sock, config)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_claim":
                 from . import guild
                 ok, why = guild.claim_guild_rewards(rec, sock)
@@ -2987,13 +2999,13 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     move_told = 0
     side_kinds = (
         "blast", "factory",
-        "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "chest", "cards", "clean",
+        "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame", "chest", "cards", "clean",
         "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
 
     def _lane_for(kind):
-        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "chest"):
+        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame", "chest"):
             return "daily"
         if kind == "blast":
             return "blast"
