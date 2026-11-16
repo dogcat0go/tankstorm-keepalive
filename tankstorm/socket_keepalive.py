@@ -2820,6 +2820,23 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 ok, why = daily.egg_probe(rec, sock, on_progress=_show)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind in ("wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute"):
+                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
+                    citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
+                    return
+                if kind == "wish":
+                    ok, why = daily.wish_once(rec, sock, params.get("times") or 1)
+                elif kind == "soul":
+                    ok, why = daily.soul_exchange(rec, sock, params.get("times") or 1)
+                else:
+                    if kind == "tribute":
+                        ok, why = daily.tribute_pack(rec, sock, params.get("ids"))
+                    else:
+                        fn = {"gift": daily.open_gift, "repair_drop": daily.drop_repair,
+                              "badge": daily.open_badge, "donate": daily.donate_badge}[kind]
+                        ok, why = fn(rec, sock)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_claim":
                 from . import guild
                 ok, why = guild.claim_guild_rewards(rec, sock)
@@ -2987,13 +3004,16 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     move_told = 0
     side_kinds = (
         "blast", "factory",
-        "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "chest", "cards", "clean",
+        "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg",
+        "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute",
+        "chest", "cards", "clean",
         "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high",
         "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
     )
 
     def _lane_for(kind):
-        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "chest"):
+        if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg",
+                    "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute", "chest"):
             return "daily"
         if kind == "blast":
             return "blast"
@@ -4466,6 +4486,37 @@ def run_fund_once(qq, config: dict, building_id: int, times: int) -> int:
     return _connect_and(qq, config, _work)
 
 
+def run_parts_fund_once(qq, config: dict) -> int:
+    """连一次，重发配件成长基金第8挡的领取包，看 ret 后退出。
+
+    2026-11-14 23:03:48 抓包。正文按 RedWar_2026111203 原样发，
+    不经过 2026102901 的字段对照，否则第 3、5 号会被丢掉。
+    """
+    from . import sender, wiremap
+    from .daily import _await_response
+
+    body = bytes.fromhex("100a2812200318c3843d")
+
+    def _work(rec, sock, spec, ctx, beater):
+        mark = rec.seq_mark()
+        prev = wiremap.ACTIVE
+        wiremap.ACTIVE = wiremap.IDENTITY
+        try:
+            sender.send_frame(sock, "04a7", body, rec.rc4_c2s)
+        finally:
+            wiremap.ACTIVE = prev
+        hit = _await_response(sock, rec, "RseTaskOpt", mark, 8)
+        if not isinstance(hit, dict):
+            log.info("[配件成长基金] 已发出，8 秒内没有 RseTaskOpt")
+            return 1
+        ret = hit.get("ret")
+        log.info("[配件成长基金] ret=%s", ret)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ret == 0 else 1
+
+    return _connect_and(qq, config, _work)
+
+
 def run_pve_once(qq, config: dict, stages=None) -> int:
     """连一次、打征战世界、退出。
 
@@ -4529,6 +4580,114 @@ def run_blast_once(qq, config: dict, count: int) -> int:
     return _connect_and(qq, config, _work)
 
 
+def _soul_slot(got, soul, slot):
+    rows = got.get("soulList")
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("nSoulID", row.get("field1")) != soul:
+            continue
+        skills = row.get("skillList", row.get("field3"))
+        if isinstance(skills, dict):
+            skills = [skills]
+        if not isinstance(skills, list):
+            return None
+        for sk in skills:
+            if not isinstance(sk, dict):
+                continue
+            if sk.get("nIndex", sk.get("field1")) != slot:
+                continue
+            return (sk.get("nType", sk.get("field2")),
+                    sk.get("nLv", sk.get("field3")),
+                    sk.get("bLock", sk.get("field4")))
+    return None
+
+
+def _soul_left(got, soul):
+    """这一本还剩几条技能。skillList 缺失算 0。找不到这本军魂返回 None。"""
+    rows = got.get("soulList")
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("nSoulID", row.get("field1")) != soul:
+            continue
+        skills = row.get("skillList", row.get("field3"))
+        if skills is None:
+            return 0
+        if isinstance(skills, dict):
+            return 1
+        if isinstance(skills, list):
+            return len(skills)
+        return None
+    return None
+
+
+def _soul_opt_once(qq, config: dict, soul: int, typ: int, slot: int) -> int:
+    """连一次，发一条军魂操作。type=6 清空，type=3 领悟一格。"""
+    if soul not in (1, 2, 3):
+        log.error("军魂只能是 1、2、3")
+        return 1
+    if typ == 3 and not 1 <= slot <= 5:
+        log.error("槽位只能是 1 到 5")
+        return 1
+
+    def _work(rec, sock, spec, ctx, beater):
+        from .proto_encode import encode_message
+        mark = rec.seq_mark()
+        sender.send_frame(sock, "04aa", encode_message({
+            1: ("int32", typ),
+            2: ("int32", soul),
+            3: ("int32", slot),
+            4: ("bool", False),
+        }, omit_zero=False), rec.rc4_c2s)
+        got = daily._await_response(
+            sock, rec, "RseMilitarySoulOpt", mark, 8,
+            want=lambda d: isinstance(d, dict) and d.get("type") == typ)
+        if not isinstance(got, dict):
+            log.error("[军魂] 没有回包")
+            return 1
+        result = daily._one(got.get("nResult"))
+        points = daily._one(got.get("nSoulNum"))
+        if result not in (0, None):
+            log.error("[军魂] 被拒 nResult=%s，点数 %s", result, points)
+            return 1
+        if typ == 6:
+            left = _soul_left(got, soul)
+            log.info("[军魂] 已清空军魂 %s，剩余技能 %s 条，点数 %s",
+                     soul, left, points)
+        else:
+            skill = _soul_slot(got, soul, slot)
+            if not skill or skill[0] is None:
+                log.info("[军魂] 回包 type=3，点数 %s，没有读到军魂 %s 槽 %s：%s",
+                         points, soul, slot, got)
+            else:
+                ntype, lv, locked = skill
+                log.info("[军魂] 军魂 %s 槽 %s → %s，品质 %s，等级 %s，锁定 %s，点数 %s",
+                         soul, slot, ntype, ntype % 10, lv, locked, points)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0
+
+    return _connect_and(qq, config, _work)
+
+
+def run_soul_reset_once(qq, config: dict, soul: int) -> int:
+    """连一次，发 type=6 清空这一本军魂的技能。消耗 1 个技能重置令。"""
+    return _soul_opt_once(qq, config, soul, 6, 0)
+
+
+def run_soul_roll_once(qq, config: dict, soul: int, slot: int) -> int:
+    """连一次，对指定军魂的一格发 type=3。扣 100 军魂点，不扣技能重置令。"""
+    return _soul_opt_once(qq, config, soul, 3, slot)
+
+
 def run_strike_once(qq, config: dict) -> int:
     """连一次，按抓包打开精准打击并打一下，看回包后退出。"""
     from . import strike
@@ -4547,6 +4706,69 @@ def run_egg_once(qq, config: dict) -> int:
     def _work(rec, sock, spec, ctx, beater):
         ok, why = daily.egg_probe(rec, sock)
         log.info("[砸彩蛋] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def _run_one(qq, config: dict, fn, title: str) -> int:
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = fn(rec, sock)
+        log.info("[%s] %s", title, why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_wish_once(qq, config: dict, times: int = 1) -> int:
+    """连一次，许愿树抽指定次数，看回包后退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.wish_once(rec, sock, times)
+        log.info("[许愿树] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_gift_once(qq, config: dict) -> int:
+    """连一次，把献礼宝箱打开，看回包后退出。"""
+    return _run_one(qq, config, daily.open_gift, "献礼宝箱")
+
+
+def run_drop_repair_once(qq, config: dict) -> int:
+    """连一次，把建筑修复卡摧毁，看回包后退出。"""
+    return _run_one(qq, config, daily.drop_repair, "建筑修复卡")
+
+
+def run_soul_once(qq, config: dict, times: int = 1) -> int:
+    """连一次，将魂兑换指定次数，兑完就停。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.soul_exchange(rec, sock, times)
+        log.info("[将魂兑换] %s", why)
+        log.info("任务执行期间共发心跳 %d 次", beater.count)
+        return 0 if ok else 1
+
+    return _connect_and(qq, config, _work)
+
+
+def run_badge_once(qq, config: dict) -> int:
+    """连一次，把献礼徽章宝箱打开。"""
+    return _run_one(qq, config, daily.open_badge, "献礼徽章宝箱")
+
+
+def run_donate_once(qq, config: dict) -> int:
+    """连一次，捐献献礼徽章。"""
+    return _run_one(qq, config, daily.donate_badge, "献礼捐献")
+
+
+def run_tribute_once(qq, config: dict) -> int:
+    """连一次，按一键献礼的顺序做完再退出。"""
+    def _work(rec, sock, spec, ctx, beater):
+        ok, why = daily.tribute_pack(rec, sock)
+        log.info("[一键献礼] %s", why)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         return 0 if ok else 1
 

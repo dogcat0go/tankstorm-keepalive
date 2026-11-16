@@ -7,6 +7,8 @@ import itemRows from "../items.json";
 const guildLevel = defineModel("guildLevel", { type: String, required: true });
 const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
 const fundTimes = defineModel("fundTimes", { type: String, required: true });
+const wishTimes = defineModel("wishTimes", { type: String, required: true });
+const soulTimes = defineModel("soulTimes", { type: String, required: true });
 
 const props = defineProps({
   dailyQq: { type: String, default: "" },
@@ -29,6 +31,13 @@ const props = defineProps({
   runGuildCamp: { type: Function, required: true },
   runStrike: { type: Function, required: true },
   runEgg: { type: Function, required: true },
+  runWish: { type: Function, required: true },
+  runGift: { type: Function, required: true },
+  runDrop: { type: Function, required: true },
+  runSoul: { type: Function, required: true },
+  runBadge: { type: Function, required: true },
+  runDonate: { type: Function, required: true },
+  runTribute: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
 
@@ -50,6 +59,13 @@ const guildTask = computed(() => props.tasks.find((it) => it.key === "公会战�
 const campJob = computed(() => props.jobs.find((it) => it.kind === "guild_camp") || null);
 const strikeJob = computed(() => props.jobs.find((it) => it.kind === "strike") || null);
 const eggJob = computed(() => props.jobs.find((it) => it.kind === "egg") || null);
+const wishJob = computed(() => props.jobs.find((it) => it.kind === "wish") || null);
+const giftJob = computed(() => props.jobs.find((it) => it.kind === "gift") || null);
+const dropJob = computed(() => props.jobs.find((it) => it.kind === "repair_drop") || null);
+const soulJob = computed(() => props.jobs.find((it) => it.kind === "soul") || null);
+const badgeJob = computed(() => props.jobs.find((it) => it.kind === "badge") || null);
+const donateJob = computed(() => props.jobs.find((it) => it.kind === "donate") || null);
+const tributeJob = computed(() => props.jobs.find((it) => it.kind === "tribute") || null);
 
 function liveText(n) {
   if (n === null || n === undefined || n === "") return "还没读到";
@@ -65,6 +81,15 @@ function liveText(n) {
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的活动用那个号做。</p>
     <p class="muted">由这个账号的攻打线程执行，不另开连接。开关和日常任务是同一个。</p>
+    <details class="campaign-box" open>
+      <summary>一键献礼</summary>
+      <form class="lock-row" @submit.prevent="runTribute().catch((e) => showErr(e.message))">
+        <span class="switch">一键献礼</span>
+        <button type="submit">开始</button>
+      </form>
+      <p v-if="tributeJob">{{ tributeJob.status }} {{ tributeJob.detail }}</p>
+      <p class="muted">先打开献礼宝箱，再摧毁建筑修复卡，然后打开献礼徽章宝箱，捐献献礼徽章，最后按已保存的清理背包名单再清一次。没保存过就用默认名单。</p>
+    </details>
     <details class="campaign-box">
       <summary>公会战役</summary>
       <div v-if="guildTask" class="campaign-line">
@@ -131,6 +156,62 @@ function liveText(n) {
       <p v-if="eggNote" class="muted">{{ eggNote }}</p>
       <p>还可以开 {{ liveText(eggLeft) }} 个</p>
       <p class="muted">进入这个页面会读一次剩余数量。点下去会一直砸，直到剩余变成 0。每砸一个消耗 1 个物品 10015，得到 1 张 200 万石油卡。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>许愿树</summary>
+      <form class="lock-row" @submit.prevent="runWish(wishTimes).catch((e) => showErr(e.message))">
+        <span class="switch">许愿树抽奖</span>
+        <label>次数<input v-model="wishTimes" class="mins" inputmode="numeric" required /></label>
+        <button type="submit">抽奖</button>
+      </form>
+      <p v-if="wishJob">{{ wishJob.status }} {{ wishJob.detail }}</p>
+      <p class="muted">先开一次面板，再按填写的次数抽。次数 1 到 999。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>献礼宝箱</summary>
+      <form class="lock-row" @submit.prevent="runGift().catch((e) => showErr(e.message))">
+        <span class="switch">开启献礼宝箱</span>
+        <button type="submit">全部打开</button>
+      </form>
+      <p v-if="giftJob">{{ giftJob.status }} {{ giftJob.detail }}</p>
+      <p class="muted">把背包里的 30156 献礼宝箱打开。物品槽不写进任务，执行时按清理背包从当前背包读取。一次最多 999 个，还有就接着开。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>建筑修复卡</summary>
+      <form class="lock-row" @submit.prevent="runDrop().catch((e) => showErr(e.message))">
+        <span class="switch">摧毁建筑修复卡</span>
+        <button type="submit">全部摧毁</button>
+      </form>
+      <p v-if="dropJob">{{ dropJob.status }} {{ dropJob.detail }}</p>
+      <p class="muted">把背包里的 10127 建筑修复卡摧毁，不修复建筑。物品槽不写进任务，执行时按清理背包从当前背包读取。一次 99 张，直到没有。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>将魂兑换</summary>
+      <form class="lock-row" @submit.prevent="runSoul(soulTimes).catch((e) => showErr(e.message))">
+        <span class="switch">将魂兑换</span>
+        <label>次数<input v-model="soulTimes" class="mins" inputmode="numeric" required /></label>
+        <button type="submit">兑换</button>
+      </form>
+      <p v-if="soulJob">{{ soulJob.status }} {{ soulJob.detail }}</p>
+      <p class="muted">每次发 type=-1、free=1、credit=900。按填写的次数兑，没有回包或被拒就当已经兑完。次数 1 到 999。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>献礼徽章宝箱</summary>
+      <form class="lock-row" @submit.prevent="runBadge().catch((e) => showErr(e.message))">
+        <span class="switch">开启献礼徽章宝箱</span>
+        <button type="submit">全部打开</button>
+      </form>
+      <p v-if="badgeJob">{{ badgeJob.status }} {{ badgeJob.detail }}</p>
+      <p class="muted">把背包里的 30157 献礼徽章宝箱打开。物品槽不写进任务，执行时按清理背包从当前背包读取。一次最多 999 个。</p>
+    </details>
+    <details class="campaign-box">
+      <summary>捐献献礼徽章</summary>
+      <form class="lock-row" @submit.prevent="runDonate().catch((e) => showErr(e.message))">
+        <span class="switch">捐献献礼徽章</span>
+        <button type="submit">捐献</button>
+      </form>
+      <p v-if="donateJob">{{ donateJob.status }} {{ donateJob.detail }}</p>
+      <p class="muted">先开面板，再发 type=2、activeType=1。</p>
     </details>
     <details class="campaign-box">
       <summary>道具表</summary>

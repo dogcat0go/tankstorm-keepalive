@@ -3520,6 +3520,160 @@ def egg_probe(rec, sock, on_progress=None):
     return True, f"成功：砸彩蛋 {done} 个，剩余 {left}"
 
 
+def _month_opt(rec, sock, typ):
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "04f8", encode_message({
+        1: ("int32", typ), 2: ("int32", 0),
+        3: ("int32", 2), 4: ("int32", 0),
+    }, omit_zero=False), rec.rc4_c2s)
+    return _await_response(sock, rec, "RseGiftTenMonth", mark, 6.0)
+
+
+def wish_once(rec, sock, times=1):
+    """许愿树抽指定次数。2026-11-16 20:52 抓包。
+
+    开面板 RceGiftTenMonth {type:0, activetype:2}，每次抽奖 {type:8, activetype:2}。
+    """
+    try:
+        times = int(times)
+    except (TypeError, ValueError):
+        return False, "次数要是数字"
+    if not 1 <= times <= 999:
+        return False, "次数要在 1 到 999"
+    if not isinstance(_month_opt(rec, sock, 0), dict):
+        return False, "失败：没打开许愿树"
+    done = 0
+    while done < times:
+        raise_if_stopped()
+        got = _month_opt(rec, sock, 8)
+        if not isinstance(got, dict):
+            if done:
+                return True, f"成功：许愿树抽了 {done} 次，已经抽完"
+            return True, "成功：许愿树已经抽完，这次抽了 0 次"
+        if got.get("ret") not in (0, None):
+            head = f"已抽 {done} 次。" if done else ""
+            return False, head + f"被拒 ret={got.get('ret')}"
+        done += 1
+        if done < times:
+            _nap(0.3)
+    return True, f"成功：许愿树抽了 {done} 次"
+
+
+def _admiral_soul(rec, sock):
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "0450", encode_message({
+        2: ("int32", 0), 3: ("int32", 1),
+        4: ("int32", -1), 5: ("int32", 900),
+    }, omit_zero=False), rec.rc4_c2s)
+    return _await_response(sock, rec, "RseAdmiralVisit", mark, 6.0)
+
+
+def soul_exchange(rec, sock, times=1):
+    """将魂兑换。2026-11-16 21:34 抓包：RceAdmiralVisit type=-1，free=1，credit=900。
+
+    没有回包或被拒绝，按已经兑完停。
+    """
+    try:
+        times = int(times)
+    except (TypeError, ValueError):
+        return False, "次数要是数字"
+    if not 1 <= times <= 999:
+        return False, "次数要在 1 到 999"
+    done = 0
+    while done < times:
+        raise_if_stopped()
+        got = _admiral_soul(rec, sock)
+        if not isinstance(got, dict) or got.get("ret") not in (0, None):
+            if done:
+                return True, f"成功：将魂兑换 {done} 次，已经兑完"
+            if not isinstance(got, dict):
+                return True, "成功：将魂已经兑完，这次兑了 0 次"
+            return False, f"失败：被拒 ret={got.get('ret')}"
+        done += 1
+        if done < times:
+            _nap(0.3)
+    return True, f"成功：将魂兑换 {done} 次"
+
+
+def _guild_act(rec, sock, typ):
+    mark = rec.seq_mark()
+    sender.send_frame(sock, "04f9", encode_message({
+        1: ("int32", typ), 2: ("int32", 1),
+        3: ("int32", 0), 4: ("int32", 0),
+    }, omit_zero=False), rec.rc4_c2s)
+    return _await_response(sock, rec, "RseBindGuildAct", mark, 6.0)
+
+
+def donate_badge(rec, sock):
+    """捐献献礼徽章。2026-11-16 21:35 抓包：先 type=0 开面板，再 type=2、activeType=1。"""
+    if not isinstance(_guild_act(rec, sock, 0), dict):
+        return False, "失败：没打开献礼捐献"
+    got = _guild_act(rec, sock, 2)
+    if not isinstance(got, dict):
+        return False, "失败：捐献没有回包"
+    if got.get("nret") not in (0, None):
+        return False, f"失败：被拒 nret={got.get('nret')}"
+    return True, "成功：已捐献献礼徽章"
+
+
+def open_badge(rec, sock):
+    """打开献礼徽章宝箱 30157。槽位按清理背包从当前背包读。"""
+    return drain_item(rec, sock, 30157, 0, 999, "献礼徽章宝箱")
+
+
+def tribute_pack(rec, sock, clean_ids=None):
+    """一键献礼：献礼宝箱、建筑修复卡、献礼徽章宝箱、捐献，最后清理背包。"""
+    from .bag_clean import clean_bag, default_ids
+    bits = []
+    ok_all = True
+    for fn in (open_gift, drop_repair, open_badge, donate_badge):
+        raise_if_stopped()
+        ok, why = fn(rec, sock)
+        bits.append(why)
+        ok_all = ok_all and ok
+    ids = clean_ids or default_ids()
+    ok, why = clean_bag(rec, sock, ids)
+    bits.append(why)
+    return ok_all and ok, "。".join(bits)
+
+
+def drain_item(rec, sock, item_id, opt_type, batch, title):
+    """按清理背包使用或摧毁。槽位每次从当前背包读，不从任务参数里带。"""
+    from .bag_clean import use_item
+    found = latest_card(rec, item_id)
+    if found is None:
+        return False, "登录包里没有背包"
+    have = found[0]
+    if have <= 0:
+        return True, f"成功：没有{title}"
+    done = 0
+    while have > 0:
+        raise_if_stopped()
+        ok, why = use_item(rec, sock, item_id, min(have, batch), opt_type=opt_type)
+        if not ok:
+            head = f"已处理 {done} 张。" if done else ""
+            return False, head + why
+        now = latest_card(rec, item_id)
+        left = 0 if not now else now[0]
+        if left >= have:
+            head = f"已处理 {done} 张。" if done else ""
+            return False, head + f"数量 {have} 没有下降"
+        done += have - left
+        have = left
+        _nap(0.3)
+    return True, f"成功：{title} {done} 张"
+
+
+def open_gift(rec, sock):
+    """把背包里的献礼宝箱 30156 打开。2026-11-16 20:52 抓包，optType=0，一次最多 999。"""
+    return drain_item(rec, sock, 30156, 0, 999, "献礼宝箱")
+
+
+def drop_repair(rec, sock):
+    """摧毁建筑修复卡 10127。2026-11-16 20:53 抓包，optType=1，一次 99 张。"""
+    return drain_item(rec, sock, 10127, 1, 99, "建筑修复卡")
+
+
 def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
     """抽指定次数。by_card 时 count 是卡的张数，十连次数为张数除以 10 向下取整。
 

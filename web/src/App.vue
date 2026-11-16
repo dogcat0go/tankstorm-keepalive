@@ -133,6 +133,8 @@ const strikeLeft = ref(null);
 let guildLevelReady = false;
 const fundBuilding = ref("");
 const fundTimes = ref("1");
+const wishTimes = ref("1");
+const soulTimes = ref("1");
 const fundNote = ref("");
 const eggNote = ref("");
 const eggLeft = ref(null);
@@ -588,6 +590,73 @@ async function runFund(building, times) {
   fundNote.value = "";
   await api("/api/daily", { kind: "fund", building_id: building, times });
   fundNote.value = "已交给绑定的攻打号";
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runWish(times) {
+  showErr("", "activity");
+  const n = Number(String(times || "").trim());
+  if (!Number.isInteger(n) || n < 1 || n > 999) throw new Error("次数要在 1 到 999");
+  const ok = await confirmUse(`许愿树抽 ${n} 次。`);
+  if (!ok) return;
+  await api("/api/daily", { kind: "wish", times: n });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runGift() {
+  showErr("", "activity");
+  const ok = await confirmUse("把背包里的献礼宝箱 30156 全部打开。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "gift" });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runSoul(times) {
+  showErr("", "activity");
+  const n = Number(String(times || "").trim());
+  if (!Number.isInteger(n) || n < 1 || n > 999) throw new Error("次数要在 1 到 999");
+  const ok = await confirmUse(`将魂兑换 ${n} 次。兑完会自己停。`);
+  if (!ok) return;
+  await api("/api/daily", { kind: "soul", times: n });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runBadge() {
+  showErr("", "activity");
+  const ok = await confirmUse("把背包里的献礼徽章宝箱 30157 全部打开。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "badge" });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runTribute() {
+  showErr("", "activity");
+  const ok = await confirmUse("一键献礼：打开献礼宝箱，摧毁建筑修复卡，打开献礼徽章宝箱，捐献献礼徽章，再清理背包。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "tribute" });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runDonate() {
+  showErr("", "activity");
+  const ok = await confirmUse("捐献献礼徽章。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "donate" });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runDrop() {
+  showErr("", "activity");
+  const ok = await confirmUse("把背包里的建筑修复卡 10127 全部摧毁，不修复建筑。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "repair_drop" });
   await refreshDaily();
   await refreshAttacks();
 }
@@ -1404,6 +1473,8 @@ onUnmounted(() => {
         v-model:guild-level="guildLevel"
         v-model:fund-building="fundBuilding"
         v-model:fund-times="fundTimes"
+        v-model:wish-times="wishTimes"
+        v-model:soul-times="soulTimes"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"
         :jobs="dailyJobs"
@@ -1424,6 +1495,13 @@ onUnmounted(() => {
         :save-daily-switch="saveDailySwitch"
         :run-fund="runFund"
         :run-egg="runEgg"
+        :run-wish="runWish"
+        :run-gift="runGift"
+        :run-drop="runDrop"
+        :run-soul="runSoul"
+        :run-badge="runBadge"
+        :run-donate="runDonate"
+        :run-tribute="runTribute"
         :show-err="showErr"
       />
       <DailyPage

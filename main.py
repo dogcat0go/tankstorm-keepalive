@@ -51,7 +51,16 @@
   python main.py --pick auto --count 99       探索自选包换 99 张军备自动化探索卡
   python main.py --lab50                      实验室探索 50 连，默认 1 次
   python main.py --egg                        把剩余彩蛋全部砸开
+  python main.py --wish 5                     许愿树抽 5 次。不写次数就是 1 次
+  python main.py --gift                       打开背包里的献礼宝箱
+  python main.py --drop-repair                摧毁背包里的建筑修复卡
+  python main.py --soul 10                    将魂兑换 10 次，兑完就停
+  python main.py --badge                      打开背包里的献礼徽章宝箱
+  python main.py --donate                     捐献献礼徽章
+  python main.py --tribute                    一键献礼：宝箱、修复卡、徽章宝箱、捐献、清理背包
   python main.py --strike                     精准打击打一下
+  python main.py --soul-reset 3               清空破阵的技能，消耗 1 个技能重置令
+  python main.py --soul-roll 3 1              破阵第 1 格抽一次技能
 """
 
 import argparse
@@ -416,6 +425,10 @@ def main() -> int:
                          "次数见 --fund-times")
     g6.add_argument("--fund-times", type=int, metavar="次数", default=1,
                     help="全部拨款的次数，默认 1。每一次都会先开 4 张金属卡和 4 张石油卡")
+    g6.add_argument("--parts-fund", action="store_true",
+                    help="连上后重发 2026-11-14 抓到的配件成长基金第8挡领取，"
+                         "看 ret 后退出。线上是 RceTaskOpt 04a7，"
+                         "nMsgIndex=10、nFlag=3、nModule=18、档位 1000003")
 
     g7 = parser.add_argument_group("征战世界")
     g7.add_argument("--pve", nargs="?", const="", default=None, metavar="关卡",
@@ -447,9 +460,38 @@ def main() -> int:
     g4.add_argument("--egg", action="store_true",
                     help="连上后把剩余彩蛋全部砸开再退出。"
                          "每砸一个消耗 1 个物品 10015")
+    g4.add_argument("--wish", nargs="?", const=1, type=int, default=None,
+                    metavar="次数",
+                    help="连上后许愿树抽 N 次再退出，默认 1。"
+                         "先开一次面板，再按次数发 type=8、activetype=2")
+    g4.add_argument("--gift", action="store_true",
+                    help="连上后把背包里的献礼宝箱 30156 全部打开再退出")
+    g4.add_argument("--drop-repair", action="store_true",
+                    help="连上后把背包里的建筑修复卡 10127 全部摧毁再退出。"
+                         "不修复建筑")
+    g4.add_argument("--soul", nargs="?", const=1, type=int, default=None,
+                    metavar="次数",
+                    help="连上后将魂兑换 N 次再退出，默认 1。"
+                         "每次 type=-1、free=1、credit=900。没有回包或被拒就当兑完")
+    g4.add_argument("--badge", action="store_true",
+                    help="连上后把背包里的献礼徽章宝箱 30157 全部打开再退出")
+    g4.add_argument("--donate", action="store_true",
+                    help="连上后捐献献礼徽章再退出。"
+                         "先 type=0 开面板，再 type=2、activeType=1")
+    g4.add_argument("--tribute", action="store_true",
+                    help="一键献礼：打开献礼宝箱，摧毁建筑修复卡，"
+                         "打开献礼徽章宝箱，捐献献礼徽章，再清理背包")
     g4.add_argument("--strike", action="store_true",
                     help="连上后打开精准打击并打一下再退出。"
                          "只发 type=1，不带奖励编号")
+    g4.add_argument("--soul-reset", type=int, metavar="军魂",
+                    help="连上后清空这一本军魂的技能再退出。"
+                         "军魂 1 不屈、2 无畏、3 破阵。"
+                         "只发 type=6，消耗 1 个技能重置令，按清掉的技能数退还军魂点")
+    g4.add_argument("--soul-roll", nargs=2, type=int, metavar=("军魂", "槽位"),
+                    help="连上后对这一本军魂的这一格抽一次技能再退出。"
+                         "军魂 1 不屈、2 无畏、3 破阵，槽位 1 到 5。"
+                         "只发 type=3，扣 100 军魂点，不发重置令")
     g4.add_argument("--capture", action="store_true",
                     help="扫码登录后打开钩子版 Flash 窗口，实时抓游戏明文包。"
                          "登录可选空间或大厅。游戏窗口仍是 flash_host，"
@@ -473,9 +515,12 @@ def main() -> int:
                 args.watch_pages is not None,
                 args.web, args.list_cities, args.route is not None,
                 args.move is not None, args.orders,
-                args.capture, args.fund is not None,
+                args.capture, args.fund is not None, args.parts_fund,
                 args.pve is not None, args.draw, args.pick, args.lab50 is not None,
-                args.blast is not None, args.egg, args.strike)):
+                args.blast is not None, args.egg, args.strike,
+                args.wish is not None, args.gift, args.drop_repair,
+                args.soul is not None, args.badge, args.donate, args.tribute,
+                args.soul_roll, args.soul_reset is not None)):
         parser.print_help()
         return 0
 
@@ -487,9 +532,10 @@ def main() -> int:
                               args.watch_pages is not None, args.list_cities,
                               args.route is not None, args.move is not None,
                               args.orders,
-                              args.capture, args.fund is not None,
+                              args.capture, args.fund is not None, args.parts_fund,
                               args.pve is not None, args.draw, args.pick, args.lab50 is not None,
-                              args.blast is not None, args.egg, args.strike)):
+                              args.blast is not None, args.egg, args.strike,
+                              args.soul_roll, args.soul_reset is not None)):
         log.error("订阅页面已和游戏分开。另开一个进程：python3 web.py")
         return 1
 
@@ -583,11 +629,11 @@ def main() -> int:
         elif not raw:
             raw = qq.platform
         hall = {"大厅", "hall", "qqgame", "游戏大厅", "qq游戏大厅", "2"}
-        qzone = {"空间", "qzone", "qq空间", "1"}
+        space = {"空间", "qzone", "qq空间", "1"}
         key = raw.lower()
         if raw in hall or key in hall:
             plat = "大厅"
-        elif raw in qzone or key in qzone:
+        elif raw in space or key in space:
             plat = "空间"
         else:
             log.error("登录入口只能是空间或大厅，收到：%s", raw)
@@ -723,6 +769,9 @@ def main() -> int:
         return socket_keepalive.run_fund_once(
             qq, config, args.fund, args.fund_times)
 
+    if args.parts_fund:
+        return socket_keepalive.run_parts_fund_once(qq, config)
+
     if args.pve is not None:
         return socket_keepalive.run_pve_once(qq, config, args.pve)
 
@@ -745,8 +794,42 @@ def main() -> int:
     if args.egg:
         return socket_keepalive.run_egg_once(qq, config)
 
+    if args.wish is not None:
+        if args.wish < 1:
+            log.error("许愿次数至少是 1")
+            return 1
+        return socket_keepalive.run_wish_once(qq, config, args.wish)
+
+    if args.gift:
+        return socket_keepalive.run_gift_once(qq, config)
+
+    if args.drop_repair:
+        return socket_keepalive.run_drop_repair_once(qq, config)
+
+    if args.soul is not None:
+        if args.soul < 1:
+            log.error("将魂兑换次数至少是 1")
+            return 1
+        return socket_keepalive.run_soul_once(qq, config, args.soul)
+
+    if args.badge:
+        return socket_keepalive.run_badge_once(qq, config)
+
+    if args.donate:
+        return socket_keepalive.run_donate_once(qq, config)
+
+    if args.tribute:
+        return socket_keepalive.run_tribute_once(qq, config)
+
     if args.strike:
         return socket_keepalive.run_strike_once(qq, config)
+
+    if args.soul_reset is not None:
+        return socket_keepalive.run_soul_reset_once(qq, config, args.soul_reset)
+
+    if args.soul_roll:
+        return socket_keepalive.run_soul_roll_once(
+            qq, config, args.soul_roll[0], args.soul_roll[1])
 
     if args.draw:
         return socket_keepalive.run_draw_once(qq, config, args.draw)

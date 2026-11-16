@@ -84,8 +84,11 @@ def _even(count, options):
     ]
 
 
-def use_item(rec, sock, item_id, count, select_id=0):
-    """用掉指定张数。select_id 为 0 时不发 selectID。"""
+def use_item(rec, sock, item_id, count, select_id=0, opt_type=0):
+    """用掉或摧毁指定张数。槽位只从当前背包读，不从配置里带。
+
+    select_id 为 0 时不发 selectID。opt_type 0 是使用，1 是摧毁。
+    """
     found = latest_card(rec, item_id)
     have = 0 if not found else found[0]
     slot = None if not found else found[1]
@@ -93,7 +96,7 @@ def use_item(rec, sock, item_id, count, select_id=0):
         return False, f"只有 {have} 张"
     fields = {
         3: ("int32", count), 4: ("int32", slot),
-        5: ("int32", item_id), 7: ("int32", 0),
+        5: ("int32", item_id), 7: ("int32", opt_type),
     }
     if select_id:
         fields[1] = ("int32", select_id)

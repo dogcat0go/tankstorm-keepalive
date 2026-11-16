@@ -5,13 +5,28 @@ package pkt
    import flash.utils.IExternalizable;
    import flash.utils.describeType;
    import flash.utils.getQualifiedClassName;
+   import flash.utils.getTimer;
    
    public class PktHook
    {
       
+      private static var _booted:Boolean = boot();
+      private static var _dumpUntil:int = 0;
+      
       public function PktHook()
       {
          super();
+      }
+      
+      private static function boot() : Boolean
+      {
+         mark("boot");
+         return true;
+      }
+      
+      public static function mark(param1:String) : void
+      {
+         note("trace",param1,"");
       }
       
       public static function reportOut(param1:*, param2:ByteArray) : void
@@ -24,20 +39,61 @@ package pkt
          report("in",param1,null);
       }
       
+      public static function reportPay(param1:String) : void
+      {
+         note("out","payorder",param1);
+      }
+      
+      public static function reportPayResult(param1:String) : void
+      {
+         note("in","payorder",param1);
+      }
+      
+      private static function note(param1:String, param2:String, param3:String) : void
+      {
+         if(!ExternalInterface.available)
+         {
+            return;
+         }
+         try
+         {
+            ExternalInterface.call("__pkt",param1,param2,param3 == null ? "" : param3,"");
+         }
+         catch(e:Error)
+         {
+         }
+      }
+      
       private static function report(param1:String, param2:*, param3:ByteArray) : void
       {
          var _loc4_:String = null;
+         var _loc5_:String = "?";
+         try
+         {
+            _loc5_ = shortName(param2);
+         }
+         catch(e0:Error)
+         {
+            _loc5_ = "name-fail";
+         }
+         note(param1,_loc5_,"begin");
          if(!hookOn())
          {
             return;
          }
          try
          {
+            _dumpUntil = getTimer() + 40;
             _loc4_ = dumpMsg(param2,0);
-            ExternalInterface.call("__pkt",param1,shortName(param2),_loc4_,param3 != null ? toHex(param3) : "");
+            if(_loc4_ != null && _loc4_.length > 4000)
+            {
+               _loc4_ = _loc4_.substr(0,4000) + "…截断";
+            }
+            ExternalInterface.call("__pkt",param1,_loc5_,_loc4_,param3 != null ? toHex(param3) : "");
          }
          catch(e:Error)
          {
+            note(param1,_loc5_,"dump-fail");
          }
       }
       
@@ -121,7 +177,7 @@ package pkt
             {
                return "";
             }
-            _loc5_ = param2 == "bagItem" ? 700 : 200;
+            _loc5_ = 40;
             _loc6_ = _loc4_.length < _loc5_ ? int(_loc4_.length) : _loc5_;
             _loc8_ = [];
             _loc7_ = 0;
@@ -165,11 +221,11 @@ package pkt
          var _loc7_:* = undefined;
          var _loc8_:String = null;
          var _loc9_:Array = null;
-         if(param1 == null)
+         if(param1 == null || getTimer() > _dumpUntil)
          {
             return "";
          }
-         if(param2 > 6)
+         if(param2 > 2)
          {
             return shortName(param1) + "(…)";
          }
@@ -179,6 +235,10 @@ package pkt
             _loc3_ = describeType(param1);
             for each(_loc4_ in _loc3_.accessor)
             {
+               if(getTimer() > _dumpUntil)
+               {
+                  break;
+               }
                _loc5_ = String(_loc4_.@name);
                _loc6_ = String(_loc4_.@access);
                if(!(skipDumpName(_loc5_) || _loc6_ == "writeonly"))
@@ -200,6 +260,10 @@ package pkt
             }
             for each(_loc4_ in _loc3_.variable)
             {
+               if(getTimer() > _dumpUntil)
+               {
+                  break;
+               }
                _loc5_ = String(_loc4_.@name);
                if(!skipDumpName(_loc5_))
                {
@@ -230,11 +294,23 @@ package pkt
          var _loc2_:uint = 0;
          var _loc3_:String = null;
          var _loc4_:String = "";
-         var _loc5_:uint = param1.position;
-         param1.position = 0;
-         while(param1.bytesAvailable)
+         var _loc5_:int = 0;
+         var _loc6_:ByteArray = null;
+         _loc5_ = param1.length;
+         if(_loc5_ > 64)
          {
-            _loc2_ = param1.readUnsignedByte();
+            _loc5_ = 64;
+         }
+         if(_loc5_ <= 0)
+         {
+            return "";
+         }
+         _loc6_ = new ByteArray();
+         _loc6_.writeBytes(param1,0,_loc5_);
+         _loc6_.position = 0;
+         while(_loc6_.bytesAvailable)
+         {
+            _loc2_ = _loc6_.readUnsignedByte();
             _loc3_ = _loc2_.toString(16);
             if(_loc3_.length < 2)
             {
@@ -242,7 +318,6 @@ package pkt
             }
             _loc4_ += _loc3_;
          }
-         param1.position = _loc5_;
          return _loc4_;
       }
    }

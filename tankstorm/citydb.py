@@ -5547,6 +5547,13 @@ DAILY_KIND_LABEL = {
     "guild_claim": "公会任务领奖",
     "strike": "精准打击",
     "egg": "欢乐砸彩蛋",
+    "wish": "许愿树抽奖",
+    "gift": "开启献礼宝箱",
+    "repair_drop": "摧毁建筑修复卡",
+    "soul": "将魂兑换",
+    "badge": "开启献礼徽章宝箱",
+    "donate": "捐献献礼徽章",
+    "tribute": "一键献礼",
 }
 _BASE_LANE = (
     "blast", "factory", "cards", "clean", "haoyin", "admiral", "admiral10", "agent10",
@@ -6501,6 +6508,26 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return "拨款次数要在 1 到 999"
         clean["building_id"] = building
         clean["times"] = times
+    elif kind == "wish":
+        try:
+            times = int(str(params.get("times") or "1").strip())
+        except (TypeError, ValueError):
+            return "次数要是数字"
+        if not 1 <= times <= 999:
+            return "次数要在 1 到 999"
+        clean["times"] = times
+    elif kind == "soul":
+        try:
+            times = int(str(params.get("times") or "1").strip())
+        except (TypeError, ValueError):
+            return "次数要是数字"
+        if not 1 <= times <= 999:
+            return "次数要在 1 到 999"
+        clean["times"] = times
+    elif kind == "tribute":
+        from .bag_clean import default_ids
+        raw = clean_items_of(user_id) or default_ids()
+        clean["ids"] = raw
     elif kind in ("blast", "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high"):
         try:
             count = int(str(params.get("count") or "").strip())
@@ -6576,7 +6603,7 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         else:
             waiting = conn.execute(
                 "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
-                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg') AND status IN ('pending','running')",
+                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg','wish','gift','repair_drop','soul','badge','donate','tribute') AND status IN ('pending','running')",
                 (user_id,)).fetchone()[0]
         if int(waiting or 0) >= 3:
             return "还有没做完的，先等这几项"

@@ -53,7 +53,8 @@ def inject(src: str, dest: str, java: str, ffdec: str, hook_dir: str) -> str:
     return ""
 
 
-def _compile_hook(java: str, ffdec: str, as_path: str, work: str) -> bytes:
+def _compile_hook(java: str, ffdec: str, as_path: str, work: str,
+                  qname: str = "pkt.PktHook", method: str = "reportOut") -> bytes:
     """先放一个空的 pkt.PktHook，再让 ffdec 用真正的源码替换它。
 
     ffdec 的 importScript 只会替换已经存在的类，加不进新类。
@@ -62,8 +63,8 @@ def _compile_hook(java: str, ffdec: str, as_path: str, work: str) -> bytes:
     stub = work + ".stub.swf"
     out = work + ".swf"
     with open(stub, "wb") as f:
-        f.write(_empty_hook_swf())
-    cmd = [java, "-jar", ffdec, "-replace", stub, out, "pkt.PktHook", as_path]
+        f.write(_empty_hook_swf(qname.rsplit(".", 1)[-1]))
+    cmd = [java, "-jar", ffdec, "-replace", stub, out, qname, as_path]
     try:
         p = subprocess.run(cmd, capture_output=True, timeout=120)
     finally:
@@ -76,14 +77,14 @@ def _compile_hook(java: str, ffdec: str, as_path: str, work: str) -> bytes:
     if not blocks:
         raise RuntimeError("编译结果里没有 ABC")
     abc = max(blocks, key=len)
-    if not _find_hook(ABC(abc)):
-        raise RuntimeError("编译结果里没有 pkt.PktHook.reportOut")
+    if not _has_static(ABC(abc), qname.replace(".", ":"), method):
+        raise RuntimeError(f"编译结果里没有 {qname}.{method}")
     return abc
 
 
-def _empty_hook_swf() -> bytes:
-    abc = _empty_hook_abc_with_methods()
-    payload = struct.pack("<I", 1) + b"pkt.PktHook\x00" + abc
+def _empty_hook_swf(class_name: str = "PktHook") -> bytes:
+    abc = _empty_hook_abc_with_methods(class_name)
+    payload = struct.pack("<I", 1) + f"pkt.{class_name}\x00".encode("ascii") + abc
     tags = b"".join([
         _tag(69, bytes.fromhex("19000000")),
         _tag(82, payload),
@@ -94,8 +95,8 @@ def _empty_hook_swf() -> bytes:
     return b"FWS" + bytes([11]) + struct.pack("<I", 8 + len(body)) + body
 
 
-def _empty_hook_abc_with_methods() -> bytes:
-    strings = ["", "pkt", "PktHook", "Object", "reportOut", "reportIn", "*"]
+def _empty_hook_abc_with_methods(class_name: str = "PktHook") -> bytes:
+    strings = ["", "pkt", class_name, "Object", "reportOut", "reportIn", "*"]
     namespaces = [(0x16, 1), (0x16, 0)]      # 1=pkt, 2=public package
     # 0 占位。1 类，2 Object，3 reportOut，4 reportIn，5 ByteArray 不需要，参数用 *
     multinames = [(1, 2), (2, 3), (2, 4), (2, 5), (2, 6)]
@@ -170,12 +171,13 @@ def _tag(code: int, payload: bytes) -> bytes:
     return struct.pack("<HI", (code << 6) | 0x3F, len(payload)) + payload
 
 
-def _append_abc(src: str, dest: str, abc: bytes) -> None:
+def _append_abc(src: str, dest: str, abc: bytes,
+                abc_name: bytes = b"pkt.PktHook\x00") -> None:
     raw = open(src, "rb").read()
     body, _, ver, _ = uncompress(raw)
     # flags=0：解析到这个标签就执行脚本。必须放在 ShowFrame 之前，
     # 否则它落在这一帧外面，类还没登记，游戏初始化就停住。
-    payload = struct.pack("<I", 0) + b"pkt.PktHook\x00" + abc
+    payload = struct.pack("<I", 0) + abc_name + abc
     tag = _tag(82, payload)
     from swfparse import _rect_len
     head = _rect_len(body) + 4
@@ -212,16 +214,40 @@ def patch_swf(src: str, dest: str) -> None:
     blocks = _abc_blocks(body)
     main_i = max(range(len(blocks)), key=lambda i: len(blocks[i][2]))
     abc = ABC(blocks[main_i][2])
-    cls_mn, out_mn, in_mn, abc, blocks = _hook_names(abc, blocks, main_i)
+    cls_mn, out_mn, in_mn, pay_mn, result_mn, mark_mn, abc, blocks = _hook_names(
+        abc, blocks, main_i)
+    raw = abc.raw
+    for s in ("Send", "Recv", "RedWar"):
+        if _str_index(abc, s) is None:
+            raw = _add_string(raw, abc, s)
+            abc = ABC(raw)
+    blocks = list(blocks)
+    blocks[main_i] = (blocks[main_i][0], blocks[main_i][1], abc.raw)
     send_mi, send_at, send_blob = _send_site(abc, cls_mn, out_mn)
     recv_mi, recv_at, recv_blob = _recv_site(abc, cls_mn, in_mn)
+    marks = []
+    for mi, label in ((send_mi, "Send"), (recv_mi, "Recv"),
+                      (_redwar_init(abc), "RedWar")):
+        at = _scope_end(abc.bodies[mi])
+        blob = _mark_blob(cls_mn, mark_mn, _str_index(abc, label))
+        marks.append((mi, at, blob))
+        if mi == send_mi and send_at >= at:
+            send_at += len(blob)
+        if mi == recv_mi and recv_at >= at:
+            recv_at += len(blob)
     code = dict(abc.bodies)
     exc = {mi: list(abc.body_pack[mi]["exc"]) for mi in abc.body_order}
     stack = {}
-    for mi, at, blob in ((send_mi, send_at, send_blob), (recv_mi, recv_at, recv_blob)):
+    for mi, at, blob in marks + [(send_mi, send_at, send_blob),
+                                 (recv_mi, recv_at, recv_blob)]:
         code[mi] = _insert(code[mi], at, blob)
         exc[mi] = _shift_exc(exc[mi], at, len(blob))
-        stack[mi] = abc.body_pack[mi]["max_stack"] + 6
+        stack[mi] = max(stack.get(mi, abc.body_pack[mi]["max_stack"]),
+                        abc.body_pack[mi]["max_stack"] + 6)
+    _force_fund_buy(abc, code, exc)
+    _open_fund_buy(abc, code)
+    _arm_fund_click(abc, code, exc)
+    _log_payorder(abc, code, exc, stack, cls_mn, pay_mn, result_mn)
     new_abc = _rebuild(abc, code, exc, stack)
     _check(new_abc, send_mi, recv_mi)
     new_body = _swap_abc(body, blocks[main_i], new_abc)
@@ -253,8 +279,8 @@ def _hook_names(abc: ABC, blocks, main_i):
         found = _find_hook(other)
         if not found:
             continue
-        cls_mn, out_mn, in_mn = found
-        raw, idxs = _copy_names(abc, other, (cls_mn, out_mn, in_mn))
+        cls_mn, out_mn, in_mn, pay_mn, result_mn, mark_mn = found
+        raw, idxs = _copy_names(abc, other, (cls_mn, out_mn, in_mn, pay_mn, result_mn, mark_mn))
         abc = ABC(raw)
         if abc.qname(idxs[0]) != "pkt:PktHook":
             raise ValueError(f"主程序里的类名是 {abc.qname(idxs[0])}")
@@ -265,8 +291,18 @@ def _hook_names(abc: ABC, blocks, main_i):
     raise ValueError("SWF 里没有 pkt.PktHook，ffdec 没有把上报类加进去")
 
 
+def _has_static(abc: ABC, qn: str, method: str) -> bool:
+    for idx, inst in enumerate(abc.instances):
+        if abc.qname(inst["name"]) != qn:
+            continue
+        for name, kind, _mi in abc.classes[idx]["traits"]:
+            if kind == "method" and name == method:
+                return True
+    return False
+
+
 def _find_hook(abc: ABC):
-    cls_mn = out_mn = in_mn = None
+    cls_mn = out_mn = in_mn = pay_mn = result_mn = mark_mn = None
     for idx, inst in enumerate(abc.instances):
         if abc.qname(inst["name"]) != "pkt:PktHook":
             continue
@@ -280,9 +316,37 @@ def _find_hook(abc: ABC):
                 out_mn = mn
             elif name == "reportIn":
                 in_mn = mn
-    if cls_mn is None or out_mn is None or in_mn is None:
+            elif name == "reportPay":
+                pay_mn = mn
+            elif name == "reportPayResult":
+                result_mn = mn
+            elif name == "mark":
+                mark_mn = mn
+    if cls_mn is None:
         return None
-    return cls_mn, out_mn, in_mn
+    if None in (out_mn, in_mn, pay_mn, result_mn, mark_mn):
+        raise ValueError("PktHook 缺少 reportPay、reportPayResult 或 mark")
+    return cls_mn, out_mn, in_mn, pay_mn, result_mn, mark_mn
+
+
+def _mark_blob(cls_mn: int, meth_mn: int, si: int) -> bytes:
+    return (bytes([0x60]) + _u30b(cls_mn) + bytes([0x2C]) + _u30b(si)
+            + bytes([0x4F]) + _u30b(meth_mn) + _u30b(1))
+
+
+def _scope_end(code: bytes) -> int:
+    ins = _parse(code)
+    for i, cur in enumerate(ins):
+        if cur["name"] == "pushscope" and i + 1 < len(ins):
+            return ins[i + 1]["addr"]
+    raise ValueError("方法开头没有 pushscope")
+
+
+def _redwar_init(abc: ABC) -> int:
+    for inst in abc.instances:
+        if abc.qname(inst["name"]) == "com.sincetimes.redwar.game:RedWar":
+            return inst["iinit"]
+    raise ValueError("找不到 RedWar 构造函数")
 
 
 def _copy_names(abc: ABC, src: ABC, mns):
@@ -451,6 +515,223 @@ def _recv_site(abc: ABC, cls_mn: int, meth_mn: int):
                 + bytes([0x4F]) + _u30b(meth_mn) + _u30b(1))
         return mi, cur["end"], blob
     raise ValueError("收包方法里找不到 readExternal 之后的插入点")
+
+
+def _s24_to(off: int) -> bytes:
+    if off < -(1 << 23) or off >= (1 << 23):
+        raise ValueError(f"跳转超出 24 位：{off}")
+    if off < 0:
+        off += 1 << 24
+    return bytes((off & 0xFF, (off >> 8) & 0xFF, (off >> 16) & 0xFF))
+
+
+def _buy_join(abc: ABC, ins):
+    """growthFund_buyPrice 之后，_-5OY 调用前的 getlocal0。两条分支都汇合在这里。"""
+    seen = False
+    for i, cur in enumerate(ins):
+        if cur["name"] == "pushstring":
+            si = int(cur["ops"][0])
+            if 0 <= si < len(abc.strings) and abc.strings[si] == "growthFund_buyPrice":
+                seen = True
+        if not seen or cur["name"] != "callpropvoid" or abc.name_of(cur["mn"]) != "_-5OY":
+            continue
+        if int(cur["ops"][1]) != 3 or i < 2:
+            continue
+        if ins[i - 1]["name"] != "getproperty" or ins[i - 2]["name"] != "getlocal0":
+            raise ValueError("成长基金购买按钮的调用形状变了")
+        return ins[i - 2]
+    return None
+
+
+def _force_fund_buy(abc: ABC, code: dict, exc: dict) -> None:
+    """成长基金 buyBtn 交给 _-5OY 的开关改成 true。
+
+    条件不成立时 iffalse 直接跳到汇合点，插在汇合点前面会被跳过去。
+    所以 pop/pushtrue 放在汇合点上，再把这些跳转指过来。
+    """
+    for idx, inst in enumerate(abc.instances):
+        if not abc.qname(inst["name"]).endswith(":GrowthFundPanel"):
+            continue
+        for name, kind, m in inst["traits"]:
+            if kind != "method" or m is None or m not in code:
+                continue
+            ins = _parse(code[m])
+            if _buy_join(abc, ins) is None:
+                continue
+            join = _buy_join(abc, ins)
+            pos = ins.index(join)
+            if not (pos >= 2 and ins[pos - 1]["name"] == "pushtrue"
+                    and ins[pos - 2]["op"] == 0x29):
+                code[m] = _insert(code[m], join["addr"], bytes([0x29, 0x26]))
+                exc[m] = _shift_exc(exc[m], join["addr"], 2)
+                ins = _parse(code[m])
+                join = _buy_join(abc, ins)
+                pos = ins.index(join)
+            pop_at = ins[pos - 2]["addr"]
+            raw = bytearray(code[m])
+            changed = False
+            for cur in ins:
+                if cur["sig"] != ("s24",):
+                    continue
+                dest = cur["end"] + cur["ops"][0]
+                if dest != join["addr"]:
+                    continue
+                raw[cur["addr"] + 1:cur["addr"] + 4] = _s24_to(pop_at - cur["end"])
+                changed = True
+            if changed:
+                code[m] = bytes(raw)
+            return
+    raise ValueError("找不到成长基金 980Q 购买按钮")
+
+
+def _mn_named(abc: ABC, name: str) -> int:
+    hits = [i for i in range(1, len(abc.multinames)) if abc.name_of(i) == name]
+    if not hits:
+        raise ValueError(f"没有名字 {name}")
+    for i in hits:
+        if abc.ns_of(i) in ("", "*"):
+            return i
+    return hits[0]
+
+
+def _arm_fund_click(abc: ABC, code: dict, exc: dict) -> None:
+    """_-5OY 开头强制 local2=true，并直接打开按钮的 mouseEnabled。
+
+    调用点把 true 放进参数之后，假分支仍可能在进这个函数前就把点击丢掉。
+    这里不看参数，登记函数自己打开鼠标。
+    """
+    me = _mn_named(abc, "mouseEnabled")
+    kids = _mn_named(abc, "mouseChildren")
+    blob = bytes([0x26, 0xD6, 0xD1, 0x26, 0x61]) + _u30b(me)
+    # 文字盖在按钮上时，点文字不会落到按钮。关掉子对象命中，整块都由按钮接收。
+    kids_blob = bytes([0xD1, 0x27, 0x61]) + _u30b(kids)
+    for idx, inst in enumerate(abc.instances):
+        if not abc.qname(inst["name"]).endswith(":GrowthFundPanel"):
+            continue
+        for name, kind, mi in inst["traits"]:
+            if name != "_-5OY" or kind != "method" or mi not in code:
+                continue
+            ins = _parse(code[mi])
+            scope = next(cur for cur in ins if cur["name"] == "pushscope")
+            nxt = ins[ins.index(scope) + 1]
+            if not (nxt["name"] == "pushtrue" and ins[ins.index(scope) + 2]["op"] == 0xD6):
+                at = nxt["addr"]
+                code[mi] = _insert(code[mi], at, blob)
+                exc[mi] = _shift_exc(exc.get(mi, []), at, len(blob))
+                ins = _parse(code[mi])
+            if not any(cur["name"] == "setproperty" and cur.get("mn")
+                       and abc.name_of(cur["mn"]) == "mouseChildren" for cur in ins):
+                me_set = next(cur for cur in ins
+                              if cur["name"] == "setproperty" and cur.get("mn")
+                              and abc.name_of(cur["mn"]) == "mouseEnabled")
+                at = ins[ins.index(me_set) + 1]["addr"]
+                code[mi] = _insert(code[mi], at, kids_blob)
+                exc[mi] = _shift_exc(exc.get(mi, []), at, len(kids_blob))
+                ins = _parse(code[mi])
+            raw = bytearray(code[mi])
+            ret = next(cur["addr"] for cur in ins if cur["name"] == "returnvoid")
+            changed = False
+            for cur in ins:
+                if cur["name"] != "iffalse" or cur["sig"] != ("s24",):
+                    continue
+                if cur["end"] + cur["ops"][0] != ret:
+                    continue
+                raw[cur["addr"] + 1:cur["addr"] + 4] = _s24_to(0)
+                changed = True
+            if changed:
+                code[mi] = bytes(raw)
+            return
+    raise ValueError("找不到成长基金点击登记")
+
+
+def _pay_blob(cls_mn: int, meth_mn: int) -> bytes:
+    """dup 之后把栈顶字符串交给 PktHook，原来的那份留给后面的 URLRequest / 比较。"""
+    return (bytes([0x2A, 0x5D]) + _u30b(cls_mn) + bytes([0x2B, 0x4F])
+            + _u30b(meth_mn) + _u30b(1))
+
+
+def _log_payorder(abc: ABC, code: dict, exc: dict, stack: dict,
+                  cls_mn: int, pay_mn: int, result_mn: int) -> None:
+    """BUY 拼好 payorder 地址、以及回包 data 时，经现有 __pkt 写进抓包日志。"""
+    url_at = body_at = None
+    url_mi = body_mi = None
+    for mi, body in code.items():
+        ins = _parse(body)
+        strings = []
+        for cur in ins:
+            if cur["name"] == "pushstring":
+                si = int(cur["ops"][0])
+                if 0 <= si < len(abc.strings):
+                    strings.append(abc.strings[si])
+        if "payorder.war?" in strings:
+            for cur in ins:
+                if cur["name"] == "constructprop" and abc.name_of(cur["mn"]) == "URLRequest":
+                    url_mi, url_at = mi, cur["addr"]
+        if "QPointResult:" in strings:
+            for i, cur in enumerate(ins):
+                if cur["name"] == "getproperty" and abc.name_of(cur["mn"]) == "data":
+                    body_mi, body_at = mi, ins[i + 1]["addr"]
+                    break
+    if url_mi is None or body_mi is None:
+        raise ValueError("找不到 payorder 的请求或回包")
+    for mi, at, meth in ((url_mi, url_at, pay_mn), (body_mi, body_at, result_mn)):
+        blob = _pay_blob(cls_mn, meth)
+        code[mi] = _insert(code[mi], at, blob)
+        exc[mi] = _shift_exc(exc.get(mi, []), at, len(blob))
+        stack[mi] = max(stack.get(mi, abc.body_pack[mi]["max_stack"]), 
+                        abc.body_pack[mi]["max_stack"]) + 4
+
+
+def _open_fund_buy(abc: ABC, code: dict) -> None:
+    """_-6L3 在 passid 为 0 时直接 return，点下去没有任何界面。
+
+    把这个 ifeq 的跳转改成 0，比较完仍继续调用 BUY._-s5。
+    """
+    for idx, inst in enumerate(abc.instances):
+        if not abc.qname(inst["name"]).endswith(":GrowthFundPanel"):
+            continue
+        for name, kind, mi in inst["traits"]:
+            if name != "_-6L3" or kind != "method" or mi not in code:
+                continue
+            ins = _parse(code[mi])
+            by = {cur["addr"]: cur for cur in ins}
+            for i, cur in enumerate(ins):
+                if cur["name"] != "ifeq" or i < 2:
+                    continue
+                if ins[i - 1]["text"] != "pushbyte 0" or ins[i - 2]["name"] != "getproperty":
+                    continue
+                if abc.name_of(ins[i - 2]["mn"]) != "_-6QS":
+                    continue
+                off = cur["ops"][0]
+                if off == 0:
+                    return
+                target = cur["end"] + off
+                if target not in by or by[target]["name"] != "returnvoid":
+                    raise ValueError("passid 判断没有跳到 return")
+                raw = bytearray(code[mi])
+                raw[cur["addr"] + 1:cur["addr"] + 4] = b"\x00\x00\x00"
+                code[mi] = bytes(raw)
+                return
+    raise ValueError("找不到成长基金购买点击")
+
+
+def enable_fund_buy(path: str) -> None:
+    """只改磁盘上已经打过抓包钩子的主 SWF，让 980Q 按钮能进购买。"""
+    raw = open(path, "rb").read()
+    body, _sig, ver, _ = uncompress(raw)
+    blocks = _abc_blocks(body)
+    main_i = max(range(len(blocks)), key=lambda i: len(blocks[i][2]))
+    abc = ABC(blocks[main_i][2])
+    code = dict(abc.bodies)
+    exc = {mi: list(abc.body_pack[mi]["exc"]) for mi in abc.body_order}
+    _force_fund_buy(abc, code, exc)
+    _open_fund_buy(abc, code)
+    _arm_fund_click(abc, code, exc)
+    new_body = _swap_abc(body, blocks[main_i], _rebuild(abc, code, exc, {}))
+    tmp = path + ".buy.tmp"
+    with open(tmp, "wb") as f:
+        f.write(_pack_swf(new_body, ver))
+    os.replace(tmp, path)
 
 
 def _method(abc: ABC, qn: str, name: str) -> int:

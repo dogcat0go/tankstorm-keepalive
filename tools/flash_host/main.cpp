@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -117,10 +118,20 @@ int main(int argc, char* argv[])
         return 2;
     }
 
+    QStringList hosts;
+    hosts << cdn;
+    const QJsonArray extra = cfg.value(QStringLiteral("extra_hosts")).toArray();
+    for (const QJsonValue& v : extra) {
+        const QString h = v.toString();
+        if (!h.isEmpty() && !hosts.contains(h)) hosts << h;
+    }
+    QStringList cond;
+    for (const QString& h : hosts)
+        cond << QStringLiteral("host==\"%1\"").arg(h);
     const QString pac = QStringLiteral(
         "function FindProxyForURL(url,host){"
-        "if(host==\"%1\")return \"PROXY 127.0.0.1:%2\";"
-        "return \"DIRECT\";}").arg(cdn).arg(proxyPort);
+        "if(%1)return \"PROXY 127.0.0.1:%2\";"
+        "return \"DIRECT\";}").arg(cond.join(QStringLiteral("||"))).arg(proxyPort);
     QByteArray flags = "--disable-logging --log-level=3 --allow-outdated-plugins "
                        "--enable-plugins --allow-running-insecure-content";
     flags += " --ppapi-flash-path=\"" + QDir::toNativeSeparators(flash).toUtf8() + "\"";

@@ -34,7 +34,7 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import ProxyHandler, Request, build_opener
 
 # 空代理表才会绕过 Windows 里登记的 127.0.0.1:7892。
@@ -49,6 +49,8 @@ from .socket_keepalive import relogin_with_push
 log = get_logger()
 
 CDN_HOST = "redwar-cdn.sincetimes.com"
+PAY_HOST = "tankstorm-qqgame.sincetimes.com"
+_PAY_HIDE = {"openid", "openkey", "pfkey", "secret", "access_token", "skey"}
 PROXY_PORT = 8443
 PKT_PORT = 18766
 SWF_RE = re.compile(r"RedWar_\d+\.swf", re.I)
@@ -120,6 +122,7 @@ def run(qq, config: dict) -> int:
         json.dump({
             "url": f"http://127.0.0.1:{PKT_PORT}/play",
             "cdn_host": CDN_HOST,
+            "extra_hosts": [PAY_HOST],
             "proxy_port": PROXY_PORT,
             "spki": spki,
             "flash": flash_dll.replace("\\", "/"),
@@ -305,6 +308,11 @@ def _on_pkt(rec: dict, ignore: set, sink: dict):
         log.info("[标记] %s  %s", row["ts"], mark)
         return
     cls = _short_cls(rec.get("cls") or "")
+    direction = rec.get("dir") or ""
+    dump = rec.get("dump") or ""
+    if direction == "trace" or dump in ("begin", "dump-fail"):
+        log.debug("[钩子] %s %s %s", direction, cls, dump[:120])
+        return
     if cls in ignore:
         return
     rec = dict(rec)
@@ -314,9 +322,9 @@ def _on_pkt(rec: dict, ignore: set, sink: dict):
     sink["fh"].write(json.dumps(rec, ensure_ascii=False) + "\n")
     sink["fh"].flush()
     sink["n"] += 1
-    dump = rec.get("dump") or ""
-    direction = rec.get("dir") or ""
-    if cls in ("RceCountryOpt", "RseCountryOpt", "RseCountryUserLst") or (
+    if cls == "payorder":
+        log.info("[购买] %s %s", direction, _redact_pay(dump)[:500])
+    elif cls in ("RceCountryOpt", "RseCountryOpt", "RseCountryUserLst") or (
             direction == "out" and "atkUserID" in dump):
         log.info("[抓包] %s %s  %s", direction, cls, dump[:400])
     elif sink["n"] <= 8 or sink["n"] % 50 == 0:
@@ -651,8 +659,8 @@ class _CdnProxy:
         self._srv = srv
         self.ok = True
         threading.Thread(target=self._accept, daemon=True).start()
-        log.info("CDN 代理 127.0.0.1:%d → %s（RedWar_*.swf 换成钩子版）",
-                 PROXY_PORT, CDN_HOST)
+        log.info("CDN 代理 127.0.0.1:%d → %s（RedWar_*.swf 换成钩子版），%s 的 payorder.war 也记日志",
+                 PROXY_PORT, CDN_HOST, PAY_HOST)
 
     def stop(self):
         self._stop.set()
@@ -739,19 +747,28 @@ class _CdnProxy:
         if len(parts) < 2:
             return
         path = parts[1]
+        host = ""
+        if path.startswith("http://") or path.startswith("https://"):
+            parsed = urlparse(path)
+            host = parsed.hostname or ""
+            path = parsed.path + (("?" + parsed.query) if parsed.query else "")
+        if not host:
+            host = _header_value(head, "host").split(":")[0]
         asked = path.rsplit("/", 1)[-1].split("?", 1)[0]
         n = _content_length(head)
         if n:
             b.read_exact(n)
         if SWF_RE.fullmatch(asked):
             dest = os.path.join(self.pkt_dir, asked)
+            min_size = 1_000_000
             with self._hook_lock:
-                if not (os.path.isfile(dest) and os.path.getsize(dest) > 1_000_000):
+                if not (os.path.isfile(dest) and os.path.getsize(dest) > min_size):
                     url_path = path.split("?", 1)[0]
                     if not url_path.startswith("/"):
                         url_path = "/" + url_path.split("/", 3)[-1]
-                    _hook_swf(self.pkt_dir, asked, f"https://{CDN_HOST}{url_path}")
-            if os.path.isfile(dest) and os.path.getsize(dest) > 1_000_000:
+                    full = f"https://{CDN_HOST}{url_path}"
+                    _hook_swf(self.pkt_dir, asked, full)
+            if os.path.isfile(dest) and os.path.getsize(dest) > min_size:
                 data = open(dest, "rb").read()
                 _write_http(b, 200, {
                     b"Content-Type": b"application/x-shockwave-flash",
@@ -761,17 +778,17 @@ class _CdnProxy:
                 log.info("已投递钩子版 %s（%d 字节）", asked, len(data))
                 return
             log.warning("钩子版没有就绪，本次透传原版 %s", asked)
-        if path.startswith("http://") or path.startswith("https://"):
-            parsed = urlparse(path)
-            path = parsed.path + (("?" + parsed.query) if parsed.query else "")
         if not path.startswith("/"):
             path = "/" + path
         if asked.lower().endswith(".swf"):
             log.info("透传 %s", asked)
-        self._forward(b, path)
+        elif not asked.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".mp3", ".webp")):
+            log.debug("请求 %s%s", host, path[:160])
+        self._forward(b, path, host or CDN_HOST)
 
-    def _forward(self, b, path: str):
-        url = f"https://{CDN_HOST}{path}"
+    def _forward(self, b, path: str, host: str):
+        url = f"https://{host}{path}"
+        pay = "payorder.war" in path.split("?", 1)[0]
         try:
             req = Request(url, headers={"Accept-Encoding": "identity",
                                         "User-Agent": "Mozilla/5.0"})
@@ -784,6 +801,11 @@ class _CdnProxy:
             _write_http(b, 502, {b"Content-Type": b"text/plain"},
                         b"upstream error")
             return
+        if int(status) != 200 and not path.lower().split("?", 1)[0].endswith(
+                (".png", ".jpg", ".jpeg", ".gif", ".mp3", ".webp")):
+            log.debug("上游 %s %s%s", status, host, path[:140])
+        if pay:
+            _log_payorder(host, path, int(status), data)
         _write_http(b, int(status), {
             b"Content-Type": ctype.encode("latin-1", "replace"),
             b"Cache-Control": b"no-store",
@@ -820,6 +842,46 @@ class _Buf:
             self.buf += chunk
         take, self.buf = self.buf[:n], self.buf[n:]
         return take
+
+
+def _redact_pay(text: str) -> str:
+    import re
+    return re.sub(
+        r"(?i)(openid|openkey|pfkey|secret|access_token|skey)=([^&\\s]*)",
+        lambda m: f"{m.group(1)}=<{len(m.group(2))}>", text)
+
+
+def _header_value(head: bytes, name: str) -> str:
+    prefix = (name.lower() + ":").encode()
+    for line in head.split(b"\n"):
+        if line.lower().startswith(prefix):
+            return line.split(b":", 1)[1].strip().decode("latin-1", "replace")
+    return ""
+
+
+def _log_payorder(host: str, path: str, status: int, data: bytes) -> None:
+    q = path.split("?", 1)[1] if "?" in path else ""
+    shown = []
+    for k, vs in parse_qs(q, keep_blank_values=True).items():
+        v = vs[0] if vs else ""
+        shown.append(f"{k}=<{len(v)}>" if k.lower() in _PAY_HIDE else f"{k}={v}")
+    text = data.decode("utf-8", "replace")
+    try:
+        obj = json.loads(text)
+    except json.JSONDecodeError:
+        obj = None
+    if isinstance(obj, dict):
+        bits = []
+        for k, v in obj.items():
+            if k in ("url_params", "billKey") and isinstance(v, str) and len(v) > 80:
+                bits.append(f"{k}=<{len(v)}>{v[:80]}")
+            else:
+                bits.append(f"{k}={v}")
+        fields = " ".join(bits)
+    else:
+        fields = text[:180].replace("\n", " ")
+    log.info("[购买] %s%s %s -> %s %s", host, path.split("?", 1)[0],
+             " ".join(shown), status, fields)
 
 
 def _content_length(head: bytes) -> int:
