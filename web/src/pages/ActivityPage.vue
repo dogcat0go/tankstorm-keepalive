@@ -55,9 +55,9 @@ const eggJob = computed(() => props.jobs.find((it) => it.kind === "egg") || null
 const wgJob = computed(() => props.jobs.find((it) => it.kind === "wargame") || null);
 const wgQuery = ref("");
 const wgLevel = ref("0");
-const wgOrder = ref("asc");
 const wgPage = ref(1);
-const wgSize = 20;
+const wgPageText = ref("1");
+const wgSize = 8;
 
 const wgBoard = computed(() => props.wargame || {});
 const wgSites = computed(() => (Array.isArray(wgBoard.value.sites) ? wgBoard.value.sites : []));
@@ -71,17 +71,11 @@ const wgLevels = computed(() => {
 const wgShown = computed(() => {
   const q = wgQuery.value.trim().toLowerCase();
   const lv = Number(wgLevel.value) || 0;
-  const rows = wgSites.value.filter((row) => {
+  return wgSites.value.filter((row) => {
     if (lv && Number(row.lv) !== lv) return false;
     if (!q) return true;
     return String(row.name || "").toLowerCase().includes(q)
       || String(row.country || "").toLowerCase().includes(q);
-  });
-  const sign = wgOrder.value === "desc" ? -1 : 1;
-  return rows.slice().sort((a, b) => {
-    const ap = Number(a.power) > 0 ? Number(a.power) : Number.MAX_SAFE_INTEGER;
-    const bp = Number(b.power) > 0 ? Number(b.power) : Number.MAX_SAFE_INTEGER;
-    return (ap - bp) * sign || (Number(a.lv) || 0) - (Number(b.lv) || 0) || (Number(a.id) || 0) - (Number(b.id) || 0);
   });
 });
 const wgPages = computed(() => Math.max(1, Math.ceil(wgShown.value.length / wgSize)));
@@ -92,9 +86,23 @@ const wgSlice = computed(() => {
 });
 const wgPageNo = computed(() => Math.min(Math.max(1, wgPage.value), wgPages.value));
 
-watch([wgQuery, wgLevel, wgOrder], () => {
+watch([wgQuery, wgLevel], () => {
   wgPage.value = 1;
 });
+
+watch(wgPageNo, (n) => {
+  wgPageText.value = String(n);
+});
+
+function jumpWgPage() {
+  const n = Number(String(wgPageText.value).trim());
+  if (!Number.isFinite(n)) {
+    wgPageText.value = String(wgPageNo.value);
+    return;
+  }
+  wgPage.value = Math.trunc(n);
+  wgPageText.value = String(wgPageNo.value);
+}
 
 function liveText(n) {
   if (n === null || n === undefined || n === "") return "还没读到";
@@ -110,6 +118,7 @@ function powerText(n) {
 }
 
 function wgState(row) {
+  if (!row || row.empty || !row.uid) return "空场";
   if (row.mine) return "自己";
   if (row.truce) return "停战";
   if (row.home) return "本国";
@@ -180,18 +189,12 @@ function occupyText(occ) {
             <option v-for="lv in wgLevels" :key="lv" :value="String(lv)">{{ lv }}级</option>
           </select>
         </label>
-        <label>排序
-          <select v-model="wgOrder">
-            <option value="asc">战力从低到高</option>
-            <option value="desc">战力从高到低</option>
-          </select>
-        </label>
         <label>查找<input v-model="wgQuery" placeholder="名字或国家" /></label>
       </form>
       <p v-if="wgJob">{{ wgJob.status }} {{ wgJob.detail }}</p>
       <p v-if="wgBoard.result">{{ wgBoard.result }}</p>
       <p>剩余次数 {{ liveText(wgBoard.token) }}<span v-if="occupyText(wgBoard.occupy)"> · {{ occupyText(wgBoard.occupy) }}</span></p>
-      <p class="muted">点刷新拉战争学院的演习场，只列有人占的，写出名字和战力。选一个人进攻，打完把结果写在上面。战报里能分出双方血量时，写出我方击伤对方、对方击伤我方的百分比。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
+      <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 8 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报里能分出双方血量时，写出我方击伤对方、对方击伤我方的百分比。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
       <p v-if="!wgSites.length" class="muted">还没有场地。点刷新场地。</p>
       <p v-else-if="!wgShown.length" class="muted">这个筛选下没有人</p>
       <div v-else class="wide">
@@ -202,8 +205,8 @@ function occupyText(occ) {
           <tbody>
             <tr v-for="row in wgSlice" :key="row.id + ':' + row.uid">
               <td>{{ row.lv ? row.lv + "级" : "—" }}</td>
-              <td>{{ row.name }}</td>
-              <td>{{ powerText(row.power) }}</td>
+              <td>{{ row.empty || !row.uid ? "空场" : row.name }}</td>
+              <td>{{ row.empty || !row.uid ? "—" : powerText(row.power) }}</td>
               <td>{{ row.country || "—" }}</td>
               <td>{{ wgState(row) }}</td>
               <td>
@@ -215,7 +218,8 @@ function occupyText(occ) {
       </div>
       <p v-if="wgPages > 1" class="pager">
         <button type="button" class="ghost" :disabled="wgPageNo <= 1" @click="wgPage = wgPageNo - 1">上一页</button>
-        {{ wgPageNo }} / {{ wgPages }}，共 {{ wgShown.length }} 人
+        <label>页码<input v-model="wgPageText" class="mins" inputmode="numeric" @change="jumpWgPage" /></label>
+        / {{ wgPages }}
         <button type="button" class="ghost" :disabled="wgPageNo >= wgPages" @click="wgPage = wgPageNo + 1">下一页</button>
       </p>
     </details>

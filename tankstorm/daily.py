@@ -5239,7 +5239,7 @@ def _wargame_panel(pages):
 
 
 def _wargame_board(pages, me, home):
-    """有人的场地全部留下，按战力从低到高排。空场只计数，不进名单。"""
+    """场地按服务器原来的顺序留下。空场也留在原位，方便和游戏翻页对上。"""
     now = time.time()
     rows = []
     empty = 0
@@ -5250,7 +5250,6 @@ def _wargame_board(pages, me, home):
         uid = e.get("field6") if isinstance(e.get("field6"), str) else ""
         if not uid:
             empty += 1
-            continue
         name = e.get("field7") if isinstance(e.get("field7"), str) and e.get("field7") else uid
         power = e.get("field9") if _plain_int(e.get("field9")) and e.get("field9") > 0 else 0
         lv = e.get("field2") if _plain_int(e.get("field2")) else 0
@@ -5263,13 +5262,13 @@ def _wargame_board(pages, me, home):
             "name": name,
             "power": power,
             "country": land,
-            "truce": bool(e.get("field12") in (True, 1) or truce_at > now),
+            "truce": bool(uid and (e.get("field12") in (True, 1) or truce_at > now)),
             "mine": bool(me and uid == me),
             "home": bool(
-                isinstance(home, int) and not isinstance(home, bool)
+                uid and isinstance(home, int) and not isinstance(home, bool)
                 and land == home),
+            "empty": not uid,
         })
-    rows.sort(key=lambda r: (0 if r["power"] > 0 else 1, r["power"], r["lv"], r["id"]))
     occupy = None
     for p in pages:
         if p.get("bOccupySite") is not True or occupy is not None:
@@ -5455,9 +5454,10 @@ def wargame_list(rec, sock, config):
     me = str(getattr(rec, "uid", "") or "")
     board = _wargame_board(pages, me, read_my_country(rec))
     _publish_wargame(board)
-    text = f"看到 {len(board['sites'])} 个有人的演习场"
+    occupied = sum(1 for row in board["sites"] if row.get("uid"))
+    text = f"看到 {occupied} 个有人的演习场"
     if board["empty"]:
-        text += f"，空场 {board['empty']} 个没列"
+        text += f"，空场 {board['empty']} 个留在原来的位置"
     if board["token"] is not None:
         text += f"，剩余次数 {board['token']}"
     if board["partial"]:

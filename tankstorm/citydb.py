@@ -4650,8 +4650,7 @@ def note_wargame(board=None, result=None) -> None:
             if not isinstance(row, dict):
                 continue
             uid = str(row.get("uid") or "")
-            if not uid:
-                continue
+            vacant = not uid
             try:
                 land = int(row.get("country") or 0)
             except (TypeError, ValueError):
@@ -4673,12 +4672,13 @@ def note_wargame(board=None, result=None) -> None:
                 "id": sid,
                 "lv": lv,
                 "uid": uid[:64],
-                "name": str(row.get("name") or uid)[:32],
-                "power": power if power > 0 else 0,
+                "name": str(row.get("name") or ("" if vacant else uid))[:32],
+                "power": 0 if vacant or power <= 0 else power,
                 "country": lands[land],
-                "truce": bool(row.get("truce")),
-                "mine": bool(row.get("mine")),
-                "home": bool(row.get("home")),
+                "truce": bool(row.get("truce")) and not vacant,
+                "mine": bool(row.get("mine")) and not vacant,
+                "home": bool(row.get("home")) and not vacant,
+                "empty": vacant,
             })
         prev["sites"] = sites
         token = board.get("token")
@@ -4713,7 +4713,7 @@ def wargame_live(user_id: int) -> dict:
         data = {}
     sites = []
     for row in data.get("sites") or []:
-        if isinstance(row, dict) and row.get("uid") and row.get("id"):
+        if isinstance(row, dict) and row.get("id") and (row.get("uid") or row.get("empty")):
             sites.append(row)
     token = data.get("token")
     occ = data.get("occupy") if isinstance(data.get("occupy"), dict) else None
