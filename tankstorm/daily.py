@@ -5239,7 +5239,7 @@ def _wargame_panel(pages):
 
 
 def _wargame_board(pages, me, home):
-    """有人的场地按战力从低到高。空场只计数，不进名单。"""
+    """有人的场地全部留下，按战力从低到高排。空场只计数，不进名单。"""
     now = time.time()
     rows = []
     empty = 0
@@ -5270,7 +5270,6 @@ def _wargame_board(pages, me, home):
                 and land == home),
         })
     rows.sort(key=lambda r: (0 if r["power"] > 0 else 1, r["power"], r["lv"], r["id"]))
-    capped = len(rows) > 500
     occupy = None
     for p in pages:
         if p.get("bOccupySite") is not True or occupy is not None:
@@ -5285,12 +5284,11 @@ def _wargame_board(pages, me, home):
     token = panel.get("tokenNum") if isinstance(panel, dict) else None
     return {
         "token": token if _plain_int(token) else None,
-        "sites": rows[:500],
+        "sites": rows,
         "all_sites": rows,
         "occupy": occupy,
         "empty": empty,
         "partial": not any(p.get("bLastMsg") is True for p in pages),
-        "capped": capped,
     }
 
 
@@ -5464,8 +5462,6 @@ def wargame_list(rec, sock, config):
         text += f"，剩余次数 {board['token']}"
     if board["partial"]:
         text += "，列表没到最后一页"
-    if board["capped"]:
-        text += "，只保留战力最低的 500 个"
     occ = board.get("occupy") or {}
     if occ.get("id"):
         text += f"，自己占着场地 {occ['id']}"
