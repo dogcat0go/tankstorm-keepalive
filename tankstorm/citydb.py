@@ -4680,7 +4680,8 @@ def note_wargame(board=None, result=None) -> None:
                 "home": bool(row.get("home")) and not vacant,
                 "empty": vacant,
             })
-        prev["sites"] = sites
+        if sites or not isinstance(prev.get("sites"), list):
+            prev["sites"] = sites
         token = board.get("token")
         prev["token"] = token if isinstance(token, int) and not isinstance(token, bool) else None
         prev["partial"] = bool(board.get("partial"))

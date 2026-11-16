@@ -662,8 +662,9 @@ class Recorder:
                             hist = self.recent.setdefault(nm, [])
                             hist.append((self._latest_seq, data))
                             # 城市玩家列表（RseCountryUserLst）一条城可能推很多人，
-                            # 每人一条时 8 条会把前面的冲掉。其它消息仍只留近 8 条。
-                            cap = 256 if nm in ("RseCountryUserLst", "RseGet") else 8
+                            # 每人一条时 8 条会把前面的冲掉。演习场名单也是连着推很多条，
+                            # 占着场地时后面还有状态包，8 条会把名单冲掉。其它消息仍只留近 8 条。
+                            cap = 256 if nm in ("RseCountryUserLst", "RseGet", "RseWarGameOpt") else 8
                             if len(hist) > cap:
                                 del hist[:-cap]
                             _note_self_defeat(data)

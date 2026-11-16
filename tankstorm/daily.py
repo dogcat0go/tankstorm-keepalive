@@ -5151,25 +5151,47 @@ def _send_op(sock, rec, task, fields):
 
 
 def _collect_wargame_pages(sock, rec, since, timeout):
-    """把这次查询推来的场地页攒齐。bLastMsg 到了就停，超时就用已经拿到的。"""
+    """把这次查询推来的场地页攒齐。
+
+    已经占着场地时，服务器先回一条带 bLastMsg 的状态，名单在后面。
+    这条状态不算名单结束，还要继续收。
+    """
     deadline = time.time() + timeout
     pages, seen = [], set()
+    last_new = time.time()
+    had_sites = False
+    finished = False
     while time.time() < deadline:
         hist = (getattr(rec, "recent", {}) or {}).get("RseWarGameOpt") or []
         if not hist:
             got = (getattr(rec, "latest", {}) or {}).get("RseWarGameOpt")
             hist = [got] if got else []
+        added = False
         for seq, data in hist:
             if not isinstance(data, dict) or seq in seen or seq <= since:
                 continue
-            if data.get("type") not in (None, 1):
+            if data.get("type") not in (None, 0, 1) and "field14" not in data:
                 continue
             if ("field14" not in data and "tokenNum" not in data
-                    and data.get("bLastMsg") is not True):
+                    and data.get("bLastMsg") is not True
+                    and data.get("bOccupySite") is not True):
                 continue
             seen.add(seq)
             pages.append(data)
-        if any(p.get("bLastMsg") is True for p in pages):
+            added = True
+            if data.get("field14"):
+                had_sites = True
+            if data.get("bLastMsg") is True and had_sites:
+                finished = True
+        if added:
+            last_new = time.time()
+        if finished:
+            break
+        quiet = time.time() - last_new
+        saw_last = any(p.get("bLastMsg") is True for p in pages)
+        if had_sites and saw_last and quiet >= 0.8:
+            break
+        if not had_sites and saw_last and quiet >= 1.5:
             break
         _beat()
         try:
@@ -5215,8 +5237,8 @@ def _query_wargame_pages(rec, sock, timeout):
         raise
     except Exception as exc:
         return None, f"发送失败：{exc}"
-    _nap(0.4)
     since = rec.seq_mark()
+    _nap(0.4)
     query = {1: ("int32", 1), 2: ("int32", 0), 3: ("string", ""), 4: ("bool", False)}
     try:
         _send_op(sock, rec, task, query)
@@ -5455,7 +5477,11 @@ def wargame_list(rec, sock, config):
     board = _wargame_board(pages, me, read_my_country(rec))
     _publish_wargame(board)
     occupied = sum(1 for row in board["sites"] if row.get("uid"))
-    text = f"看到 {occupied} 个有人的演习场"
+    if not board["sites"]:
+        log.info("[%s] 回包 %d 条，没有场地名单", _task_of("军事演习").key, len(pages))
+        text = "这次没拉到演习场名单"
+    else:
+        text = f"看到 {occupied} 个有人的演习场"
     if board["empty"]:
         text += f"，空场 {board['empty']} 个留在原来的位置"
     if board["token"] is not None:
@@ -5488,6 +5514,10 @@ def wargame_attack(rec, sock, config, site_id, uid, name="", power=0):
     me = str(getattr(rec, "uid", "") or "")
     board = _wargame_board(pages, me, read_my_country(rec))
     row = next((s for s in (board.get("all_sites") or board["sites"]) if s["id"] == site_id), None)
+    if not board["sites"]:
+        why = "这次没拉到演习场名单，没发进攻"
+        _publish_wargame(board, why)
+        return False, why
     if row is None:
         why = f"场地 {site_id} 现在没人"
         _publish_wargame(board, why)
