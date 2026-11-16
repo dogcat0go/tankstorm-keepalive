@@ -476,8 +476,8 @@ def main() -> int:
     g4.add_argument("--badge", action="store_true",
                     help="连上后把背包里的献礼徽章宝箱 30157 全部打开再退出")
     g4.add_argument("--donate", action="store_true",
-                    help="连上后捐献献礼徽章再退出。"
-                         "先 type=0 开面板，再 type=2、activeType=1")
+                    help="连上后直接捐献献礼徽章再退出。"
+                         "只发 type=2、activeType=1，不先开面板")
     g4.add_argument("--tribute", action="store_true",
                     help="一键献礼：打开献礼宝箱，摧毁建筑修复卡，"
                          "打开献礼徽章宝箱，捐献献礼徽章，再清理背包")

@@ -339,7 +339,7 @@ function occupyText(occ) {
         <button type="submit">捐献</button>
       </form>
       <p v-if="donateJob">{{ donateJob.status }} {{ donateJob.detail }}</p>
-      <p class="muted">先开面板，再发 type=2、activeType=1。</p>
+      <p class="muted">直接发 type=2、activeType=1，不先开面板。</p>
     </details>
     <details class="campaign-box">
       <summary>道具表</summary>

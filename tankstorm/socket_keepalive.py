@@ -2829,7 +2829,8 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 elif kind == "soul":
                     ok, why = daily.soul_exchange(rec, sock, params.get("times") or 1)
                 elif kind == "tribute":
-                    ok, why = daily.tribute_pack(rec, sock, params.get("ids"))
+                    ok, why = daily.tribute_pack(
+                        rec, sock, params.get("ids"), on_progress=_show)
                 else:
                     fn = {"gift": daily.open_gift, "repair_drop": daily.drop_repair,
                           "badge": daily.open_badge, "donate": daily.donate_badge}[kind]
@@ -4776,7 +4777,7 @@ def run_donate_once(qq, config: dict) -> int:
 def run_tribute_once(qq, config: dict) -> int:
     """连一次，按一键献礼的顺序做完再退出。"""
     def _work(rec, sock, spec, ctx, beater):
-        ok, why = daily.tribute_pack(rec, sock)
+        ok, why = daily.tribute_pack(rec, sock, on_progress=lambda text: log.info("[一键献礼] %s", text))
         log.info("[一键献礼] %s", why)
         log.info("任务执行期间共发心跳 %d 次", beater.count)
         return 0 if ok else 1

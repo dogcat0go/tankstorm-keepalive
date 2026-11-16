@@ -3753,17 +3753,18 @@ def soul_exchange(rec, sock, times=1):
 
 def _guild_act(rec, sock, typ):
     mark = rec.seq_mark()
-    sender.send_frame(sock, "04f9", encode_message({
-        1: ("int32", typ), 2: ("int32", 1),
-        3: ("int32", 0), 4: ("int32", 0),
+    sender.send_frame(sock, "04db", encode_message({
+        1: ("int32", typ), 2: ("int32", 0),
+        3: ("int32", 1), 4: ("int32", 0),
     }, omit_zero=False), rec.rc4_c2s)
-    return _await_response(sock, rec, "RseBindGuildAct", mark, 6.0)
+    return _await_response(sock, rec, "RseSixYearBuildGuild", mark, 6.0)
 
 
 def donate_badge(rec, sock):
-    """捐献献礼徽章。2026-11-16 21:35 抓包：先 type=0 开面板，再 type=2、activeType=1。"""
-    if not isinstance(_guild_act(rec, sock, 0), dict):
-        return False, "失败：没打开献礼捐献"
+    """捐献献礼徽章。2026-11-16 21:35 抓包是 RceSixYearBuildGuild type=2、activeType=1。
+
+    不先开面板。之前误发成 RceBindGuildAct，服务器不认，所以没有回包。
+    """
     got = _guild_act(rec, sock, 2)
     if not isinstance(got, dict):
         return False, "失败：捐献没有回包"
@@ -3777,18 +3778,32 @@ def open_badge(rec, sock):
     return drain_item(rec, sock, 30157, 0, 999, "献礼徽章宝箱")
 
 
-def tribute_pack(rec, sock, clean_ids=None):
+def tribute_pack(rec, sock, clean_ids=None, on_progress=None):
     """一键献礼：献礼宝箱、建筑修复卡、献礼徽章宝箱、捐献，最后清理背包。"""
     from .bag_clean import clean_bag, default_ids
+    steps = (
+        ("打开献礼宝箱", open_gift),
+        ("摧毁建筑修复卡", drop_repair),
+        ("打开献礼徽章宝箱", open_badge),
+        ("捐献献礼徽章", donate_badge),
+    )
     bits = []
     ok_all = True
-    for fn in (open_gift, drop_repair, open_badge, donate_badge):
+    for title, fn in steps:
         raise_if_stopped()
+        log.info("[一键献礼] 开始%s", title)
+        if on_progress:
+            on_progress(f"开始{title}")
         ok, why = fn(rec, sock)
+        log.info("[一键献礼] %s", why)
         bits.append(why)
         ok_all = ok_all and ok
     ids = clean_ids or default_ids()
-    ok, why = clean_bag(rec, sock, ids)
+    log.info("[一键献礼] 开始清理背包")
+    if on_progress:
+        on_progress("开始清理背包")
+    ok, why = clean_bag(rec, sock, ids, on_progress=on_progress)
+    log.info("[一键献礼] %s", why)
     bits.append(why)
     return ok_all and ok, "。".join(bits)
 
