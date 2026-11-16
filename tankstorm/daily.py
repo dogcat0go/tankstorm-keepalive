@@ -5198,12 +5198,13 @@ def _attack_reply(sid, uid):
     return want
 
 
-def _run_wargame(rec, sock, config):
-    """先开战争学院再拉场地。从低到高打低于 900 万的，ret=10 就换下一个。"""
+def _plain_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _query_wargame_pages(rec, sock, timeout):
+    """开战争学院再拉场地页。失败返回 (None, 原因)。"""
     task = _task_of("军事演习")
-    if rec is None or sock is None:
-        return False, "没有连接，不打"
-    timeout, _gap = _daily_wait(config)
     try:
         sender.send_frame(
             sock, "04a5",
@@ -5213,7 +5214,7 @@ def _run_wargame(rec, sock, config):
     except OSError:
         raise
     except Exception as exc:
-        return False, f"发送失败：{exc}"
+        return None, f"发送失败：{exc}"
     _nap(0.4)
     since = rec.seq_mark()
     query = {1: ("int32", 1), 2: ("int32", 0), 3: ("string", ""), 4: ("bool", False)}
@@ -5222,13 +5223,331 @@ def _run_wargame(rec, sock, config):
     except OSError:
         raise
     except Exception as exc:
-        return False, f"发送失败：{exc}"
+        return None, f"发送失败：{exc}"
     log.info("[%s] 查询场地", task.key)
     pages = _collect_wargame_pages(sock, rec, since, timeout)
     if not pages:
-        return False, "失败：未收到演习场列表"
+        return None, "失败：未收到演习场列表"
     if not any(p.get("bLastMsg") is True for p in pages):
         log.info("[%s] 场地列表没等齐最后一页，按已收到的继续", task.key)
+    return pages, ""
+
+
+def _wargame_panel(pages):
+    return next((p for p in pages
+                 if _plain_int(p.get("tokenNum"))), None)
+
+
+def _wargame_board(pages, me, home):
+    """有人的场地按战力从低到高。空场只计数，不进名单。"""
+    now = time.time()
+    rows = []
+    empty = 0
+    for e in _wargame_sites(pages):
+        sid = e.get("field1")
+        if not _plain_int(sid):
+            continue
+        uid = e.get("field6") if isinstance(e.get("field6"), str) else ""
+        if not uid:
+            empty += 1
+            continue
+        name = e.get("field7") if isinstance(e.get("field7"), str) and e.get("field7") else uid
+        power = e.get("field9") if _plain_int(e.get("field9")) and e.get("field9") > 0 else 0
+        lv = e.get("field2") if _plain_int(e.get("field2")) else 0
+        land = e.get("field8") if _plain_int(e.get("field8")) else 0
+        truce_at = e.get("field13") if _plain_int(e.get("field13")) else 0
+        rows.append({
+            "id": sid,
+            "lv": lv,
+            "uid": uid,
+            "name": name,
+            "power": power,
+            "country": land,
+            "truce": bool(e.get("field12") in (True, 1) or truce_at > now),
+            "mine": bool(me and uid == me),
+            "home": bool(
+                isinstance(home, int) and not isinstance(home, bool)
+                and land == home),
+        })
+    rows.sort(key=lambda r: (0 if r["power"] > 0 else 1, r["power"], r["lv"], r["id"]))
+    capped = len(rows) > 500
+    occupy = None
+    for p in pages:
+        if p.get("bOccupySite") is not True or occupy is not None:
+            continue
+        sid = p.get("siteID")
+        occupy = {
+            "id": sid if _plain_int(sid) else 0,
+            "lv": p.get("siteLv") if _plain_int(p.get("siteLv")) else 0,
+            "end": _future_stamp(p, "siteEndTime") or 0,
+        }
+    panel = _wargame_panel(pages)
+    token = panel.get("tokenNum") if isinstance(panel, dict) else None
+    return {
+        "token": token if _plain_int(token) else None,
+        "sites": rows[:500],
+        "all_sites": rows,
+        "occupy": occupy,
+        "empty": empty,
+        "partial": not any(p.get("bLastMsg") is True for p in pages),
+        "capped": capped,
+    }
+
+
+def _army_hp(node):
+    """一辆车的剩余血和满血。对不上 PVEArmyRecord 就不当成车。"""
+    if not isinstance(node, dict):
+        return None
+    final = node.get("nFinalHp", node.get("field4"))
+    mx = node.get("nMaxHp", node.get("field6"))
+    typ = node.get("nType", node.get("field2"))
+    ident = node.get("nID", node.get("field1"))
+    if not all(_plain_int(v) for v in (final, mx, typ, ident)):
+        return None
+    if ident <= 0 or not (0 <= typ <= 30) or mx < 100 or final < 0 or final > mx:
+        return None
+    return final, mx
+
+
+def _armies_in(node):
+    found = []
+
+    def walk(n, depth):
+        if depth > 8:
+            return
+        if isinstance(n, dict):
+            hp = _army_hp(n)
+            if hp:
+                found.append(hp)
+                return
+            for v in n.values():
+                walk(v, depth + 1)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v, depth + 1)
+
+    walk(node, 0)
+    return found
+
+
+def _two_sides(node, depth=0):
+    """field1 是己方、field2 是对方时，两边都要有车。"""
+    if depth > 4 or not isinstance(node, dict):
+        return None
+    ours = _armies_in(node.get("field1"))
+    theirs = _armies_in(node.get("field2"))
+    if ours and theirs:
+        return ours, theirs
+    found = None
+    for key in ("field1", "field2", "field3", "field8"):
+        child = node.get(key)
+        kids = child if isinstance(child, list) else [child]
+        for item in kids:
+            got = _two_sides(item, depth + 1)
+            if got:
+                found = got
+    return found
+
+
+def _hit_pct(who, armies):
+    mx = sum(m for _left, m in armies)
+    left = sum(f for f, _mx in armies)
+    if mx <= 0:
+        return ""
+    lost = (mx - left) * 100.0 / mx
+    return f"{who} {lost:.1f}%（剩 {left}/{mx}）"
+
+
+def _wargame_hurt(report):
+    """从战报里算我方击伤对方、对方击伤我方的百分比。分不出来返回空。"""
+    nodes = report if isinstance(report, list) else [report]
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        sides = _two_sides(node)
+        if sides:
+            ours, theirs = sides
+            parts = [p for p in (_hit_pct("我方击伤对方", theirs),
+                                 _hit_pct("对方击伤我方", ours)) if p]
+            if parts:
+                return "，".join(parts)
+        defu = node.get("field2")
+        if not isinstance(defu, dict) or not isinstance(defu.get("field1"), str) or not defu.get("field1"):
+            continue
+        after, lost = defu.get("field8"), defu.get("field14")
+        if not _plain_int(after) or not _plain_int(lost) or lost < 0 or after < 0:
+            continue
+        base = lost + after
+        if base <= 0:
+            continue
+        return f"我方击伤对方 {lost * 100.0 / base:.1f}%（掉 {lost}，剩余 {after}）"
+    return ""
+
+
+def _wargame_outcome(data, sid, name, power):
+    ret = data.get("ret") if isinstance(data, dict) else None
+    hurt = _wargame_hurt(data.get("fightReoprt") if isinstance(data, dict) else None)
+    report = data.get("fightReoprt") if isinstance(data, dict) else None
+    if isinstance(report, dict) and report and not hurt:
+        shape = []
+        for k, v in list(data["fightReoprt"].items())[:12]:
+            if isinstance(v, dict):
+                shape.append(f"{k}:{{{','.join(list(v)[:6])}}}")
+            elif isinstance(v, list):
+                shape.append(f"{k}:[{len(v)}]")
+            else:
+                shape.append(f"{k}:{type(v).__name__}")
+        log.info("[军事演习] 战报没有解析出血量 %s", " ".join(shape))
+        hurt = "战报里没分出双方血量"
+    who = f"场地 {sid}（{name}，战力 {power}）"
+    if isinstance(data, dict) and data.get("bOccupySite") is True and ret in (0, 100):
+        text = f"打下{who}"
+        ts = _future_stamp(data, "siteEndTime")
+        if ts:
+            text += f"，占用至 {(ts - time.time()) / 60:.0f} 分钟后"
+        if hurt:
+            text += f"。{hurt}"
+        return True, text
+    if ret == 10:
+        text = f"{who}被拒 ret=10"
+    else:
+        text = f"{who}没打下来 ret={ret}"
+    if hurt:
+        text += f"。{hurt}"
+    return False, text
+
+
+def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
+    """发一次 type=3。失败返回 (None, 原因)。"""
+    task = _task_of("军事演习")
+    names = _field_names(_schema, task.opcode)
+    fields = {1: ("int32", 3), 2: ("int32", sid),
+              3: ("string", uid), 4: ("bool", False)}
+    safe, why = _check_safety(task, names, fields)
+    if not safe:
+        return None, f"安全检查拦截：{why}"
+    before = rec.seq_mark()
+    try:
+        _send_op(sock, rec, task, fields)
+    except OSError:
+        raise
+    except Exception as exc:
+        return None, f"发送失败：{exc}"
+    log.info("[%s] 攻打场地 %s（%s，战力 %s）", task.key, sid, name, power)
+    data = _await_response(
+        sock, rec, "RseWarGameOpt", before, timeout, want=_attack_reply(sid, uid))
+    if not isinstance(data, dict):
+        return None, "失败：未收到攻打回包"
+    return data, ""
+
+
+def _publish_wargame(board, result=None):
+    from . import citydb
+    citydb.note_wargame(board, result)
+
+
+def wargame_list(rec, sock, config):
+    """拉演习场，记下占领者的名字和战力。不进攻。"""
+    if rec is None or sock is None:
+        return False, "没有连接，不查"
+    timeout, _gap = _daily_wait(config)
+    pages, why = _query_wargame_pages(rec, sock, max(timeout, 20))
+    if pages is None:
+        return False, why
+    me = str(getattr(rec, "uid", "") or "")
+    board = _wargame_board(pages, me, read_my_country(rec))
+    _publish_wargame(board)
+    text = f"看到 {len(board['sites'])} 个有人的演习场"
+    if board["empty"]:
+        text += f"，空场 {board['empty']} 个没列"
+    if board["token"] is not None:
+        text += f"，剩余次数 {board['token']}"
+    if board["partial"]:
+        text += "，列表没到最后一页"
+    if board["capped"]:
+        text += "，只保留战力最低的 500 个"
+    occ = board.get("occupy") or {}
+    if occ.get("id"):
+        text += f"，自己占着场地 {occ['id']}"
+        if occ.get("end"):
+            text += f"，还有 {(occ['end'] - time.time()) / 60:.0f} 分钟"
+    return True, text
+
+
+def wargame_attack(rec, sock, config, site_id, uid, name="", power=0):
+    """先对一下这个场现在是不是这个人，再发一次军事演习进攻。"""
+    if rec is None or sock is None:
+        return False, "没有连接，不打"
+    try:
+        site_id = int(site_id)
+    except (TypeError, ValueError):
+        return False, "场地不对"
+    uid = str(uid or "").strip()
+    if site_id <= 0 or not uid:
+        return False, "要选一个有人的演习场"
+    timeout, _gap = _daily_wait(config)
+    pages, why = _query_wargame_pages(rec, sock, max(timeout, 12))
+    if pages is None:
+        return False, why
+    me = str(getattr(rec, "uid", "") or "")
+    board = _wargame_board(pages, me, read_my_country(rec))
+    row = next((s for s in (board.get("all_sites") or board["sites"]) if s["id"] == site_id), None)
+    if row is None:
+        why = f"场地 {site_id} 现在没人"
+        _publish_wargame(board, why)
+        return False, why
+    if row["uid"] != uid:
+        why = f"场地 {site_id} 现在是 {row['name']}，不是 {name or uid}"
+        _publish_wargame(board, why)
+        return False, why
+    if row["mine"]:
+        why = "这是自己占的场"
+        _publish_wargame(board, why)
+        return False, why
+    if row["truce"]:
+        why = f"{row['name']} 停战中，没发进攻"
+        _publish_wargame(board, why)
+        return False, why
+    task = _task_of("军事演习")
+    passed, why, _exhausted, _tier = _check_gate(task.gate, _wargame_panel(pages))
+    if not passed:
+        why = f"闸门拦截：{why}"
+        _publish_wargame(board, why)
+        return False, why
+    shown = row["name"] or name or uid
+    shown_power = row["power"] or power or 0
+    data, err = _strike_wargame(rec, sock, site_id, uid, shown, shown_power, timeout)
+    if err:
+        _publish_wargame(board, err)
+        return False, err
+    ok, text = _wargame_outcome(data, site_id, shown, shown_power)
+    if ok:
+        row["mine"] = True
+        row["uid"] = me or row["uid"]
+        row["name"] = "自己"
+        row["truce"] = False
+        ts = _future_stamp(data, "siteEndTime")
+        board["occupy"] = {
+            "id": site_id,
+            "lv": row["lv"],
+            "end": ts or 0,
+        }
+        token = data.get("tokenNum")
+        if _plain_int(token):
+            board["token"] = token
+    _publish_wargame(board, text)
+    return ok, text
+
+
+def _run_wargame(rec, sock, config):
+    """先开战争学院再拉场地。从低到高打低于 900 万的，ret=10 就换下一个。"""
+    task = _task_of("军事演习")
+    if rec is None or sock is None:
+        return False, "没有连接，不打"
+    timeout, _gap = _daily_wait(config)
+    pages, why = _query_wargame_pages(rec, sock, timeout)
+    if pages is None:
+        return False, why
     again = bool((config.get("每日任务") or {}).get("忽略今日次数"))
     for p in pages:
         if again or p.get("bOccupySite") is not True:
@@ -5240,10 +5559,7 @@ def _run_wargame(rec, sock, config):
             mins = (ts - time.time()) / 60
             return True, f"成功：已经占着{where}，占用至 {mins:.0f} 分钟后", ts
         return True, f"成功：已经占着{where}，这一轮不打"
-    panel = next((p for p in pages
-                  if isinstance(p.get("tokenNum"), int)
-                  and not isinstance(p.get("tokenNum"), bool)), None)
-    passed, why, _exhausted, _tier = _check_gate(task.gate, panel)
+    passed, why, _exhausted, _tier = _check_gate(task.gate, _wargame_panel(pages))
     if not passed:
         return False, f"闸门拦截：{why}"
     log.info("[%s] 闸门放行：%s", task.key, why)
@@ -5252,26 +5568,11 @@ def _run_wargame(rec, sock, config):
     targets = _wargame_targets(sites, me, read_my_country(rec))
     if not targets:
         return True, f"成功：看过 {len(sites)} 个场地，没有 900 万以下可打的对手"
-    names = _field_names(_schema, task.opcode)
     refused = []
     for power, sid, uid, name in targets[:5]:
-        fields = {1: ("int32", 3), 2: ("int32", sid),
-                  3: ("string", uid), 4: ("bool", False)}
-        safe, why = _check_safety(task, names, fields)
-        if not safe:
-            return False, f"安全检查拦截：{why}"
-        before = rec.seq_mark()
-        try:
-            _send_op(sock, rec, task, fields)
-        except OSError:
-            raise
-        except Exception as exc:
-            return False, f"发送失败：{exc}"
-        log.info("[%s] 攻打场地 %s（%s，战力 %s）", task.key, sid, name, power)
-        data = _await_response(
-            sock, rec, "RseWarGameOpt", before, timeout, want=_attack_reply(sid, uid))
-        if not isinstance(data, dict):
-            return False, "失败：未收到攻打回包"
+        data, err = _strike_wargame(rec, sock, sid, uid, name, power, timeout)
+        if err:
+            return False, err
         ret = data.get("ret")
         if data.get("bOccupySite") is True and ret in (0, 100):
             ts = _future_stamp(data, "siteEndTime")
