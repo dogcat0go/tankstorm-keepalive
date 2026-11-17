@@ -286,6 +286,7 @@ function occupyText(occ) {
         <button type="submit">拨款</button>
         <button type="button" @click="runFundCycle().catch((e) => showErr(e.message))">一键循环拨款</button>
       </form>
+      <p v-if="fundJob">{{ fundJob.status }} {{ fundJob.detail }}<button v-if="fundJob.status === '排队' || fundJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(fundJob).catch((e) => showErr(e.message))">关停</button></p>
       <p v-if="fundNote" class="muted">{{ fundNote }}</p>
       <p v-if="fundJob">{{ fundJob.status }} {{ fundJob.detail }}</p>
       <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。一键循环按上面的顺序把当前这栋拨满再换下一栋。这一次被拒就换还没满的下一栋，下一轮再回来。资源没补满不会停掉整轮。</p>

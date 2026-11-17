@@ -118,6 +118,8 @@ const resourceCards = ref(null);
 const ask = ref("");
 let askDone = null;
 const baseJobs = ref([]);
+const activityOpen = computed(() => activityJobs.value.filter((it) => it.status === "排队" || it.status === "正在做"));
+const baseOpen = computed(() => baseJobs.value.filter((it) => it.status === "排队" || it.status === "正在做"));
 const baseNote = ref("");
 const baseBlast = ref(null);
 const baseMetal = ref(null);
@@ -921,6 +923,10 @@ async function enter() {
   pinRetreatCity();
   await refresh();
   await refreshAttacks();
+  if (me.value && me.value.base_war && toolsOn.value) {
+    refreshDaily().catch(() => {});
+    refreshBase().catch(() => {});
+  }
 }
 
 async function loadCities() {
@@ -961,6 +967,10 @@ async function loadMe() {
   pinRetreatCity();
   await refresh();
   await refreshAttacks();
+  if (me.value && me.value.base_war && toolsOn.value) {
+    refreshDaily().catch(() => {});
+    refreshBase().catch(() => {});
+  }
 }
 
 function takeUser(user) {
@@ -1470,8 +1480,10 @@ onMounted(async () => {
   atkTimer = setInterval(() => {
     if (!me.value) return;
     refreshAttacks().catch(() => {});
-    if (tab.value === "daily" || tab.value === "activity") refreshDaily().catch(() => {});
-    if (tab.value === "base") refreshBase().catch(() => {});
+    if (me.value.base_war && toolsOn.value) {
+      refreshDaily().catch(() => {});
+      refreshBase().catch(() => {});
+    } else if (tab.value === "daily") refreshDaily().catch(() => {});
   }, 2000);
   clockTimer = setInterval(() => {
     clock.value = Date.now();
@@ -1540,6 +1552,16 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
+      <div v-if="toolsOn && me.base_war && (activityOpen.length || baseOpen.length)" class="job-float">
+        <section v-if="activityOpen.length">
+          <h2>活动助手</h2>
+          <p v-for="it in activityOpen" :key="it.id">{{ it.label }} {{ it.status }} {{ it.detail }}<button type="button" class="ghost" @click="cancelDaily(it).catch((e) => showErr(e.message))">关停</button></p>
+        </section>
+        <section v-if="baseOpen.length">
+          <h2>基地战助手</h2>
+          <p v-for="it in baseOpen" :key="it.id">{{ it.label }} {{ it.status }} {{ it.detail }}<button type="button" class="ghost" @click="cancelBase(it).catch((e) => showErr(e.message))">关停</button></p>
+        </section>
+      </div>
       <el-menu v-if="toolsOn" class="page-nav" mode="horizontal" :ellipsis="false" :default-active="sideOn ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
