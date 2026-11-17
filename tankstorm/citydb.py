@@ -5664,6 +5664,12 @@ _BASE_LANE = (
     "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
 )
 _BASE_JOB_KINDS = _BASE_LANE
+# 活动助手页面上的执行记录。成就拨款不在这里，仍跟日常记录走。
+_ACTIVITY_JOB_KINDS = (
+    "guild_camp", "strike", "egg", "wargame",
+    "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute",
+    "train_book", "skill_book", "stone",
+)
 _DAILY_STATUS = {
     "pending": "排队",
     "running": "正在做",
@@ -6962,28 +6968,35 @@ def resume_daily_jobs() -> None:
 
 
 def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
-    """kind 为空时不带基地战。kind 为 base 时只带爆破兵、战车工厂和开资源卡。"""
+    """kind 为空时不带基地战和活动助手。kind 为 base 或 activity 时只带那一块。"""
     conn = connect(readonly=True)
     try:
         if kind == "base":
-            slot = ",".join("?" * len(_BASE_JOB_KINDS))
+            kinds = _BASE_JOB_KINDS
+        elif kind == "activity":
+            kinds = _ACTIVITY_JOB_KINDS
+        else:
+            kinds = ()
+        if kinds:
+            slot = ",".join("?" * len(kinds))
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
                 "WHERE user_id=? AND kind IN (" + slot + ") "
                 "ORDER BY id DESC LIMIT ?",
-                (int(user_id), *_BASE_JOB_KINDS, int(limit))).fetchall()
+                (int(user_id), *kinds, int(limit))).fetchall()
         elif kind:
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
                 "WHERE user_id=? AND kind=? ORDER BY id DESC LIMIT ?",
                 (int(user_id), kind, int(limit))).fetchall()
         else:
-            slot = ",".join("?" * len(_BASE_JOB_KINDS))
+            skip = _BASE_JOB_KINDS + _ACTIVITY_JOB_KINDS
+            slot = ",".join("?" * len(skip))
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
                 "WHERE user_id=? AND kind NOT IN (" + slot + ") "
                 "ORDER BY id DESC LIMIT ?",
-                (int(user_id), *_BASE_JOB_KINDS, int(limit))).fetchall()
+                (int(user_id), *skip, int(limit))).fetchall()
     finally:
         conn.close()
     from . import daily
