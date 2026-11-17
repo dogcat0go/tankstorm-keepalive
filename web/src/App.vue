@@ -78,8 +78,9 @@ const tab = ref("attack");
 const dailyQq = ref("");
 const dailyTasks = ref([]);
 const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
-const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
+const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra && it.key !== "公会战役"));
 const dailyJobs = ref([]);
+const activityJobs = ref([]);
 const guildBoard = ref(null);
 const guildCatalog = ref([]);
 const guildAccept = ref([]);
@@ -237,6 +238,7 @@ async function refreshDaily() {
     dailyQq.value = "";
     dailyTasks.value = [];
     dailyJobs.value = [];
+    activityJobs.value = [];
     guildBoard.value = null;
     guildCatalog.value = [];
     guildAccept.value = [];
@@ -266,6 +268,7 @@ async function refreshDaily() {
   dailyQq.value = data.qq || "";
   dailyTasks.value = data.tasks || [];
   dailyJobs.value = data.jobs || [];
+  activityJobs.value = data.activity_jobs || [];
   guildBoard.value = data.guild_tasks || null;
   guildCatalog.value = data.guild_catalog || [];
   if (!guildAcceptReady) {
@@ -1369,6 +1372,7 @@ async function logout() {
   dailyQq.value = "";
   dailyTasks.value = [];
   dailyJobs.value = [];
+  activityJobs.value = [];
   guildBoard.value = null;
   guildCatalog.value = [];
   guildAccept.value = [];
@@ -1552,7 +1556,8 @@ onUnmounted(() => {
         v-model:stone-times="stoneTimes"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"
-        :jobs="dailyJobs"
+        :jobs="activityJobs"
+        :cancel-job="cancelDaily"
         :run-guild-camp="runGuildCamp"
         :daily-switching="dailySwitching"
         :note="guildLevelNote"

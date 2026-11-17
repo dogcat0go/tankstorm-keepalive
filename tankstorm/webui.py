@@ -487,6 +487,7 @@ def _handler(config: dict):
                     "qq": uin,
                     "tasks": daily.task_board(uin, switches),
                     "jobs": citydb.list_daily_jobs(user["id"]),
+                    "activity_jobs": citydb.list_daily_jobs(user["id"], kind="activity"),
                     "process": citydb.attack_status(user["id"]),
                     "stages": citydb.campaign_stages(user["id"]),
                     "schedule": citydb.daily_schedule(user["id"]),

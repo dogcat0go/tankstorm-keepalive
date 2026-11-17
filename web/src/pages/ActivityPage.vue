@@ -47,6 +47,7 @@ const props = defineProps({
   runStone: { type: Function, required: true },
   wargame: { type: Object, default: () => ({}) },
   runWargame: { type: Function, required: true },
+  cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
 
@@ -180,7 +181,7 @@ function occupyText(occ) {
         <span class="switch">一键献礼</span>
         <button type="submit">开始</button>
       </form>
-      <p v-if="tributeJob">{{ tributeJob.status }} {{ tributeJob.detail }}</p>
+      <p v-if="tributeJob">{{ tributeJob.status }} {{ tributeJob.detail }}<button v-if="tributeJob.status === '排队' || tributeJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(tributeJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">先打开献礼宝箱，再摧毁建筑修复卡，然后打开献礼徽章宝箱，捐献献礼徽章，最后按已保存的清理背包名单再清一次。没保存过就用默认名单。</p>
     </details>
     <details class="campaign-box">
@@ -200,6 +201,7 @@ function occupyText(occ) {
             @change="saveDailySwitch(guildTask, $event)"
           />
           <span v-if="guildTask.locked" class="muted">功能尚在恢复中...</span>
+          <span class="muted">今日 {{ guildTask.done }}/{{ guildTask.max }}</span>
         </span>
       </div>
       <form class="lock-row" @submit.prevent="saveLevel().catch((e) => showErr(e.message))">
@@ -209,7 +211,7 @@ function occupyText(occ) {
         <button type="button" @click="runGuildCamp().catch((e) => showErr(e.message))">进攻</button>
       </form>
       <p v-if="note" class="muted">{{ note }}</p>
-      <p v-if="campJob">{{ campJob.status }} {{ campJob.detail }}</p>
+      <p v-if="campJob">{{ campJob.status }} {{ campJob.detail }}<button v-if="campJob.status === '排队' || campJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(campJob).catch((e) => showErr(e.message))">关停</button></p>
       <p>体力 {{ liveText(thew) }} · 当前积分 {{ liveText(score) }}</p>
       <p class="muted">进入这个页面会读一次体力和当前积分。只在周五 10:00 到周六 22:00（本机时间）进攻。点进攻就按体力打这一轮，不用等整轮日常。同一等级一直打，直到体力不够、体力不再下降或被拒绝。不领奖。等级记在这个登录账号上，没改过就用配置里的等级。</p>
     </details>
@@ -226,7 +228,7 @@ function occupyText(occ) {
         </label>
         <label>查找<input v-model="wgQuery" placeholder="名字或国家" /></label>
       </form>
-      <p v-if="wgJob">{{ wgJob.status }} {{ wgJob.detail }}</p>
+      <p v-if="wgJob">{{ wgJob.status }} {{ wgJob.detail }}<button v-if="wgJob.status === '排队' || wgJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(wgJob).catch((e) => showErr(e.message))">关停</button></p>
       <p v-if="wgBoard.result">{{ wgBoard.result }}</p>
       <p>剩余次数 {{ liveText(wgBoard.token) }}<span v-if="occupyText(wgBoard.occupy)"> · {{ occupyText(wgBoard.occupy) }}</span></p>
       <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 8 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报里能分出双方血量时，写出我方击伤对方、对方击伤我方的百分比。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
@@ -264,7 +266,7 @@ function occupyText(occ) {
         <span class="switch">精准打击</span>
         <button type="submit">打击</button>
       </form>
-      <p v-if="strikeJob">{{ strikeJob.status }} {{ strikeJob.detail }}</p>
+      <p v-if="strikeJob">{{ strikeJob.status }} {{ strikeJob.detail }}<button v-if="strikeJob.status === '排队' || strikeJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(strikeJob).catch((e) => showErr(e.message))">关停</button></p>
       <p>剩余次数 {{ liveText(strikeLeft) }}</p>
       <p class="muted">进入这个页面会读一次剩余次数。点下去会一直打，直到服务器上的剩余次数变成 0。次数没有下降不算打中。这次打开回包里没有活动起止时间。不领圈数奖励。</p>
     </details>
@@ -290,7 +292,7 @@ function occupyText(occ) {
         <span class="switch">欢乐砸彩蛋</span>
         <button type="submit">全部砸开</button>
       </form>
-      <p v-if="eggJob">{{ eggJob.status }} {{ eggJob.detail }}</p>
+      <p v-if="eggJob">{{ eggJob.status }} {{ eggJob.detail }}<button v-if="eggJob.status === '排队' || eggJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(eggJob).catch((e) => showErr(e.message))">关停</button></p>
       <p v-if="eggNote" class="muted">{{ eggNote }}</p>
       <p>还可以开 {{ liveText(eggLeft) }} 个</p>
       <p class="muted">进入这个页面会读一次剩余数量。点下去会一直砸，直到剩余变成 0。每砸一个消耗 1 个物品 10015，得到 1 张 200 万石油卡。</p>
@@ -302,7 +304,7 @@ function occupyText(occ) {
         <label>次数<input v-model="wishTimes" class="mins" inputmode="numeric" required /></label>
         <button type="submit">抽奖</button>
       </form>
-      <p v-if="wishJob">{{ wishJob.status }} {{ wishJob.detail }}</p>
+      <p v-if="wishJob">{{ wishJob.status }} {{ wishJob.detail }}<button v-if="wishJob.status === '排队' || wishJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(wishJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">先开一次面板，再按填写的次数抽。次数 1 到 999。</p>
     </details>
     <details class="campaign-box">
@@ -311,7 +313,7 @@ function occupyText(occ) {
         <span class="switch">开启献礼宝箱</span>
         <button type="submit">全部打开</button>
       </form>
-      <p v-if="giftJob">{{ giftJob.status }} {{ giftJob.detail }}</p>
+      <p v-if="giftJob">{{ giftJob.status }} {{ giftJob.detail }}<button v-if="giftJob.status === '排队' || giftJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(giftJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">把背包里的 30156 献礼宝箱打开。物品槽不写进任务，执行时按清理背包从当前背包读取。一次最多 999 个，还有就接着开。</p>
     </details>
     <details class="campaign-box">
@@ -320,7 +322,7 @@ function occupyText(occ) {
         <span class="switch">摧毁建筑修复卡</span>
         <button type="submit">全部摧毁</button>
       </form>
-      <p v-if="dropJob">{{ dropJob.status }} {{ dropJob.detail }}</p>
+      <p v-if="dropJob">{{ dropJob.status }} {{ dropJob.detail }}<button v-if="dropJob.status === '排队' || dropJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(dropJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">把背包里的 10127 建筑修复卡摧毁，不修复建筑。物品槽不写进任务，执行时按清理背包从当前背包读取。一次 99 张，直到没有。</p>
     </details>
     <details class="campaign-box">
@@ -330,7 +332,7 @@ function occupyText(occ) {
         <label>次数<input v-model="soulTimes" class="mins" inputmode="numeric" required /></label>
         <button type="submit">兑换</button>
       </form>
-      <p v-if="soulJob">{{ soulJob.status }} {{ soulJob.detail }}</p>
+      <p v-if="soulJob">{{ soulJob.status }} {{ soulJob.detail }}<button v-if="soulJob.status === '排队' || soulJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(soulJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">每次发 type=-1、free=1、credit=900。按填写的次数兑，没有回包或被拒就当已经兑完。次数 1 到 999。</p>
     </details>
     <details class="campaign-box">
@@ -339,7 +341,7 @@ function occupyText(occ) {
         <span class="switch">开启献礼徽章宝箱</span>
         <button type="submit">全部打开</button>
       </form>
-      <p v-if="badgeJob">{{ badgeJob.status }} {{ badgeJob.detail }}</p>
+      <p v-if="badgeJob">{{ badgeJob.status }} {{ badgeJob.detail }}<button v-if="badgeJob.status === '排队' || badgeJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(badgeJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">把背包里的 30157 献礼徽章宝箱打开。物品槽不写进任务，执行时按清理背包从当前背包读取。一次最多 999 个。</p>
     </details>
     <details class="campaign-box">
@@ -348,7 +350,7 @@ function occupyText(occ) {
         <span class="switch">捐献献礼徽章</span>
         <button type="submit">捐献</button>
       </form>
-      <p v-if="donateJob">{{ donateJob.status }} {{ donateJob.detail }}</p>
+      <p v-if="donateJob">{{ donateJob.status }} {{ donateJob.detail }}<button v-if="donateJob.status === '排队' || donateJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(donateJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">直接发 type=2、activeType=1，不先开面板。</p>
     </details>
     <details class="campaign-box">
@@ -359,7 +361,7 @@ function occupyText(occ) {
         <button type="submit">使用</button>
         <button type="button" @click="runTrainAll().catch((e) => showErr(e.message))">抽光</button>
       </form>
-      <p v-if="trainJob">{{ trainJob.status }} {{ trainJob.detail }}</p>
+      <p v-if="trainJob">{{ trainJob.status }} {{ trainJob.detail }}<button v-if="trainJob.status === '排队' || trainJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(trainJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">给一个正在训练的英雄用填写的本数，1 到 999。抽光会把背包里的训练册用完，一次最多 999 本。没有正在训练的英雄不发。</p>
     </details>
     <details class="campaign-box">
@@ -369,7 +371,7 @@ function occupyText(occ) {
         <label>等级<input v-model="skillLevel" class="mins" inputmode="numeric" required /></label>
         <button type="submit">合成</button>
       </form>
-      <p v-if="skillJob">{{ skillJob.status }} {{ skillJob.detail }}</p>
+      <p v-if="skillJob">{{ skillJob.status }} {{ skillJob.detail }}<button v-if="skillJob.status === '排队' || skillJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(skillJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">按背包里这一级的一半合成。等级 1 到 10，1 到 7 级是 10143 起，8 到 10 级是 10245 起。不足两本不发。</p>
     </details>
     <details class="campaign-box">
@@ -379,7 +381,7 @@ function occupyText(occ) {
         <label>次数<input v-model="stoneTimes" class="mins" inputmode="numeric" required /></label>
         <button type="submit">购买</button>
       </form>
-      <p v-if="stoneJob">{{ stoneJob.status }} {{ stoneJob.detail }}</p>
+      <p v-if="stoneJob">{{ stoneJob.status }} {{ stoneJob.detail }}<button v-if="stoneJob.status === '排队' || stoneJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(stoneJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">按填写的次数一次买完。商店 1112，每个花费 2，得到物品 50009。次数 1 到 999。这次抓包里勋章和功勋没有变化。</p>
     </details>
     <details class="campaign-box">
