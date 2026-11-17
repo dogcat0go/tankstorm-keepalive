@@ -119,6 +119,7 @@ const ask = ref("");
 let askDone = null;
 const baseJobs = ref([]);
 const floatAt = ref(null);
+const floatFolded = ref(true);
 const floatJobs = computed(() => {
   const seen = new Set();
   const base = [];
@@ -137,6 +138,14 @@ const floatStyle = computed(() => {
   return { left: at.x + "px", top: at.y + "px", right: "auto", bottom: "auto" };
 });
 
+function clampFloat(x, y, width) {
+  const w = width || Math.min(360, window.innerWidth - 24);
+  return {
+    x: Math.max(8, Math.min(window.innerWidth - w - 8, x)),
+    y: Math.max(8, Math.min(window.innerHeight - 36, y)),
+  };
+}
+
 function dragFloat(ev) {
   if (ev.button != null && ev.button !== 0) return;
   ev.preventDefault();
@@ -144,16 +153,24 @@ function dragFloat(ev) {
   const rect = box.getBoundingClientRect();
   const dx = ev.clientX - rect.left;
   const dy = ev.clientY - rect.top;
+  const sx = ev.clientX;
+  const sy = ev.clientY;
+  let moved = false;
   function move(e) {
-    const x = Math.max(8, Math.min(window.innerWidth - rect.width - 8, e.clientX - dx));
-    const y = Math.max(8, Math.min(window.innerHeight - 36, e.clientY - dy));
-    floatAt.value = { x, y };
+    if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) < 6) return;
+    moved = true;
+    const at = clampFloat(e.clientX - dx, e.clientY - dy, rect.width);
+    floatAt.value = at;
   }
   function up() {
     window.removeEventListener("pointermove", move);
     window.removeEventListener("pointerup", up);
+    if (!moved && window.matchMedia("(max-width: 720px)").matches) {
+      floatFolded.value = !floatFolded.value;
+      return;
+    }
     try {
-      if (floatAt.value) localStorage.setItem("job-float-at", JSON.stringify(floatAt.value));
+      if (moved && floatAt.value) localStorage.setItem("job-float-at", JSON.stringify(floatAt.value));
     } catch (e) { /* 存不住就只留在这一页 */ }
   }
   window.addEventListener("pointermove", move);
@@ -1510,7 +1527,7 @@ function onSubToggle(key, ev) {
 onMounted(async () => {
   try {
     const at = JSON.parse(localStorage.getItem("job-float-at") || "null");
-    if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) floatAt.value = at;
+    if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) floatAt.value = clampFloat(at.x, at.y);
   } catch (e) { /* 没有存过位置 */ }
   const meta = await fetch("/api/meta").then((r) => r.json()).catch(() => ({}));
   devLogin.value = !!meta.dev_login;
@@ -1595,7 +1612,7 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
-      <div v-if="toolsOn && me.base_war && floatJobs.length" class="job-float" :style="floatStyle">
+      <div v-if="toolsOn && me.base_war && floatJobs.length && (tab === 'base' || tab === 'activity')" class="job-float" :class="{ 'is-collapsed': floatFolded }" :style="floatStyle">
         <header @pointerdown="dragFloat">任务状态</header>
         <div class="job-float-body">
           <p v-for="it in floatJobs" :key="it.id">{{ it.lane === "base" ? "基地战" : "活动" }} {{ it.label }} {{ it.status }} {{ it.detail }}<button v-if="it.status === '排队' || it.status === '正在做'" type="button" class="ghost" @click="(it.lane === 'base' ? cancelBase(it) : cancelDaily(it)).catch((e) => showErr(e.message))">关停</button></p>

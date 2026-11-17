@@ -306,6 +306,7 @@ table.daily-jobs td.reason {
   font-weight: 700;
   cursor: move;
   user-select: none;
+  touch-action: none;
   border-bottom: 1px solid #e6e6e6;
 }
 .job-float-body { overflow: auto; min-height: 0; padding: 4px 12px 8px; }
@@ -358,6 +359,17 @@ img.scan-qr { width: 280px; }
     box-shadow: 0 1px 0 #eee;
   }
   .job-float { bottom: calc(12px + 20dvh); max-height: 30vh; }
+  .job-float header::after {
+    content: "收起";
+    float: right;
+    font-weight: 400;
+    font-size: 12px;
+    color: #666;
+  }
+  .job-float.is-collapsed { max-height: none; }
+  .job-float.is-collapsed header { border-bottom: 0; }
+  .job-float.is-collapsed header::after { content: "展开"; }
+  .job-float.is-collapsed .job-float-body { display: none; }
   .base-page { padding-bottom: 20dvh; }
   .recent-dock {
     position: fixed;
