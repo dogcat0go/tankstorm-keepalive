@@ -118,8 +118,47 @@ const resourceCards = ref(null);
 const ask = ref("");
 let askDone = null;
 const baseJobs = ref([]);
-const activityOpen = computed(() => activityJobs.value.filter((it) => it.status === "排队" || it.status === "正在做"));
-const baseOpen = computed(() => baseJobs.value.filter((it) => it.status === "排队" || it.status === "正在做"));
+const floatAt = ref(null);
+const floatJobs = computed(() => {
+  const seen = new Set();
+  const base = [];
+  for (const it of baseJobs.value) {
+    if (seen.has(it.kind)) continue;
+    seen.add(it.kind);
+    base.push({ ...it, lane: "base" });
+  }
+  const rows = activityJobs.value.map((it) => ({ ...it, lane: "activity" })).concat(base);
+  const rank = (it) => (it.status === "正在做" ? 0 : it.status === "排队" ? 1 : 2);
+  return rows.sort((a, b) => rank(a) - rank(b) || b.id - a.id);
+});
+const floatStyle = computed(() => {
+  const at = floatAt.value;
+  if (!at) return {};
+  return { left: at.x + "px", top: at.y + "px", right: "auto", bottom: "auto" };
+});
+
+function dragFloat(ev) {
+  if (ev.button != null && ev.button !== 0) return;
+  ev.preventDefault();
+  const box = ev.currentTarget.parentElement;
+  const rect = box.getBoundingClientRect();
+  const dx = ev.clientX - rect.left;
+  const dy = ev.clientY - rect.top;
+  function move(e) {
+    const x = Math.max(8, Math.min(window.innerWidth - rect.width - 8, e.clientX - dx));
+    const y = Math.max(8, Math.min(window.innerHeight - 36, e.clientY - dy));
+    floatAt.value = { x, y };
+  }
+  function up() {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    try {
+      if (floatAt.value) localStorage.setItem("job-float-at", JSON.stringify(floatAt.value));
+    } catch (e) { /* 存不住就只留在这一页 */ }
+  }
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
 const baseNote = ref("");
 const baseBlast = ref(null);
 const baseMetal = ref(null);
@@ -1469,6 +1508,10 @@ function onSubToggle(key, ev) {
 }
 
 onMounted(async () => {
+  try {
+    const at = JSON.parse(localStorage.getItem("job-float-at") || "null");
+    if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) floatAt.value = at;
+  } catch (e) { /* 没有存过位置 */ }
   const meta = await fetch("/api/meta").then((r) => r.json()).catch(() => ({}));
   devLogin.value = !!meta.dev_login;
   registerOpen.value = !!meta.register;
@@ -1552,15 +1595,11 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
-      <div v-if="toolsOn && me.base_war && (activityOpen.length || baseOpen.length)" class="job-float">
-        <section v-if="activityOpen.length">
-          <h2>活动助手</h2>
-          <p v-for="it in activityOpen" :key="it.id">{{ it.label }} {{ it.status }} {{ it.detail }}<button type="button" class="ghost" @click="cancelDaily(it).catch((e) => showErr(e.message))">关停</button></p>
-        </section>
-        <section v-if="baseOpen.length">
-          <h2>基地战助手</h2>
-          <p v-for="it in baseOpen" :key="it.id">{{ it.label }} {{ it.status }} {{ it.detail }}<button type="button" class="ghost" @click="cancelBase(it).catch((e) => showErr(e.message))">关停</button></p>
-        </section>
+      <div v-if="toolsOn && me.base_war && floatJobs.length" class="job-float" :style="floatStyle">
+        <header @pointerdown="dragFloat">任务状态</header>
+        <div class="job-float-body">
+          <p v-for="it in floatJobs" :key="it.id">{{ it.lane === "base" ? "基地战" : "活动" }} {{ it.label }} {{ it.status }} {{ it.detail }}<button v-if="it.status === '排队' || it.status === '正在做'" type="button" class="ghost" @click="(it.lane === 'base' ? cancelBase(it) : cancelDaily(it)).catch((e) => showErr(e.message))">关停</button></p>
+        </div>
       </div>
       <el-menu v-if="toolsOn" class="page-nav" mode="horizontal" :ellipsis="false" :default-active="sideOn ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
