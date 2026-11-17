@@ -482,4 +482,41 @@ def fund_cycle(rec, sock, buildings, on_progress=None):
                     row["note"] = (row["note"] or "拨不动").replace("，换下一栋", "")
             break
     text = "；".join(f"{row['name']}：{row['note']}" for row in rows)
-    return True, text
+    return True, brief_fund_detail(text)
+
+
+def brief_fund_detail(detail: str) -> str:
+    """循环拨款的整表结果收成一句。单栋的说明不动。"""
+    text = " ".join(str(detail or "").split())
+    if "；" not in text:
+        return text
+    made = []
+    missed = 0
+    for part in text.split("；"):
+        part = part.strip()
+        if "：" not in part:
+            return text
+        name, note = part.split("：", 1)
+        n = 0
+        for key in ("已成 ", "共 "):
+            if key not in note:
+                continue
+            num = ""
+            for ch in note.split(key, 1)[1]:
+                if ch.isdigit():
+                    num += ch
+                elif num:
+                    break
+            if num:
+                n = int(num)
+                break
+        if n:
+            made.append(f"{name.strip()} {n} 次")
+        else:
+            missed += 1
+    parts = []
+    if made:
+        parts.append("、".join(made))
+    if missed:
+        parts.append(f"{missed} 栋没拨成")
+    return "。".join(parts) if parts else text

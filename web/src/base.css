@@ -291,17 +291,24 @@ table.daily-jobs td.reason {
   z-index: 8;
   display: flex;
   flex-direction: column;
-  gap: 8px;
   width: min(360px, calc(100vw - 24px));
-}
-.job-float section {
+  max-height: 30vh;
   background: #fff;
   border: 1px solid #c5daf0;
   border-radius: 8px;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
-  padding: 8px 12px;
+  overflow: hidden;
 }
-.job-float h2 { margin: 0 0 4px; font-size: 14px; }
+.job-float header {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: move;
+  user-select: none;
+  border-bottom: 1px solid #e6e6e6;
+}
+.job-float-body { overflow: auto; min-height: 0; padding: 4px 12px 8px; }
 .job-float p { margin: 4px 0; }
 .recent-dock {
   display: flex;
@@ -350,7 +357,7 @@ img.scan-qr { width: 280px; }
     margin-top: 8px;
     box-shadow: 0 1px 0 #eee;
   }
-  .job-float { bottom: calc(12px + 20dvh); }
+  .job-float { bottom: calc(12px + 20dvh); max-height: 30vh; }
   .base-page { padding-bottom: 20dvh; }
   .recent-dock {
     position: fixed;

@@ -7003,14 +7003,18 @@ def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
     finally:
         conn.close()
     from . import daily
+    from .fund import brief_fund_detail
     out = []
     for row in rows:
+        detail = daily.display_job_detail(row[2], row[3] or "")
+        if row[1] == "fund":
+            detail = brief_fund_detail(detail)
         out.append({
             "id": int(row[0]),
             "kind": row[1],
             "label": DAILY_KIND_LABEL.get(row[1], row[1]),
             "status": _DAILY_STATUS.get(row[2], row[2]),
-            "detail": daily.display_job_detail(row[2], row[3] or ""),
+            "detail": detail,
             "created_at": beijing_ts(row[4]) if row[4] else "",
         })
     return out
