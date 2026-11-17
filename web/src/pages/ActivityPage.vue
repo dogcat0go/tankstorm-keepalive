@@ -79,6 +79,7 @@ const tributeJob = computed(() => props.jobs.find((it) => it.kind === "tribute")
 const trainJob = computed(() => props.jobs.find((it) => it.kind === "train_book") || null);
 const skillJob = computed(() => props.jobs.find((it) => it.kind === "skill_book") || null);
 const stoneJob = computed(() => props.jobs.find((it) => it.kind === "stone") || null);
+const fundJob = computed(() => props.jobs.find((it) => it.kind === "fund") || null);
 const wgJob = computed(() => props.jobs.find((it) => it.kind === "wargame") || null);
 const wgQuery = ref("");
 const wgLevel = ref("0");
@@ -283,6 +284,7 @@ function occupyText(occ) {
         <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
         <button type="submit">拨款</button>
       </form>
+      <p v-if="fundJob">{{ fundJob.status }} {{ fundJob.detail }}<button v-if="fundJob.status === '排队' || fundJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(fundJob).catch((e) => showErr(e.message))">关停</button></p>
       <p v-if="fundNote" class="muted">{{ fundNote }}</p>
       <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。</p>
     </details>
