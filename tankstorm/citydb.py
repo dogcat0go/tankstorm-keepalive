@@ -6600,17 +6600,44 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return why
         clean["stages"] = str(params.get("stages") or "").strip()
     elif kind == "fund":
-        try:
-            building = int(str(params.get("building_id") or "").strip())
-            times = int(str(params.get("times") or "1").strip())
-        except (TypeError, ValueError):
-            return "建筑和次数要是数字"
-        if building <= 0:
-            return "要填建筑 ID"
-        if not (1 <= times <= 999):
-            return "拨款次数要在 1 到 999"
-        clean["building_id"] = building
-        clean["times"] = times
+        if params.get("cycle") in (True, 1, "1", "true", "True"):
+            raw = params.get("buildings")
+            if not isinstance(raw, list) or not raw:
+                return "没有要循环的建筑"
+            buildings = []
+            seen = set()
+            for item in raw:
+                name = ""
+                raw_id = item
+                if isinstance(item, dict):
+                    raw_id = item.get("id")
+                    name = str(item.get("name") or "").strip()[:16]
+                try:
+                    building = int(str(raw_id).strip())
+                except (TypeError, ValueError):
+                    return "建筑要是数字"
+                if building <= 0:
+                    return "要填建筑 ID"
+                if building in seen:
+                    continue
+                seen.add(building)
+                buildings.append({"id": building, "name": name})
+            if not buildings:
+                return "没有要循环的建筑"
+            clean["cycle"] = True
+            clean["buildings"] = buildings
+        else:
+            try:
+                building = int(str(params.get("building_id") or "").strip())
+                times = int(str(params.get("times") or "1").strip())
+            except (TypeError, ValueError):
+                return "建筑和次数要是数字"
+            if building <= 0:
+                return "要填建筑 ID"
+            if not (1 <= times <= 999):
+                return "拨款次数要在 1 到 999"
+            clean["building_id"] = building
+            clean["times"] = times
     elif kind == "wish":
         try:
             times = int(str(params.get("times") or "1").strip())
