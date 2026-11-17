@@ -31,6 +31,7 @@ const props = defineProps({
   saveLevel: { type: Function, required: true },
   saveDailySwitch: { type: Function, required: true },
   runFund: { type: Function, required: true },
+  runFundCycle: { type: Function, required: true },
   runGuildCamp: { type: Function, required: true },
   runStrike: { type: Function, required: true },
   runEgg: { type: Function, required: true },
@@ -78,6 +79,7 @@ const tributeJob = computed(() => props.jobs.find((it) => it.kind === "tribute")
 const trainJob = computed(() => props.jobs.find((it) => it.kind === "train_book") || null);
 const skillJob = computed(() => props.jobs.find((it) => it.kind === "skill_book") || null);
 const stoneJob = computed(() => props.jobs.find((it) => it.kind === "stone") || null);
+const fundJob = computed(() => props.jobs.find((it) => it.kind === "fund") || null);
 const wgJob = computed(() => props.jobs.find((it) => it.kind === "wargame") || null);
 const wgQuery = ref("");
 const wgLevel = ref("0");
@@ -280,9 +282,11 @@ function occupyText(occ) {
         </label>
         <label>次数<input v-model="fundTimes" class="mins" inputmode="numeric" required /></label>
         <button type="submit">拨款</button>
+        <button type="button" @click="runFundCycle().catch((e) => showErr(e.message))">一键循环拨款</button>
       </form>
       <p v-if="fundNote" class="muted">{{ fundNote }}</p>
-      <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。</p>
+      <p v-if="fundJob">{{ fundJob.status }} {{ fundJob.detail }}</p>
+      <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。一键循环按上面的顺序各拨一次，升不了或被拒就换下一个。</p>
     </details>
     <details class="campaign-box">
       <summary>欢乐砸彩蛋</summary>

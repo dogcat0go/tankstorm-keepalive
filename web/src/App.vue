@@ -600,6 +600,19 @@ async function runFund(building, times) {
   await refreshAttacks();
 }
 
+async function runFundCycle() {
+  showErr("", "activity");
+  fundNote.value = "";
+  await api("/api/daily", {
+    kind: "fund",
+    cycle: true,
+    buildings: fundBuildings.map((b) => ({ id: b.id, name: b.name })),
+  });
+  fundNote.value = "已按列表顺序循环拨款";
+  await refreshDaily();
+  await refreshAttacks();
+}
+
 async function runWish(times) {
   showErr("", "activity");
   const n = Number(String(times || "").trim());
@@ -1571,6 +1584,7 @@ onUnmounted(() => {
         :save-level="saveGuildLevel"
         :save-daily-switch="saveDailySwitch"
         :run-fund="runFund"
+        :run-fund-cycle="runFundCycle"
         :run-egg="runEgg"
         :run-wish="runWish"
         :run-gift="runGift"
