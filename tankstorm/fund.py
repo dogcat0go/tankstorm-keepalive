@@ -387,3 +387,99 @@ def fund(rec, sock, building_id, times, on_progress=None):
         if i < times:
             _nap(0.4)
     return True, f"建筑 {building_id} 拨款 {done} 次，拨款值={last_times}"
+
+
+def fund_cycle(rec, sock, buildings, on_progress=None):
+    """按顺序把每栋拨满再换下一栋。
+
+    当前这栋一直拨，直到拨满，或这一次被拒。被拒就换还没满的下一栋，
+    下一轮再回来。资源没补满不结束整轮；再拨一次仍不增加，或这一轮都拨不动，才停。
+    """
+    rows = []
+    for item in buildings:
+        if isinstance(item, dict):
+            raw_id = item.get("id")
+            name = str(item.get("name") or "").strip()
+        else:
+            raw_id = item
+            name = ""
+        bid = int(raw_id)
+        rows.append({
+            "id": bid, "name": name or str(bid), "done": 0, "filled": False,
+            "zhu": None, "again": False, "note": "",
+        })
+    got_bag = rec.latest.get(RSE_BAG) if rec else None
+    bag = got_bag[1] if got_bag and isinstance(got_bag[1], dict) else None
+
+    def publish(text):
+        if on_progress:
+            on_progress(text)
+
+    while any(not row["filled"] for row in rows):
+        raise_if_stopped()
+        moved = False
+        for row in rows:
+            if row["filled"]:
+                continue
+            while not row["filled"]:
+                raise_if_stopped()
+                publish(f"正在拨{row['name']}，已成 {row['done']} 次")
+                if isinstance(bag, dict):
+                    bag, _cards = open_resource_cards(
+                        rec, sock, bag, label=f"拨款 {row['name']}")
+                metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
+                short = not (isinstance(metal, int) and metal >= 30_000_000
+                             and isinstance(oil, int) and oil >= 30_000_000)
+                got = fund_once(rec, sock, row["id"])
+                if not isinstance(got, dict) or got.get("error") not in (0, None):
+                    err = got.get("error") if isinstance(got, dict) else "无回包"
+                    row["again"] = False
+                    row["note"] = f"被拒 error={err}，已成 {row['done']} 次，换下一栋"
+                    log.info("[拨款] %s %s", row["name"], row["note"])
+                    publish(f"{row['name']}{row['note']}")
+                    break
+                zhu = got.get("ZhuZiTimes")
+                if isinstance(zhu, bool) or not isinstance(zhu, int):
+                    zhu = None
+                grew = zhu is None or row["zhu"] is None or zhu > row["zhu"]
+                if zhu is not None:
+                    row["zhu"] = zhu
+                row["done"] += 1
+                if grew:
+                    row["again"] = False
+                    moved = True
+                    row["note"] = f"已成 {row['done']} 次"
+                    log.info("[拨款] %s 第 %d 次 error=0", row["name"], row["done"])
+                    if row["done"] >= HARD_MAX_TIMES:
+                        row["filled"] = True
+                        row["note"] = f"拨满，共 {row['done']} 次"
+                        break
+                    _nap(0.4)
+                    continue
+                if short and not row["again"]:
+                    row["again"] = True
+                    moved = True
+                    row["note"] = f"资源没补满，已成 {row['done']} 次，再拨一次"
+                    log.info("[拨款] %s %s", row["name"], row["note"])
+                    _nap(0.4)
+                    continue
+                if not short:
+                    row["filled"] = True
+                    row["note"] = f"拨满，共 {row['done']} 次"
+                else:
+                    row["note"] = f"资源没补满，再拨没有增加，已成 {row['done']} 次，换下一栋"
+                log.info("[拨款] %s %s", row["name"], row["note"])
+                publish(f"{row['name']}：{row['note']}")
+                break
+        if not moved:
+            for row in rows:
+                if row["filled"]:
+                    continue
+                row["filled"] = True
+                if row["done"]:
+                    row["note"] = f"这一轮拨不动，已成 {row['done']} 次"
+                else:
+                    row["note"] = (row["note"] or "拨不动").replace("，换下一栋", "")
+            break
+    text = "；".join(f"{row['name']}：{row['note']}" for row in rows)
+    return True, text

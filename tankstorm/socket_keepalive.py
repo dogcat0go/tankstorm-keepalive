@@ -2785,20 +2785,8 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             elif kind == "fund":
                 rows = params.get("buildings") if params.get("cycle") else None
                 if isinstance(rows, list) and rows:
-                    bits = []
-                    for row in rows:
-                        if isinstance(row, dict):
-                            building_id = row.get("id")
-                            label = str(row.get("name") or "").strip() or str(building_id)
-                        else:
-                            building_id = row
-                            label = str(row)
-                        _show("；".join(bits + [f"正在拨{label}"]))
-                        _ok, why = fund.fund(
-                            rec, sock, building_id, 1, on_progress=_show)
-                        bits.append(f"{label}：{why}")
-                        _show("；".join(bits))
-                    why = "；".join(bits)
+                    _ok, why = fund.fund_cycle(rec, sock, rows, on_progress=_show)
+                    _show(why)
                     citydb.finish_daily_job(job["id"], "done", why)
                 else:
                     ok, why = fund.fund(
