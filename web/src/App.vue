@@ -669,7 +669,7 @@ async function runFundCycle() {
     cycle: true,
     buildings: fundBuildings.map((b) => ({ id: b.id, name: b.name })),
   });
-  fundNote.value = "已按列表顺序循环拨款";
+  fundNote.value = "已按列表顺序，一栋拨到被拒再换下一栋";
   await refreshDaily();
   await refreshAttacks();
 }
