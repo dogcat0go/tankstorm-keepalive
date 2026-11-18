@@ -408,10 +408,44 @@ def _webui_already_in(data: dict) -> bool:
     return "logined" in str((data or {}).get("message") or "").lower()
 
 
+# 页面每 3 秒问一次。问到的旧地址不能每轮都刷新，否则新码还没扫就被换掉。
+# 打开页面或这张码已经留了 90 秒，才刷新一次。刷新后地址没变，30 秒内不再刷。
+_qr_shown = {}
+_qr_locks = {}
+_qr_locks_guard = threading.Lock()
+_QR_FRESH_SEC = 90
+_QR_SAME_SEC = 30
+
+
+def _qr_lock(base: str):
+    with _qr_locks_guard:
+        lock = _qr_locks.get(base)
+        if lock is None:
+            lock = threading.Lock()
+            _qr_locks[base] = lock
+        return lock
+
+
+def _qr_expired(err: str) -> bool:
+    text = str(err or "")
+    return "二维码" in text and ("过期" in text or "失效" in text)
+
+
+def _qr_keep(held, mark: str, err: str, now: float) -> bool:
+    if not held or _qr_expired(err):
+        return False
+    mark = mark or "无"
+    if held.get("mark") != mark:
+        return False
+    limit = _QR_SAME_SEC if mark == "无" or not held.get("changed") else _QR_FRESH_SEC
+    return now - float(held.get("at") or 0) < limit
+
+
 def napcat_login_qr(base: str, token: str, uin: str = "") -> dict:
     """向 NapCat 界面要它自己的登录二维码。已经登录就不再要码。不收发消息。
 
     每一步写到 logs/napcat/QQ号.log。登录码本身不落盘，只记种类和摘要。
+    同一张码不会每 3 秒刷新。第一次看到、写着过期、或已显示满 90 秒，才刷新一次。
     """
     base = str(base or "").strip().rstrip("/")
     token = str(token or "").strip()
@@ -432,6 +466,11 @@ def napcat_login_qr(base: str, token: str, uin: str = "") -> dict:
         out["msg"] = "没有 NapCat 界面 Token"
         note(out["msg"])
         return out
+    with _qr_lock(base):
+        return _napcat_login_qr_locked(base, token, out, note)
+
+
+def _napcat_login_qr_locked(base: str, token: str, out: dict, note) -> dict:
     note(f"看登录状态 {napcat_host(base)}")
     ok, data = _webui_post(base, "/api/QQLogin/CheckLoginStatus", token)
     if not ok:
@@ -445,6 +484,7 @@ def napcat_login_qr(base: str, token: str, uin: str = "") -> dict:
         return out
     info = data.get("data") if isinstance(data.get("data"), dict) else {}
     if info.get("isLogin"):
+        _qr_shown.pop(base, None)
         out["ok"] = True
         out["logged_in"] = True
         out["msg"] = "NapCat 已经登录，不用再扫码"
@@ -453,41 +493,70 @@ def napcat_login_qr(base: str, token: str, uin: str = "") -> dict:
     out["offline"] = bool(info.get("isOffline"))
     qr = str(info.get("qrcodeurl") or "")
     err = str(info.get("loginError") or "")
-    if qr and err:
-        note(f"状态里已经有登录码，同时写着：{err}。这次沿用这张码，没有刷新")
-    if not qr:
-        note("状态里没有登录码，改向 GetQQLoginQrcode 要")
-        ok, got = _webui_post(base, "/api/QQLogin/GetQQLoginQrcode", token)
-        if ok:
-            note("GetQQLoginQrcode " + _webui_brief(got))
+    now = time.monotonic()
+    mark = _qr_mark(qr)
+    held = _qr_shown.get(base)
+    same = False
+    if held and mark != "无" and held.get("mark") != mark and not _qr_expired(err):
+        note(f"NapCat 自己换了登录码 {mark}，这次不刷新")
+        _qr_shown[base] = {"mark": mark, "at": now, "changed": True}
+    elif (not qr and held and held.get("changed") and not _qr_expired(err)
+          and now - float(held.get("at") or 0) < _QR_FRESH_SEC):
+        note("状态里没有地址，距上次刷新还短，这次不刷新")
+    elif _qr_keep(held, mark, err, now):
+        age = int(now - float(held.get("at") or now))
+        same = not held.get("changed")
+        note(f"沿用 {mark}，距上次刷新 {age} 秒，这次不刷新")
+    else:
+        if not qr:
+            why = "还没有登录码"
+        elif _qr_expired(err):
+            why = f"状态写着过期：{err}"
+        elif held and held.get("mark") == mark and held.get("changed"):
+            why = "这张码已显示满 90 秒"
+        elif held and held.get("mark") == mark:
+            why = "上次刷新没有换码，再试一次"
         else:
-            note(f"GetQQLoginQrcode {got}")
-        if ok and _webui_already_in(got):
-            out["ok"] = True
-            out["logged_in"] = True
-            out["msg"] = "NapCat 已经登录，不用再扫码"
-            note(out["msg"])
-            return out
-        qr = _webui_qrcode(got) if ok else ""
-    if not qr:
-        note("还是没有登录码，先 RefreshQRcode 再要一次")
-        refreshed_ok, refreshed = _webui_post(base, "/api/QQLogin/RefreshQRcode", token)
+            why = "打开页面时先换一张新码"
+        note(f"{why}，刷新一次")
+        refreshed_ok, refreshed_body = _webui_post(base, "/api/QQLogin/RefreshQRcode", token)
         if refreshed_ok:
-            note("RefreshQRcode " + _webui_brief(refreshed))
+            note("RefreshQRcode " + _webui_brief(refreshed_body))
         else:
-            note(f"RefreshQRcode {refreshed}")
+            note(f"RefreshQRcode {refreshed_body}")
+        old = qr
+        qr, err, logged = _qr_after_refresh(base, token, note, old)
+        if logged:
+            _qr_shown.pop(base, None)
+            out["ok"] = True
+            out["logged_in"] = True
+            out["msg"] = "NapCat 已经登录，不用再扫码"
+            note(out["msg"])
+            return out
+        changed = bool(qr) and qr != old
+        same = not changed
+        _qr_shown[base] = {"mark": _qr_mark(qr), "at": time.monotonic(), "changed": changed}
+        if changed:
+            note(f"刷新后登录码已换 {_qr_mark(qr)}")
+        else:
+            note(f"刷新后登录码没有变 {_qr_mark(qr)}")
+    if not qr:
         ok, got = _webui_post(base, "/api/QQLogin/GetQQLoginQrcode", token)
         if ok:
             note("GetQQLoginQrcode " + _webui_brief(got))
         else:
             note(f"GetQQLoginQrcode {got}")
         if ok and _webui_already_in(got):
+            _qr_shown.pop(base, None)
             out["ok"] = True
             out["logged_in"] = True
             out["msg"] = "NapCat 已经登录，不用再扫码"
             note(out["msg"])
             return out
         qr = _webui_qrcode(got) if ok else ""
+        if qr:
+            same = False
+            _qr_shown[base] = {"mark": _qr_mark(qr), "at": time.monotonic(), "changed": True}
     if not qr:
         out["msg"] = err or "NapCat 还没有登录二维码"
         note(out["msg"])
@@ -504,9 +573,36 @@ def napcat_login_qr(base: str, token: str, uin: str = "") -> dict:
         return out
     out["ok"] = True
     out["qrcode"] = image
-    out["msg"] = err or "用这个攻打号的手机 QQ 扫网页上的这张 NapCat 登录码"
+    if same:
+        out["msg"] = "已让 NapCat 刷新一次，它给出的还是同一张登录码。手机若仍提示过期，就是这台 NapCat 没有换新码。"
+    else:
+        out["msg"] = err or "用这个攻打号的手机 QQ 扫网页上的这张 NapCat 登录码"
     note(f"页面显示登录码 {_qr_mark(qr)}。{out['msg']}")
     return out
+
+
+def _qr_after_refresh(base: str, token: str, note, old: str) -> tuple:
+    """刷新后再看状态。地址还是原来那张时再等一次。返回 (登录码, 错误, 是否已经登录)。"""
+    qr = err = ""
+    for attempt in (1, 2):
+        ok, data = _webui_post(base, "/api/QQLogin/CheckLoginStatus", token)
+        if not ok:
+            note(f"CheckLoginStatus {data}")
+            break
+        note("CheckLoginStatus " + _webui_brief(data))
+        if data.get("code") not in (0, "0"):
+            note(str(data.get("message") or "看不了 NapCat 登录状态"))
+            break
+        info = data.get("data") if isinstance(data.get("data"), dict) else {}
+        if info.get("isLogin"):
+            return "", "", True
+        qr = str(info.get("qrcodeurl") or "")
+        err = str(info.get("loginError") or "")
+        if attempt == 1 and (not qr or qr == old):
+            time.sleep(0.6)
+            continue
+        break
+    return qr, err, False
 
 
 def probe_attack_napcat(config: dict | None, uin: str, api: str = "",
