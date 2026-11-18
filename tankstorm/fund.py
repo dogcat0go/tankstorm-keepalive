@@ -392,3 +392,87 @@ def fund(rec, sock, building_id, times, on_progress=None):
         if i < times:
             _nap(0.4)
     return True, f"建筑 {building_id} 拨款 {done} 次，拨款值={last_times}"
+
+
+def fund_cycle(rec, sock, buildings, on_progress=None):
+    """按列表顺序，一栋一直拨到被拒，再换下一栋，不回头。"""
+    rows = []
+    for item in buildings:
+        if isinstance(item, dict):
+            raw_id = item.get("id")
+            name = str(item.get("name") or "").strip()
+        else:
+            raw_id = item
+            name = ""
+        bid = int(raw_id)
+        rows.append({"id": bid, "name": name or str(bid), "done": 0, "note": ""})
+    got_bag = rec.latest.get(RSE_BAG) if rec else None
+    bag = got_bag[1] if got_bag and isinstance(got_bag[1], dict) else None
+
+    def publish(text):
+        if on_progress:
+            on_progress(text)
+
+    for row in rows:
+        while row["done"] < HARD_MAX_TIMES:
+            raise_if_stopped()
+            publish(f"正在拨{row['name']}，已成 {row['done']} 次")
+            if isinstance(bag, dict):
+                bag, _cards = open_resource_cards(
+                    rec, sock, bag, label=f"拨款 {row['name']}")
+            got = fund_once(rec, sock, row["id"])
+            if not isinstance(got, dict) or got.get("error") not in (0, None):
+                err = got.get("error") if isinstance(got, dict) else "无回包"
+                if row["done"]:
+                    row["note"] = f"被拒 error={err}，已成 {row['done']} 次"
+                else:
+                    row["note"] = f"被拒 error={err}"
+                log.info("[拨款] %s %s", row["name"], row["note"])
+                publish(f"{row['name']}：{row['note']}")
+                break
+            row["done"] += 1
+            row["note"] = f"已成 {row['done']} 次"
+            log.info("[拨款] %s 第 %d 次 error=0", row["name"], row["done"])
+            _nap(0.4)
+        else:
+            row["note"] = f"拨满，共 {row['done']} 次"
+            log.info("[拨款] %s %s", row["name"], row["note"])
+    text = "；".join(f"{row['name']}：{row['note']}" for row in rows)
+    return True, brief_fund_detail(text)
+
+
+def brief_fund_detail(detail: str) -> str:
+    """循环拨款的整表结果收成一句。单栋的说明不动。"""
+    text = " ".join(str(detail or "").split())
+    if "；" not in text:
+        return text
+    made = []
+    missed = 0
+    for part in text.split("；"):
+        part = part.strip()
+        if "：" not in part:
+            return text
+        name, note = part.split("：", 1)
+        n = 0
+        for key in ("已成 ", "共 "):
+            if key not in note:
+                continue
+            num = ""
+            for ch in note.split(key, 1)[1]:
+                if ch.isdigit():
+                    num += ch
+                elif num:
+                    break
+            if num:
+                n = int(num)
+                break
+        if n:
+            made.append(f"{name.strip()} {n} 次")
+        else:
+            missed += 1
+    parts = []
+    if made:
+        parts.append("、".join(made))
+    if missed:
+        parts.append(f"{missed} 栋没拨成")
+    return "。".join(parts) if parts else text

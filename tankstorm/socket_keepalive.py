@@ -2783,11 +2783,17 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     citydb.set_attack_status("daily", task=label, note=why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "fund":
-                ok, why = fund.fund(
-                    rec, sock, params.get("building_id"), params.get("times") or 1,
-                    on_progress=_show)
-                _show(why)
-                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+                rows = params.get("buildings") if params.get("cycle") else None
+                if isinstance(rows, list) and rows:
+                    _ok, why = fund.fund_cycle(rec, sock, rows, on_progress=_show)
+                    _show(why)
+                    citydb.finish_daily_job(job["id"], "done", why)
+                else:
+                    ok, why = fund.fund(
+                        rec, sock, params.get("building_id"), params.get("times") or 1,
+                        on_progress=_show)
+                    _show(why)
+                    citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_camp":
                 from . import guild
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):

@@ -78,8 +78,9 @@ const tab = ref("attack");
 const dailyQq = ref("");
 const dailyTasks = ref([]);
 const campaignTasks = computed(() => dailyTasks.value.filter((it) => it.extra));
-const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra));
+const progressTasks = computed(() => dailyTasks.value.filter((it) => !it.extra && it.key !== "公会战役"));
 const dailyJobs = ref([]);
+const activityJobs = ref([]);
 const guildBoard = ref(null);
 const guildCatalog = ref([]);
 const guildAccept = ref([]);
@@ -117,6 +118,64 @@ const resourceCards = ref(null);
 const ask = ref("");
 let askDone = null;
 const baseJobs = ref([]);
+const floatAt = ref(null);
+const floatFolded = ref(true);
+const floatJobs = computed(() => {
+  const seen = new Set();
+  const base = [];
+  for (const it of baseJobs.value) {
+    if (seen.has(it.kind)) continue;
+    seen.add(it.kind);
+    base.push({ ...it, lane: "base" });
+  }
+  const rows = activityJobs.value.map((it) => ({ ...it, lane: "activity" })).concat(base);
+  const rank = (it) => (it.status === "正在做" ? 0 : it.status === "排队" ? 1 : 2);
+  return rows.sort((a, b) => rank(a) - rank(b) || b.id - a.id);
+});
+const floatStyle = computed(() => {
+  const at = floatAt.value;
+  if (!at) return {};
+  return { left: at.x + "px", top: at.y + "px", right: "auto", bottom: "auto" };
+});
+
+function clampFloat(x, y, width) {
+  const w = width || Math.min(360, window.innerWidth - 24);
+  return {
+    x: Math.max(8, Math.min(window.innerWidth - w - 8, x)),
+    y: Math.max(8, Math.min(window.innerHeight - 36, y)),
+  };
+}
+
+function dragFloat(ev) {
+  if (ev.button != null && ev.button !== 0) return;
+  ev.preventDefault();
+  const box = ev.currentTarget.parentElement;
+  const rect = box.getBoundingClientRect();
+  const dx = ev.clientX - rect.left;
+  const dy = ev.clientY - rect.top;
+  const sx = ev.clientX;
+  const sy = ev.clientY;
+  let moved = false;
+  function move(e) {
+    if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) < 6) return;
+    moved = true;
+    const at = clampFloat(e.clientX - dx, e.clientY - dy, rect.width);
+    floatAt.value = at;
+  }
+  function up() {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    if (!moved && window.matchMedia("(max-width: 720px)").matches) {
+      floatFolded.value = !floatFolded.value;
+      return;
+    }
+    try {
+      if (moved && floatAt.value) localStorage.setItem("job-float-at", JSON.stringify(floatAt.value));
+    } catch (e) { /* 存不住就只留在这一页 */ }
+  }
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
 const baseNote = ref("");
 const baseBlast = ref(null);
 const baseMetal = ref(null);
@@ -237,6 +296,7 @@ async function refreshDaily() {
     dailyQq.value = "";
     dailyTasks.value = [];
     dailyJobs.value = [];
+    activityJobs.value = [];
     guildBoard.value = null;
     guildCatalog.value = [];
     guildAccept.value = [];
@@ -266,6 +326,7 @@ async function refreshDaily() {
   dailyQq.value = data.qq || "";
   dailyTasks.value = data.tasks || [];
   dailyJobs.value = data.jobs || [];
+  activityJobs.value = data.activity_jobs || [];
   guildBoard.value = data.guild_tasks || null;
   guildCatalog.value = data.guild_catalog || [];
   if (!guildAcceptReady) {
@@ -600,6 +661,19 @@ async function runFund(building, times) {
   await refreshAttacks();
 }
 
+async function runFundCycle() {
+  showErr("", "activity");
+  fundNote.value = "";
+  await api("/api/daily", {
+    kind: "fund",
+    cycle: true,
+    buildings: fundBuildings.map((b) => ({ id: b.id, name: b.name })),
+  });
+  fundNote.value = "已按列表顺序，一栋拨到被拒再换下一栋";
+  await refreshDaily();
+  await refreshAttacks();
+}
+
 async function runWish(times) {
   showErr("", "activity");
   const n = Number(String(times || "").trim());
@@ -905,6 +979,10 @@ async function enter() {
   pinRetreatCity();
   await refresh();
   await refreshAttacks();
+  if (me.value && me.value.base_war && toolsOn.value) {
+    refreshDaily().catch(() => {});
+    refreshBase().catch(() => {});
+  }
 }
 
 async function loadCities() {
@@ -945,6 +1023,10 @@ async function loadMe() {
   pinRetreatCity();
   await refresh();
   await refreshAttacks();
+  if (me.value && me.value.base_war && toolsOn.value) {
+    refreshDaily().catch(() => {});
+    refreshBase().catch(() => {});
+  }
 }
 
 function takeUser(user) {
@@ -1369,6 +1451,7 @@ async function logout() {
   dailyQq.value = "";
   dailyTasks.value = [];
   dailyJobs.value = [];
+  activityJobs.value = [];
   guildBoard.value = null;
   guildCatalog.value = [];
   guildAccept.value = [];
@@ -1442,6 +1525,10 @@ function onSubToggle(key, ev) {
 }
 
 onMounted(async () => {
+  try {
+    const at = JSON.parse(localStorage.getItem("job-float-at") || "null");
+    if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) floatAt.value = clampFloat(at.x, at.y);
+  } catch (e) { /* 没有存过位置 */ }
   const meta = await fetch("/api/meta").then((r) => r.json()).catch(() => ({}));
   devLogin.value = !!meta.dev_login;
   registerOpen.value = !!meta.register;
@@ -1453,8 +1540,10 @@ onMounted(async () => {
   atkTimer = setInterval(() => {
     if (!me.value) return;
     refreshAttacks().catch(() => {});
-    if (tab.value === "daily" || tab.value === "activity") refreshDaily().catch(() => {});
-    if (tab.value === "base") refreshBase().catch(() => {});
+    if (me.value.base_war && toolsOn.value) {
+      refreshDaily().catch(() => {});
+      refreshBase().catch(() => {});
+    } else if (tab.value === "daily") refreshDaily().catch(() => {});
   }, 2000);
   clockTimer = setInterval(() => {
     clock.value = Date.now();
@@ -1523,6 +1612,12 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
+      <div v-if="toolsOn && me.base_war && floatJobs.length && (tab === 'base' || tab === 'activity')" class="job-float" :class="{ 'is-collapsed': floatFolded }" :style="floatStyle">
+        <header @pointerdown="dragFloat">任务状态</header>
+        <div class="job-float-body">
+          <p v-for="it in floatJobs" :key="it.id">{{ it.lane === "base" ? "基地战" : "活动" }} {{ it.label }} {{ it.status }} {{ it.detail }}<button v-if="it.status === '排队' || it.status === '正在做'" type="button" class="ghost" @click="(it.lane === 'base' ? cancelBase(it) : cancelDaily(it)).catch((e) => showErr(e.message))">关停</button></p>
+        </div>
+      </div>
       <el-menu v-if="toolsOn" class="page-nav" mode="horizontal" :ellipsis="false" :default-active="sideOn ? '' : tab" :key="tab" aria-label="功能" @select="pickTab">
         <el-menu-item index="attack">国战助手</el-menu-item>
         <el-menu-item index="daily">日常任务</el-menu-item>
@@ -1552,7 +1647,8 @@ onUnmounted(() => {
         v-model:stone-times="stoneTimes"
         :daily-qq="dailyQq"
         :tasks="dailyTasks"
-        :jobs="dailyJobs"
+        :jobs="activityJobs"
+        :cancel-job="cancelDaily"
         :run-guild-camp="runGuildCamp"
         :daily-switching="dailySwitching"
         :note="guildLevelNote"
@@ -1571,6 +1667,7 @@ onUnmounted(() => {
         :save-level="saveGuildLevel"
         :save-daily-switch="saveDailySwitch"
         :run-fund="runFund"
+        :run-fund-cycle="runFundCycle"
         :run-egg="runEgg"
         :run-wish="runWish"
         :run-gift="runGift"

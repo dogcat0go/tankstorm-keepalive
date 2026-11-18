@@ -284,6 +284,33 @@ table.daily-jobs td.reason {
   min-width: 12em;
   line-height: 1.45;
 }
+.job-float {
+  position: fixed;
+  right: 12px;
+  bottom: 12px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  width: min(360px, calc(100vw - 24px));
+  max-height: 30vh;
+  background: #fff;
+  border: 1px solid #c5daf0;
+  border-radius: 8px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+}
+.job-float header {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+  border-bottom: 1px solid #e6e6e6;
+}
+.job-float-body { overflow: auto; min-height: 0; padding: 4px 12px 8px; }
+.job-float p { margin: 4px 0; }
 .recent-dock {
   display: flex;
   flex-direction: column;
@@ -331,6 +358,18 @@ img.scan-qr { width: 280px; }
     margin-top: 8px;
     box-shadow: 0 1px 0 #eee;
   }
+  .job-float { bottom: calc(12px + 20dvh); max-height: 30vh; }
+  .job-float header::after {
+    content: "收起";
+    float: right;
+    font-weight: 400;
+    font-size: 12px;
+    color: #666;
+  }
+  .job-float.is-collapsed { max-height: none; }
+  .job-float.is-collapsed header { border-bottom: 0; }
+  .job-float.is-collapsed header::after { content: "展开"; }
+  .job-float.is-collapsed .job-float-body { display: none; }
   .base-page { padding-bottom: 20dvh; }
   .recent-dock {
     position: fixed;

@@ -5664,6 +5664,12 @@ _BASE_LANE = (
     "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
 )
 _BASE_JOB_KINDS = _BASE_LANE
+# 活动助手页面上的执行记录，含成就拨款。日常任务的最近执行不带这些。
+_ACTIVITY_JOB_KINDS = (
+    "fund", "guild_camp", "strike", "egg", "wargame",
+    "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute",
+    "train_book", "skill_book", "stone",
+)
 _DAILY_STATUS = {
     "pending": "排队",
     "running": "正在做",
@@ -6600,17 +6606,44 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
             return why
         clean["stages"] = str(params.get("stages") or "").strip()
     elif kind == "fund":
-        try:
-            building = int(str(params.get("building_id") or "").strip())
-            times = int(str(params.get("times") or "1").strip())
-        except (TypeError, ValueError):
-            return "建筑和次数要是数字"
-        if building <= 0:
-            return "要填建筑 ID"
-        if not (1 <= times <= 999):
-            return "拨款次数要在 1 到 999"
-        clean["building_id"] = building
-        clean["times"] = times
+        if params.get("cycle") in (True, 1, "1", "true", "True"):
+            raw = params.get("buildings")
+            if not isinstance(raw, list) or not raw:
+                return "没有要循环的建筑"
+            buildings = []
+            seen = set()
+            for item in raw:
+                name = ""
+                raw_id = item
+                if isinstance(item, dict):
+                    raw_id = item.get("id")
+                    name = str(item.get("name") or "").strip()[:16]
+                try:
+                    building = int(str(raw_id).strip())
+                except (TypeError, ValueError):
+                    return "建筑要是数字"
+                if building <= 0:
+                    return "要填建筑 ID"
+                if building in seen:
+                    continue
+                seen.add(building)
+                buildings.append({"id": building, "name": name})
+            if not buildings:
+                return "没有要循环的建筑"
+            clean["cycle"] = True
+            clean["buildings"] = buildings
+        else:
+            try:
+                building = int(str(params.get("building_id") or "").strip())
+                times = int(str(params.get("times") or "1").strip())
+            except (TypeError, ValueError):
+                return "建筑和次数要是数字"
+            if building <= 0:
+                return "要填建筑 ID"
+            if not (1 <= times <= 999):
+                return "拨款次数要在 1 到 999"
+            clean["building_id"] = building
+            clean["times"] = times
     elif kind == "wish":
         try:
             times = int(str(params.get("times") or "1").strip())
@@ -6935,10 +6968,19 @@ def resume_daily_jobs() -> None:
 
 
 def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
-    """kind 为空时不带基地战。kind 为 base 时只带爆破兵、战车工厂和开资源卡。"""
+    """kind 为空时不带基地战和活动助手。kind 为 base 或 activity 时只带那一块。"""
     conn = connect(readonly=True)
     try:
-        if kind == "base":
+        if kind == "activity":
+            slot = ",".join("?" * len(_ACTIVITY_JOB_KINDS))
+            rows = conn.execute(
+                "SELECT id, kind, status, detail, created_at FROM daily_job "
+                "WHERE user_id=? AND id IN ("
+                "SELECT MAX(id) FROM daily_job "
+                "WHERE user_id=? AND kind IN (" + slot + ") GROUP BY kind) "
+                "ORDER BY id DESC",
+                (int(user_id), int(user_id), *_ACTIVITY_JOB_KINDS)).fetchall()
+        elif kind == "base":
             slot = ",".join("?" * len(_BASE_JOB_KINDS))
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
@@ -6951,23 +6993,28 @@ def list_daily_jobs(user_id: int, limit: int = 2, kind: str = "") -> list:
                 "WHERE user_id=? AND kind=? ORDER BY id DESC LIMIT ?",
                 (int(user_id), kind, int(limit))).fetchall()
         else:
-            slot = ",".join("?" * len(_BASE_JOB_KINDS))
+            skip = _BASE_JOB_KINDS + _ACTIVITY_JOB_KINDS
+            slot = ",".join("?" * len(skip))
             rows = conn.execute(
                 "SELECT id, kind, status, detail, created_at FROM daily_job "
                 "WHERE user_id=? AND kind NOT IN (" + slot + ") "
                 "ORDER BY id DESC LIMIT ?",
-                (int(user_id), *_BASE_JOB_KINDS, int(limit))).fetchall()
+                (int(user_id), *skip, int(limit))).fetchall()
     finally:
         conn.close()
     from . import daily
+    from .fund import brief_fund_detail
     out = []
     for row in rows:
+        detail = daily.display_job_detail(row[2], row[3] or "")
+        if row[1] == "fund":
+            detail = brief_fund_detail(detail)
         out.append({
             "id": int(row[0]),
             "kind": row[1],
             "label": DAILY_KIND_LABEL.get(row[1], row[1]),
             "status": _DAILY_STATUS.get(row[2], row[2]),
-            "detail": daily.display_job_detail(row[2], row[3] or ""),
+            "detail": detail,
             "created_at": beijing_ts(row[4]) if row[4] else "",
         })
     return out
