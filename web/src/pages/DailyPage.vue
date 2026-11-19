@@ -5,6 +5,7 @@ import "element-plus/es/components/switch/style/css";
 import FoldPart from "../components/FoldPart.vue";
 
 const dailyAt = defineModel("dailyAt", { type: String, required: true });
+const guildLevel = defineModel("guildLevel", { type: String, required: true });
 const pveStages = defineModel("pveStages", { type: String, required: true });
 const modoCards = defineModel("modoCards", { type: String, required: true });
 const modoAt = defineModel("modoAt", { type: String, required: true });
@@ -33,7 +34,22 @@ const props = defineProps({
   saveDailySwitch: { type: Function, required: true },
   addModo: { type: Function, required: true },
   showErr: { type: Function, required: true },
+  showCamp: { type: Boolean, default: false },
+  campTask: { type: Object, default: null },
+  campJob: { type: Object, default: null },
+  thew: { default: null },
+  score: { default: null },
+  guildLevelNote: { type: String, default: "" },
+  saveGuildLevel: { type: Function, required: true },
+  runGuildCamp: { type: Function, required: true },
 });
+
+function liveText(n) {
+  if (n === null || n === undefined || n === "") return "还没读到";
+  const num = Number(n);
+  if (!Number.isFinite(num)) return "还没读到";
+  return Math.trunc(num).toLocaleString("zh-CN");
+}
 
 const guildClaimable = computed(() =>
   (props.guildBoard?.tasks || []).filter((it) => it.state === "可领奖").length);
@@ -219,6 +235,37 @@ function toggleGuild(id, on) {
         </tbody>
       </table>
     </div>
+    <details v-if="showCamp" class="campaign-box" open>
+      <summary>公会战役</summary>
+      <div v-if="campTask" class="campaign-line">
+        <span class="switch">{{ campTask.name }}</span>
+        <span class="campaign-ops">
+          <el-switch
+            class="daily-switch"
+            size="large"
+            inline-prompt
+            active-text="开"
+            inactive-text="关"
+            :model-value="campTask.on"
+            :loading="dailySwitching === campTask.key"
+            :disabled="campTask.locked"
+            @change="saveDailySwitch(campTask, $event)"
+          />
+          <span v-if="campTask.locked" class="muted">功能尚在恢复中...</span>
+          <span class="muted">今日 {{ campTask.done }}/{{ campTask.max }}</span>
+        </span>
+      </div>
+      <form class="lock-row" @submit.prevent="saveGuildLevel().catch((e) => showErr(e.message))">
+        <span class="switch">攻打等级</span>
+        <label>等级<input v-model="guildLevel" class="mins" inputmode="numeric" required /></label>
+        <button type="submit">保存</button>
+        <button type="button" @click="runGuildCamp().catch((e) => showErr(e.message))">进攻</button>
+      </form>
+      <p v-if="guildLevelNote" class="muted">{{ guildLevelNote }}</p>
+      <p v-if="campJob">{{ campJob.status }} {{ campJob.detail }}<button v-if="campJob.status === '排队' || campJob.status === '正在做'" type="button" class="ghost" @click="cancelDaily(campJob).catch((e) => showErr(e.message))">关停</button></p>
+      <p>体力 {{ liveText(thew) }} · 当前积分 {{ liveText(score) }}</p>
+      <p class="muted">进入这一页会读一次体力和当前积分。只在周五 10:00 到周六 22:00（本机时间）进攻。点进攻就按体力打这一轮。同一等级一直打，直到体力不够、体力不再下降或被拒绝。不领奖。等级记在这个登录账号上。</p>
+    </details>
     <h2>今日进度</h2>
     <p class="muted">点开关就保存。跑一轮时按这里的开和关做。标着恢复中的项先不能开。</p>
     <p v-if="!progressTasks.length" class="muted">还没有任务表。</p>
