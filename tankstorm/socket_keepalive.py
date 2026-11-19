@@ -2796,9 +2796,6 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_camp":
                 from . import guild
-                if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
-                    citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
-                    return
                 cfg = copy.deepcopy(config)
                 user_id = citydb.attack_context_user()
                 level = citydb.guild_camp_level(user_id) if user_id else None
