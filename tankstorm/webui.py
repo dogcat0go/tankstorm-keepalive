@@ -733,8 +733,6 @@ def _handler(config: dict):
                     })
                 elif path == "/api/daily/switch":
                     from . import daily
-                    if str(data.get("key") or "") == "公会战役" and not citydb.base_tier(user.get("tier") or ""):
-                        raise ValueError("活动助手需要高级pro订阅")
                     on = data.get("on")
                     if isinstance(on, str):
                         on = on.strip().lower() in ("1", "true", "on", "开")
@@ -761,8 +759,6 @@ def _handler(config: dict):
                         "guild_accept": citydb.guild_task_accept(user["id"]),
                     })
                 elif path == "/api/daily/guild-level":
-                    if not citydb.base_tier(user.get("tier") or ""):
-                        raise ValueError("活动助手需要高级pro订阅")
                     why = citydb.set_guild_camp_level(user["id"], data.get("level"))
                     if why:
                         raise ValueError(why)
@@ -834,7 +830,7 @@ def _handler(config: dict):
                     if citydb.account_expired(user.get("expires_at") or ""):
                         raise ValueError("账号已过期")
                     if str(data.get("kind") or "") in (
-                            "guild_camp", "strike", "egg", "wargame", "wish", "gift", "repair_drop",
+                            "strike", "egg", "wargame", "wish", "gift", "repair_drop",
                             "soul", "badge", "donate", "tribute", "train_book", "skill_book", "stone"
                     ) and not citydb.base_tier(user.get("tier") or ""):
                         raise ValueError("活动助手需要高级pro订阅")
@@ -881,8 +877,6 @@ def _handler(config: dict):
                         raise ValueError(why)
                     _json(self, 200, {"ok": True})
                 elif path == "/api/camp-live":
-                    if not citydb.base_tier(user.get("tier") or ""):
-                        raise ValueError("活动助手需要高级pro订阅")
                     why = citydb.request_camp_live(user["id"])
                     if why:
                         raise ValueError(why)
@@ -1398,7 +1392,7 @@ def _announce(host, port, config):
         log.warning("注册口令是空的，公网上任何人都能注册。填 config「订阅.注册口令」")
     if not _register_open(config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
-        log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级|高级pro。中级及以上可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置要高级或高级pro。活动助手和基地战只要高级pro")
+        log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级|高级pro。中级及以上可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置要高级或高级pro。活动助手和基地战只要高级pro。公会战役从初级就能用")
         log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin，可看成员配置、攻打 QQ 和扫描安排。扫描号登录二维码在「扫描号」一栏")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
     log.info("攻打号 NapCat 测试：/api/test（只要管理员。登录二维码和 get_cookies，不收发消息）")

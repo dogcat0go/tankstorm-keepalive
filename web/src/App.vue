@@ -368,7 +368,7 @@ async function saveGuildAccept() {
 }
 
 async function saveGuildLevel() {
-  showErr("", "activity");
+  showErr("", tab.value === "daily" ? "daily" : "activity");
   guildLevelNote.value = "";
   const data = await api("/api/daily/guild-level", { level: guildLevel.value });
   guildLevel.value = data.guild_level == null ? "" : String(data.guild_level);
@@ -631,7 +631,7 @@ async function runLab50(count) {
 }
 
 async function runGuildCamp() {
-  showErr("", "activity");
+  showErr("", tab.value === "daily" ? "daily" : "activity");
   guildLevelNote.value = "";
   const level = String(guildLevel.value || "").trim();
   const ok = await confirmUse(`按体力进攻 ${level} 级据点，直到体力不够。`);
@@ -883,7 +883,10 @@ function markAttackHere() {
 
 function pickTab(key) {
   tab.value = key;
-  if (key === "daily") refreshDaily().catch((e) => showErr(e.message, "daily"));
+  if (key === "daily") {
+    refreshDaily().catch((e) => showErr(e.message, "daily"));
+    if (!me.value || !me.value.base_war) api("/api/camp-live", {}).catch((e) => showErr(e.message, "daily"));
+  }
   if (key === "activity") {
     refreshDaily().catch((e) => showErr(e.message, "activity"));
     api("/api/camp-live", {}).catch((e) => showErr(e.message, "activity"));
@@ -1711,6 +1714,15 @@ onUnmounted(() => {
         :save-daily-switch="saveDailySwitch"
         :add-modo="addModo"
         :show-err="showErr"
+        :show-camp="!(me && me.base_war)"
+        :camp-task="dailyTasks.find((it) => it.key === '公会战役') || null"
+        :camp-job="activityJobs.find((it) => it.kind === 'guild_camp') || null"
+        v-model:guild-level="guildLevel"
+        :guild-level-note="guildLevelNote"
+        :thew="guildThew"
+        :score="guildScore"
+        :save-guild-level="saveGuildLevel"
+        :run-guild-camp="runGuildCamp"
       />
       <QqPage
         v-show="tab === 'qq'"

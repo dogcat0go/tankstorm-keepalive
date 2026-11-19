@@ -341,8 +341,6 @@ def peek_campaign(rec, sock):
 def daily_campaign(rec, sock, config):
     """窗口内对上等级后按体力连打。窗口外不发包。一轮只算一次任务。"""
     from . import citydb
-    if not citydb.base_tier(citydb.user_tier(citydb.attack_context_user() or 0)):
-        return False, "活动助手需要高级pro订阅"
     if not _camp_window():
         return False, "不在周五 10:00 到周六 22:00（本机时间），跳过"
     level = (config.get("公会战役") or {}).get("敌方等级")

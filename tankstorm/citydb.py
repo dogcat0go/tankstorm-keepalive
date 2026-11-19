@@ -4732,10 +4732,8 @@ def wargame_live(user_id: int) -> dict:
 
 
 def request_camp_live(user_id: int) -> str:
-    """进活动助手时读一次公会战役体力和当前积分。成功返回空字符串。"""
+    """读一次公会战役体力和当前积分。高级pro同时读精准打击和彩蛋。成功返回空字符串。"""
     user_id = int(user_id or 0)
-    if not base_tier(user_tier(user_id)):
-        return "活动助手需要高级pro订阅"
     if shutdown_due(user_id):
         return "已定时关闭，不再执行任务"
     if not attack_qq_of(user_id):
@@ -4746,8 +4744,9 @@ def request_camp_live(user_id: int) -> str:
     if status.get("phase") == "login" or status.get("need_login"):
         return "还在登录，连上后再看体力和积分"
     _upsert_signal(_mark_name("campask", user_id), "1")
-    _upsert_signal(_mark_name("strikeask", user_id), "1")
-    _upsert_signal(_mark_name("eggask", user_id), "1")
+    if base_tier(user_tier(user_id)):
+        _upsert_signal(_mark_name("strikeask", user_id), "1")
+        _upsert_signal(_mark_name("eggask", user_id), "1")
     return ""
 
 
