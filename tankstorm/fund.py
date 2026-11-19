@@ -80,6 +80,10 @@ RESOURCE_CARDS = (
     (20818, 1000, "1000万石油"),
 )
 _CARD_ORDER = {item: i for i, (item, _wan, _name) in enumerate(RESOURCE_CARDS)}
+_CARD_WAN = {item: wan for item, wan, _name in RESOURCE_CARDS}
+# 空仓库每种资源大约吃下 4000 万。按面额算出一次能开的张数，被拒再减半。
+_HOLD = 40_000_000
+_BATCH_CAP = 999
 BASE_CARDS = tuple((item, name) for item, _wan, name in RESOURCE_CARDS)
 # 整叠打开，每张同时得到金属卡和石油卡各 1 张，然后再按面额开这些卡。
 # 20377 → 20051、20050。20835 → 20116、20117。
@@ -139,10 +143,18 @@ def _wan(n):
     return f"{n / 10000:.2f}万"
 
 
+def _card_batch(item_id, have):
+    """一次请求开多少张。2026-09-25 抓包 1000 万卡一次发 count=4。"""
+    wan = _CARD_WAN.get(item_id, 1000)
+    face = wan * 10_000
+    room = _HOLD // face if face else 1
+    return max(1, min(int(have), room, _BATCH_CAP))
+
+
 def use_card(rec, sock, slot, item_id, count=1):
-    """用一张资源卡。仓库有上限，不一次开一叠。"""
-    if count != 1:
-        return False, f"一次只开 1 张，收到 {count}"
+    """用指定张数的资源卡。count 是这一次请求的张数。"""
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        return False, f"张数不对，收到 {count}"
     if not isinstance(slot, int) or isinstance(slot, bool):
         return False, "没有槽位，不用"
     before = _send(sock, rec, OP_USE, {
@@ -240,7 +252,7 @@ def resource_card_rows(ids):
 
 def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡",
                         cards=None):
-    """按顺序开资源卡。一次一张。某种没有或没开成就停这种，换下一种。
+    """按顺序开资源卡。同一种按仓库容量批量开。某种没有或没开成就停这种，换下一种。
 
     cards 不传时仍是拨款前的 1000 万金属卡和石油卡，每种最多 4 张。
     传了就按这个顺序，背包里有多少开多少。
@@ -272,25 +284,27 @@ def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡",
         opened = 0
         why = ""
         cap = MAX_OPEN if default else count
+        step = _card_batch(item_id, count)
         while opened < cap and slot is not None and count > 0:
-            ok, reason = use_card(rec, sock, slot, item_id, 1)
+            batch = min(step, count, cap - opened)
+            ok, reason = use_card(rec, sock, slot, item_id, batch)
             if not ok:
+                if batch > 1:
+                    step = max(1, batch // 2)
+                    log.info("[%s] %s一次 %d 张没开成（%s），改成 %d 张",
+                             label, name, batch, reason, step)
+                    continue
                 tail = "，接着拨款" if "拨款" in label else ""
-                log.info("[%s] %s卡第 %d 张没开成（%s）%s",
-                         label, name, opened + 1, reason, tail)
+                log.info("[%s] %s卡没开成（%s）%s", label, name, reason, tail)
                 why = str(reason)
                 break
-            opened += 1
+            opened += batch
             metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
-            if default:
-                log.info("[%s] 开了 1 张 1000 万%s卡（%d/%d），基地金属 %s 石油 %s",
-                         label, name, opened, cap, _wan(metal), _wan(oil))
-            else:
-                log.info("[%s] 开了 1 张%s卡（%d/%d），基地金属 %s 石油 %s",
-                         label, name, opened, cap, _wan(metal), _wan(oil))
+            log.info("[%s] 开了 %d 张%s卡（%d/%d），基地金属 %s 石油 %s",
+                     label, batch, name, opened, cap, _wan(metal), _wan(oil))
             if on_progress:
                 on_progress(f"{name} {opened}/{cap}")
-            _nap(0.4)
+            _nap(0.2)
             bag = _pick_recent(rec, RSE_BAG, 0) or bag
             slot, count = _find_card(bag, item_id)
         rows.append((name, opened, why))
