@@ -3325,11 +3325,12 @@ def run_remote_orders(qq, config: dict) -> int:
                 if _idle_needs_login():
                     citydb.set_attack_status("login")
                     owner = citydb.attack_context_user()
-                    citydb.set_page_qr(True, owner)
                     try:
                         relogin_with_push(qq, config)
                     finally:
                         citydb.set_page_qr(False, owner)
+                        citydb.set_login_push("", owner)
+                        citydb.set_login_push_note("", owner)
                     login_checked[0] = time.time()
                     continue
                 citydb.set_attack_status("idle")
@@ -3485,11 +3486,21 @@ def _login_way(way: str) -> str:
         return "napcat"
     if text in ("qr", "scan", "扫码"):
         return "qr"
+    if text in ("push", "confirm", "推送"):
+        return "push"
     return ""
 
 
+def _push_page_note(uin: str, why: str) -> str:
+    """推送没发出去时，页面上留一句，并回到二维码。"""
+    text = str(why or "")
+    if "dev_mid_sig" in text or "没有设备记录" in text:
+        return "这个 QQ 还没有设备记录，确认发不出去。请用另一台设备扫下面的码。"
+    return f"向 QQ {uin} 发送确认没成。请用另一台设备扫下面的码。"
+
+
 def remember_login_way(user_id: int = 0, uin: str = "", way: str = "") -> None:
-    """网页这次点的是扫码还是 NapCat。空着表示沿用原来的：有地址就先问 NapCat，不行再扫码。"""
+    """网页这次点的是扫码、向已绑定 QQ 要确认，还是 NapCat。空着表示沿用原来的。"""
     kind = _login_way(way)
     if not kind:
         return
@@ -3786,16 +3797,22 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                 citydb.take_attack_login()
                 log.info("攻打 QQ %s 的 NapCat 没接上，这次不改走扫码", uin)
                 return
-        elif login_way == "qr" and not (valid and not scope_blocked):
+        elif login_way in ("qr", "push") and not (valid and not scope_blocked):
             valid = False
         if scope_blocked or not valid:
             citydb.set_attack_status("login")
             _arm_login_limit()
-            if on_page:
+            relogin_way = (
+                "qr" if login_way == "qr"
+                else "push" if login_way == "push" or scope_blocked
+                else "")
+            if on_page and relogin_way == "qr":
                 citydb.set_page_qr(True, user_id)
+            elif on_page and relogin_way == "push":
+                citydb.set_page_qr(False, user_id)
             ok = relogin_with_push(
                 qq, config, force_qr=scope_blocked or login_way == "qr",
-                way="qr" if login_way == "qr" else "")
+                way=relogin_way)
             if on_page:
                 citydb.set_page_qr(False, user_id)
             if ok:
@@ -3825,19 +3842,21 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                             _arm_push_keepalive()
                             _connect_attack_orders(qq, config)
                             continue
-                        if picked == "qr" or blocked:
+                        if picked in ("qr", "push") or blocked:
                             if not blocked and qq.is_valid():
                                 citydb.set_attack_paused(False, _owner())
                                 _arm_login_hold()
-                                log.info("攻打 QQ %s 票据还在，不重新扫码，直接连游戏", uin)
+                                log.info("攻打 QQ %s 票据还在，不重新登录，直接连游戏", uin)
                             else:
                                 citydb.set_attack_status("login")
                                 _arm_login_limit()
-                                if on_page:
+                                relogin_way = "qr" if picked == "qr" else "push"
+                                if on_page and relogin_way == "qr":
                                     citydb.set_page_qr(True, user_id)
+                                elif on_page:
+                                    citydb.set_page_qr(False, user_id)
                                 ok = relogin_with_push(
-                                    qq, config, force_qr=True,
-                                    way="qr" if picked == "qr" else "")
+                                    qq, config, force_qr=True, way=relogin_way)
                                 if on_page:
                                     citydb.set_page_qr(False, user_id)
                                 if not ok and _give_up_login(uin):
@@ -3878,18 +3897,22 @@ def _attack_worker(config: dict, user_id: int, uin: str, name: str, on_page: boo
                         else:
                             _arm_login_hold()
                             log.info("攻打 QQ %s 已用 NapCat 登录", uin)
-                    elif picked == "qr":
+                    elif picked in ("qr", "push"):
                         if qq.is_valid() and not any(
                                 citydb.attack_qq_blocked(uid)
                                 for uid in citydb.attack_context_users()):
                             _arm_login_hold()
-                            log.info("攻打 QQ %s 票据还在，不重新扫码，直接连游戏", uin)
+                            log.info("攻打 QQ %s 票据还在，不重新登录，直接连游戏", uin)
                         else:
                             citydb.set_attack_status("login")
                             _arm_login_limit()
-                            if on_page:
+                            relogin_way = "qr" if picked == "qr" else "push"
+                            if on_page and relogin_way == "qr":
                                 citydb.set_page_qr(True, user_id)
-                            if not relogin_with_push(qq, config, force_qr=True, way="qr"):
+                            elif on_page:
+                                citydb.set_page_qr(False, user_id)
+                            if not relogin_with_push(
+                                    qq, config, force_qr=True, way=relogin_way):
                                 if on_page:
                                     citydb.set_page_qr(False, user_id)
                                 continue
@@ -4095,12 +4118,19 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
                 citydb.note_attack_logging_in(user_id)
                 if on_page and claim and way == "qr":
                     citydb.set_page_qr(True, user_id)
+                elif on_page and claim and way == "push":
+                    citydb.set_page_qr(False, user_id)
+                    citydb.set_login_push("", user_id)
                 elif on_page:
                     citydb.set_page_qr(False, user_id)
                 if _drop_live_sock(user_id):
                     log.info("攻打 QQ %s 游戏没挂上，掐掉旧连接准备重连", uin)
             log.info("攻打 QQ %s 的线程已在跑", uin)
-            return "started" if claim and way == "napcat" else "busy"
+            if claim and way == "napcat":
+                return "started"
+            if claim and way == "push":
+                return "push"
+            return "busy"
         if claim:
             remember_login_way(user_id, uin, way)
             citydb.ask_attack_login(user_id)
@@ -4113,6 +4143,8 @@ def kick_attack_login(config: dict, user_id: int = 0, claim: bool = False,
     log.info("已为攻打 QQ %s 拉起线程，登录账号 %s", uin, citydb.username_of(user_id))
     if way == "napcat":
         return "started"
+    if way == "push":
+        return "push"
     return "qr" if on_page else "started"
 
 
@@ -4649,7 +4681,8 @@ def _login_context() -> str:
 
 def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -> bool:
     """需要重新登录时：点了 NapCat 就只向这台要票；点了扫码就出二维码。
-    没指定时，配了攻打号 NapCat 就先要票，要不到再扫码。
+    已绑定的攻打号向这个 QQ 发一次确认，手机上点一下。确认发不出去才出二维码。
+    没指定时，配了攻打号 NapCat 就先要票，要不到再向这个 QQ 要确认。
     二维码过期/超时则自动重发新码，一直重试直到扫码成功（守护进程不能自己退场）。
     攻打线程设了 10 分钟上限时，到点返回 False。
     force_qr 为真时不再用旧票据续上，必须重新扫。攻打 QQ 对不上时用这个。"""
@@ -4715,30 +4748,55 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
         log.error("续上的 QQ 不是这个账号绑定的，改走扫码")
         qq.note_login("续上的 QQ 不是绑定的号，改为扫码")
     elif force_qr:
-        qq.note_login("这一次不续旧票据，直接扫码。%s", qq.ticket_brief())
+        qq.note_login("这一次不续旧票据，直接重新登录。%s", qq.ticket_brief())
     else:
-        qq.note_login("续期没有接上，改为扫码。%s", qq.ticket_brief())
+        qq.note_login("续期没有接上，改为重新登录。%s", qq.ticket_brief())
 
-    # 推送登录：直接往手机QQ推确认，免去扫码。
-    # 这解决了"二维码图存本地、同一台手机相册扫码"被腾讯拒（限制本地扫码登录）的问题。
+    # 已绑定的攻打号：向这个 QQ 发一次登录确认，手机上点一下。
+    # 明确点了扫码，或还没有 QQ 号时，才出二维码。
+    # 扫描号仍用配置里的推送登录QQ号。
     if getattr(qq, "attack_account", False):
-        push_uin = None
+        bound = str(getattr(qq, "bound_uin", "") or "").strip()
+        if not bound.isdigit():
+            bound = str(getattr(qq, "uin", "") or "").strip()
+        push_uin = None if way == "qr" or not bound.isdigit() else bound
     else:
         push_uin = (config.get("登录", {}) or {}).get("推送登录QQ号") or qq.uin or None
 
     def on_qr(path, pushed=False):
         from . import citydb
+        owner = int(citydb.attack_context_user() or 0)
         if getattr(qq, "attack_account", False):
+            if pushed:
+                citydb.set_login_push(str(push_uin or ""), owner)
+                citydb.set_login_push_note("", owner)
+                citydb.set_page_qr(False, owner)
+                log.info("已向 QQ %s 推送登录确认，打开手机点一下，网页不显示二维码", push_uin)
+                if not getattr(qq, "page_qr", False):
+                    notify.send(
+                        config, "坦克风暴：请在手机QQ点「确认登录」",
+                        f"已向 QQ {push_uin} 发送登录确认，打开手机点一下，不用扫码。")
+                return
+            citydb.set_login_push("", owner)
+            if push_uin:
+                citydb.set_login_push_note(
+                    _push_page_note(str(push_uin), getattr(qq, "_push_why", "")),
+                    owner)
             citydb.note_login_qr(path)
-        if getattr(qq, "page_qr", False):
-            log.info("登录二维码留在网页上：%s", path)
-            return
-        elif getattr(qq, "attack_account", False):
+            if getattr(qq, "page_qr", False):
+                if owner:
+                    citydb.set_page_qr(True, owner)
+                log.info("登录二维码留在网页上：%s", path)
+                return
             name = getattr(qq, "account_name", "") or "攻打号"
             notify.send_admin_login_qr(
                 config, path, target=getattr(qq, "notify_qq", ""),
                 text=(f"攻打号「{name}」需要扫码。用这个号的手机 QQ，"
                       f"在另一台设备上扫这张图。不要把图存进同一台手机相册再扫。"))
+            return
+        if getattr(qq, "page_qr", False):
+            log.info("登录二维码留在网页上：%s", path)
+            return
         elif attempt == 1:
             # 扫描号同一次失效只私聊管理员一次，后面换码不再发
             notify.send_admin_login_qr(config, path)
@@ -4760,8 +4818,10 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
     from . import citydb
     if getattr(qq, "page_qr", False):
         owner = int(citydb.attack_context_user() or 0)
-        if owner:
+        if owner and not push_uin:
             citydb.set_page_qr(True, owner)
+        elif owner and push_uin:
+            citydb.set_page_qr(False, owner)
     qq._login_busy = True
     try:
         while True:
@@ -4775,7 +4835,9 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
             # 推送其实失败了日志却显示"已推送"，很误导。
             log.info("登录态失效，正在%s（第 %d 次尝试）",
                      f"向 QQ {push_uin} 发起推送登录" if push_uin else "生成二维码", attempt)
-            qq.note_login("扫码第 %d 次。%s", attempt, _login_context())
+            qq.note_login("%s第 %d 次。%s",
+                          "向已绑定 QQ 发送确认" if push_uin else "扫码",
+                          attempt, _login_context())
             timeout = 180 if not until else max(1, int(until - time.time()))
             if qq.qr_login(on_qr=on_qr, push_uin=push_uin,
                            timeout_sec=min(180, timeout), until=until):
@@ -4805,7 +4867,10 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
             time.sleep(pause)
     finally:
         qq._login_busy = False
-        citydb.set_page_qr(False, owner or citydb.attack_context_user() or 0)
+        done = owner or citydb.attack_context_user() or 0
+        citydb.set_page_qr(False, done)
+        citydb.set_login_push("", done)
+        citydb.set_login_push_note("", done)
 
 
 def run(qq, config: dict, with_daily: bool = False) -> int:

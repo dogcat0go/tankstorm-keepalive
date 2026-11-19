@@ -67,6 +67,9 @@ watch(() => props.loginPlatDefault, (value) => {
       <label class="choice"><input v-model="loginPlat" type="radio" value="大厅" /> QQ游戏大厅</label>
       <button type="button" class="login" @click="pushLogin(loginPlat).catch((e) => showErr(e.message, 'bar'))">登录</button>
     </p>
+    <p v-if="proc && proc.push_to" class="bind-wait">已向 QQ {{ proc.push_to }} 发送登录确认。打开手机 QQ 点一下，不用扫码。</p>
+    <p v-else-if="proc && proc.qq && !qrSrc" class="muted">点登录后向这个 QQ 发一次确认。打开手机点一下。确认发不出去时才会出二维码。</p>
+    <p v-if="qrSrc && proc && proc.push_note" class="muted">{{ proc.push_note }}</p>
     <div class="proc">
       <span class="proc-text">攻打 QQ {{ proc && proc.qq ? proc.qq : "还没绑定" }}：{{ procText(proc) }}<template v-if="proc && proc.online && proc.seen_at && !proc.paused"> · {{ proc.seen_at }}</template></span>
       <button v-if="proc && proc.qq && !proc.shutdown" type="button" class="ghost" :disabled="closeBusy" @click="closeAttack().catch((e) => showErr(e.message, 'bar'))">关闭</button>

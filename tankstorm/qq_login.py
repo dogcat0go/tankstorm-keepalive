@@ -2053,10 +2053,13 @@ class QQSession:
             return {"ok": False, "pushed": False, "why": why}
 
         pushed = False
+        self._push_why = ""
         if push_uin:
             pushed, why = self._push_login(push_uin)
             if not pushed:
-                log.info("推送登录没成（%s），本次用扫码", why)
+                self._push_why = why or "推送没发出去"
+                log.info("推送登录没成（%s），本次用扫码", self._push_why)
+                self.note_login("向 QQ %s 推送没成：%s。改为扫码", push_uin, self._push_why)
 
         folder = os.path.dirname(self.qrcode_file)
         if folder:

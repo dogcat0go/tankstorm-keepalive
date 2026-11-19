@@ -3681,6 +3681,26 @@ def set_page_qr(on: bool, user_id: int = 0) -> None:
         _upsert_signal(_mark_name("qrpath", user_id), "")
 
 
+def set_login_push(uin: str, user_id: int = 0) -> None:
+    """正在等这个 QQ 在手机上点确认。空字符串表示没在等。"""
+    _upsert_signal(_mark_name("loginpush", user_id), str(uin or "").strip())
+
+
+def login_push_uin(user_id: int = 0, conn=None) -> str:
+    return _signal_value(_mark_name("loginpush", user_id, conn=conn), conn=conn).strip()
+
+
+def set_login_push_note(text: str, user_id: int = 0) -> None:
+    """推送没发出去时，给页面的一句说明。发出去或登录结束就清掉。"""
+    _upsert_signal(
+        _mark_name("pushnote", user_id),
+        " ".join(str(text or "").split())[:180])
+
+
+def login_push_note(user_id: int = 0, conn=None) -> str:
+    return _signal_value(_mark_name("pushnote", user_id, conn=conn), conn=conn).strip()
+
+
 def note_login_qr(path: str, user_id: int = 0) -> None:
     """这次扫码的图写在哪。只给这个攻打 QQ 对应的登录账号看。"""
     _upsert_signal(
@@ -5094,6 +5114,12 @@ def attack_status(user_id: int) -> dict:
             row.setdefault("need_login", False)
             row.setdefault("keepalive", False)
             row = _with_page_qr(row, user_id, conn=conn)
+            pushed = login_push_uin(user_id, conn=conn)
+            note = login_push_note(user_id, conn=conn)
+            row["push_to"] = pushed
+            row["push_note"] = note
+            if pushed:
+                row["qr"] = False
             row["qr_at"] = login_qr_at(user_id, conn=conn) if row.get("qr") else ""
             return row
 
@@ -5128,7 +5154,12 @@ def attack_status(user_id: int) -> dict:
             else:
                 detail = "已暂停，不在保活，先连上再继续"
         elif phase == "login":
-            detail = hold_note("登录中")
+            pushed = login_push_uin(user_id, conn=conn)
+            if pushed:
+                detail = hold_note(f"已向 QQ {pushed} 发送确认，打开手机点一下")
+            else:
+                note = login_push_note(user_id, conn=conn)
+                detail = hold_note(note or "登录中")
         elif phase == "daily":
             label = str(parsed.get("task") or "").strip()
             detail = f"正在做{label}" if label else "正在做日常任务"
@@ -5156,7 +5187,7 @@ def attack_status(user_id: int) -> dict:
                     if latest and latest[0] == "failed" and latest[1]:
                         detail = f"空闲。上一单没打成：{latest[1]}"
             if uin and not attack_cookie_logged_in(user_id, conn=conn):
-                detail = "登录已失效，请重新扫码"
+                detail = "登录已失效，点登录向这个 QQ 要一次确认"
         here = ""
         if here_id:
             name = city_name(here_id, conn=conn)
