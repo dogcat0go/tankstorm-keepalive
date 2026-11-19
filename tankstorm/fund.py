@@ -54,12 +54,24 @@ CARD_GAIN = 10_000_000
 # 按面额从小到大，同面额先金属后石油。1000 万也开，排在最后。
 # 2026-11-18 23:28 30 万：20012 金属、20019 石油，每张 +300000。
 RESOURCE_CARDS = (
+    (20006, 1, "1万金属"),
+    (20013, 1, "1万石油"),
+    (20007, 5, "5万金属"),
+    (20014, 5, "5万石油"),
     (20008, 10, "10万金属"),
     (20015, 10, "10万石油"),
+    (20009, 15, "15万金属"),
+    (20016, 15, "15万石油"),
+    (20010, 20, "20万金属"),
+    (20017, 20, "20万石油"),
+    (20011, 25, "25万金属"),
+    (20018, 25, "25万石油"),
     (20012, 30, "30万金属"),
     (20019, 30, "30万石油"),
     (20051, 50, "50万金属"),
     (20050, 50, "50万石油"),
+    (20029, 100, "100万金属"),
+    (20024, 100, "100万石油"),
     (20030, 200, "200万金属"),
     (20025, 200, "200万石油"),
     (20116, 500, "500万金属"),
@@ -69,11 +81,21 @@ RESOURCE_CARDS = (
 )
 _CARD_ORDER = {item: i for i, (item, _wan, _name) in enumerate(RESOURCE_CARDS)}
 BASE_CARDS = tuple((item, name) for item, _wan, name in RESOURCE_CARDS)
-# 2026-10-25 15:49–15:50。整叠打开，每张同时得到金属卡和石油卡各 1 张。
-# 20377 → 20051、20050。20835 → 20116、20117。然后再按面额开这些卡。
+# 整叠打开，每张同时得到金属卡和石油卡各 1 张，然后再按面额开这些卡。
+# 20377 → 20051、20050。20835 → 20116、20117。
+# 20822 是 1000 万资源包，打开后是 1000 万金属卡和 1000 万石油卡各 1 张。
+# 20823 是各 2 张。
 RESOURCE_BOXES = (
-    (20377, "50万资源箱"),
-    (20835, "500万资源箱"),
+    (20903, "1万资源包"),
+    (20808, "5万资源包"),
+    (20821, "10万资源包"),
+    (20809, "20万资源包"),
+    (20377, "50万资源包"),
+    (20810, "100万资源包"),
+    (20811, "200万资源包"),
+    (20835, "500万资源包"),
+    (20822, "1000万资源包"),
+    (20823, "1000万资源包x2"),
 )
 _BOX_ORDER = {item: i for i, (item, _name) in enumerate(RESOURCE_BOXES)}
 _BOX_NAMES = {item: name for item, name in RESOURCE_BOXES}
@@ -339,9 +361,18 @@ def open_base_cards(rec, sock, on_progress=None, card_ids=None):
     return True, text
 
 
-def fund(rec, sock, building_id, times, on_progress=None):
-    """每次全部拨款之前，各开 4 张 1000 万金属卡和石油卡。
+def _open_before_fund(rec, sock, on_progress=None):
+    """拨款前打开全部资源包和各面额资源卡。背包里没有的跳过。"""
+    ok, text = open_base_cards(
+        rec, sock, on_progress=on_progress, card_ids=default_resource_ids())
+    log.info("[拨款] 开卡 %s", text)
+    return ok, text
 
+
+def fund(rec, sock, building_id, times, on_progress=None):
+    """每次全部拨款之前，打开背包里的资源包和各面额资源卡。
+
+    1000 万资源包先开成 1000 万金属卡和石油卡，再和其他面额一起用掉。
     返回 (是否按次数做完, 说明)。拨款升级后建设值会重算，下降不算失败。
     """
     building_id = int(building_id)
@@ -359,8 +390,7 @@ def fund(rec, sock, building_id, times, on_progress=None):
     for i in range(1, times + 1):
         raise_if_stopped()
         if isinstance(bag, dict):
-            bag, _rows = open_resource_cards(
-                rec, sock, bag, label=f"拨款 第 {i}/{times} 次")
+            _open_before_fund(rec, sock, on_progress)
         metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
         log.info("[拨款] 第 %d 次拨款前 基地金属 %s 石油 %s",
                  i, _wan(metal), _wan(oil))
@@ -418,8 +448,7 @@ def fund_cycle(rec, sock, buildings, on_progress=None):
             raise_if_stopped()
             publish(f"正在拨{row['name']}，已成 {row['done']} 次")
             if isinstance(bag, dict):
-                bag, _cards = open_resource_cards(
-                    rec, sock, bag, label=f"拨款 {row['name']}")
+                _open_before_fund(rec, sock)
             got = fund_once(rec, sock, row["id"])
             if not isinstance(got, dict) or got.get("error") not in (0, None):
                 err = got.get("error") if isinstance(got, dict) else "无回包"
