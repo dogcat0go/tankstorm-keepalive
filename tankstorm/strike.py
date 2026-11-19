@@ -9,6 +9,17 @@
 骰子 nRandNum 是 1 到 6。圈数不是每下都加。
 第 7 下回包 nRewardID=3，背包物品 110009 从 97 加到 99。
 请求仍然不带 nRewardID。回包里没有活动起止时间。
+
+2026-11-19 19:30:35–19:31:55 又抓了一次（logs/packets/2026-11-19.jsonl）。
+标记从「准备开始-精准打击」到「结束-精准打击」。
+打开仍是 08 00，打一下仍是 08 01。线上类名换成了 _-3It / _-sK，字段号没变。
+打开时剩余 176、圈数 0。连打 26 次，剩余 176→150，圈数 0→16。
+最后一下奖励标记亮起，背包物品 10070 加了 1。
+奖励不是每下都有。没出奖励也继续打，直到剩余次数变成 0。
+
+2026111802 的回包里，剩余次数 nCurEnergy 在线上第 5 号，
+nPartNum 在第 3 号。2026102901 的旧对照把这两号对反了，
+打开时第 3 号是 0，页面就把剩余次数显示成 0，并且一次都不打。
 """
 
 from . import citydb, sender
@@ -94,7 +105,8 @@ def run_strike(rec, sock, on_progress=None):
     done = 0
     rolls = []
     misses = 0
-    while left > 0 and done < 99 and misses < 5:
+    # 奖励可有可无。次数还在就继续打。176 这种次数要能打完，上限只防死循环。
+    while left > 0 and done < 999 and misses < 5:
         raise_if_stopped()
         got = _send(rec, sock, 1)
         if not isinstance(got, dict):
@@ -139,5 +151,7 @@ def run_strike(rec, sock, on_progress=None):
         tail += f"，圈数 {circle}"
     if left > 0:
         head = f"已打 {done} 次。" if done else ""
-        return False, head + f"剩余 {left} 次没有下降" + tail
+        if misses >= 5:
+            return False, head + f"连续 {misses} 次次数没有下降，剩余 {left}" + tail
+        return False, head + f"剩余 {left} 次还没打完" + tail
     return True, f"成功：精准打击 {done} 次，剩余 {left}{tail}"

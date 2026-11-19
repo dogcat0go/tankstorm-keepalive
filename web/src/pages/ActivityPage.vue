@@ -270,7 +270,7 @@ function occupyText(occ) {
       </form>
       <p v-if="strikeJob">{{ strikeJob.status }} {{ strikeJob.detail }}<button v-if="strikeJob.status === '排队' || strikeJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(strikeJob).catch((e) => showErr(e.message))">关停</button></p>
       <p>剩余次数 {{ liveText(strikeLeft) }}</p>
-      <p class="muted">进入这个页面会读一次剩余次数。点下去会一直打，直到服务器上的剩余次数变成 0。次数没有下降不算打中。这次打开回包里没有活动起止时间。不领圈数奖励。</p>
+      <p class="muted">进入这个页面会读一次剩余次数。点下去会一直打，直到服务器上的剩余次数变成 0。没出奖励也继续打。次数没有下降不算打中。这次打开回包里没有活动起止时间。不领圈数奖励。</p>
     </details>
     <details class="campaign-box">
       <summary>成就拨款</summary>
