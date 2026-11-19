@@ -47,8 +47,6 @@ TYPE_FUND = 70
 # 全部拨款。schema 把这一号标成 addOil，和客户端对不上；以 14:58 的线上字节为准。
 F_ZHUZI_ALL = 27
 
-ITEM_METAL = 20817          # 1000 万金属卡
-ITEM_OIL = 20818            # 1000 万石油卡
 CARD_GAIN = 10_000_000
 # 2026-10-22 23:59 从资源卡包开出后用掉的卡。面额来自回包 medal/oil。
 # 按面额从小到大，同面额先金属后石油。1000 万也开，排在最后。
@@ -79,8 +77,6 @@ _BOX_ORDER = {item: i for i, (item, _name) in enumerate(RESOURCE_BOXES)}
 _BOX_NAMES = {item: name for item, name in RESOURCE_BOXES}
 
 HARD_MAX_TIMES = 999
-# 空仓库每种资源最多吃下 4 张 1000 万卡。一次只开 1 张，开满或被拒就停。
-MAX_OPEN = 4
 
 
 def _send(sock, rec, opcode, fields):
@@ -220,36 +216,29 @@ def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡",
                         cards=None):
     """按顺序开资源卡。一次一张。某种没有或没开成就停这种，换下一种。
 
-    cards 不传时仍是拨款前的 1000 万金属卡和石油卡，每种最多 4 张。
-    传了就按这个顺序，背包里有多少开多少。
+    cards 不传时开全部资源卡，从 10 万到 1000 万，背包里有多少开多少。
+    传了就按这个顺序，同样有多少开多少。
     bag 不传就用最近的背包。返回 (背包, [(资源, 开了几张, 原因)])。
     没有背包时不发请求。
     """
     if bag is None:
         got_bag = rec.latest.get(RSE_BAG) if rec else None
         bag = got_bag[1] if got_bag and isinstance(got_bag[1], dict) else None
-    default = cards is None
-    names = ((ITEM_METAL, "金属"), (ITEM_OIL, "石油")) if default else cards
+    names = [(item, name) for item, _wan, name in RESOURCE_CARDS] if cards is None else cards
     if not isinstance(bag, dict):
         return None, [(name, 0, "没有背包") for _item, name in names]
-    if default:
-        log.info("[%s] 先各开 %d 张金属卡和石油卡", label, MAX_OPEN)
-    else:
-        log.info("[%s] 按顺序开资源卡", label)
+    log.info("[%s] 按顺序开资源卡", label)
     rows = []
     for item_id, name in names:
         raise_if_stopped()
         slot, count = _find_card(bag, item_id)
         if not count:
-            if default:
-                log.info("[%s] 背包没有 1000 万%s卡", label, name)
-            else:
-                log.info("[%s] 背包没有%s卡", label, name)
+            log.info("[%s] 背包没有%s卡", label, name)
             rows.append((name, 0, "背包没有"))
             continue
         opened = 0
         why = ""
-        cap = MAX_OPEN if default else count
+        cap = count
         while opened < cap and slot is not None and count > 0:
             ok, reason = use_card(rec, sock, slot, item_id, 1)
             if not ok:
@@ -260,12 +249,8 @@ def open_resource_cards(rec, sock, bag=None, on_progress=None, label="开卡",
                 break
             opened += 1
             metal, oil = _wallet(_pick_recent(rec, RSE_USER, 0))
-            if default:
-                log.info("[%s] 开了 1 张 1000 万%s卡（%d/%d），基地金属 %s 石油 %s",
-                         label, name, opened, cap, _wan(metal), _wan(oil))
-            else:
-                log.info("[%s] 开了 1 张%s卡（%d/%d），基地金属 %s 石油 %s",
-                         label, name, opened, cap, _wan(metal), _wan(oil))
+            log.info("[%s] 开了 1 张%s卡（%d/%d），基地金属 %s 石油 %s",
+                     label, name, opened, cap, _wan(metal), _wan(oil))
             if on_progress:
                 on_progress(f"{name} {opened}/{cap}")
             _nap(0.4)
@@ -340,7 +325,7 @@ def open_base_cards(rec, sock, on_progress=None, card_ids=None):
 
 
 def fund(rec, sock, building_id, times, on_progress=None):
-    """每次全部拨款之前，各开 4 张 1000 万金属卡和石油卡。
+    """每次全部拨款之前，把背包里的资源卡按面额从小到大开完。
 
     返回 (是否按次数做完, 说明)。拨款升级后建设值会重算，下降不算失败。
     """

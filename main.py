@@ -424,10 +424,10 @@ def main() -> int:
 
     g6 = parser.add_argument_group("成就建筑拨款")
     g6.add_argument("--fund", type=int, metavar="建筑ID", default=None,
-                    help="每次全部拨款前，各开 4 张 1000 万金属卡和石油卡。"
+                    help="每次全部拨款前，把背包里的资源卡按面额从小到大开完。"
                          "次数见 --fund-times")
     g6.add_argument("--fund-times", type=int, metavar="次数", default=1,
-                    help="全部拨款的次数，默认 1。每一次都会先开 4 张金属卡和 4 张石油卡")
+                    help="全部拨款的次数，默认 1。每一次都会先把背包里的资源卡开完")
     g6.add_argument("--parts-fund", action="store_true",
                     help="连上后重发 2026-11-14 抓到的配件成长基金第8挡领取，"
                          "看 ret 后退出。线上是 RceTaskOpt 04a7，"

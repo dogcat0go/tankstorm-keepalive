@@ -288,7 +288,7 @@ function occupyText(occ) {
       </form>
       <p v-if="fundJob">{{ fundJob.status }} {{ fundJob.detail }}<button v-if="fundJob.status === '排队' || fundJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(fundJob).catch((e) => showErr(e.message))">关停</button></p>
       <p v-if="fundNote" class="muted">{{ fundNote }}</p>
-      <p class="muted">每次拨款前各开 4 张 1000 万金属卡和石油卡。次数 1 到 999。一键循环按上面的顺序，一栋一直拨到被拒，再拨下一栋，不回头。</p>
+      <p class="muted">每次拨款前把背包里的资源卡按面额从小到大开完，从 10 万、30 万、50 万开到 1000 万。次数 1 到 999。一键循环按上面的顺序，一栋一直拨到被拒，再拨下一栋，不回头。</p>
     </details>
     <details class="campaign-box">
       <summary>欢乐砸彩蛋</summary>
