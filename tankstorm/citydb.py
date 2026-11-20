@@ -2376,6 +2376,21 @@ def users_bound_to_qq(uin: str) -> list:
     return [int(row[0]) for row in rows]
 
 
+def attack_qq_has_admin(uin: str) -> bool:
+    """绑着这个攻打 QQ 的登录账号里，有没有管理员。"""
+    uin = str(uin or "").strip()
+    if not uin:
+        return False
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM app_user WHERE attack_qq=? AND IFNULL(admin,0)=1 LIMIT 1",
+            (uin,)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def attack_qq_owner(uin: str) -> tuple:
     """这个攻打 QQ 最早绑上的登录账号。没有则是 (0, '')。线程启动用它。"""
     uin = str(uin or "").strip()
