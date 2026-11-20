@@ -5656,127 +5656,232 @@ def _wargame_board(pages, me, home):
     }
 
 
-def _army_hp(node):
-    """一辆车的剩余血和满血。对不上 PVEArmyRecord 就不当成车。"""
+def _as_nodes(value):
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def _is_army(node):
+    """一辆坦克。PVEArmyRecord：编号、型号、剩余血、满血，第 7 号字段是带时间的血量。"""
     if not isinstance(node, dict):
-        return None
+        return False
     final = node.get("nFinalHp", node.get("field4"))
     mx = node.get("nMaxHp", node.get("field6"))
     typ = node.get("nType", node.get("field2"))
     ident = node.get("nID", node.get("field1"))
     if not all(_plain_int(v) for v in (final, mx, typ, ident)):
-        return None
-    if ident <= 0 or not (0 <= typ <= 30) or mx < 100 or final < 0 or final > mx:
-        return None
-    return final, mx
+        return False
+    if ident <= 0 or not (0 <= typ <= 200) or mx < 100 or final < 0 or final > mx:
+        return False
+    return isinstance(node.get("field7"), (dict, list))
 
 
-def _armies_in(node):
+def _tank_of(node):
+    samples = []
+    for item in _as_nodes(node.get("field7")):
+        if _is_army(item):
+            continue
+        tick = item.get("nTick", item.get("field1"))
+        hp = item.get("nHp", item.get("field2"))
+        if _plain_int(tick) and _plain_int(hp) and tick >= 0 and hp >= 0:
+            samples.append((tick, hp))
+    samples.sort()
+    return {
+        "final": node.get("nFinalHp", node.get("field4")),
+        "max": node.get("nMaxHp", node.get("field6")),
+        "samples": samples,
+    }
+
+
+def _tanks_of(value):
+    return [_tank_of(item) for item in _as_nodes(value) if _is_army(item)]
+
+
+def _battle_ways(report):
+    """每一路是 PVEFightRecordWay：field1 我方坦克，field2 对方坦克。最多 5 路。"""
     found = []
 
-    def walk(n, depth):
-        if depth > 8:
+    def walk(node, depth):
+        if depth > 6 or len(found) >= 5:
             return
-        if isinstance(n, dict):
-            hp = _army_hp(n)
-            if hp:
-                found.append(hp)
+        if isinstance(node, dict):
+            ours = _tanks_of(node.get("fightRecordSelf", node.get("field1")))
+            theirs = _tanks_of(node.get("fightRecordEnemy", node.get("field2")))
+            if ours and theirs:
+                found.append((ours, theirs))
                 return
-            for v in n.values():
-                walk(v, depth + 1)
-        elif isinstance(n, list):
-            for v in n:
-                walk(v, depth + 1)
+            for value in node.values():
+                walk(value, depth + 1)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, depth + 1)
 
-    walk(node, 0)
+    for root in (report if isinstance(report, list) else [report]):
+        walk(root, 0)
     return found
 
 
-def _two_sides(node, depth=0):
-    """field1 是己方、field2 是对方时，两边都要有车。"""
-    if depth > 4 or not isinstance(node, dict):
+def _hp_at(tank, tick):
+    hp = tank["max"]
+    seen = False
+    for at, value in tank["samples"]:
+        if at <= tick:
+            hp = value
+            seen = True
+        else:
+            break
+    if not seen and not tank["samples"]:
+        hp = tank["final"]
+    return hp if hp > 0 else 0
+
+
+def _side_at(tanks, tick, use_final=False):
+    left_n = left_hp = max_hp = 0
+    for tank in tanks:
+        max_hp += tank["max"]
+        hp = tank["final"] if use_final else _hp_at(tank, tick)
+        if hp > tank["max"]:
+            hp = tank["max"]
+        if hp > 0:
+            left_n += 1
+            left_hp += hp
+    return {"tanks": left_n, "total": len(tanks), "hp": left_hp, "maxHp": max_hp}
+
+
+def _battle_seconds(span):
+    """时间戳跨度。跨度大时按毫秒，短时按逻辑 30 帧/秒。"""
+    span = max(0, int(span))
+    if span >= 8000:
+        return int(round(span / 1000.0))
+    return int(round(span / 30.0))
+
+
+def _sec_text(seconds):
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}秒"
+    minute, second = divmod(seconds, 60)
+    return f"{minute}分{second}秒" if second else f"{minute}分"
+
+
+def _wan(n):
+    n = int(n)
+    if n < 10000:
+        return str(n)
+    text = f"{n / 10000:.1f}"
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text + "万"
+
+
+def _side_text(side):
+    return (f"剩 {side['tanks']}/{side['total']} 辆、"
+            f"血 {_wan(side['hp'])}/{_wan(side['maxHp'])}")
+
+
+def _wargame_battle(report):
+    """第一阶段的剩余坦克、总血和耗时。时间轴上出现明显间断且当时两边都还活着，就算进入决战。"""
+    ours, theirs = [], []
+    for left, right in _battle_ways(report):
+        ours.extend(left)
+        theirs.extend(right)
+    if not ours or not theirs:
         return None
-    ours = _armies_in(node.get("field1"))
-    theirs = _armies_in(node.get("field2"))
-    if ours and theirs:
-        return ours, theirs
-    found = None
-    for key in ("field1", "field2", "field3", "field8"):
-        child = node.get(key)
-        kids = child if isinstance(child, list) else [child]
-        for item in kids:
-            got = _two_sides(item, depth + 1)
-            if got:
-                found = got
-    return found
+    ticks = sorted({tick for tank in ours + theirs for tick, _hp in tank["samples"]})
+    if not ticks:
+        end = 0
+        return {
+            "climax": None,
+            "phase1": {
+                "seconds": 0,
+                "self": _side_at(ours, end, True),
+                "enemy": _side_at(theirs, end, True),
+            },
+        }
+    start, end = ticks[0], ticks[-1]
+    split = None
+    if len(ticks) >= 4:
+        gaps = [(ticks[i] - ticks[i - 1], i) for i in range(1, len(ticks))]
+        widths = sorted(width for width, _index in gaps)
+        median = widths[len(widths) // 2]
+        # 均匀采样的间隔不会被当成决战。间断要明显长于平常间隔，并且至少 8 秒。
+        limit = max(8000 if (end - start) >= 8000 else 240, median * 4)
+        width, index = max(gaps)
+        if width > limit:
+            before = ticks[index - 1]
+            alive = (_side_at(ours, before)["tanks"] and _side_at(theirs, before)["tanks"])
+            if alive and index > 1 and ticks[index] < end:
+                split = (before, ticks[index])
+    if split is None:
+        return {
+            "climax": None,
+            "phase1": {
+                "seconds": _battle_seconds(end - start),
+                "self": _side_at(ours, end, True),
+                "enemy": _side_at(theirs, end, True),
+            },
+        }
+    phase_end, climax_at = split
+    return {
+        "phase1": {
+            "seconds": _battle_seconds(phase_end - start),
+            "self": _side_at(ours, phase_end),
+            "enemy": _side_at(theirs, phase_end),
+        },
+        "climax": {
+            "seconds": _battle_seconds(end - climax_at),
+            "self": _side_at(ours, end, True),
+            "enemy": _side_at(theirs, end, True),
+        },
+    }
 
 
-def _hit_pct(who, armies):
-    mx = sum(m for _left, m in armies)
-    left = sum(f for f, _mx in armies)
-    if mx <= 0:
-        return ""
-    lost = (mx - left) * 100.0 / mx
-    return f"{who} {lost:.1f}%（剩 {left}/{mx}）"
-
-
-def _wargame_hurt(report):
-    """从战报里算我方击伤对方、对方击伤我方的百分比。分不出来返回空。"""
-    nodes = report if isinstance(report, list) else [report]
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        sides = _two_sides(node)
-        if sides:
-            ours, theirs = sides
-            parts = [p for p in (_hit_pct("我方击伤对方", theirs),
-                                 _hit_pct("对方击伤我方", ours)) if p]
-            if parts:
-                return "，".join(parts)
-        defu = node.get("field2")
-        if not isinstance(defu, dict) or not isinstance(defu.get("field1"), str) or not defu.get("field1"):
-            continue
-        after, lost = defu.get("field8"), defu.get("field14")
-        if not _plain_int(after) or not _plain_int(lost) or lost < 0 or after < 0:
-            continue
-        base = lost + after
-        if base <= 0:
-            continue
-        return f"我方击伤对方 {lost * 100.0 / base:.1f}%（掉 {lost}，剩余 {after}）"
-    return ""
+def _battle_line(battle):
+    phase = battle["phase1"]
+    text = f"第一阶段 {_sec_text(phase['seconds'])}，我方{_side_text(phase['self'])}，对方{_side_text(phase['enemy'])}"
+    climax = battle.get("climax")
+    if not climax:
+        return text + "。未进入决战"
+    text += (f"。决战 {_sec_text(climax['seconds'])}，"
+             f"我方最终血 {_wan(climax['self']['hp'])}（剩 {climax['self']['tanks']} 辆），"
+             f"对方最终血 {_wan(climax['enemy']['hp'])}（剩 {climax['enemy']['tanks']} 辆）")
+    return text
 
 
 def _wargame_outcome(data, sid, name, power):
     ret = data.get("ret") if isinstance(data, dict) else None
-    hurt = _wargame_hurt(data.get("fightReoprt") if isinstance(data, dict) else None)
     report = data.get("fightReoprt") if isinstance(data, dict) else None
-    if isinstance(report, dict) and report and not hurt:
+    battle = _wargame_battle(report)
+    if isinstance(report, dict) and report and battle is None:
         shape = []
-        for k, v in list(data["fightReoprt"].items())[:12]:
-            if isinstance(v, dict):
-                shape.append(f"{k}:{{{','.join(list(v)[:6])}}}")
-            elif isinstance(v, list):
-                shape.append(f"{k}:[{len(v)}]")
+        for key, value in list(report.items())[:12]:
+            if isinstance(value, dict):
+                shape.append(f"{key}:{{{','.join(list(value)[:6])}}}")
+            elif isinstance(value, list):
+                shape.append(f"{key}:[{len(value)}]")
             else:
-                shape.append(f"{k}:{type(v).__name__}")
-        log.info("[军事演习] 战报没有解析出血量 %s", " ".join(shape))
-        hurt = "战报里没分出双方血量"
+                shape.append(f"{key}:{type(value).__name__}")
+        log.info("[军事演习] 战报没有解析出双方坦克 %s", " ".join(shape))
     who = f"场地 {sid}（{name}，战力 {power}）"
+    detail = ""
+    if battle:
+        detail = "。" + _battle_line(battle)
+    elif isinstance(report, dict) and report:
+        detail = "。战报里没分出双方坦克"
     if isinstance(data, dict) and data.get("bOccupySite") is True and ret in (0, 100):
         text = f"打下{who}"
         ts = _future_stamp(data, "siteEndTime")
         if ts:
             text += f"，占用至 {(ts - time.time()) / 60:.0f} 分钟后"
-        if hurt:
-            text += f"。{hurt}"
-        return True, text
+        return True, text + detail, battle
     if ret == 10:
         text = f"{who}被拒 ret=10"
     else:
         text = f"{who}没打下来 ret={ret}"
-    if hurt:
-        text += f"。{hurt}"
-    return False, text
+    return False, text + detail, battle
 
 
 def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
@@ -5803,9 +5908,9 @@ def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
     return data, ""
 
 
-def _publish_wargame(board, result=None):
+def _publish_wargame(board, result=None, battle=None, update_battle=False):
     from . import citydb
-    citydb.note_wargame(board, result)
+    citydb.note_wargame(board, result, battle, update_battle)
 
 
 def _my_combat_power(rec):
@@ -5918,7 +6023,7 @@ def wargame_attack(rec, sock, config, site_id, uid, name="", power=0):
     if err:
         _publish_wargame(board, err)
         return False, err
-    ok, text = _wargame_outcome(data, site_id, shown, shown_power)
+    ok, text, battle = _wargame_outcome(data, site_id, shown, shown_power)
     if ok:
         fresh_pages, _fresh_why = _query_wargame_pages(rec, sock, max(timeout, 8))
         if fresh_pages:
@@ -5938,7 +6043,7 @@ def wargame_attack(rec, sock, config, site_id, uid, name="", power=0):
         token = data.get("tokenNum")
         if _plain_int(token):
             board["token"] = token
-    _publish_wargame(board, text)
+    _publish_wargame(board, text, battle, True)
     return ok, text
 
 
@@ -5984,6 +6089,10 @@ def _run_wargame(rec, sock, config):
                 text += f"，前面 {len(refused)} 个被拒"
             if ts:
                 text += f"，占用至 {(ts - time.time()) / 60:.0f} 分钟后"
+            battle = _wargame_battle(data.get("fightReoprt"))
+            if battle:
+                text += "。" + _battle_line(battle)
+            if ts:
                 return True, text, ts
             return True, text
         if ret == 10:

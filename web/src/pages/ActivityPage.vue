@@ -120,6 +120,32 @@ const wgPageText = ref("1");
 const wgSize = 10;
 
 const wgBoard = computed(() => props.wargame || {});
+const wgBattle = computed(() => wgBoard.value.battle || null);
+
+function wgSec(seconds) {
+  const n = Number(seconds) || 0;
+  if (n < 60) return `${n}秒`;
+  const minute = Math.floor(n / 60);
+  const second = n % 60;
+  return second ? `${minute}分${second}秒` : `${minute}分`;
+}
+
+function wgWan(n) {
+  const value = Number(n) || 0;
+  if (value < 10000) return String(value);
+  const text = (value / 10000).toFixed(1).replace(/\.0$/, "");
+  return `${text}万`;
+}
+
+function wgTanks(side) {
+  if (!side) return "—";
+  return `${side.tanks}/${side.total}`;
+}
+
+function wgHp(side) {
+  if (!side) return "—";
+  return `${wgWan(side.hp)}/${wgWan(side.maxHp)}`;
+}
 const wgSites = computed(() => (Array.isArray(wgBoard.value.sites) ? wgBoard.value.sites : []));
 const wgLevels = computed(() => {
   const set = new Set();
@@ -263,8 +289,32 @@ function occupyText(occ) {
       </form>
       <p v-if="wgJob">{{ wgJob.status }} {{ wgJob.detail }}<button v-if="wgJob.status === '排队' || wgJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(wgJob).catch((e) => showErr(e.message))">关停</button></p>
       <p v-if="wgBoard.result">{{ wgBoard.result }}</p>
+      <div v-if="wgBattle" class="wg-result">
+        <p>第一阶段 {{ wgSec(wgBattle.phase1.seconds) }}<span v-if="!wgBattle.climax"> · 未进入决战</span></p>
+        <table>
+          <thead>
+            <tr><th></th><th>剩余坦克</th><th>整体血量</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>我方</td><td>{{ wgTanks(wgBattle.phase1.self) }}</td><td>{{ wgHp(wgBattle.phase1.self) }}</td></tr>
+            <tr><td>对方</td><td>{{ wgTanks(wgBattle.phase1.enemy) }}</td><td>{{ wgHp(wgBattle.phase1.enemy) }}</td></tr>
+          </tbody>
+        </table>
+        <template v-if="wgBattle.climax">
+          <p>决战 {{ wgSec(wgBattle.climax.seconds) }}</p>
+          <table>
+            <thead>
+              <tr><th></th><th>剩余坦克</th><th>最终血量</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>我方</td><td>{{ wgTanks(wgBattle.climax.self) }}</td><td>{{ wgHp(wgBattle.climax.self) }}</td></tr>
+              <tr><td>对方</td><td>{{ wgTanks(wgBattle.climax.enemy) }}</td><td>{{ wgHp(wgBattle.climax.enemy) }}</td></tr>
+            </tbody>
+          </table>
+        </template>
+      </div>
       <p>剩余次数 {{ liveText(wgBoard.token) }}<span v-if="occupyText(wgBoard.occupy)"> · {{ occupyText(wgBoard.occupy) }}</span></p>
-      <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 10 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报里能分出双方血量时，写出我方击伤对方、对方击伤我方的百分比。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
+      <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 10 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时；时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
       <p v-if="!wgSites.length" class="muted">还没有场地。点刷新场地。</p>
       <p v-else-if="!wgShown.length" class="muted">这个筛选下没有人</p>
       <div v-else class="wide">
