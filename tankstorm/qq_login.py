@@ -1332,7 +1332,12 @@ class QQSession:
         # 不用可重入锁。SIGTERM 处理函数和正在进行的请求在同一条线程上，
         # 重入会把同一次会话的两个请求叠在一起。
         self._http_lock = threading.Lock()
+        self._remembered_uin = ""
+        self._scan_phase = ""
         self._load_cookies()
+        remembered = "".join(ch for ch in str(self.uin or "") if ch.isdigit())
+        if remembered:
+            self._remembered_uin = remembered
         found = self._detect_platform()
         if found:
             self.set_platform(found)
@@ -1438,12 +1443,46 @@ class QQSession:
         long = "有长效凭据" if self.has_long_term_ticket() else "没有长效凭据"
         return "，".join((one("skey"), one("p_skey"), long))
 
+    def scan_status_uin(self) -> str:
+        """扫描号写状态用的 QQ。扫码过程中会话票据会被清掉，沿用上次的号。"""
+        if os.path.basename(self.cookie_file or "") != "cookies.json":
+            return ""
+        uin = "".join(ch for ch in str(self.uin or "") if ch.isdigit())
+        if uin:
+            self._remembered_uin = uin
+            return uin
+        return "".join(ch for ch in str(getattr(self, "_remembered_uin", "") or "") if ch.isdigit())
+
+    def _scan_phase_for(self, text: str) -> str:
+        """这条登录日志对应的扫描号状态。不是扫描号就空。"""
+        if os.path.basename(self.cookie_file or "") != "cookies.json":
+            return ""
+        if any(k in text for k in ("二维码已生成", "已扫码", "等待手机确认")):
+            return "wait"
+        if any(k in text for k in ("开始取二维码", "二维码已失效", "马上换一张")):
+            return "login"
+        if any(k in text for k in (
+                "扫码登录完成", "重新登录成功", "静默续期成功", "已用 NapCat",
+                "现成 cookie 仍有效", "网页票据已保活", "游戏连接开始")):
+            return "online"
+        if any(k in text for k in (
+                "进入重新登录", "没有 skey", "游戏页不认", "改为扫码",
+                "开始重新登录", "游戏连接断开", "检查登录态失败", "继续扫描登录")):
+            return "login"
+        return ""
+
     def note_login(self, msg, *args) -> None:
-        """写到 logs/login.log。每行带上登录账号名称和攻打 QQ。"""
+        """写到 logs/login.log。每行带上登录账号名称和攻打 QQ。扫描号同时记下状态。"""
         try:
             from .log import get_login_logger
             text = msg % args if args else str(msg)
             get_login_logger().info("%s %s", self._qq_label(), text)
+            phase = self._scan_phase_for(text)
+            if not phase:
+                return
+            self._scan_phase = phase
+            from . import citydb
+            citydb.note_scan_status(self.scan_status_uin(), phase)
         except Exception:
             log.debug("登录日志没写上", exc_info=True)
 

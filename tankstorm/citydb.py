@@ -5277,6 +5277,122 @@ def attack_status(user_id: int) -> dict:
             set_attack_paused(False, user_id)
 
 
+def _scan_uin_in_cookie() -> str:
+    """根目录 cookies.json 里的扫描 QQ。没有文件或还没登录就是空。"""
+    path = user_path("cookies.json")
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            jar = json.load(handle)
+    except (OSError, ValueError):
+        return ""
+    picked = ""
+    for item in jar if isinstance(jar, list) else []:
+        if not isinstance(item, dict) or item.get("name") != "uin":
+            continue
+        picked = "".join(ch for ch in str(item.get("value") or "").lstrip("o0") if ch.isdigit())
+        if "qq.com" in str(item.get("domain") or ""):
+            return picked
+    return picked
+
+
+def note_scan_status(uin: str, phase: str) -> None:
+    """扫描进程把自己的阶段写进库。网页只读，不写到登录账号上。"""
+    uin = "".join(ch for ch in str(uin or "") if ch.isdigit())
+    phase = str(phase or "")
+    if phase not in ("online", "login", "wait", "offline"):
+        phase = "login"
+    name = f"scanproc:{uin}" if uin else "scanproc"
+    try:
+        _upsert_signal(name, json.dumps({"phase": phase, "qq": uin}, ensure_ascii=False))
+        if uin:
+            _delete_signal("scanproc")
+    except sqlite3.Error:
+        return
+
+
+def note_scan_storm(uin: str) -> int:
+    """扫描号拒绝了一次超级强攻。按北京时间每天从 0 再计。返回今天的次数。"""
+    uin = "".join(ch for ch in str(uin or "") if ch.isdigit())
+    day = beijing_day()
+    name = f"scanstorm:{uin}" if uin else "scanstorm"
+    with _proc_lock:
+        data = _proc_payload(_signal_value(name))
+        used = int(data.get("used") or 0) if str(data.get("day") or "") == day else 0
+        used += 1
+        try:
+            _upsert_signal(name, json.dumps(
+                {"day": day, "used": used, "qq": uin}, ensure_ascii=False))
+        except sqlite3.Error:
+            return used
+    return used
+
+
+def scan_storm_today(uin: str) -> int:
+    """这个扫描号今天已经拒绝的超级强攻。没有记录是 0。"""
+    uin = "".join(ch for ch in str(uin or "") if ch.isdigit())
+    name = f"scanstorm:{uin}" if uin else "scanstorm"
+    data = _proc_payload(_signal_value(name))
+    if str(data.get("day") or "") != beijing_day():
+        return 0
+    try:
+        return max(0, int(data.get("used") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _scan_row(qq: str, phase: str, seen: str) -> dict:
+    online = False
+    if seen and phase != "offline":
+        try:
+            dt = datetime.strptime(seen, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            online = (datetime.now(timezone.utc) - dt).total_seconds() <= 25
+        except ValueError:
+            online = False
+    if not online:
+        phase = "offline"
+    detail = {"online": "在线", "wait": "正在等扫码", "login": "登录中"}.get(phase, "掉线")
+    return {"qq": qq, "online": online, "phase": phase, "detail": detail,
+            "storm_used": scan_storm_today(qq)}
+
+
+def list_scan_accounts() -> list:
+    """每个扫描号现在的状态。超过 25 秒没心跳就当掉线。"""
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT name, value, at FROM atk_signal "
+            "WHERE name='scanproc' OR name LIKE 'scanproc:%' ORDER BY name"
+        ).fetchall()
+    finally:
+        conn.close()
+    found = {}
+    for name, value, seen in rows:
+        parsed = _proc_payload(value)
+        qq = "".join(ch for ch in str(parsed.get("qq") or "") if ch.isdigit())
+        if not qq and str(name).startswith("scanproc:"):
+            qq = "".join(ch for ch in str(name).split(":", 1)[1] if ch.isdigit())
+        row = _scan_row(qq, parsed.get("phase") or "offline", seen or "")
+        prev = found.get(qq)
+        if prev and prev["online"] and not row["online"]:
+            continue
+        found[qq] = row
+    cookie_uin = _scan_uin_in_cookie()
+    if cookie_uin and "" in found and not found[""]["qq"]:
+        blank = found.pop("")
+        blank["qq"] = cookie_uin
+        prev = found.get(cookie_uin)
+        if not prev or (blank["online"] and not prev["online"]):
+            found[cookie_uin] = blank
+    if cookie_uin and cookie_uin not in found:
+        found[cookie_uin] = _scan_row(cookie_uin, "offline", "")
+    if not found:
+        found[""] = _scan_row("", "offline", "")
+    named = [row for qq, row in found.items() if qq]
+    return named or list(found.values())
+
+
 def list_attack_fighters() -> list:
     """每个已绑定的攻打 QQ 现在在干什么。主进程用这个看全部线程。"""
     rows = []

@@ -991,6 +991,26 @@ onUnmounted(() => {
       <p v-else-if="!shownMembers.length" class="muted">{{ hiddenExpiredMembers && !memberFilterOn ? "过期账号已隐藏。" : "没有符合筛选的账号。" }}</p>
       </template>
       <template v-else-if="sheet === 'scan'">
+        <h2>扫描号</h2>
+        <p class="muted">每个扫描号一条。进程还在时显示在线、登录中或正在等扫码。进程停了显示掉线。收到超级强攻就在这条连接上拒绝，今天拒绝了几次写在强攻这一列。</p>
+        <div class="wide" v-if="scanLogin && (scanLogin.accounts || []).length">
+          <table class="fighters">
+            <thead>
+              <tr>
+                <th>扫描 QQ</th>
+                <th>状态</th>
+                <th>强攻</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(a, i) in scanLogin.accounts" :key="(a.qq || 'scan') + i">
+                <td>{{ a.qq || "—" }}</td>
+                <td :class="a.online ? 'on' : 'off'">{{ a.detail }}</td>
+                <td>今日已拒绝 {{ a.storm_used || 0 }} 次</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <h2>扫描号登录</h2>
         <p class="muted">只显示扫描进程正在等的那一张。用扫描号的手机 QQ 对着屏幕扫，不要把图存进同一部手机的相册再扫。大约两分钟过期，过期后进程会换一张，这里跟着换。</p>
         <p v-if="scanErr" class="err">{{ scanErr }}</p>
