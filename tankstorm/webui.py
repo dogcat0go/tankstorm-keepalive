@@ -1468,8 +1468,9 @@ def _wake_attack_orders(config) -> None:
     while not gap.wait(5):
         try:
             citydb.shelve_due_accounts()
-            citydb.enqueue_due_daily_jobs(
-                ((config or {}).get("每日任务") or {}).get("任务"))
+            task_switches = ((config or {}).get("每日任务") or {}).get("任务")
+            citydb.enqueue_due_daily_jobs(task_switches)
+            citydb.enqueue_due_friday_guild_camp(task_switches)
             citydb.enqueue_due_modo_orders()
             users = citydb.users_needing_attack()
         except Exception:
