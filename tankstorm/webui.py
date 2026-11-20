@@ -470,6 +470,14 @@ def _handler(config: dict):
                     "clean_items": _clean_items_of(user["id"]),
                 })
                 return
+            if path == "/api/items":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                from .items_catalog import live_view
+                _json(self, 200, live_view() or {"live": False})
+                return
             if path == "/api/daily":
                 user = self._user()
                 if not user:
