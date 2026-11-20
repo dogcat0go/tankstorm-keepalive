@@ -5808,6 +5808,35 @@ def _publish_wargame(board, result=None):
     citydb.note_wargame(board, result)
 
 
+def _my_combat_power(rec):
+    """自己的战力。登录时 RseLoad 或 RseUserData 里的 combatpowervalue。读不到是 0。"""
+    latest = getattr(rec, "latest", None) or {}
+    for msg in ("RseLoad", "RseUserData"):
+        got = latest.get(msg)
+        if not got or not isinstance(got[1], dict):
+            continue
+        power = got[1].get("combatpowervalue")
+        if _plain_int(power) and power > 0:
+            return power
+    return 0
+
+
+def _claim_wargame_row(row, me, rec):
+    """占领成功后，这一行改成自己的名字、战力和国家。"""
+    row["mine"] = True
+    row["uid"] = me or row["uid"]
+    row["name"] = "自己"
+    row["truce"] = False
+    row["empty"] = False
+    home = read_my_country(rec)
+    if _plain_int(home) and home > 0:
+        row["country"] = home
+        row["home"] = True
+    power = _my_combat_power(rec)
+    if power:
+        row["power"] = power
+
+
 def wargame_list(rec, sock, config):
     """拉演习场，记下占领者的名字和战力。不进攻。"""
     if rec is None or sock is None:
@@ -5891,15 +5920,20 @@ def wargame_attack(rec, sock, config, site_id, uid, name="", power=0):
         return False, err
     ok, text = _wargame_outcome(data, site_id, shown, shown_power)
     if ok:
-        row["mine"] = True
-        row["uid"] = me or row["uid"]
-        row["name"] = "自己"
-        row["truce"] = False
+        fresh_pages, _fresh_why = _query_wargame_pages(rec, sock, max(timeout, 8))
+        if fresh_pages:
+            fresh = _wargame_board(fresh_pages, me, read_my_country(rec))
+            fresh_row = next((s for s in (fresh.get("sites") or []) if s["id"] == site_id), None)
+            if fresh_row is not None:
+                board = fresh
+                row = fresh_row
+        if not row.get("mine") or not row.get("power") or not row.get("country"):
+            _claim_wargame_row(row, me, rec)
         ts = _future_stamp(data, "siteEndTime")
         board["occupy"] = {
             "id": site_id,
             "lv": row["lv"],
-            "end": ts or 0,
+            "end": ts or (board.get("occupy") or {}).get("end") or 0,
         }
         token = data.get("tokenNum")
         if _plain_int(token):
