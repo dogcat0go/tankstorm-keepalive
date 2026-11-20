@@ -40,6 +40,10 @@ _TYPES = {
     ".json": "application/json",
     ".woff2": "font/woff2",
     ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
     ".ico": "image/x-icon",
 }
 
@@ -132,7 +136,9 @@ def _account(data):
 
 
 # 功能说明按条目写死在这里。id 用来记已读，tier 是面向的那一档，text 是文案。
-# 再加一条就在这张表里加一项。已读记在 app_user.guide_seen，不进管理后台。
+# images 是站内图片路径，按这个顺序显示在文案下面。文件放 web/public/guides/，
+# 构建后从 /guides/文件名 访问。没有图就留空元组。再加一条就在这张表里加一项。
+# 已读记在 app_user.guide_seen，不进管理后台。
 GUIDES = (
     {
         "id": "wargame",
@@ -151,8 +157,25 @@ GUIDES = (
             "从低到高打战力低于 900 万的，空场、自己、本国和停战中的跳过。"
             "这一场被拒就换下一个，否则就停。一轮最多打 5 个。今日进度记 1 次。"
         ),
+        "images": (),
     },
 )
+
+
+def _guide_images(item: dict) -> list:
+    """只留下站内路径。外链和带 .. 的路径不发给页面。"""
+    raw = item.get("images") or ()
+    if isinstance(raw, str):
+        raw = (raw,)
+    out = []
+    for one in raw:
+        path = str(one or "").strip()
+        if not path.startswith("/") or path.startswith("//") or "://" in path:
+            continue
+        if ".." in path.split("/"):
+            continue
+        out.append(path)
+    return out
 
 
 def _pending_guides(user: dict) -> list:
@@ -163,7 +186,12 @@ def _pending_guides(user: dict) -> list:
     for item in GUIDES:
         if item["tier"] != tier or item["id"] in seen:
             continue
-        out.append({"id": item["id"], "title": item["title"], "text": item["text"]})
+        out.append({
+            "id": item["id"],
+            "title": item["title"],
+            "text": item["text"],
+            "images": _guide_images(item),
+        })
     return out
 
 

@@ -125,6 +125,12 @@ const guideBusy = ref(false);
 const guide = computed(() => guides.value[0] || null);
 const guideParagraphs = computed(() =>
   String((guide.value && guide.value.text) || "").split(/\n\n+/).map((part) => part.trim()).filter(Boolean));
+const guideImages = computed(() => {
+  const raw = guide.value && guide.value.images;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((src) =>
+    typeof src === "string" && src.startsWith("/") && !src.startsWith("//") && !src.includes("://") && !src.split("/").includes(".."));
+});
 const baseJobs = ref([]);
 const floatAt = ref(null);
 const floatFolded = ref(true);
@@ -1968,6 +1974,13 @@ onUnmounted(() => {
       <div class="modal-card guide" role="dialog" aria-modal="true" aria-labelledby="guide-title">
         <h2 id="guide-title">{{ guide.title }}</h2>
         <p v-for="(para, i) in guideParagraphs" :key="i">{{ para }}</p>
+        <img
+          v-for="(src, i) in guideImages"
+          :key="src + i"
+          class="guide-shot"
+          :src="src"
+          :alt="guide.title"
+        />
         <p v-if="guideErr" class="err">{{ guideErr }}</p>
         <button type="button" :disabled="guideBusy" @click="ackGuide()">确认</button>
       </div>
