@@ -2796,6 +2796,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_camp":
                 from . import guild
+                if not citydb.guild_camp_friday_fresh(params):
+                    why = "这周五的公会战役已经过了"
+                    _show(why)
+                    citydb.finish_daily_job(job["id"], "failed", why)
+                    return
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
                     return

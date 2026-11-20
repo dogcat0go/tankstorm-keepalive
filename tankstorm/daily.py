@@ -1991,7 +1991,8 @@ TASKS = [
        "2026-10-24：type:200 打开，type:208 进战场，type:217 读据点等级。"
        "对上「公会战役.敌方等级」后反复 type:203，直到体力不够、体力不再下降或被拒绝。"
        "体力读 thew，当前积分读 nowPersonMsg.point。一轮打完算一次。"
-       "只在周五 10:00 到周六 22:00（本机时间）。不领奖、不刷新",
+       "只在周五 10:00 到周六 22:00（本机时间）。不领奖、不刷新。"
+       "周五北京时间 10:10，开关开着并且游戏还连着的号自动排一次，每个号一周一次。没连上的不拉起来",
        runner=lambda rec, sock, config: __import__(
            "tankstorm.guild", fromlist=["daily_campaign"]
        ).daily_campaign(rec, sock, config)),
