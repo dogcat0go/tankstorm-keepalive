@@ -8,6 +8,8 @@ const props = defineProps({
   savePassword: { type: Function, required: true },
   loadFailLibrary: { type: Function, required: true },
   resetFailLibrary: { type: Function, required: true },
+  loadRegions: { type: Function, required: true },
+  saveRegion: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
 
@@ -25,6 +27,11 @@ const failNote = ref("");
 const failBusy = ref(false);
 const failReady = ref(false);
 const FAIL_PAGE = 20;
+const regions = ref([]);
+const regionPick = ref("");
+const regionNote = ref("");
+const regionBusy = ref(false);
+const regionReady = ref(false);
 
 const failQuery = computed(() => failName.value.trim().toLowerCase());
 const failShown = computed(() => {
@@ -109,8 +116,37 @@ async function resetFail() {
   }
 }
 
+async function loadRegions() {
+  try {
+    const data = await props.loadRegions();
+    regions.value = data.items || [];
+    const cur = Number(props.me.region) || 0;
+    regionPick.value = regions.value.some((it) => it.id === cur) ? String(cur) : "";
+  } finally {
+    regionReady.value = true;
+  }
+}
+
+async function switchRegion() {
+  regionNote.value = "";
+  props.showErr("", "region");
+  const face = Number(regionPick.value);
+  if (!regions.value.some((it) => it.id === face)) {
+    props.showErr("这个区进不去", "region");
+    return;
+  }
+  regionBusy.value = true;
+  try {
+    const data = await props.saveRegion(face);
+    regionNote.value = `已改成 ${data.region}区`;
+  } finally {
+    regionBusy.value = false;
+  }
+}
+
 onMounted(() => {
   loadFail().catch((e) => props.showErr(e.message, "fail"));
+  loadRegions().catch((e) => props.showErr(e.message, "region"));
 });
 
 async function submitPwd() {
@@ -136,6 +172,20 @@ async function submitPwd() {
     </p>
     <p>区服：<template v-if="me.region">{{ me.region }}区</template><template v-else>还没识别</template></p>
     <p class="muted">攻打号登录游戏后，从游戏链接里自动识别。目前只有 1 区支持订阅敌方。</p>
+    <p v-if="!regionReady" class="muted">正在看区服。</p>
+    <form v-else-if="regions.length" class="stack" @submit.prevent="switchRegion().catch((e) => showErr(e.message, 'region'))">
+      <label>换到
+        <select v-model="regionPick" :disabled="regionBusy" required>
+          <option value="" disabled>选择区服</option>
+          <option v-for="it in regions" :key="it.id" :value="String(it.id)">{{ it.id }}区</option>
+        </select>
+      </label>
+      <button type="submit" :disabled="regionBusy || !regionPick || Number(regionPick) === Number(me.region || 0)">切换</button>
+      <span v-if="regionNote" class="muted">{{ regionNote }}</span>
+    </form>
+    <p v-else class="muted">还没有区服列表，不能切换。</p>
+    <p v-if="regions.length" class="muted">已经连着的话，这次不断开，下次重连才进新区服。</p>
+    <p v-if="err && errAt === 'region'" class="err">{{ err }}</p>
     <p>今天拒绝超级强攻 {{ me.storm_day ?? 0 }} 次</p>
     <h3>修改密码</h3>
     <form class="stack" @submit.prevent="submitPwd().catch((e) => showErr(e.message, 'pwd'))">

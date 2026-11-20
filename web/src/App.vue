@@ -1431,6 +1431,17 @@ async function loadFailLibrary() {
   return await api("/api/atk-fail");
 }
 
+async function loadRegions() {
+  return await api("/api/regions");
+}
+
+async function saveRegion(region) {
+  showErr("", "region");
+  const data = await api("/api/region", { region });
+  if (me.value) me.value = { ...me.value, region: Number(data.region) || 0 };
+  return data;
+}
+
 async function resetFailLibrary(uid) {
   showErr("", "fail");
   const body = {};
@@ -1636,6 +1647,8 @@ onUnmounted(() => {
         :save-password="savePassword"
         :load-fail-library="loadFailLibrary"
         :reset-fail-library="resetFailLibrary"
+        :load-regions="loadRegions"
+        :save-region="saveRegion"
         :show-err="showErr"
       />
       <ActivityPage

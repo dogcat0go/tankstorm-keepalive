@@ -6,6 +6,10 @@ accounts/
 napcat/
 state.json
 config.local.json
+# 运行时解开的道具表。仓库里的 web/src/items.json 仍是页面的打包底稿。
+items-live.json
+items-refresh.json
+items-refresh.lock
 # 从浏览器搬设备记录时的中转文件（--import-device 的输入，含真 cookie）
 dev-cookie*.txt
 

@@ -186,6 +186,15 @@ def _mark_game_online(on: bool) -> None:
     _storm_local.online = bool(on)
 
 
+def _schedule_item_catalog(qq, ctx) -> None:
+    """游戏号刚登上。道具表放到后台拉，不在这条连接上等待。"""
+    try:
+        from .items_catalog import schedule_refresh
+        schedule_refresh(qq, ctx)
+    except Exception:
+        log.info("道具表刷新没排上", exc_info=True)
+
+
 def _game_online() -> bool:
     return bool(getattr(_storm_local, "online", False))
 
@@ -655,6 +664,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                  len(steps), ctx.get("uid"), ctx.get("secret"))
         _mark_game_online(True)
         qq.note_login("游戏连接开始。%s", qq.ticket_brief())
+        _schedule_item_catalog(qq, ctx)
         if rec:
             # sid 是加密载荷分析时的头号候选密钥材料，记进会话元信息
             rec.note("login_ok", sid=ctx.get("sid"), uid=ctx.get("uid"))
@@ -2833,6 +2843,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "guild_camp":
                 from . import guild
+                if not citydb.guild_camp_friday_fresh(params):
+                    why = "这周五的公会战役已经过了"
+                    _show(why)
+                    citydb.finish_daily_job(job["id"], "failed", why)
+                    return
                 cfg = copy.deepcopy(config)
                 user_id = citydb.attack_context_user()
                 level = citydb.guild_camp_level(user_id) if user_id else None
@@ -4506,6 +4521,7 @@ def _connect_once(qq, config: dict, work) -> int:
                         "连接保持，国战助手先停",
                         got)
         _mark_game_online(True)
+        _schedule_item_catalog(qq, ctx)
         citydb.note_attack_link(interval)
         if citydb.attack_context_user() or citydb.attack_context_qq():
             _clear_login_limit()

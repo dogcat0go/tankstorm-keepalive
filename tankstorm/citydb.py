@@ -1677,7 +1677,7 @@ def note_game_region(user_id: int, region) -> None:
     """攻打号打开游戏页后，把区号记到这个登录账号。
 
     链接里的 region 从 0 起算，玩家说的区号是它加 1。1 区就是链接里的 0。
-    认不出就不改。游戏连接仍用链接里的原值，不读这里。
+    认不出就不改。下次连接按这里的区号去要游戏页，页里实际返回的再写回来。
     """
     user_id = int(user_id or 0)
     text = str(region if region is not None else "").strip()
@@ -1701,6 +1701,32 @@ def note_game_region(user_id: int, region) -> None:
         conn.close()
     if changed:
         log.info("登录账号 %s 的区服是 %s", username_of(user_id), face)
+
+
+def set_user_region(user_id: int, face: int) -> None:
+    """把这个登录账号后面攻打、保活用的区号改成玩家看到的区号。
+
+    同一个攻打 QQ 绑了几个登录账号，一起改。已经连着的那次不断开，
+    下次按现有登录再要游戏页时才带上新区。
+    """
+    user_id = int(user_id or 0)
+    face = int(face)
+    if user_id <= 0 or face <= 0:
+        return
+    uin = attack_qq_of(user_id)
+    ids = users_bound_to_qq(uin) if uin.isdigit() else []
+    if user_id not in ids:
+        ids = [user_id] + ids
+    conn = connect()
+    try:
+        for uid in ids:
+            conn.execute(
+                "UPDATE app_user SET region=? WHERE id=?",
+                (face, int(uid)))
+        conn.commit()
+    finally:
+        conn.close()
+    log.info("登录账号 %s 的区服改成 %s", username_of(user_id), face)
 
 
 def open_session(username: str) -> str:
@@ -2348,6 +2374,21 @@ def users_bound_to_qq(uin: str) -> list:
     finally:
         conn.close()
     return [int(row[0]) for row in rows]
+
+
+def attack_qq_has_admin(uin: str) -> bool:
+    """绑着这个攻打 QQ 的登录账号里，有没有管理员。"""
+    uin = str(uin or "").strip()
+    if not uin:
+        return False
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM app_user WHERE attack_qq=? AND IFNULL(admin,0)=1 LIMIT 1",
+            (uin,)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 def attack_qq_owner(uin: str) -> tuple:
@@ -5803,12 +5844,18 @@ LOCKED_DAILY_TASKS = frozenset({
 })
 
 
+# 自动排的公会战役带 friday。这种单不拿来拉起没连上的号。
+_FRIDAY_CAMP_JOB = "kind='guild_camp' AND instr(IFNULL(params,''), '\"friday\"')>0"
+
+
 def users_with_daily_jobs() -> list:
+    """还有没做完的日常。周五自动排的公会战役不算，那种单不拉起没连上的号。"""
     conn = connect(readonly=True)
     try:
         rows = conn.execute(
             "SELECT DISTINCT user_id FROM daily_job "
-            "WHERE status IN ('pending','running')").fetchall()
+            "WHERE status IN ('pending','running') "
+            "AND NOT (" + _FRIDAY_CAMP_JOB + ")").fetchall()
     finally:
         conn.close()
     return [int(r[0]) for r in rows]
@@ -5917,7 +5964,10 @@ def users_needing_attack() -> list:
 
 
 def daily_job_open() -> bool:
-    """这个攻打 QQ 上还有没做完的日常。定时关闭到点的账号不算。"""
+    """这个攻打 QQ 上还有没做完的日常。定时关闭到点的账号不算。
+
+    周五自动排的公会战役只在游戏已经连着时算数，掉线后不拿它再登录。
+    """
     ids = executable_users()
     if not ids:
         return False
@@ -5926,11 +5976,21 @@ def daily_job_open() -> bool:
     try:
         row = conn.execute(
             "SELECT 1 FROM daily_job WHERE user_id IN (" + slot + ") "
-            "AND status IN ('pending','running') LIMIT 1",
+            "AND status IN ('pending','running') "
+            "AND NOT (" + _FRIDAY_CAMP_JOB + ") LIMIT 1",
             tuple(ids)).fetchone()
+        if row:
+            return True
+        rows = conn.execute(
+            "SELECT user_id FROM daily_job WHERE user_id IN (" + slot + ") "
+            "AND status IN ('pending','running') AND " + _FRIDAY_CAMP_JOB,
+            tuple(ids)).fetchall()
     finally:
         conn.close()
-    return bool(row)
+    for (user_id,) in rows:
+        if attack_in_keepalive(int(user_id)):
+            return True
+    return False
 
 
 def _saved_daily_switches(conn, user_id: int):
@@ -6246,6 +6306,8 @@ def enqueue_due_daily_jobs(guild_defaults=None) -> list:
 _GUILD_HOUR_AT = "_公会任务于"
 _GUILD_BOARD = "_公会任务内容"
 _GUILD_TASK_KEY = "公会任务"
+_GUILD_CAMP_TASK = "公会战役"
+_GUILD_CAMP_AUTO = "_公会战役自动"
 
 
 def _switch_blob(raw):
@@ -6375,6 +6437,108 @@ def enqueue_due_guild_tasks(defaults=None) -> list:
                 log.info("公会任务：账号 %s 满一小时，已排队，并带上 %s", name, extra)
             else:
                 log.info("公会任务：账号 %s 满一小时，已排队", name)
+        conn.commit()
+        return queued
+    finally:
+        conn.close()
+
+
+def guild_camp_friday(now=None) -> str:
+    """这一轮公会战役算在哪个周五。周五是当天，周六是前一天，别的日子是空。"""
+    now = beijing_now() if now is None else now
+    if now.weekday() == 4:
+        return now.strftime("%Y-%m-%d")
+    if now.weekday() == 5:
+        return (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    return ""
+
+
+def guild_camp_friday_fresh(params, now=None) -> bool:
+    """没带周五日期的是手动打，照旧。带了的只在这一轮还能做。"""
+    if not isinstance(params, dict):
+        return True
+    friday = str(params.get("friday") or "")
+    if not friday:
+        return True
+    return friday == guild_camp_friday(now)
+
+
+def _friday_camp_blocking(raw, friday: str) -> bool:
+    """已经有一条公会战役占着队。过期的自动单不算，免得挡住这一周。"""
+    try:
+        data = json.loads(raw or "{}")
+    except ValueError:
+        return True
+    if not isinstance(data, dict):
+        return True
+    marked = str(data.get("friday") or "")
+    if not marked:
+        return True
+    return marked == friday
+
+
+def enqueue_due_friday_guild_camp(defaults=None) -> list:
+    """周五北京时间 10:10，给这一分钟里游戏还连着、公会战役开关开着的号排一次。
+
+    不给没连上的号排，所以也不会为了这一下把人拉起来。
+    每个号一周只排一次，日期记在开关里的 _公会战役自动。
+    排上的任务带上这周五的日期。过了这一轮还没做，就结束，不再进攻。
+    等级、体力和原来的时间窗仍由公会战役自己判断。
+    """
+    now = beijing_now()
+    if now.weekday() != 4 or now.strftime("%H:%M") != "10:10":
+        return []
+    friday = now.strftime("%Y-%m-%d")
+    conn = connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE daily_job SET status='failed', detail=?, updated_at=? "
+            "WHERE kind='guild_camp' AND status='pending' "
+            "AND instr(IFNULL(params,''), '\"friday\"')>0 "
+            "AND instr(IFNULL(params,''), ?)=0",
+            ("这周五的公会战役已经过了", now_ts(), json.dumps(friday)))
+        rows = conn.execute(
+            "SELECT id, username, IFNULL(expires_at,''), IFNULL(attack_qq,''), daily_switch "
+            "FROM app_user WHERE IFNULL(attack_qq,'') != ''").fetchall()
+        queued = []
+        for user_id, name, expires, qq, switch_raw in rows:
+            if (not str(qq or "").strip() or account_expired(expires)
+                    or shutdown_due(user_id)):
+                continue
+            saved = _switch_blob(switch_raw)
+            if str(saved.get(_GUILD_CAMP_AUTO) or "") == friday:
+                continue
+            if not _guild_switch_on(saved, defaults, _GUILD_CAMP_TASK):
+                continue
+            if not attack_in_keepalive(user_id):
+                continue
+            waiting = conn.execute(
+                "SELECT COUNT(*) FROM daily_job WHERE user_id=? "
+                "AND kind IN ('daily','pve','fund','guild_camp','guild_claim','strike','egg','wargame',"
+                "'wish','gift','repair_drop','soul','badge','donate','tribute','train_book','skill_book','stone') "
+                "AND status IN ('pending','running')",
+                (user_id,)).fetchone()[0]
+            if int(waiting or 0) >= 3:
+                continue
+            open_rows = conn.execute(
+                "SELECT params FROM daily_job WHERE user_id=? AND kind='guild_camp' "
+                "AND status IN ('pending','running')",
+                (user_id,)).fetchall()
+            if any(_friday_camp_blocking(row[0], friday) for row in open_rows):
+                continue
+            saved[_GUILD_CAMP_AUTO] = friday
+            blob = json.dumps({"friday": friday}, ensure_ascii=False)
+            now_text = now_ts()
+            conn.execute(
+                "INSERT INTO daily_job(user_id, kind, params, status, detail, created_at, updated_at) "
+                "VALUES (?,'guild_camp',?,'pending','',?,?)",
+                (user_id, blob, now_text, now_text))
+            conn.execute(
+                "UPDATE app_user SET daily_switch=? WHERE id=?",
+                (json.dumps(saved, ensure_ascii=False), int(user_id)))
+            queued.append(int(user_id))
+            log.info("公会战役：账号 %s 周五 10:10 还在线，已排队", name)
         conn.commit()
         return queued
     finally:
