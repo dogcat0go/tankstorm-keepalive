@@ -24,6 +24,9 @@ datas = [
     ("config.json", "."),
     ("endpoints.json", "."),
     ("protocol.json", "."),
+    # 道具表基线。刷新写到程序目录，不改这两份随包文件。
+    ("web/src/items.json", "web/src"),
+    ("web/src/items-new.json", "web/src"),
 ]
 datas = [(src, dst) for src, dst in datas if os.path.exists(src)]
 
@@ -35,7 +38,8 @@ a = Analysis(
     # 这几个模块 daily.py 是用 __import__("tankstorm.xxx") 动态引的（避免和
     # daily 成环），PyInstaller 静态分析看不见字符串里的模块名，必须显式列出。
     hiddenimports=["tankstorm.arena", "tankstorm.country_war",
-                   "tankstorm.guild", "tankstorm.shop"],
+                   "tankstorm.guild", "tankstorm.shop",
+                   "tankstorm.items_catalog"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -186,6 +186,15 @@ def _mark_game_online(on: bool) -> None:
     _storm_local.online = bool(on)
 
 
+def _schedule_item_catalog(qq, ctx) -> None:
+    """游戏号刚登上。道具表放到后台拉，不在这条连接上等待。"""
+    try:
+        from .items_catalog import schedule_refresh
+        schedule_refresh(qq, ctx)
+    except Exception:
+        log.info("道具表刷新没排上", exc_info=True)
+
+
 def _game_online() -> bool:
     return bool(getattr(_storm_local, "online", False))
 
@@ -639,6 +648,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         log.info("已完成登录握手（%d 步），uid=%s secret=%s",
                  len(steps), ctx.get("uid"), ctx.get("secret"))
         _mark_game_online(True)
+        _schedule_item_catalog(qq, ctx)
         if rec:
             # sid 是加密载荷分析时的头号候选密钥材料，记进会话元信息
             rec.note("login_ok", sid=ctx.get("sid"), uid=ctx.get("uid"))
@@ -4472,6 +4482,7 @@ def _connect_once(qq, config: dict, work) -> int:
                         "连接保持，国战助手先停",
                         got)
         _mark_game_online(True)
+        _schedule_item_catalog(qq, ctx)
         citydb.note_attack_link(interval)
         if citydb.attack_context_user() or citydb.attack_context_qq():
             _clear_login_limit()
