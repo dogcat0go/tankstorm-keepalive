@@ -311,16 +311,26 @@ def refresh_login_sessions() -> None:
             log.info("退出前刷新网页票据没做成", exc_info=True)
 
 
+def _scan_session(qq) -> bool:
+    """根目录 cookies.json 才是扫描号。攻打号和日常线程不算。"""
+    import os
+    if not qq or getattr(qq, "attack_account", False):
+        return False
+    return os.path.basename(getattr(qq, "cookie_file", "") or "") == "cookies.json"
+
+
 def _arm_super_storm(rec, sock, config, qq=None) -> None:
     """这条连接收到超级强攻就拒绝。拒绝发出去之后，记到对应登录账号的页面上。
 
     登录账号默认不拒绝。管理员填了大于 0 的每日上限，并且今天还没到这个数，才发拒绝包。
     同一个攻打 QQ 上有账号把上限填成 0 时，这条连接不再自动拒绝。
     次数按北京时间每天 0 点重新计算。没填上限也不拒绝。
+    扫描号没有登录账号，总开关开着时收到就拒绝，不走这个每日上限。
     """
     if not rec or not getattr(rec, "auto_reject", False):
         return
     uin = str(getattr(qq, "uin", "") or "")
+    scan = _scan_session(qq)
     from . import citydb
     bound_user = citydb.attack_context_user()
 
@@ -357,8 +367,8 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
         uin_now = _uin_now()
         user_id = citydb.storm_subject(bound_user, uin_now)
         day = citydb.beijing_day()
-        # 打城窗口没有网页登录账号，不走每日上限，收到就拒绝。
-        if (config or {}).get("_界面拒绝强攻"):
+        # 打城窗口和扫描号没有网页登录账号，不走每日上限，收到就拒绝。
+        if (config or {}).get("_界面拒绝强攻") or scan:
             why = ""
         else:
             why = citydb.reserve_storm_reject(user_id, day, uin_now)
@@ -379,7 +389,12 @@ def _arm_super_storm(rec, sock, config, qq=None) -> None:
                 _abort_reject(user_id, day, session)
                 return
             try:
-                citydb.note_storm_reject(who, user_id=user_id, qq=uin_now)
+                if scan:
+                    citydb.note_scan_storm(uin_now)
+                    if hasattr(qq, "note_login"):
+                        qq.note_login("已拒绝超级强攻，进攻方 %s", who or "未知玩家")
+                else:
+                    citydb.note_storm_reject(who, user_id=user_id, qq=uin_now)
             except Exception:
                 log.info("超级强攻拒绝没记上页面", exc_info=True)
             log.info("已拒绝超级强攻（进攻方 %s），这条连接不重启", who or "未知玩家")

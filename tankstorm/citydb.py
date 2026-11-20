@@ -5312,6 +5312,36 @@ def note_scan_status(uin: str, phase: str) -> None:
         return
 
 
+def note_scan_storm(uin: str) -> int:
+    """扫描号拒绝了一次超级强攻。按北京时间每天从 0 再计。返回今天的次数。"""
+    uin = "".join(ch for ch in str(uin or "") if ch.isdigit())
+    day = beijing_day()
+    name = f"scanstorm:{uin}" if uin else "scanstorm"
+    with _proc_lock:
+        data = _proc_payload(_signal_value(name))
+        used = int(data.get("used") or 0) if str(data.get("day") or "") == day else 0
+        used += 1
+        try:
+            _upsert_signal(name, json.dumps(
+                {"day": day, "used": used, "qq": uin}, ensure_ascii=False))
+        except sqlite3.Error:
+            return used
+    return used
+
+
+def scan_storm_today(uin: str) -> int:
+    """这个扫描号今天已经拒绝的超级强攻。没有记录是 0。"""
+    uin = "".join(ch for ch in str(uin or "") if ch.isdigit())
+    name = f"scanstorm:{uin}" if uin else "scanstorm"
+    data = _proc_payload(_signal_value(name))
+    if str(data.get("day") or "") != beijing_day():
+        return 0
+    try:
+        return max(0, int(data.get("used") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _scan_row(qq: str, phase: str, seen: str) -> dict:
     online = False
     if seen and phase != "offline":
@@ -5323,7 +5353,8 @@ def _scan_row(qq: str, phase: str, seen: str) -> dict:
     if not online:
         phase = "offline"
     detail = {"online": "在线", "wait": "正在等扫码", "login": "登录中"}.get(phase, "掉线")
-    return {"qq": qq, "online": online, "phase": phase, "detail": detail}
+    return {"qq": qq, "online": online, "phase": phase, "detail": detail,
+            "storm_used": scan_storm_today(qq)}
 
 
 def list_scan_accounts() -> list:
