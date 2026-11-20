@@ -1,9 +1,9 @@
 <script setup>
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElSwitch } from "element-plus";
 import "element-plus/es/components/switch/style/css";
-import itemRows from "../items.json";
-import newItemRows from "../items-new.json";
+import bundledItems from "../items.json";
+import bundledNew from "../items-new.json";
 
 const guildLevel = defineModel("guildLevel", { type: String, required: true });
 const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
@@ -53,19 +53,48 @@ const props = defineProps({
   showErr: { type: Function, required: true },
 });
 
-const newItems = newItemRows.map(([id, name, desc]) => ({ id, name, desc }));
+const itemRows = ref(bundledItems);
+const newItems = ref(bundledNew.map(([id, name, desc]) => ({ id, name, desc })));
 const itemQuery = ref("");
+let itemLoad = 0;
+
 const itemHits = computed(() => {
   const q = itemQuery.value.trim().toLowerCase();
   if (!q) return [];
   const out = [];
-  for (const [id, name, desc] of itemRows) {
+  for (const [id, name, desc] of itemRows.value) {
     if (String(id).includes(q) || name.toLowerCase().includes(q) || desc.toLowerCase().includes(q)) {
       out.push({ id, name, desc });
       if (out.length >= 40) break;
     }
   }
   return out;
+});
+
+async function loadLiveItems() {
+  const serial = ++itemLoad;
+  try {
+    const resp = await fetch("/api/items", { credentials: "same-origin" });
+    if (!resp.ok || serial !== itemLoad) return;
+    const data = await resp.json();
+    if (serial !== itemLoad) return;
+    if (!data || !Array.isArray(data.items) || !data.items.length) return;
+    itemRows.value = data.items;
+    if (Array.isArray(data.new)) {
+      newItems.value = data.new.map(([id, name, desc]) => ({ id, name, desc }));
+    }
+  } catch {
+    // 接口没有数据时继续用打包进来的表。
+  }
+}
+
+function onItemToggle(event) {
+  const box = event.currentTarget;
+  if (box && box.open) loadLiveItems();
+}
+
+onMounted(() => {
+  loadLiveItems();
 });
 
 const guildTask = computed(() => props.tasks.find((it) => it.key === "公会战役") || null);
@@ -390,7 +419,7 @@ function occupyText(occ) {
       <p v-if="stoneJob">{{ stoneJob.status }} {{ stoneJob.detail }}<button v-if="stoneJob.status === '排队' || stoneJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(stoneJob).catch((e) => showErr(e.message))">关停</button></p>
       <p class="muted">按填写的次数一次买完。商店 1112，每个花费 2，得到物品 50009。次数 1 到 999。这次抓包里勋章和功勋没有变化。</p>
     </details>
-    <details class="campaign-box">
+    <details class="campaign-box" @toggle="onItemToggle">
       <summary>道具表</summary>
       <form class="lock-row" @submit.prevent>
         <label>查找<input v-model="itemQuery" placeholder="编号或名称" /></label>
