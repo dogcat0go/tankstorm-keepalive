@@ -5719,6 +5719,57 @@ def _wargame_outcome(data, sid, name, power):
     return False, text + detail, battle
 
 
+def _packet_has_report(data):
+    report = data.get("fightReoprt") if isinstance(data, dict) else None
+    if isinstance(report, (dict, list)):
+        return bool(report)
+    return isinstance(report, str) and bool(report)
+
+
+def _collect_attack_replies(sock, rec, since, timeout, sid, uid):
+    """攻打回包可能先到一条结果，战报在后面。有战报并安静一会儿再停。
+
+    只有结果、还没有战报时，一直收到这次等待结束。ret=10 的拒绝没有战报，安静就停。
+    """
+    want = _attack_reply(sid, uid)
+    deadline = time.time() + timeout
+    got, seen = [], set()
+    last_new = time.time()
+    while time.time() < deadline:
+        raise_if_stopped()
+        if _stop_set():
+            raise OSError("连接中断")
+        hist = (getattr(rec, "recent", {}) or {}).get("RseWarGameOpt") or []
+        if not hist:
+            latest = (getattr(rec, "latest", {}) or {}).get("RseWarGameOpt")
+            hist = [latest] if latest else []
+        added = False
+        for seq, data in hist:
+            if seq <= since or seq in seen or not want(data):
+                continue
+            seen.add(seq)
+            got.append(data)
+            added = True
+        if added:
+            last_new = time.time()
+        quiet = time.time() - last_new
+        has_report = any(_packet_has_report(item) for item in got)
+        if has_report and quiet >= 0.8:
+            break
+        if got and quiet >= 0.8 and all(item.get("ret") == 10 for item in got):
+            break
+        _beat()
+        try:
+            sock.settimeout(0.5)
+            if not sock.recv(8192):
+                break
+        except TimeoutError:
+            continue
+        except OSError:
+            break
+    return got
+
+
 def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
     """发一次 type=3。失败返回 (None, 原因)。"""
     task = _task_of("军事演习")
@@ -5736,8 +5787,14 @@ def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
     except Exception as exc:
         return None, f"发送失败：{exc}"
     log.info("[%s] 攻打场地 %s（%s，战力 %s）", task.key, sid, name, power)
-    data = _await_response(
-        sock, rec, "RseWarGameOpt", before, timeout, want=_attack_reply(sid, uid))
+    # 战报可能比结果晚到，而且一条帧会拆成多次 recv。至少等 20 秒。
+    packets = _collect_attack_replies(
+        sock, rec, before, max(timeout, 20), sid, uid)
+    reported = sum(1 for item in packets if _packet_has_report(item))
+    log.info("[军事演习] 攻打回包 %d 条，其中 %d 条带战报", len(packets), reported)
+    data = next((item for item in reversed(packets) if _packet_has_report(item)), None)
+    if data is None and packets:
+        data = packets[-1]
     if not isinstance(data, dict):
         return None, "失败：未收到攻打回包"
     return data, ""
