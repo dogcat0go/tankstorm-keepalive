@@ -269,16 +269,16 @@ _SCAN_LOGIN_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) \[INFO\] 扫描号(?: QQ \d+)? (.*)$")
 
 
-def _tail_scan_login(path: str):
-    """登录日志末尾最后一条扫描号记录。文件不在或还没写过就没有。"""
+def _scan_login_in_file(path: str, max_bytes: int):
+    """这个文件末尾最后一条扫描号记录。读不到就是没有。"""
     try:
         size = os.path.getsize(path)
     except OSError:
         return None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            if size > 65536:
-                handle.seek(size - 65536)
+            if size > max_bytes:
+                handle.seek(size - max_bytes)
                 handle.readline()
             last = None
             for line in handle:
@@ -288,6 +288,27 @@ def _tail_scan_login(path: str):
             return last
     except OSError:
         return None
+
+
+def _tail_scan_login(path: str):
+    """登录日志末尾最后一条扫描号记录。当天文件被攻打号占满时，再看前几天的。"""
+    last = _scan_login_in_file(path, 4_000_000)
+    if last:
+        return last
+    folder = os.path.dirname(path) or "."
+    name = os.path.basename(path)
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return None
+    rotated = sorted(
+        (os.path.join(folder, item) for item in names if item.startswith(name + ".")),
+        reverse=True)
+    for item in rotated[:3]:
+        last = _scan_login_in_file(item, 4_000_000)
+        if last:
+            return last
+    return None
 
 
 def _scan_login_phase(msg: str) -> str:
@@ -305,6 +326,14 @@ def _scan_login_phase(msg: str) -> str:
     return "other"
 
 
+def _scan_accounts() -> list:
+    try:
+        from . import citydb
+        return citydb.list_scan_accounts()
+    except Exception:
+        return []
+
+
 def _scan_login_view() -> dict:
     """扫描号现在是否在等扫码。过期图不交给页面。"""
     last = _tail_scan_login(user_path(os.path.join("logs", "login.log")))
@@ -312,7 +341,8 @@ def _scan_login_view() -> dict:
     if not last:
         return {"phase": "none",
                 "detail": "登录日志里还没有扫描号的记录。",
-                "at": "", "qr": False, "qr_at": ""}
+                "at": "", "qr": False, "qr_at": "",
+                "accounts": _scan_accounts()}
     at, msg = last
     phase = _scan_login_phase(msg)
     mtime = 0.0
@@ -349,7 +379,8 @@ def _scan_login_view() -> dict:
         if short:
             detail = "扫描号这会儿不在等扫码。" + short + "。"
     return {"phase": phase, "detail": detail, "at": at,
-            "qr": show, "qr_at": qr_at if show else ""}
+            "qr": show, "qr_at": qr_at if show else "",
+            "accounts": _scan_accounts()}
 
 
 def _handler(config: dict):

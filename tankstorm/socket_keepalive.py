@@ -639,6 +639,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
         log.info("已完成登录握手（%d 步），uid=%s secret=%s",
                  len(steps), ctx.get("uid"), ctx.get("secret"))
         _mark_game_online(True)
+        qq.note_login("游戏连接开始。%s", qq.ticket_brief())
         if rec:
             # sid 是加密载荷分析时的头号候选密钥材料，记进会话元信息
             rec.note("login_ok", sid=ctx.get("sid"), uid=ctx.get("uid"))
@@ -1051,6 +1052,8 @@ class _Pulse:
             self._beat()
             if self.attack:
                 self._status()
+            else:
+                self._scan_status()
             self._touch()
             if self._stop.wait(1.0):
                 return
@@ -1118,6 +1121,18 @@ class _Pulse:
         except Exception:
             log.debug("旧游戏连接没掐掉", exc_info=True)
 
+    def _scan_status(self) -> None:
+        if self.qq is None or time.monotonic() - self._status_at < 10:
+            return
+        self._status_at = time.monotonic()
+        from . import citydb
+        phase = getattr(self.qq, "_scan_phase", "") or "login"
+        try:
+            who = self.qq.scan_status_uin() if hasattr(self.qq, "scan_status_uin") else ""
+            citydb.note_scan_status(who or getattr(self.qq, "uin", ""), phase)
+        except Exception:
+            log.debug("扫描号状态没写上", exc_info=True)
+
     def _touch(self) -> None:
         if self.qq is None:
             return
@@ -1158,6 +1173,13 @@ def _stop_pulse(pulse) -> None:
         return
     pulse.stop()
     if not pulse.attack:
+        from . import citydb
+        try:
+            qq = pulse.qq
+            who = qq.scan_status_uin() if hasattr(qq, "scan_status_uin") else ""
+            citydb.note_scan_status(who or getattr(qq, "uin", ""), "offline")
+        except Exception:
+            log.debug("扫描号收尾状态没写上", exc_info=True)
         return
     from . import citydb
     try:
@@ -5128,8 +5150,16 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
     install_login_refresh()
     bind_login_session(qq)
     pulse = _start_pulse(qq, attack=False)
-    if not qq.is_valid():
+    qq._scan_phase = "login"
+    try:
+        ticket_ok = bool(qq.is_valid())
+    except Exception as exc:
+        qq.note_login("检查登录态失败，改为重新登录：%s", exc)
+        ticket_ok = False
+    if not ticket_ok:
         relogin_with_push(qq, config)
+    else:
+        qq.note_login("扫描保活启动，票据仍有效。%s", qq.ticket_brief())
 
     log.info("保持活跃启动（Ctrl+C 停止）")
     try:
@@ -5138,16 +5168,31 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
                 log.info("达到设定运行时长，退出")
                 break
             if storm_retry and _storm_retry_expired(storm_started):
-                _stop_storm_relogin(str(getattr(qq, "uin", "") or ""))
-                break
-            if not qq.is_valid():
+                qq.note_login("被超级强攻打断后仍未登上，继续扫描登录。%s", qq.ticket_brief())
+                storm_retry = False
+                storm_started = 0.0
+            try:
+                ticket_ok = bool(qq.is_valid())
+            except Exception as exc:
+                qq.note_login("检查登录态失败，改为重新登录：%s", exc)
+                ticket_ok = False
+            if not ticket_ok:
                 relogin_with_push(qq, config)
 
             reason = _one_session(qq, spec, conf, config, rec,
                                   with_daily=with_daily)
             log.warning("本次连接结束：%s", reason)
+            qq.note_login("游戏连接断开：%s。%s", reason, qq.ticket_brief())
             if str(reason).startswith("公会校验失败"):
                 break
+            if str(reason).startswith("未取得 openkey"):
+                try:
+                    ticket_ok = bool(qq.is_valid())
+                except Exception:
+                    ticket_ok = False
+                if not ticket_ok:
+                    relogin_with_push(qq, config)
+                    continue
             if _keepalive_held(getattr(qq, "uin", "")):
                 log.info("打城进行中，保活先让开")
                 while _keepalive_held(getattr(qq, "uin", "")):
@@ -5157,9 +5202,11 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
             keep, storm_started, timed_out = _storm_retry_decision(
                 dropped, storm_retry, _game_online(), storm_started, time.monotonic())
             if timed_out:
-                _stop_storm_relogin(str(getattr(qq, "uin", "") or ""))
-                break
-            if keep:
+                qq.note_login("被超级强攻打断后仍未登上，继续扫描登录。%s", qq.ticket_brief())
+                storm_retry = False
+                storm_started = 0.0
+                wait = min_backoff
+            elif keep:
                 storm_retry = True
                 wait = STORM_RETRY_SEC
                 log.info("被超级强攻断开，%d 秒后重新登录", wait)
