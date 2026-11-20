@@ -4675,7 +4675,51 @@ def egg_live(user_id: int):
     return _kept_int(parsed, "egg_left")
 
 
-def note_wargame(board=None, result=None) -> None:
+def _clean_side(raw):
+    if not isinstance(raw, dict):
+        return None
+    try:
+        side = {
+            "tanks": int(raw["tanks"]),
+            "total": int(raw["total"]),
+            "hp": int(raw["hp"]),
+            "maxHp": int(raw["maxHp"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    if min(side.values()) < 0 or side["tanks"] > side["total"] or side["hp"] > side["maxHp"]:
+        return None
+    return side
+
+
+def _clean_phase(raw):
+    if not isinstance(raw, dict):
+        return None
+    try:
+        seconds = int(raw["seconds"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    left, right = _clean_side(raw.get("self")), _clean_side(raw.get("enemy"))
+    if seconds < 0 or left is None or right is None:
+        return None
+    return {"seconds": seconds, "self": left, "enemy": right}
+
+
+def _clean_wargame_battle(raw):
+    if not isinstance(raw, dict):
+        return None
+    phase = _clean_phase(raw.get("phase1"))
+    if phase is None:
+        return None
+    climax = raw.get("climax")
+    if climax is not None:
+        climax = _clean_phase(climax)
+        if climax is None:
+            return None
+    return {"phase1": phase, "climax": climax}
+
+
+def note_wargame(board=None, result=None, battle=None, update_battle=False) -> None:
     """记下军事演习场地和最近一次进攻结果。没绑攻打号就不写。"""
     if not attack_context_user() and not attack_context_qq():
         return
@@ -4743,6 +4787,8 @@ def note_wargame(board=None, result=None) -> None:
             prev["occupy"] = None
     if result is not None:
         prev["result"] = " ".join(str(result or "").split())[:500]
+    if update_battle:
+        prev["battle"] = _clean_wargame_battle(battle)
     _upsert_signal(name, json.dumps(prev, ensure_ascii=False))
 
 
@@ -4769,6 +4815,7 @@ def wargame_live(user_id: int) -> dict:
         "sites": sites,
         "empty": empty if isinstance(empty, int) and not isinstance(empty, bool) else 0,
         "result": str(data.get("result") or ""),
+        "battle": _clean_wargame_battle(data.get("battle")),
     }
 
 
