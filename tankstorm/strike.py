@@ -103,7 +103,6 @@ def run_strike(rec, sock, on_progress=None):
     if left <= 0:
         return True, "成功：没有剩余次数"
     done = 0
-    rolls = []
     misses = 0
     # 奖励可有可无。次数还在就继续打。176 这种次数要能打完，上限只防死循环。
     while left > 0 and done < 999 and misses < 5:
@@ -135,23 +134,16 @@ def run_strike(rec, sock, on_progress=None):
             left = now
         if now_circle is not None:
             circle = now_circle
-        rolled = _one(got.get("nRandNum"))
-        if rolled:
-            rolls.append(rolled)
         citydb.note_strike(left)
         if on_progress:
-            on_progress(f"已打 {done} 次，剩余 {left}")
-        log.info("[精准打击] 第 %d 次，剩余 %d，圈数 %s，抽出 %s",
-                 done, left, circle, rolled)
+            on_progress(f"已打 {done} 次")
+        log.info("[精准打击] 已打 %d 次，剩余 %d", done, left)
         if left <= 0:
             break
         _nap(0.35)
-    tail = f"，抽出 {'、'.join(str(n) for n in rolls)}" if rolls else ""
-    if circle is not None:
-        tail += f"，圈数 {circle}"
     if left > 0:
         head = f"已打 {done} 次。" if done else ""
         if misses >= 5:
-            return False, head + f"连续 {misses} 次次数没有下降，剩余 {left}" + tail
-        return False, head + f"剩余 {left} 次还没打完" + tail
-    return True, f"成功：精准打击 {done} 次，剩余 {left}{tail}"
+            return False, head + f"连续 {misses} 次次数没有下降，剩余 {left}"
+        return False, head + f"剩余 {left} 次还没打完"
+    return True, f"成功：精准打击 {done} 次"
