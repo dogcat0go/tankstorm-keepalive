@@ -101,13 +101,15 @@ const staffCount = ref("1");
 const labPickCount = ref("1");
 const autoCount = ref("1");
 const lab50Count = ref("1");
+const lab10Count = ref("1");
+const plant50Count = ref("1");
 const auto50Count = ref("1");
 const spreadX1 = ref("");
 const spreadY1 = ref("");
 const spreadX2 = ref("");
 const spreadY2 = ref("");
 const emptyCards = () => ({
-  general: null, staff: null, lab: null, auto: null, drink: null, agent: null, recruit: null, explore: null,
+  general: null, staff: null, lab: null, plant: null, auto: null, drink: null, agent: null, recruit: null, explore: null,
   box_mid: null, box_high: null, box_mid_key: null, box_high_key: null,
 });
 const baseCards = ref(emptyCards());
@@ -612,22 +614,41 @@ async function runAuto50(count) {
   await refreshAttacks();
 }
 
-async function runLab50(count) {
+async function runExplore(kind, count, cardKey, cardName, batch, note) {
   showErr("", "base");
   baseNote.value = "";
   const n = cardNum(count);
-  const need = n * 50;
-  const have = knownCards(baseCards.value.lab);
+  const need = n * batch;
+  const have = knownCards(baseCards.value[cardKey]);
   if (have !== null && have < need) {
-    tellShortage("实验卡", have, need);
+    tellShortage(cardName, have, need);
     return;
   }
-  const ok = await confirmUse(`使用实验卡 ${need} 张，做 ${n} 次 50 连。`);
+  const ok = await confirmUse(`使用${cardName} ${need} 张，做 ${n} 次 ${batch} 连。`);
   if (!ok) return;
-  await api("/api/base", { kind: "lab50", count: n });
-  baseNote.value = "实验室探索已交给绑定的攻打号";
+  await api("/api/base", { kind, count: n });
+  baseNote.value = note;
   await refreshBase();
   await refreshAttacks();
+}
+
+function runLab50(count) {
+  return runExplore("lab50", count, "lab", "实验室探索卡", 50, "实验室探索已交给绑定的攻打号");
+}
+
+function runLab10(count) {
+  return runExplore("lab10", count, "lab", "实验室探索卡", 10, "实验室探索已交给绑定的攻打号");
+}
+
+function runPlant50(count) {
+  return runExplore("plant50", count, "plant", "工厂探索卡", 50, "工厂探索已交给绑定的攻打号");
+}
+
+async function claimBlueprint() {
+  showErr("", "attack");
+  const ok = await confirmUse("领取国战图纸奖励。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "blueprint" });
 }
 
 async function runGuildCamp() {
@@ -1818,6 +1839,7 @@ onUnmounted(() => {
         :here-text="hereText"
         :city-text="cityText"
         :add-order="addOrder"
+        :claim-blueprint="claimBlueprint"
         :save-clear-plan="saveClearPlan"
         :add-priority="addPriority"
         :move-to-city="moveToCity"
@@ -1847,6 +1869,8 @@ onUnmounted(() => {
         v-model:lab-pick-count="labPickCount"
         v-model:auto-count="autoCount"
         v-model:lab50-count="lab50Count"
+        v-model:lab10-count="lab10Count"
+        v-model:plant50-count="plant50Count"
         v-model:auto50-count="auto50Count"
         v-model:x1="spreadX1"
         v-model:y1="spreadY1"
@@ -1878,6 +1902,8 @@ onUnmounted(() => {
         :run-box="runBox"
         :run-pick="runPick"
         :run-lab50="runLab50"
+        :run-lab10="runLab10"
+        :run-plant50="runPlant50"
         :run-auto50="runAuto50"
         :cancel-job="cancelBase"
         :show-err="showErr"

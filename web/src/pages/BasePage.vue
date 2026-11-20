@@ -17,6 +17,8 @@ const staffCount = defineModel("staffCount", { type: String, required: true });
 const labPickCount = defineModel("labPickCount", { type: String, required: true });
 const autoCount = defineModel("autoCount", { type: String, required: true });
 const lab50Count = defineModel("lab50Count", { type: String, required: true });
+const lab10Count = defineModel("lab10Count", { type: String, required: true });
+const plant50Count = defineModel("plant50Count", { type: String, required: true });
 const auto50Count = defineModel("auto50Count", { type: String, required: true });
 
 const props = defineProps({
@@ -188,11 +190,11 @@ function resText(n) {
     <h2>基地战</h2>
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的制造用那个号做。</p>
-    <p class="muted">由这个账号的攻打线程执行，不另开连接。兵营和战车工厂按剩余时间排下一次快速制造，免费线默认 600 秒。开资源卡和清理背包也在这条线程上做。</p>
+    <p class="muted">由这个账号的攻打线程执行，不另开连接。兵营和战车工厂按剩余时间排下一次快速制造，免费线默认 600 秒。开资源卡、清理背包和摧毁物品也在这条线程上做。</p>
     <h2>基地内资源</h2>
     <p>金属 {{ resText(metal) }} · 石油 {{ resText(oil) }}</p>
     <p>勋章 {{ resText(credit) }} · 人口 {{ resText(pop) }}</p>
-    <p>高级将领卡 {{ resText(cards.general) }} · 参谋卡 {{ resText(cards.staff) }} · 实验卡 {{ resText(cards.lab) }} · 自动化探索卡 {{ resText(cards.auto) }} · 豪饮卡 {{ resText(cards.drink) }} · 紫色特工令 {{ resText(cards.agent) }}</p>
+    <p>高级将领卡 {{ resText(cards.general) }} · 参谋卡 {{ resText(cards.staff) }} · 实验卡 {{ resText(cards.lab) }} · 工厂探索卡 {{ resText(cards.plant) }} · 自动化探索卡 {{ resText(cards.auto) }} · 豪饮卡 {{ resText(cards.drink) }} · 紫色特工令 {{ resText(cards.agent) }}</p>
     <p>中级补给箱 {{ resText(cards.box_mid) }} · 中级钥匙 {{ resText(cards.box_mid_key) }} · 高级补给箱 {{ resText(cards.box_high) }} · 高级钥匙 {{ resText(cards.box_high_key) }}</p>
     <p>招募卡自选 {{ resText(cards.recruit) }} · 探索卡自选 {{ resText(cards.explore) }}</p>
     <p class="muted">进入这一页就读攻打号背包里的这几种卡。开卡、换自选包或抽卡之后，剩余张数会跟着背包更新。还没收到就显示还没读到。</p>
@@ -309,6 +311,18 @@ function resText(n) {
             <label>次数<input v-model="lab50Count" class="mins" inputmode="numeric" required /></label>
             <button type="submit">探索</button>
           </form>
+          <form class="lock-row" @submit.prevent="runLab10(lab10Count).catch((e) => showErr(e.message))">
+            <span class="switch">实验室探索10连</span>
+            <span class="card-have">实验卡 {{ resText(cards.lab) }}</span>
+            <label>次数<input v-model="lab10Count" class="mins" inputmode="numeric" required /></label>
+            <button type="submit">探索</button>
+          </form>
+          <form class="lock-row" @submit.prevent="runPlant50(plant50Count).catch((e) => showErr(e.message))">
+            <span class="switch">工厂探索50连</span>
+            <span class="card-have">工厂探索卡 {{ resText(cards.plant) }}</span>
+            <label>次数<input v-model="plant50Count" class="mins" inputmode="numeric" required /></label>
+            <button type="submit">探索</button>
+          </form>
           <form class="lock-row" @submit.prevent="runAuto50(auto50Count).catch((e) => showErr(e.message))">
             <span class="switch">自动化探索50连</span>
             <span class="card-have">自动化探索卡 {{ resText(cards.auto) }}</span>
@@ -316,7 +330,7 @@ function resText(n) {
             <button type="submit">探索</button>
           </form>
           <p v-if="err && errAt === 'base' && err.includes('数量不足')" class="err">{{ err }}</p>
-          <p class="muted">实验室 50 连一次用 50 张实验卡，自动化探索 50 连一次用 50 张自动化探索卡，次数默认 1。点下去会先确认。背包不够这次要的张数时，提示数量不足，不发，也不扣勋章。</p>
+          <p class="muted">实验室 50 连一次用 50 张实验室探索卡，10 连一次用 10 张。工厂 50 连一次用 50 张工厂探索卡。自动化探索 50 连一次用 50 张自动化探索卡。次数默认 1。点下去会先确认。背包不够这次要的张数时，提示数量不足，不发，也不扣勋章。</p>
         </FoldPart>
       </details>
       <details class="campaign-box">

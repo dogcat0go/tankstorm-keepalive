@@ -3834,7 +3834,8 @@ _LANE_RANK = {
     "war": 0, "daily": 1, "blast": 2, "factory": 3, "cards": 4,
     "haoyin": 5, "admiral": 6, "admiral10": 7, "agent10": 7,
     "box_mid": 7, "box_high": 7,
-    "pick_general": 8, "pick_staff": 8, "pick_lab": 8, "pick_auto": 8, "lab50": 8,
+    "pick_general": 8, "pick_staff": 8, "pick_lab": 8, "pick_auto": 8,
+    "lab50": 8, "lab10": 8, "plant50": 8,
 }
 
 
@@ -5800,7 +5801,10 @@ DAILY_KIND_LABEL = {
     "pick_lab": "换实验卡",
     "pick_auto": "换自动化探索卡",
     "lab50": "实验室探索50连",
+    "lab10": "实验室探索10连",
+    "plant50": "工厂探索50连",
     "auto50": "自动化探索50连",
+    "blueprint": "国战图纸奖励",
     "chest": "国家宝箱",
     "guild_camp": "公会战役",
     "guild_claim": "公会任务领奖",
@@ -5821,7 +5825,7 @@ DAILY_KIND_LABEL = {
 _BASE_LANE = (
     "blast", "factory", "cards", "clean", "haoyin", "admiral", "admiral10", "agent10",
     "box_mid", "box_high",
-    "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
+    "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "lab10", "plant50", "auto50",
 )
 _BASE_JOB_KINDS = _BASE_LANE
 # 活动助手页面上的执行记录，含成就拨款。日常任务的最近执行不带这些。
@@ -6987,12 +6991,12 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         elif not (1 <= count <= 399):
             return "数量要在 1 到 399"
         clean["count"] = count
-    elif kind in ("pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"):
+    elif kind in ("pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "lab10", "plant50", "auto50"):
         try:
             count = int(str(params.get("count") or "").strip())
         except (TypeError, ValueError):
             return "数量要是数字"
-        if kind in ("lab50", "auto50"):
+        if kind in ("lab50", "lab10", "plant50", "auto50"):
             if not (1 <= count <= 999):
                 return "次数要在 1 到 999"
         elif not (1 <= count <= 99999):

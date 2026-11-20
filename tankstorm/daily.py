@@ -4139,16 +4139,17 @@ def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
     text = f"成功：{title}{tail}，{card}剩余={remain}"
     if mode == "agent10":
         text += f"，得到紫色特工令 {gained_all} 个"
-    return True, text
+    return True, _with_gain(text)
 
 
 # 2026-10-17 09:55 抓包。自选包是 RceBagItemUse：selectID 是要换成的物品，
 # id 是包的背包槽，itemID 是包本身，optType=0。回包 ret=0，credit=0、medal=0。
 # 招募包 110011：10020 高级将领卡、10107 高级参谋招募卡。
 # 探索包 110015：10006 实验室探索卡、10116 军备自动化探索卡。
-# 实验室 50 连是 RceWPCExplore：sceneID=10003、expType=0、exploreCnt=0、
-# credit=0、useItemID=实验室卡的槽位、useItemCnt=这次用的张数。
-# 2026-10-31 客户端高级探索就是这组字段，不再写 expType=1、exploreCnt=50。
+# 付费探索是 RceWPCExplore。2026-11-20 19:52–19:53 抓包：
+# 实验室 50 抽、实验室 10 抽都是 sceneID=10003、expType=1、exploreCnt=张数、
+# credit=0、useItemID=实验室探索卡 10006 的槽位、useItemCnt=同一张数。
+# 工厂 50 抽是 sceneID=10002，卡是工厂探索卡 10005，其余字段一样。
 _PACKS = {
     "general": (110011, 10020, "招募卡自选包", "高级将领卡"),
     "staff": (110011, 10107, "招募卡自选包", "高级参谋招募卡"),
@@ -4269,10 +4270,11 @@ def pick_pack(rec, sock, kind, count=1, on_progress=None):
     return True, text
 
 
-def lab50_probe(rec, sock, times=1, on_progress=None):
-    """实验室探索 50 连。一次请求用 50 张实验室探索卡，credit 固定 0。"""
+def _explore_paid(rec, sock, times, scene, card, batch, title, lock, card_name,
+                   on_progress=None):
+    """用探索卡抽一次。expType=1，exploreCnt 和 useItemCnt 都是这次的张数，credit 固定 0。"""
     from . import citydb
-    if "lab50" in citydb.LOCKED_DAILY_KINDS:
+    if lock in citydb.LOCKED_DAILY_KINDS:
         return False, citydb.RECOVERING_TEXT
     try:
         times = int(times)
@@ -4290,33 +4292,33 @@ def lab50_probe(rec, sock, times=1, on_progress=None):
     done = 0
     while done < times:
         raise_if_stopped()
-        known = latest_card(rec, _LAB_CARD)
+        known = latest_card(rec, card)
         head = f"完成 {done}/{times}。" if done else ""
         if known is None:
-            return False, f"{head}还没读到实验室探索卡的数量，不发"
+            return False, f"{head}还没读到{card_name}的数量，不发"
         have, slot = known
-        if have < _LAB_BATCH:
-            return False, _batch_short("实验室探索卡", have, _LAB_BATCH, done, times)
+        if have < batch:
+            return False, _batch_short(card_name, have, batch, done, times)
         if slot is None:
-            return False, f"{head}实验室探索卡有 {have} 张，没读到背包槽位，不发"
+            return False, f"{head}{card_name}有 {have} 张，没读到背包槽位，不发"
         before = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
-        sent = (f"043a scene={_LAB_SCENE} expType=0 exploreCnt=0 "
-                f"credit=0 槽={slot} useItemCnt={_LAB_BATCH}")
+        sent = (f"043a scene={scene} expType=1 exploreCnt={batch} "
+                f"credit=0 槽={slot} useItemCnt={batch}")
         mark = rec.seq_mark()
         sender.send_frame(sock, "043a", encode_message({
-            1: ("int32", _LAB_SCENE), 2: ("int32", 0), 3: ("int32", 0),
-            4: ("int32", 0), 5: ("int32", slot), 6: ("int32", _LAB_BATCH),
+            1: ("int32", scene), 2: ("int32", 1), 3: ("int32", batch),
+            4: ("int32", 0), 5: ("int32", slot), 6: ("int32", batch),
             7: ("int32", 0),
         }, omit_zero=False), rec.rc4_c2s)
         got = _await_response(
             sock, rec, "RseWPCExplore", mark, 8,
-            want=lambda d: isinstance(d, dict) and d.get("sceneID") == _LAB_SCENE)
+            want=lambda d, scene=scene: isinstance(d, dict) and d.get("sceneID") == scene)
         if not isinstance(got, dict):
             head = f"完成 {done}/{times}。" if done else ""
-            return False, f"{head}实验室探索已发出 {sent}，没有回包"
+            return False, f"{head}{title}已发出 {sent}，没有回包"
         if got.get("ret") not in (0, None):
             head = f"完成 {done}/{times}。" if done else ""
-            return False, f"{head}实验室探索已发出 {sent}，ret={got.get('ret')}，未成功"
+            return False, f"{head}{title}已发出 {sent}，ret={got.get('ret')}，未成功"
         deadline = time.time() + 0.8
         while time.time() < deadline:
             _beat()
@@ -4330,19 +4332,44 @@ def lab50_probe(rec, sock, times=1, on_progress=None):
                 break
         after = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
         if before is not None and after is not None and after < before:
-            return False, _medal_short("实验室探索卡", before, after, done)
+            return False, _medal_short(card_name, before, after, done)
         done += 1
         note_bag_cards(rec)
-        left = _bag_left(rec, _LAB_CARD)
+        left = _bag_left(rec, card)
         if on_progress:
-            on_progress(f"{done}/{times}，实验室探索卡剩余={left if left is not None else '未知'}")
+            on_progress(f"{done}/{times}，{card_name}剩余={left if left is not None else '未知'}")
         _nap(0.3)
     note_bag_cards(rec)
-    left = _bag_left(rec, _LAB_CARD)
+    left = _bag_left(rec, card)
     medal = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
-    return True, (f"成功：实验室探索 50 连做了 {done} 次，用了 {done * _LAB_BATCH} 张，"
-                  f"实验室探索卡剩余={left if left is not None else '未知'}，"
+    return True, (f"成功：{title}做了 {done} 次，用了 {done * batch} 张，"
+                  f"{card_name}剩余={left if left is not None else '未知'}，"
                   f"勋章={medal if medal is not None else '未知'}")
+
+
+def lab50_probe(rec, sock, times=1, on_progress=None):
+    """实验室探索 50 连。一次请求用 50 张实验室探索卡。"""
+    return _explore_paid(
+        rec, sock, times, _LAB_SCENE, _LAB_CARD, _LAB_BATCH,
+        "实验室探索 50 连", "lab50", "实验室探索卡", on_progress)
+
+
+def lab10_probe(rec, sock, times=1, on_progress=None):
+    """实验室探索 10 连。一次请求用 10 张实验室探索卡。"""
+    return _explore_paid(
+        rec, sock, times, _LAB_SCENE, _LAB_CARD, 10,
+        "实验室探索 10 连", "lab10", "实验室探索卡", on_progress)
+
+
+_PLANT_SCENE = 10002
+_PLANT_CARD = 10005
+
+
+def plant50_probe(rec, sock, times=1, on_progress=None):
+    """工厂探索 50 连。一次请求用 50 张工厂探索卡。"""
+    return _explore_paid(
+        rec, sock, times, _PLANT_SCENE, _PLANT_CARD, 50,
+        "工厂探索 50 连", "plant50", "工厂探索卡", on_progress)
 
 
 _AUTO_CARD = 10116

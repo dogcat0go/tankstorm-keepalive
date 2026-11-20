@@ -860,7 +860,7 @@ def _handler(config: dict):
                     if kind not in (
                             "blast", "spread", "factory", "cards", "clean", "haoyin", "admiral", "admiral10", "agent10",
                             "box_mid", "box_high",
-                            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"):
+                            "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "lab10", "plant50", "auto50"):
                         raise ValueError("没有这项")
                     if kind in ("cards", "clean"):
                         params = {"ids": data.get("ids")} if "ids" in data else {}
