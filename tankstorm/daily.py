@@ -1918,8 +1918,8 @@ TASKS = [
        {}, "实测",
        "2026-10-11：先 {type:1} 开战争学院，再 {type:1,siteID:0,uID:\"\",forceFlag:false} 拉场地。"
        "有人的场看 field9，从低到高打低于 900 万的。本国、自己、停战中的跳过。"
-       "拉场地 forceFlag 是 false。进攻必须是 true，false 时服务器只回面板，"
-       "ret=101，不带 fightReoprt。"
+       "拉场地和普通进攻的 forceFlag 都是 false。"
+       "true 只在对停战场地确认宣战后再发。普通进攻发 true 会 ret=17，没有战报。"
        "ret=10 是这一场被拒，换下一个。ret=100 且 bOccupySite=true 算打下",
        max_per_day=1,
        gate=Gate("RseWarGameOpt", "tokenNum"),
@@ -5716,8 +5716,12 @@ def _wargame_outcome(data, sid, name, power):
         return True, text + detail, battle
     if ret == 10:
         text = f"{who}被拒 ret=10"
+    elif ret == 17:
+        text = f"{who}被拒 ret=17，没有开战"
     else:
         text = f"{who}没打下来 ret={ret}"
+    if not detail:
+        detail = "。回包里没有战报"
     return False, text + detail, battle
 
 
@@ -5776,9 +5780,9 @@ def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
     """发一次 type=3。失败返回 (None, 原因)。"""
     task = _task_of("军事演习")
     names = _field_names(_schema, task.opcode)
-    # 客户端点进攻第 4 号是 true。false 时服务器只回面板状态，ret=101，没有战报。
+    # 普通进攻和客户端一样不带强攻标记。true 是停战宣战确认后才发的。
     fields = {1: ("int32", 3), 2: ("int32", sid),
-              3: ("string", uid), 4: ("bool", True)}
+              3: ("string", uid), 4: ("bool", False)}
     safe, why = _check_safety(task, names, fields)
     if not safe:
         return None, f"安全检查拦截：{why}"
