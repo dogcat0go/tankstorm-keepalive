@@ -34,7 +34,7 @@ openid/openkey 每次都是新鲜签发的，所以保活守护进程可反复�
 import json
 import os
 import re
-from urllib.parse import parse_qsl, urljoin, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from . import APPID, HALL_APPID, PLAT_HALL, platform_spec
 from .log import get_logger
@@ -170,6 +170,84 @@ def fetch_hall_launch(session, *, referer: str = "", appid: str = "") -> dict:
     return last
 
 
+_LOGIN_WAR = "https://tankstorm-qzone.sincetimes.com/login.war"
+_ZONE_RE = re.compile(
+    r"<b>\s*(\d+)区</b>[\s\S]{0,500}?showFlash\((\d+)\)", re.I)
+
+
+def parse_login_regions(html: str) -> list:
+    """登录选区页上能点的区。页上写的是玩家看到的区号，showFlash 里是链接用的 region。
+
+    1 区对应 showFlash(0)。对不上的不收。隐藏的「曾进过」那一块不收，避免空的 showFlash。
+    """
+    text = html or ""
+    cut = text.find('id="loginserverever"')
+    if cut >= 0:
+        text = text[:cut]
+    out = []
+    seen = set()
+    for face, raw in _ZONE_RE.findall(text):
+        face_n, raw_n = int(face), int(raw)
+        if face_n <= 0 or face_n in seen or face_n != raw_n + 1:
+            continue
+        seen.add(face_n)
+        out.append({"id": face_n})
+    out.sort(key=lambda it: it["id"])
+    return out
+
+
+def fetch_login_regions() -> list:
+    """现拉登录选区页。页上没有，或请求失败，就返回空列表，不编一份。"""
+    import requests
+
+    try:
+        r = requests.get(_LOGIN_WAR, timeout=20)
+        items = parse_login_regions(r.text)
+    except Exception as exc:
+        log.info("登录选区页没取到：%s", exc)
+        return []
+    if not items:
+        log.info("登录选区页里没有区服")
+    return items
+
+
+def _account_region_raw(qq):
+    """攻打号已选的区，换成游戏链接里的 region。没选过就是 None。"""
+    if not getattr(qq, "attack_account", False):
+        return None
+    from . import citydb
+
+    user_id = int(citydb.attack_context_user() or 0)
+    if user_id <= 0:
+        uin = str(getattr(qq, "uin", "") or "").strip()
+        ids = citydb.users_bound_to_qq(uin) if uin.isdigit() else []
+        user_id = ids[0] if ids else 0
+    if user_id <= 0:
+        return None
+    face = citydb.user_region(user_id)
+    if face <= 0:
+        return None
+    return face - 1
+
+
+def _with_region(url: str, raw: int) -> str:
+    parts = urlparse(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["region"] = str(int(raw))
+    return urlunparse(parts._replace(query=urlencode(query)))
+
+
+def _pin_login_region(qq, url: str) -> str:
+    """下次打开游戏页时带上这个号选的区。登录包仍是原来的 uid/secret。"""
+    raw = _account_region_raw(qq)
+    if raw is None or not url:
+        return url
+    pinned = _with_region(url, raw)
+    if pinned != url:
+        log.info("按登录账号的区服打开游戏页 region=%s", raw)
+    return pinned
+
+
 def get_game_context(qq) -> dict:
     """在线版：真正发请求，返回 socket 登录所需的完整 ctx。qq 为已登录 QQSession。"""
     lock = getattr(qq, "_http_lock", None)
@@ -229,8 +307,8 @@ def _ready_log(ctx: dict) -> dict:
 def _fetch_qzone_context(qq) -> dict:
     s = qq.session
     ctx = _base_ctx(qq)
-    game_url = getattr(qq, "game_url", None) or platform_spec("空间")["game_url"]
-
+    game_url = _pin_login_region(
+        qq, getattr(qq, "game_url", None) or platform_spec("空间")["game_url"])
     log.info("打开游戏页，获取 openid/openkey…")
     r = s.get(game_url, timeout=20)
     _dump("1_outer.html", r.text)
@@ -241,7 +319,7 @@ def _fetch_qzone_context(qq) -> dict:
         if not m:
             return ctx
         iframe_url = m.group(1)
-    _fill_from_canvas(qq, ctx, iframe_url, game_url)
+    _fill_from_canvas(qq, ctx, _pin_login_region(qq, iframe_url), game_url)
     return _ready_log(ctx)
 
 
@@ -275,5 +353,5 @@ def _fetch_hall_context(qq) -> dict:
     if not jump:
         log.warning("大厅 launchapp 没有 jump_url（JSON 已存 debug/1_launchapp.json）")
         return _ready_log(ctx)
-    _fill_from_canvas(qq, ctx, jump, spec["game_url"])
+    _fill_from_canvas(qq, ctx, _pin_login_region(qq, jump), spec["game_url"])
     return _ready_log(ctx)
