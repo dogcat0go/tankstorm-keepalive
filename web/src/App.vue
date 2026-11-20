@@ -804,6 +804,17 @@ async function runDrop() {
   await refreshAttacks();
 }
 
+async function runWargameRetreat(siteId) {
+  showErr("", "activity");
+  const id = Number(siteId) || 0;
+  const where = id > 0 ? `场地 ${id}` : "当前占着的演习场";
+  const ok = await confirmUse(`从${where}撤退。`);
+  if (!ok) return;
+  await api("/api/daily", { kind: "wargame", action: "retreat", site_id: id });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
 async function runWargame(site) {
   showErr("", "activity");
   if (site && site.uid) {
@@ -1699,6 +1710,7 @@ onUnmounted(() => {
         :egg-note="eggNote"
         :wargame="wargame"
         :run-wargame="runWargame"
+        :run-wargame-retreat="runWargameRetreat"
         :err="err"
         :err-at="errAt"
         :save-level="saveGuildLevel"

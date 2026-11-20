@@ -3,7 +3,8 @@
 """军事演习战报。
 
 RseWarGameOpt.fightReoprt 是 CountryFightData。第 3 号是 PVEFightRecord，
-里面第 1 号最多 5 路（一次进攻会拆成多条回包，每条一路）。
+里面第 1 号最多 6 路（一次进攻会拆成多条回包，每条一路）。
+2026-11-20 21:20:51 有决战的那次是 wayIndex 0 到 5。没有决战的那次只到 4。
 每一路第 1 号是我方坦克，第 2 号是对方。
 一辆坦克是 PVEArmyRecord：编号、型号、剩余血、满血，第 7 号字段是带时间的血量。
 
@@ -65,7 +66,7 @@ def _ways(report):
     found = []
 
     def walk(node, depth):
-        if depth > 6 or len(found) >= 5:
+        if depth > 6 or len(found) >= 6:
             return
         if isinstance(node, dict):
             ours = _tanks(node.get("fightRecordSelf", node.get("field1")))

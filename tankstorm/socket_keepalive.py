@@ -2909,10 +2909,14 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
                     return
-                if str(params.get("action") or "") == "attack":
+                action = str(params.get("action") or "")
+                if action == "attack":
                     ok, why = daily.wargame_attack(
                         rec, sock, config, params.get("site_id"), params.get("uid"),
                         params.get("name") or "", params.get("power") or 0)
+                elif action == "retreat":
+                    ok, why = daily.wargame_retreat(
+                        rec, sock, config, params.get("site_id") or 0)
                 else:
                     ok, why = daily.wargame_list(rec, sock, config)
                 _show(why)

@@ -5987,6 +5987,58 @@ def wargame_attack(rec, sock, config, site_id, uid, name="", power=0):
     return ok, text
 
 
+def wargame_retreat(rec, sock, config, site_id=0):
+    """从自己占的演习场撤出。
+
+    2026-11-20 21:20:23 抓包：type=4，siteID 是占着的场，uID 空，forceFlag=false。
+    回包 type=4、ret=0，场地等级和开始时间都清成 0。
+    """
+    if rec is None or sock is None:
+        return False, "没有连接，不撤退"
+    timeout, _gap = _daily_wait(config)
+    try:
+        site_id = int(site_id or 0)
+    except (TypeError, ValueError):
+        site_id = 0
+    pages, why = _query_wargame_pages(rec, sock, max(timeout, 8))
+    if pages is None:
+        return False, why
+    if site_id <= 0:
+        for page in pages:
+            sid = page.get("siteID") if isinstance(page, dict) else None
+            if page.get("bOccupySite") is True and _plain_int(sid) and sid > 0:
+                site_id = sid
+                break
+    if site_id <= 0:
+        return False, "没有占着的演习场，不撤退"
+    task = _task_of("军事演习")
+    fields = {1: ("int32", 4), 2: ("int32", site_id),
+              3: ("string", ""), 4: ("bool", False)}
+    before = rec.seq_mark()
+    try:
+        _send_op(sock, rec, task, fields)
+    except OSError:
+        raise
+    except Exception as exc:
+        return False, f"发送失败：{exc}"
+    got = _await_response(
+        sock, rec, "RseWarGameOpt", before, max(timeout, 8),
+        want=lambda d: isinstance(d, dict) and d.get("type") == 4)
+    if not isinstance(got, dict):
+        return False, f"场地 {site_id} 撤退没有回包"
+    if got.get("ret") not in (0, None):
+        return False, f"场地 {site_id} 撤退失败 ret={got.get('ret')}"
+    text = f"已从场地 {site_id} 撤退"
+    fresh, _why = _query_wargame_pages(rec, sock, max(timeout, 8))
+    if fresh:
+        me = str(getattr(rec, "uid", "") or "")
+        _publish_wargame(
+            _wargame_board(fresh, me, read_my_country(rec)), text)
+    else:
+        _publish_wargame(None, text)
+    return True, text
+
+
 def _run_wargame(rec, sock, config):
     """先开战争学院再拉场地。从低到高打低于 900 万的，ret=10 就换下一个。"""
     task = _task_of("军事演习")

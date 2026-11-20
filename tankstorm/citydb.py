@@ -7045,10 +7045,18 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         clean["army"] = army
     elif kind == "wargame":
         action = str(params.get("action") or "list").strip()
-        if action not in ("list", "attack"):
+        if action not in ("list", "attack", "retreat"):
             return "没有这项"
         clean["action"] = action
-        if action == "attack":
+        if action == "retreat":
+            try:
+                sid = int(str(params.get("site_id") or "0").strip() or "0")
+            except (TypeError, ValueError):
+                return "场地不对"
+            if sid < 0:
+                return "场地不对"
+            clean["site_id"] = sid
+        elif action == "attack":
             try:
                 sid = int(str(params.get("site_id") or "").strip())
             except (TypeError, ValueError):
