@@ -1918,9 +1918,10 @@ TASKS = [
        {}, "实测",
        "2026-10-11：先 {type:1} 开战争学院，再 {type:1,siteID:0,uID:\"\",forceFlag:false} 拉场地。"
        "有人的场看 field9，从低到高打低于 900 万的。本国、自己、停战中的跳过。"
-       "拉场地 forceFlag 是 false。进攻必须是 true，false 时服务器只回面板，"
-       "ret=101，不带 fightReoprt。"
-       "ret=10 是这一场被拒，换下一个。ret=100 且 bOccupySite=true 算打下",
+       "2026-11-20 20:02:10 进攻 forceFlag 是 false。发 true 会出错。"
+       "先回 type=3、ret=101，详细战报在后面。"
+       "ret=10 是这一场被拒，换下一个。ret=100 且 bOccupySite=true 算打下。"
+       "ret=101 且有战报是打完了，不是没发出去",
        max_per_day=1,
        gate=Gate("RseWarGameOpt", "tokenNum"),
        cooldown_until="siteEndTime",
@@ -5751,8 +5752,12 @@ def _wargame_outcome(data, sid, name, power):
         if ts:
             text += f"，占用至 {(ts - time.time()) / 60:.0f} 分钟后"
         return True, text + detail, battle
+    if ret == 101 and battle:
+        return True, f"已打{who}{detail}", battle
     if ret == 10:
         text = f"{who}被拒 ret=10"
+    elif ret == 101:
+        text = f"{who}没有战报 ret=101"
     else:
         text = f"{who}没打下来 ret={ret}"
     return False, text + detail, battle
@@ -5813,9 +5818,9 @@ def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
     """发一次 type=3。失败返回 (None, 原因)。"""
     task = _task_of("军事演习")
     names = _field_names(_schema, task.opcode)
-    # 客户端点进攻第 4 号是 true。false 时服务器只回面板状态，ret=101，没有战报。
+    # 2026-11-20 20:02:10 客户端进攻第 4 号是 false。发 true 服务器会拒。
     fields = {1: ("int32", 3), 2: ("int32", sid),
-              3: ("string", uid), 4: ("bool", True)}
+              3: ("string", uid), 4: ("bool", False)}
     safe, why = _check_safety(task, names, fields)
     if not safe:
         return None, f"安全检查拦截：{why}"
@@ -6035,6 +6040,12 @@ def _run_wargame(rec, sock, config):
             log.info("[%s] 场地 %s 被拒 ret=10，换下一个", task.key, sid)
             _nap(0.4)
             continue
+        battle = wargame_battle.analyze(data.get("fightReoprt"))
+        if ret == 101 and battle:
+            text = f"已打场地 {sid}（{name}，战力 {power}）。" + wargame_battle.line(battle)
+            if refused:
+                text = f"前面 {len(refused)} 个被拒。" + text
+            return True, text
         return False, f"失败：场地 {sid}（{name}，战力 {power}）没打下来 ret={ret}"
     shown = "、".join(str(s) for s in refused)
     return False, f"失败：打了 {len(refused)} 个都被拒 ret=10（场地 {shown}）"
