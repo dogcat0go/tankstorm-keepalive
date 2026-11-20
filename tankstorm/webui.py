@@ -381,6 +381,17 @@ def _handler(config: dict):
                 who["storm_day"] = citydb.storm_rejects_day(user["id"])
                 _json(self, 200, {"user": who, "invite": bool(invite)})
                 return
+            if path == "/api/regions":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                from .qzone import fetch_login_regions
+                _json(self, 200, {
+                    "region": int(user.get("region") or 0),
+                    "items": fetch_login_regions(),
+                })
+                return
             if path == "/api/atk-fail":
                 user = self._user()
                 if not user:
@@ -1139,6 +1150,19 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True})
+                elif path == "/api/region":
+                    from .qzone import fetch_login_regions
+                    try:
+                        face = int(str(data.get("region", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("区号不对") from None
+                    items = fetch_login_regions()
+                    if not items:
+                        raise ValueError("没有区服列表")
+                    if face not in {int(it.get("id") or 0) for it in items}:
+                        raise ValueError("这个区进不去")
+                    citydb.set_user_region(user["id"], face)
+                    _json(self, 200, {"ok": True, "region": face})
                 elif path == "/api/push":
                     qq_target = str(data.get("qq_target", "")).strip()
                     if qq_target and (not qq_target.isdigit() or not 5 <= len(qq_target) <= 12):

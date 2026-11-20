@@ -1677,7 +1677,7 @@ def note_game_region(user_id: int, region) -> None:
     """攻打号打开游戏页后，把区号记到这个登录账号。
 
     链接里的 region 从 0 起算，玩家说的区号是它加 1。1 区就是链接里的 0。
-    认不出就不改。游戏连接仍用链接里的原值，不读这里。
+    认不出就不改。下次连接按这里的区号去要游戏页，页里实际返回的再写回来。
     """
     user_id = int(user_id or 0)
     text = str(region if region is not None else "").strip()
@@ -1701,6 +1701,32 @@ def note_game_region(user_id: int, region) -> None:
         conn.close()
     if changed:
         log.info("登录账号 %s 的区服是 %s", username_of(user_id), face)
+
+
+def set_user_region(user_id: int, face: int) -> None:
+    """把这个登录账号后面攻打、保活用的区号改成玩家看到的区号。
+
+    同一个攻打 QQ 绑了几个登录账号，一起改。已经连着的那次不断开，
+    下次按现有登录再要游戏页时才带上新区。
+    """
+    user_id = int(user_id or 0)
+    face = int(face)
+    if user_id <= 0 or face <= 0:
+        return
+    uin = attack_qq_of(user_id)
+    ids = users_bound_to_qq(uin) if uin.isdigit() else []
+    if user_id not in ids:
+        ids = [user_id] + ids
+    conn = connect()
+    try:
+        for uid in ids:
+            conn.execute(
+                "UPDATE app_user SET region=? WHERE id=?",
+                (face, int(uid)))
+        conn.commit()
+    finally:
+        conn.close()
+    log.info("登录账号 %s 的区服改成 %s", username_of(user_id), face)
 
 
 def open_session(username: str) -> str:
