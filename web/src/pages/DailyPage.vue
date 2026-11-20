@@ -149,6 +149,7 @@ function toggleGuild(id, on) {
     <details class="guild-fold">
       <summary>
         公会任务
+        <button type="button" @click.stop="runDaily('guild_claim').catch((e) => showErr(e.message))">一键领取</button>
         <span class="muted">功能尚在完善</span>
         <span v-if="guildCatalog.length" class="muted">接受 {{ guildAccept.length }} 项</span>
         <span v-if="!guildBoard" class="muted">还没读到</span>
@@ -215,10 +216,7 @@ function toggleGuild(id, on) {
         </div>
       </template>
     </details>
-    <div class="lock-row">
-      <h2>最近执行</h2>
-      <button type="button" @click="runDaily('guild_claim').catch((e) => showErr(e.message))">一键领取</button>
-    </div>
+    <h2>最近执行</h2>
     <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
     <div v-else class="wide">
       <table class="daily-jobs">
