@@ -5657,9 +5657,38 @@ def _wargame_board(pages, me, home):
     }
 
 
+def _reply_shape(value):
+    """回包字段的外形。不写战报正文，只留下能不能接着解析。"""
+    if value is None:
+        return "无"
+    if isinstance(value, str):
+        head = value[:16].lower()
+        kind = "十六进制" if head and all(c in "0123456789abcdef" for c in head) else "文本"
+        return f"{kind}{len(value)}"
+    if isinstance(value, list):
+        return f"列表{len(value)}"
+    if isinstance(value, dict):
+        parts = []
+        for key, item in list(value.items())[:12]:
+            if isinstance(item, dict):
+                parts.append(f"{key}:对象{len(item)}")
+            elif isinstance(item, list):
+                parts.append(f"{key}:列表{len(item)}")
+            elif isinstance(item, str):
+                parts.append(f"{key}:{_reply_shape(item)}")
+            else:
+                parts.append(f"{key}:{type(item).__name__}")
+        return " ".join(parts)
+    return type(value).__name__
+
+
 def _wargame_outcome(data, sid, name, power):
     ret = data.get("ret") if isinstance(data, dict) else None
     report = data.get("fightReoprt") if isinstance(data, dict) else None
+    log.info("[军事演习] 攻打回包 ret=%s 字段=%s 战报=%s",
+             ret,
+             ",".join(list(data)[:16]) if isinstance(data, dict) else type(data).__name__,
+             _reply_shape(report))
     battle = wargame_battle.analyze(report)
     if isinstance(report, dict) and report and battle is None:
         shape = []
