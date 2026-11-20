@@ -144,7 +144,9 @@ function wgTanks(side) {
 
 function wgHp(side) {
   if (!side) return "—";
-  return `${wgWan(side.hp)}/${wgWan(side.maxHp)}`;
+  const max = Number(side.maxHp) || 0;
+  const pct = max > 0 ? Math.round((Number(side.hp) || 0) * 100 / max) : 0;
+  return `${wgWan(side.hp)}/${wgWan(side.maxHp)}（${pct}%）`;
 }
 const wgSites = computed(() => (Array.isArray(wgBoard.value.sites) ? wgBoard.value.sites : []));
 const wgLevels = computed(() => {

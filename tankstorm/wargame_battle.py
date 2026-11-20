@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """军事演习战报。
 
-RseWarGameOpt.fightReoprt 里最多 5 路。每一路 field1 是我方坦克，field2 是对方。
+RseWarGameOpt.fightReoprt 是 CountryFightData。第 3 号是 PVEFightRecord，
+里面第 1 号最多 5 路（一次进攻会拆成多条回包，每条一路）。
+每一路第 1 号是我方坦克，第 2 号是对方。
 一辆坦克是 PVEArmyRecord：编号、型号、剩余血、满血，第 7 号字段是带时间的血量。
 
 对外只有三件事：
@@ -135,9 +137,16 @@ def _wan(n):
     return text + "万"
 
 
+def _pct(hp, max_hp):
+    if max_hp <= 0:
+        return "0%"
+    return f"{int(round(hp * 100 / max_hp))}%"
+
+
 def _side_text(side):
     return (f"剩 {side['tanks']}/{side['total']} 辆、"
-            f"血 {_wan(side['hp'])}/{_wan(side['maxHp'])}")
+            f"血 {_wan(side['hp'])}/{_wan(side['maxHp'])}"
+            f"（{_pct(side['hp'], side['maxHp'])}）")
 
 
 def analyze(report):
@@ -205,8 +214,12 @@ def line(battle):
     if not climax:
         return text + "。未进入决战"
     text += (f"。决战 {_sec_text(climax['seconds'])}，"
-             f"我方最终血 {_wan(climax['self']['hp'])}（剩 {climax['self']['tanks']} 辆），"
-             f"对方最终血 {_wan(climax['enemy']['hp'])}（剩 {climax['enemy']['tanks']} 辆）")
+             f"我方最终血 {_wan(climax['self']['hp'])}"
+             f"（{_pct(climax['self']['hp'], climax['self']['maxHp'])}，"
+             f"剩 {climax['self']['tanks']} 辆），"
+             f"对方最终血 {_wan(climax['enemy']['hp'])}"
+             f"（{_pct(climax['enemy']['hp'], climax['enemy']['maxHp'])}，"
+             f"剩 {climax['enemy']['tanks']} 辆）")
     return text
 
 

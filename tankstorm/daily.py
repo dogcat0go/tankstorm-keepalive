@@ -5579,9 +5579,19 @@ def _collect_wargame_pages(sock, rec, since, timeout):
 
 
 def _attack_reply(sid, uid):
-    """type=3 才是攻打结果。ret=10 的那条不带 siteID，只带 deftUid。"""
+    """type=3 是攻打结果。详细对战不在这条上：后面另有几条，每条一路。
+
+    2026-11-20 20:02:10 客户端进攻（forceFlag 为 false）先回 type=3、ret=101，
+    没有 fightReoprt。紧接着 5 条 RseWarGameOpt，wayIndex 0 到 4，战报在里面。
+    这几条 type 不一定是 3，只认 type=3 就会把详细对战丢掉。
+    ret=10 的拒绝不带 siteID，只带 deftUid。
+    """
     def want(d):
-        if not isinstance(d, dict) or d.get("type") != 3:
+        if not isinstance(d, dict):
+            return False
+        if _packet_has_report(d):
+            return True
+        if d.get("type") != 3:
             return False
         got_sid = d.get("siteID")
         got_uid = d.get("deftUid")
@@ -5820,13 +5830,16 @@ def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
     # 战报可能比结果晚到，而且一条帧会拆成多次 recv。至少等 20 秒。
     packets = _collect_attack_replies(
         sock, rec, before, max(timeout, 20), sid, uid)
-    reported = sum(1 for item in packets if _packet_has_report(item))
-    log.info("[军事演习] 攻打回包 %d 条，其中 %d 条带战报", len(packets), reported)
-    data = next((item for item in reversed(packets) if _packet_has_report(item)), None)
+    reported = [item["fightReoprt"] for item in packets if _packet_has_report(item)]
+    log.info("[军事演习] 攻打回包 %d 条，其中 %d 条带战报", len(packets), len(reported))
+    data = next((item for item in packets if item.get("type") == 3), None)
     if data is None and packets:
         data = packets[-1]
     if not isinstance(data, dict):
         return None, "失败：未收到攻打回包"
+    if reported:
+        data = dict(data)
+        data["fightReoprt"] = reported if len(reported) > 1 else reported[0]
     return data, ""
 
 
