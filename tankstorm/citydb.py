@@ -22,6 +22,7 @@ import requests
 
 from .log import get_logger
 from .paths import user_path
+from .wargame_battle import clean as _clean_wargame_battle
 
 log = get_logger()
 
@@ -4673,50 +4674,6 @@ def egg_live(user_id: int):
     """页面上还能砸的彩蛋。还没读到是 None。"""
     parsed, _seen, _online = _read_user_proc(int(user_id))
     return _kept_int(parsed, "egg_left")
-
-
-def _clean_side(raw):
-    if not isinstance(raw, dict):
-        return None
-    try:
-        side = {
-            "tanks": int(raw["tanks"]),
-            "total": int(raw["total"]),
-            "hp": int(raw["hp"]),
-            "maxHp": int(raw["maxHp"]),
-        }
-    except (KeyError, TypeError, ValueError):
-        return None
-    if min(side.values()) < 0 or side["tanks"] > side["total"] or side["hp"] > side["maxHp"]:
-        return None
-    return side
-
-
-def _clean_phase(raw):
-    if not isinstance(raw, dict):
-        return None
-    try:
-        seconds = int(raw["seconds"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    left, right = _clean_side(raw.get("self")), _clean_side(raw.get("enemy"))
-    if seconds < 0 or left is None or right is None:
-        return None
-    return {"seconds": seconds, "self": left, "enemy": right}
-
-
-def _clean_wargame_battle(raw):
-    if not isinstance(raw, dict):
-        return None
-    phase = _clean_phase(raw.get("phase1"))
-    if phase is None:
-        return None
-    climax = raw.get("climax")
-    if climax is not None:
-        climax = _clean_phase(climax)
-        if climax is None:
-            return None
-    return {"phase1": phase, "climax": climax}
 
 
 def note_wargame(board=None, result=None, battle=None, update_battle=False) -> None:
