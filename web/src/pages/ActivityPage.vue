@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { ElSwitch } from "element-plus";
 import "element-plus/es/components/switch/style/css";
 import itemRows from "../items.json";
+import newItemRows from "../items-new.json";
 
 const guildLevel = defineModel("guildLevel", { type: String, required: true });
 const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
@@ -52,6 +53,7 @@ const props = defineProps({
   showErr: { type: Function, required: true },
 });
 
+const newItems = newItemRows.map(([id, name, desc]) => ({ id, name, desc }));
 const itemQuery = ref("");
 const itemHits = computed(() => {
   const q = itemQuery.value.trim().toLowerCase();
@@ -396,6 +398,11 @@ function occupyText(occ) {
       <p class="muted">共 {{ itemRows.length }} 条。输入编号或名称后列出，一次最多 40 条。自选包后面写着可以开出的道具。</p>
       <p v-if="itemQuery.trim() && !itemHits.length" class="muted">没有这个道具</p>
       <p v-for="it in itemHits" :key="it.id"><b>{{ it.id }}</b> {{ it.name }}<span class="muted"> {{ it.desc }}</span></p>
+      <div v-if="newItems.length" class="item-part">
+        <h3>新出的道具</h3>
+        <p class="muted">新出 {{ newItems.length }} 个。</p>
+        <p v-for="it in newItems" :key="'new-' + it.id"><b>{{ it.id }}</b> {{ it.name }}<span class="muted"> {{ it.desc }}</span></p>
+      </div>
     </details>
     <p v-if="err && errAt === 'activity'" class="err">{{ err }}</p>
   </section>
