@@ -7,6 +7,8 @@ RseWarGameOpt.fightReoprt 是 CountryFightData。第 3 号是 PVEFightRecord，
 2026-11-20 21:20:51 有决战的那次是 wayIndex 0 到 5。没有决战的那次只到 4。
 每一路第 1 号是我方坦克，第 2 号是对方。
 一辆坦克是 PVEArmyRecord：编号、型号、剩余血、满血，第 7 号字段是带时间的血量。
+同一路第 8 号是我方火炮，第 7 项是固定发射间隔。
+第 9 号是对方火炮，第 5 项是开火时刻，相邻差恒定才算这一路的间隔。
 
 对外只有三件事：
   analyze(report)  从战报得到双方的阶段结果，读不出返回 None
@@ -62,6 +64,33 @@ def _tanks(value):
     return [_tank(item) for item in _nodes(value) if _is_army(item)]
 
 
+def _gap(value, timed):
+    """我方读固定间隔。对方用开火时刻的相邻差，差不恒定就不猜一个数。"""
+    node = next(iter(_nodes(value)), None)
+    if node is None:
+        return None
+    if not timed:
+        tick = node.get("nAtackTick", node.get("field7"))
+        return tick if _int(tick) and tick >= 4 else None
+    times = node.get("field5")
+    if not isinstance(times, list) or len(times) < 2:
+        return None
+    diffs = []
+    prev = None
+    for tick in times:
+        if not _int(tick):
+            return None
+        if prev is not None:
+            gap = tick - prev
+            if gap < 4:
+                return None
+            diffs.append(gap)
+        prev = tick
+    if len(set(diffs)) != 1:
+        return None
+    return diffs[0]
+
+
 def _ways(report):
     found = []
 
@@ -72,7 +101,11 @@ def _ways(report):
             ours = _tanks(node.get("fightRecordSelf", node.get("field1")))
             theirs = _tanks(node.get("fightRecordEnemy", node.get("field2")))
             if ours and theirs:
-                found.append((ours, theirs))
+                found.append((
+                    ours, theirs,
+                    _gap(node.get("field8"), False),
+                    _gap(node.get("field9"), True),
+                ))
                 return
             for value in node.values():
                 walk(value, depth + 1)
@@ -151,11 +184,21 @@ def _side_text(side):
 
 
 def analyze(report):
-    """第一阶段的剩余坦克、总血和耗时。时间轴上出现明显间断且当时两边都还活着，就算进入决战。"""
-    ours, theirs = [], []
-    for left, right in _ways(report):
+    """第一阶段的剩余坦克、总血和耗时。时间轴上出现明显间断且当时两边都还活着，就算进入决战。
+
+    lanes 跟路的顺序一致：我方是固定间隔，对方是开火时刻的恒定相邻差。
+    """
+    ways = _ways(report)
+    ours, theirs, lanes = [], [], []
+    for left, right, me, them in ways:
         ours.extend(left)
         theirs.extend(right)
+        lane = {}
+        if me is not None:
+            lane["self"] = me
+        if them is not None:
+            lane["enemy"] = them
+        lanes.append(lane)
     if not ours or not theirs:
         return None
     ticks = sorted({tick for tank in ours + theirs for tick, _hp in tank["samples"]})
@@ -168,6 +211,7 @@ def analyze(report):
                 "self": _side_at(ours, end, True),
                 "enemy": _side_at(theirs, end, True),
             },
+            "lanes": lanes,
         }
     start, end = ticks[0], ticks[-1]
     split = None
@@ -191,6 +235,7 @@ def analyze(report):
                 "self": _side_at(ours, end, True),
                 "enemy": _side_at(theirs, end, True),
             },
+            "lanes": lanes,
         }
     phase_end, climax_at = split
     return {
@@ -204,7 +249,24 @@ def analyze(report):
             "self": _side_at(ours, end, True),
             "enemy": _side_at(theirs, end, True),
         },
+        "lanes": lanes,
     }
+
+
+def _lane_line(lanes):
+    bits = []
+    for i, lane in enumerate(lanes or (), 1):
+        if not isinstance(lane, dict):
+            continue
+        parts = []
+        me, them = lane.get("self"), lane.get("enemy")
+        if _int(me) and me >= 4:
+            parts.append(f"我方火炮 {me}")
+        if _int(them) and them >= 4:
+            parts.append(f"对方火炮 {them}")
+        if parts:
+            bits.append(f"第 {i} 路 " + "，".join(parts))
+    return "。".join(bits)
 
 
 def line(battle):
@@ -213,14 +275,18 @@ def line(battle):
     text = f"第一阶段 {_sec_text(phase['seconds'])}，我方{_side_text(phase['self'])}，对方{_side_text(phase['enemy'])}"
     climax = battle.get("climax")
     if not climax:
-        return text + "。未进入决战"
-    text += (f"。决战 {_sec_text(climax['seconds'])}，"
-             f"我方最终血 {_wan(climax['self']['hp'])}"
-             f"（{_pct(climax['self']['hp'], climax['self']['maxHp'])}，"
-             f"剩 {climax['self']['tanks']} 辆），"
-             f"对方最终血 {_wan(climax['enemy']['hp'])}"
-             f"（{_pct(climax['enemy']['hp'], climax['enemy']['maxHp'])}，"
-             f"剩 {climax['enemy']['tanks']} 辆）")
+        text += "。未进入决战"
+    else:
+        text += (f"。决战 {_sec_text(climax['seconds'])}，"
+                 f"我方最终血 {_wan(climax['self']['hp'])}"
+                 f"（{_pct(climax['self']['hp'], climax['self']['maxHp'])}，"
+                 f"剩 {climax['self']['tanks']} 辆），"
+                 f"对方最终血 {_wan(climax['enemy']['hp'])}"
+                 f"（{_pct(climax['enemy']['hp'], climax['enemy']['maxHp'])}，"
+                 f"剩 {climax['enemy']['tanks']} 辆）")
+    extra = _lane_line(battle.get("lanes"))
+    if extra:
+        text += "。" + extra
     return text
 
 
@@ -254,8 +320,31 @@ def _clean_phase(raw):
     return {"seconds": seconds, "self": left, "enemy": right}
 
 
+def _clean_gap(value):
+    if not _int(value) or value < 4:
+        return None
+    return value
+
+
+def _clean_lanes(raw):
+    if not isinstance(raw, list):
+        return None
+    lanes = []
+    any_gap = False
+    for item in raw:
+        lane = {}
+        if isinstance(item, dict):
+            for key in ("self", "enemy"):
+                gap = _clean_gap(item.get(key))
+                if gap is not None:
+                    lane[key] = gap
+                    any_gap = True
+        lanes.append(lane)
+    return lanes if any_gap else None
+
+
 def clean(raw):
-    """页面和库存只留数字。对不上返回 None。"""
+    """页面和库存只留数字。阶段对不上返回 None，火炮间隔对不上只丢掉这一项。"""
     if not isinstance(raw, dict):
         return None
     phase = _clean_phase(raw.get("phase1"))
@@ -266,4 +355,8 @@ def clean(raw):
         climax = _clean_phase(climax)
         if climax is None:
             return None
-    return {"phase1": phase, "climax": climax}
+    out = {"phase1": phase, "climax": climax}
+    lanes = _clean_lanes(raw.get("lanes"))
+    if lanes:
+        out["lanes"] = lanes
+    return out
