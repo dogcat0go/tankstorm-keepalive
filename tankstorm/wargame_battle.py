@@ -145,6 +145,13 @@ def _side_at(tanks, tick, use_final=False):
     return {"tanks": left_n, "total": len(tanks), "hp": left_hp, "maxHp": max_hp}
 
 
+def _span(tanks):
+    ticks = [tick for tank in tanks for tick, _hp in tank["samples"]]
+    if not ticks:
+        return 0
+    return max(ticks) - min(ticks)
+
+
 def _seconds(span):
     """时间戳跨度。跨度大时按毫秒，短时按逻辑 30 帧/秒。"""
     span = max(0, int(span))
@@ -183,22 +190,48 @@ def _side_text(side):
             f"（{_pct(side['hp'], side['maxHp'])}）")
 
 
-def analyze(report):
-    """第一阶段的剩余坦克、总血和耗时。时间轴上出现明显间断且当时两边都还活着，就算进入决战。
+def _collect(ways):
+    ours, theirs = [], []
+    for left, right, _me, _them in ways:
+        ours.extend(left)
+        theirs.extend(right)
+    return ours, theirs
 
+
+def analyze(report):
+    """第一阶段的剩余坦克、总血和耗时。有第 6 路就是决战，决战时间用这一路自己的跨度。
+
+    不到 6 路时，仍看时间轴上有没有明显间断。
     lanes 跟路的顺序一致：我方是固定间隔，对方是开火时刻的恒定相邻差。
     """
     ways = _ways(report)
-    ours, theirs, lanes = [], [], []
-    for left, right, me, them in ways:
-        ours.extend(left)
-        theirs.extend(right)
+    lanes = []
+    for _left, _right, me, them in ways:
         lane = {}
         if me is not None:
             lane["self"] = me
         if them is not None:
             lane["enemy"] = them
         lanes.append(lane)
+    if len(ways) >= 6:
+        ours, theirs = _collect(ways[:5])
+        climax_ours, climax_theirs = ways[5][0], ways[5][1]
+        if not ours or not theirs or not climax_ours or not climax_theirs:
+            return None
+        return {
+            "phase1": {
+                "seconds": _seconds(_span(ours + theirs)),
+                "self": _side_at(ours, 0, True),
+                "enemy": _side_at(theirs, 0, True),
+            },
+            "climax": {
+                "seconds": _seconds(_span(climax_ours + climax_theirs)),
+                "self": _side_at(climax_ours, 0, True),
+                "enemy": _side_at(climax_theirs, 0, True),
+            },
+            "lanes": lanes,
+        }
+    ours, theirs = _collect(ways)
     if not ours or not theirs:
         return None
     ticks = sorted({tick for tank in ours + theirs for tick, _hp in tank["samples"]})
@@ -261,9 +294,9 @@ def _lane_line(lanes):
         parts = []
         me, them = lane.get("self"), lane.get("enemy")
         if _int(me) and me >= 4:
-            parts.append(f"我方火炮 {me}")
+            parts.append(f"我方火炮发射间隔 {me}")
         if _int(them) and them >= 4:
-            parts.append(f"对方火炮 {them}")
+            parts.append(f"敌方火炮发射间隔 {them}")
         if parts:
             bits.append(f"第 {i} 路 " + "，".join(parts))
     return "。".join(bits)

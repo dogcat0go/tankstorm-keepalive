@@ -327,7 +327,7 @@ function occupyText(occ) {
         </template>
         <table v-if="wgLanes.some((lane) => wgGap(lane && lane.self) || wgGap(lane && lane.enemy))">
           <thead>
-            <tr><th>路</th><th>我方火炮</th><th>对方火炮</th></tr>
+            <tr><th>路</th><th>我方火炮发射间隔</th><th>敌方火炮发射间隔</th></tr>
           </thead>
           <tbody>
             <template v-for="(lane, i) in wgLanes" :key="i">
