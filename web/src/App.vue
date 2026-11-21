@@ -1,8 +1,5 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { MdPreview } from "md-editor-v3";
-import "md-editor-v3/lib/preview.css";
-import "./markdown.js";
 import { ElMenu, ElMenuItem } from "element-plus";
 import "element-plus/es/components/menu/style/css";
 import "./base.css";
@@ -15,6 +12,7 @@ import BasePage from "./pages/BasePage.vue";
 import WatchPage from "./pages/WatchPage.vue";
 import QqPage from "./pages/QqPage.vue";
 import ProfilePage from "./pages/ProfilePage.vue";
+import MarkdownDoc from "./components/MarkdownDoc.vue";
 
 const me = ref(null);
 const mode = ref("login");
@@ -1979,7 +1977,7 @@ onUnmounted(() => {
     <div v-if="me && guide" class="modal">
       <div class="modal-card guide" role="dialog" aria-modal="true" aria-labelledby="guide-title">
         <h2 id="guide-title">{{ guide.title }}</h2>
-        <MdPreview :modelValue="guide.text || ''" previewTheme="github" />
+        <MarkdownDoc :model-value="guide.text || ''" readonly />
         <img
           v-for="(src, i) in guideImages"
           :key="src + i"

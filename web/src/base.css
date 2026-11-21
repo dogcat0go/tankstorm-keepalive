@@ -107,7 +107,7 @@ input.when { width: 12.5em; }
   font-size: 12px;
   font-weight: 400;
 }
-label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
+label, .feature-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
 input, select, textarea { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
 textarea { width: 100%; box-sizing: border-box; resize: vertical; }
 .feature-imgs { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }

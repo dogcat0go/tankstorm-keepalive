@@ -1,9 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { MdEditor } from "md-editor-v3";
-import "md-editor-v3/lib/style.css";
-import "./markdown.js";
 import "./base.css";
+import MarkdownDoc from "./components/MarkdownDoc.vue";
 
 const me = ref(null);
 const username = ref("");
@@ -1138,22 +1136,10 @@ onUnmounted(() => {
               <option v-for="t in TIERS" :key="'feature' + t">{{ t }}</option>
             </select>
           </label>
-          <label>说明
-            <MdEditor
-              v-model="featureText"
-              language="zh-CN"
-              preview
-              previewTheme="github"
-              :maxLength="2000"
-              :noUploadImg="true"
-              :noMermaid="true"
-              :noKatex="true"
-              :noEcharts="true"
-              :toolbarsExclude="['mermaid', 'katex', 'github', 'save', 'htmlPreview', 'catalog', 'prettier']"
-              placeholder="支持 Markdown。图片地址单独一行，预览里会显示成图片。"
-              style="height: 420px"
-            />
-          </label>
+          <div class="feature-field">
+            <span>说明</span>
+            <MarkdownDoc v-model="featureText" />
+          </div>
           <p>
             <button type="submit" :disabled="featureBusy">保存</button>
             <button type="button" :disabled="featureBusy" @click="pushFeature()">推送给成员</button>
