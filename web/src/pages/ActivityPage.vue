@@ -126,6 +126,7 @@ const wgLanes = computed(() => {
   const rows = wgBattle.value && wgBattle.value.lanes;
   return Array.isArray(rows) ? rows : [];
 });
+const wgDeep = computed(() => wgLanes.value.some((lane) => wgLaneDeep(lane)));
 
 function wgGap(n) {
   const value = Number(n);
@@ -142,6 +143,32 @@ function wgLv(n) {
   const value = Number(n);
   if (!Number.isFinite(value) || value < 1) return "";
   return `${Math.trunc(value)}级`;
+}
+
+const wgSides = [
+  { key: "self", label: "我方" },
+  { key: "enemy", label: "对方" },
+];
+const wgGenCols = [
+  ["id", "编号"], ["lv", "等级"], ["train", "训练"],
+  ["atk", "攻击"], ["def", "防御"], ["hp", "生命"], ["crt", "暴击"], ["score", "评分"],
+  ["eqpAtk", "装备攻击"], ["eqpHp", "装备生命"],
+  ["buffAtk", "增益攻击"], ["buffHp", "增益生命"],
+  ["cut", "相性减"], ["add", "相性加"],
+];
+const wgAdvCols = [
+  ["id", "编号"], ["star", "星级"], ["hit", "命中"], ["avoid", "闪避"], ["crt", "暴击"],
+];
+
+function wgNum(person, key) {
+  if (!person || person[key] === undefined || person[key] === null) return "";
+  const value = Number(person[key]);
+  if (!Number.isFinite(value) || value < 0) return "";
+  return Math.trunc(value).toLocaleString("zh-CN");
+}
+
+function wgLaneDeep(lane) {
+  return !!(lane && (lane.general || lane.adviser));
 }
 
 function wgLaneOn(lane) {
@@ -358,11 +385,51 @@ function occupyText(occ) {
             </template>
           </tbody>
         </table>
+        <details v-if="wgDeep" class="campaign-box">
+          <summary>深度解析</summary>
+          <template v-for="(lane, i) in wgLanes" :key="'deep' + i">
+            <div v-if="wgLaneDeep(lane)">
+              <p>第 {{ i + 1 }} 路</p>
+              <div v-if="lane.general" class="wide">
+                <table>
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th v-for="col in wgGenCols" :key="col[0]">{{ col[1] }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="side in wgSides" :key="side.key">
+                      <td>{{ side.label }}将领</td>
+                      <td v-for="col in wgGenCols" :key="col[0]">{{ wgNum(lane.general[side.key], col[0]) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-if="lane.adviser" class="wide">
+                <table>
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th v-for="col in wgAdvCols" :key="col[0]">{{ col[1] }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="side in wgSides" :key="side.key">
+                      <td>{{ side.label }}参谋</td>
+                      <td v-for="col in wgAdvCols" :key="col[0]">{{ wgNum(lane.adviser[side.key], col[0]) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </template>
+        </details>
       </div>
       <p>剩余次数 {{ liveText(wgBoard.token) }}<span v-if="occupyText(wgBoard.occupy)"> · {{ occupyText(wgBoard.occupy) }}</span>
         <button v-if="wgBoard.occupy && wgBoard.occupy.id" type="button" class="ghost" @click="runWargameRetreat(wgBoard.occupy.id).catch((e) => showErr(e.message))">撤退</button>
       </p>
-      <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 10 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时，并按路写出第一阶段各自的战斗时间；时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。火炮等级和发射间隔按路写在下面，没读到的一方留空。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
+      <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 10 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时，并按路写出第一阶段各自的战斗时间；时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。火炮等级和发射间隔按路写在下面，没读到的一方留空。深度解析默认收着，点开看每一路双方将领和参谋。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
       <p v-if="!wgSites.length" class="muted">还没有场地。点刷新场地。</p>
       <p v-else-if="!wgShown.length" class="muted">这个筛选下没有人</p>
       <div v-else class="wide">
