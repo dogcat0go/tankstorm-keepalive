@@ -1,5 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { MdEditor } from "md-editor-v3";
+import "md-editor-v3/lib/style.css";
+import "./markdown.js";
 import "./base.css";
 
 const me = ref(null);
@@ -1127,15 +1130,30 @@ onUnmounted(() => {
       </template>
       <template v-else-if="sheet === 'feature'">
         <h2>新功能</h2>
-        <p class="muted">这里是唯一的新功能推送，军事演习说明也在这条里改。写好标题和说明，选定会员等级，上传图片，再点推送。只给这一档看，不包含更高或更低的档。点「确认」之后记在这个登录账号上。再推一次，看过的人也会再看到。</p>
-        <form class="stack" @submit.prevent="saveFeature()">
+        <p class="muted">这里是唯一的新功能推送，军事演习说明也在这条里改。说明用 Markdown，右侧是预览。图片地址单独一行就会显示成图片，也可以写成 ![](地址)。选定会员等级，再点推送。只给这一档看，不包含更高或更低的档。点「确认」之后记在这个登录账号上。再推一次，看过的人也会再看到。</p>
+        <form class="stack feature-form" @submit.prevent="saveFeature()">
           <label>标题<input v-model="featureTitle" maxlength="80" /></label>
           <label>会员等级
             <select v-model="featureTier">
               <option v-for="t in TIERS" :key="'feature' + t">{{ t }}</option>
             </select>
           </label>
-          <label>说明<textarea v-model="featureText" rows="12" maxlength="2000"></textarea></label>
+          <label>说明
+            <MdEditor
+              v-model="featureText"
+              language="zh-CN"
+              preview
+              previewTheme="github"
+              :maxLength="2000"
+              :noUploadImg="true"
+              :noMermaid="true"
+              :noKatex="true"
+              :noEcharts="true"
+              :toolbarsExclude="['mermaid', 'katex', 'github', 'save', 'htmlPreview', 'catalog', 'prettier']"
+              placeholder="支持 Markdown。图片地址单独一行，预览里会显示成图片。"
+              style="height: 420px"
+            />
+          </label>
           <p>
             <button type="submit" :disabled="featureBusy">保存</button>
             <button type="button" :disabled="featureBusy" @click="pushFeature()">推送给成员</button>

@@ -1,5 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import { MdPreview } from "md-editor-v3";
+import "md-editor-v3/lib/preview.css";
+import "./markdown.js";
 import { ElMenu, ElMenuItem } from "element-plus";
 import "element-plus/es/components/menu/style/css";
 import "./base.css";
@@ -123,13 +126,16 @@ const guides = ref([]);
 const guideErr = ref("");
 const guideBusy = ref(false);
 const guide = computed(() => guides.value[0] || null);
-const guideParagraphs = computed(() =>
-  String((guide.value && guide.value.text) || "").split(/\n\n+/).map((part) => part.trim()).filter(Boolean));
 const guideImages = computed(() => {
   const raw = guide.value && guide.value.images;
   if (!Array.isArray(raw)) return [];
-  return raw.filter((src) =>
-    typeof src === "string" && src.startsWith("/") && !src.startsWith("//") && !src.includes("://") && !src.split("/").includes(".."));
+  const text = String((guide.value && guide.value.text) || "");
+  return raw.filter((src) => {
+    if (typeof src !== "string" || !src.startsWith("/") || src.startsWith("//") || src.includes("://")) return false;
+    if (src.split("/").includes("..")) return false;
+    const name = src.slice(src.lastIndexOf("/") + 1);
+    return !name || !text.includes(name);
+  });
 });
 const baseJobs = ref([]);
 const floatAt = ref(null);
@@ -1973,7 +1979,7 @@ onUnmounted(() => {
     <div v-if="me && guide" class="modal">
       <div class="modal-card guide" role="dialog" aria-modal="true" aria-labelledby="guide-title">
         <h2 id="guide-title">{{ guide.title }}</h2>
-        <p v-for="(para, i) in guideParagraphs" :key="i">{{ para }}</p>
+        <MdPreview :modelValue="guide.text || ''" previewTheme="github" />
         <img
           v-for="(src, i) in guideImages"
           :key="src + i"

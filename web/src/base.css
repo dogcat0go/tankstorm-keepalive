@@ -64,6 +64,9 @@ span.switch { font-size: 15px; font-weight: 700; }
 .page-nav.el-menu--horizontal > .el-menu-item { flex: 1 1 0; justify-content: center; min-width: 0; padding: 0 6px; }
 form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 form.stack { display: grid; max-width: 520px; }
+form.feature-form { max-width: none; }
+form.feature-form .md-editor { width: 100%; }
+.modal-card.guide .md-editor-preview-wrapper { padding: 0 0 8px; }
 form.scan-form { max-width: none; }
 .wide { overflow-x: auto; }
 .proc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
