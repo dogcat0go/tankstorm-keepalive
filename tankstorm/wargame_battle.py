@@ -7,8 +7,10 @@ RseWarGameOpt.fightReoprt 是 CountryFightData。第 3 号是 PVEFightRecord，
 2026-11-20 21:20:51 有决战的那次是 wayIndex 0 到 5。没有决战的那次只到 4。
 每一路第 1 号是我方坦克，第 2 号是对方。
 一辆坦克是 PVEArmyRecord：编号、型号、剩余血、满血，第 7 号字段是带时间的血量。
-同一路第 8 号是我方火炮，第 7 项是固定发射间隔。
-第 9 号是对方火炮，第 5 项是开火时刻，相邻差恒定才算这一路的间隔。
+同一路第 8 号是我方火炮，第 3 项是等级，第 7 项是固定发射间隔。
+第 9 号是对方火炮，第 3 项是等级，第 5 项是开火时刻，相邻差恒定才算这一路的间隔。
+第 4 号是我方将领，第 5 号是对方将领。第 11 号是我方参谋，第 12 号是对方参谋。
+将领和参谋只放在深度解析里，不写进一行摘要。
 
 对外只有三件事：
   analyze(report)  从战报得到双方的阶段结果，读不出返回 None
@@ -91,6 +93,69 @@ def _gap(value, timed):
     return diffs[0]
 
 
+_GENERAL = (
+    ("id", "nGeneralID", "field1"),
+    ("lv", "nGeneralLvl", "field2"),
+    ("train", "nGeneralTrainLvl", "field3"),
+    ("atk", "nGeneralAtk", "field4"),
+    ("def", "nGeneralDef", "field5"),
+    ("hp", "nGeneralHP", "field6"),
+    ("crt", "nGeneralCrt", "field7"),
+    ("score", "nGeneralScore", "field8"),
+    ("eqpAtk", "nGeneralEqpAtk", "field9"),
+    ("eqpHp", "nGeneralEqpHp", "field10"),
+    ("buffAtk", "nGeneralBuffAtk", "field11"),
+    ("buffHp", "nGeneralBuffHp", "field12"),
+    ("cut", "nRducAdmXiangxin", "field14"),
+    ("add", "nAddAdmXiangxin", "field15"),
+)
+
+_ADVISER = (
+    ("id", "nAdviserID", "field1"),
+    ("hit", "nChanceHitNum", "field2"),
+    ("avoid", "nAvoidNum", "field3"),
+    ("crt", "nCritcal", "field4"),
+    ("star", "nAdviserStar", "field5"),
+)
+
+
+def _person(value, spec):
+    """将领或参谋。只留非负整数，没有就返回 None。"""
+    node = next(iter(_nodes(value)), None)
+    if not isinstance(node, dict):
+        return None
+    out = {}
+    for key, named, numbered in spec:
+        raw = node[named] if named in node else node.get(numbered)
+        if _int(raw) and raw >= 0:
+            out[key] = raw
+    return out or None
+
+
+def _pair(node, self_name, self_field, enemy_name, enemy_field, spec):
+    mine = _person(node[self_name] if self_name in node else node.get(self_field), spec)
+    theirs = _person(node[enemy_name] if enemy_name in node else node.get(enemy_field), spec)
+    out = {}
+    if mine:
+        out["self"] = mine
+    if theirs:
+        out["enemy"] = theirs
+    return out or None
+
+
+def _level(value):
+    """火炮等级，读这一门火炮的第 3 项。没有这项，或不是正整数，就不写。"""
+    node = next(iter(_nodes(value)), None)
+    if node is None:
+        return None
+    level = node.get("nLevel", node.get("nLv", node.get("level")))
+    if level is None:
+        level = node.get("field3")
+    if _int(level) and level >= 1:
+        return level
+    return None
+
+
 def _ways(report):
     found = []
 
@@ -105,6 +170,12 @@ def _ways(report):
                     ours, theirs,
                     _gap(node.get("field8"), False),
                     _gap(node.get("field9"), True),
+                    _level(node.get("field8")),
+                    _level(node.get("field9")),
+                    _pair(node, "fightGeneralSelf", "field4",
+                          "fightGeneralEnemy", "field5", _GENERAL),
+                    _pair(node, "rAdviserSelf", "field11",
+                          "rAdviserEnemy", "field12", _ADVISER),
                 ))
                 return
             for value in node.values():
@@ -197,7 +268,7 @@ def _side_text(side):
 
 def _collect(ways):
     ours, theirs = [], []
-    for left, right, _me, _them in ways:
+    for left, right, *_rest in ways:
         ours.extend(left)
         theirs.extend(right)
     return ours, theirs
@@ -219,16 +290,25 @@ def analyze(report):
 
     不到 6 路时，仍看时间轴上有没有明显间断。
     lanes 跟路的顺序一致。第一阶段每一路另有自己的战斗时间。
-    我方火炮是固定间隔，对方是开火时刻的恒定相邻差。
+    我方火炮是固定间隔，对方是开火时刻的恒定相邻差。双方火炮等级读第 3 项。
+    每一路的将领和参谋放在 general、adviser 里，给深度解析用。
     """
     ways = _ways(report)
     lanes = []
-    for _left, _right, me, them in ways:
+    for _left, _right, me, them, me_lv, them_lv, general, adviser in ways:
         lane = {}
         if me is not None:
             lane["self"] = me
         if them is not None:
             lane["enemy"] = them
+        if me_lv is not None:
+            lane["selfLv"] = me_lv
+        if them_lv is not None:
+            lane["enemyLv"] = them_lv
+        if general:
+            lane["general"] = general
+        if adviser:
+            lane["adviser"] = adviser
         lanes.append(lane)
     if len(ways) >= 6:
         ours, theirs = _collect(ways[:5])
@@ -317,6 +397,11 @@ def _lane_line(lanes):
         if _int(seconds) and seconds >= 0:
             parts.append(f"战斗 {_sec_text(seconds)}")
         me, them = lane.get("self"), lane.get("enemy")
+        me_lv, them_lv = lane.get("selfLv"), lane.get("enemyLv")
+        if _int(me_lv) and me_lv >= 1:
+            parts.append(f"我方火炮 {me_lv} 级")
+        if _int(them_lv) and them_lv >= 1:
+            parts.append(f"敌方火炮 {them_lv} 级")
         if _int(me) and me >= 4:
             parts.append(f"我方火炮发射间隔 {me}")
         if _int(them) and them >= 4:
@@ -383,6 +468,34 @@ def _clean_gap(value):
     return value
 
 
+def _clean_level(value):
+    if not _int(value) or value < 1:
+        return None
+    return value
+
+
+def _clean_person(raw, keys):
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for key in keys:
+        value = raw.get(key)
+        if _int(value) and value >= 0:
+            out[key] = value
+    return out or None
+
+
+def _clean_pair(raw, keys):
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for side in ("self", "enemy"):
+        person = _clean_person(raw.get(side), keys)
+        if person:
+            out[side] = person
+    return out or None
+
+
 def _clean_lanes(raw):
     if not isinstance(raw, list):
         return None
@@ -396,16 +509,29 @@ def _clean_lanes(raw):
                 if gap is not None:
                     lane[key] = gap
                     kept = True
+            for key in ("selfLv", "enemyLv"):
+                level = _clean_level(item.get(key))
+                if level is not None:
+                    lane[key] = level
+                    kept = True
             seconds = item.get("seconds")
             if _int(seconds) and seconds >= 0:
                 lane["seconds"] = seconds
+                kept = True
+            general = _clean_pair(item.get("general"), tuple(item[0] for item in _GENERAL))
+            adviser = _clean_pair(item.get("adviser"), tuple(item[0] for item in _ADVISER))
+            if general:
+                lane["general"] = general
+                kept = True
+            if adviser:
+                lane["adviser"] = adviser
                 kept = True
         lanes.append(lane)
     return lanes if kept else None
 
 
 def clean(raw):
-    """页面和库存只留数字。阶段对不上返回 None，火炮间隔和一路的战斗时间对不上只丢掉这一项。"""
+    """页面和库存只留数字。阶段对不上返回 None，火炮、将领、参谋对不上只丢掉这一项。"""
     if not isinstance(raw, dict):
         return None
     phase = _clean_phase(raw.get("phase1"))
