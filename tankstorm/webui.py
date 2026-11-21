@@ -14,6 +14,7 @@
 按账号有效期返回还剩多少毫秒。
 """
 
+import base64
 import json
 import os
 import re
@@ -99,9 +100,9 @@ def _clear_cookie() -> str:
     return f"{_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax"
 
 
-def _read_json(handler):
+def _read_json(handler, limit=8192):
     n = int(handler.headers.get("Content-Length") or 0)
-    if n > 8192:
+    if n > limit:
         raise ValueError("内容太长")
     raw = handler.rfile.read(n) if n else b""
     if not raw:
@@ -191,6 +192,16 @@ def _pending_guides(user: dict) -> list:
             "title": item["title"],
             "text": item["text"],
             "images": _guide_images(item),
+        })
+    with _FEATURE_LOCK:
+        note = _feature_load()
+    feature_id = f"feature-{note['push_id']}" if note["push_id"] else ""
+    if feature_id and note.get("tier") == tier and feature_id not in seen:
+        out.append({
+            "id": feature_id,
+            "title": note["title"] or "新功能",
+            "text": note["text"],
+            "images": [f"/api/feature-img/{name}" for name in note["images"]],
         })
     return out
 
@@ -445,6 +456,102 @@ def _scan_login_view() -> dict:
     return {"phase": phase, "detail": detail, "at": at,
             "qr": show, "qr_at": qr_at if show else "",
             "accounts": _scan_accounts()}
+
+
+_FEATURE_LOCK = threading.Lock()
+_FEATURE_FILE = "feature_note.json"
+_FEATURE_DIR = "feature_images"
+_FEATURE_KINDS = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
+
+
+def _feature_kind(raw: bytes) -> str:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "webp"
+    return ""
+
+
+def _feature_load() -> dict:
+    try:
+        with open(user_path(_FEATURE_FILE), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    images = []
+    for name in data.get("images") or []:
+        if isinstance(name, str) and re.fullmatch(r"[0-9a-f]{16}\.(png|jpg|gif|webp)", name):
+            images.append(name)
+    try:
+        push_id = int(data.get("push_id") or 0)
+    except (TypeError, ValueError):
+        push_id = 0
+    return {
+        "title": str(data.get("title") or "")[:80],
+        "text": str(data.get("text") or "")[:2000],
+        "images": images[:6],
+        "push_id": max(0, push_id),
+        "pushed_at": str(data.get("pushed_at") or "")[:32],
+        "tier": data.get("tier") if data.get("tier") in citydb.TIERS else "",
+    }
+
+
+def _feature_save(note: dict) -> None:
+    path = user_path(_FEATURE_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(note, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _feature_view(note: dict, admin: bool = False) -> dict:
+    if not admin and not note["push_id"]:
+        return {"id": 0}
+    return {
+        "id": note["push_id"],
+        "title": note["title"],
+        "text": note["text"],
+        "images": [{"name": name, "url": "/api/feature-img/" + name} for name in note["images"]],
+        "pushed_at": note["pushed_at"],
+        "tier": note.get("tier") or "",
+    }
+
+
+def _feature_words(data: dict, note: dict) -> None:
+    title = str(data.get("title") if "title" in data else note["title"]).strip()
+    text = str(data.get("text") if "text" in data else note["text"]).strip()
+    if len(title) > 80:
+        raise ValueError("标题最多 80 字")
+    if len(text) > 2000:
+        raise ValueError("说明最多 2000 字")
+    note["title"] = title
+    note["text"] = text
+    if "tier" not in data:
+        return
+    tier = str(data.get("tier") or "").strip()
+    if tier not in citydb.TIERS:
+        raise ValueError("会员等级只能是初级、中级、高级、高级pro")
+    note["tier"] = tier
+
+
+def _feature_file(name: str) -> str:
+    folder = os.path.realpath(user_path(_FEATURE_DIR))
+    path = os.path.realpath(os.path.join(folder, name))
+    if os.path.dirname(path) != folder:
+        raise ValueError("没有这张图")
+    return path
 
 
 def _handler(config: dict):
@@ -713,6 +820,47 @@ def _handler(config: dict):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if path == "/api/feature":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看新功能配置"})
+                    return
+                with _FEATURE_LOCK:
+                    note = _feature_load()
+                _json(self, 200, _feature_view(note, admin=True))
+                return
+            if path.startswith("/api/feature-img/"):
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                name = path.rsplit("/", 1)[-1]
+                with _FEATURE_LOCK:
+                    note = _feature_load()
+                if name not in note["images"]:
+                    self.send_error(404)
+                    return
+                same = (user.get("tier") or "初级") == (note.get("tier") or "")
+                if not user.get("admin") and not (note["push_id"] and same):
+                    self.send_error(404)
+                    return
+                try:
+                    with open(_feature_file(name), "rb") as f:
+                        body = f.read()
+                except (OSError, ValueError):
+                    self.send_error(404)
+                    return
+                kind = name.rsplit(".", 1)[-1]
+                self.send_response(200)
+                self.send_header("Content-Type", _FEATURE_KINDS.get(kind, "application/octet-stream"))
+                self.send_header("Cache-Control", "private, max-age=3600")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path == "/api/pwd-lab" or path.startswith("/api/pwd-lab/"):
                 self._pwd_lab_get(path)
                 return
@@ -727,7 +875,7 @@ def _handler(config: dict):
         def do_POST(self):
             path = self.path.split("?", 1)[0]
             try:
-                data = _read_json(self)
+                data = _read_json(self, 2_600_000 if path == "/api/admin/feature/image" else 8192)
             except (ValueError, json.JSONDecodeError) as exc:
                 _json(self, 400, {"error": str(exc) or "格式不对"})
                 return
@@ -1243,9 +1391,17 @@ def _handler(config: dict):
                         _json(self, 200, {"ok": True, "removed": removed})
                 elif path == "/api/guide/seen":
                     guide_id = str(data.get("id") or "").strip()
+                    tier = user.get("tier") or "初级"
                     item = next((g for g in GUIDES if g["id"] == guide_id), None)
-                    if not item or item["tier"] != (user.get("tier") or "初级"):
-                        raise ValueError("没有这条说明")
+                    if item:
+                        if item["tier"] != tier:
+                            raise ValueError("没有这条说明")
+                    else:
+                        with _FEATURE_LOCK:
+                            note = _feature_load()
+                        feature_id = f"feature-{note['push_id']}" if note["push_id"] else ""
+                        if guide_id != feature_id or (note.get("tier") or "") != tier:
+                            raise ValueError("没有这条说明")
                     why = citydb.mark_guide_seen(user["id"], guide_id)
                     if why:
                         raise ValueError(why)
@@ -1276,6 +1432,74 @@ def _handler(config: dict):
                         raise ValueError("QQ 号要是 5 到 12 位数字")
                     citydb.save_push(user["id"], qq_target)
                     _json(self, 200, {"ok": True})
+                elif path == "/api/admin/feature":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能改新功能"})
+                        return
+                    with _FEATURE_LOCK:
+                        note = _feature_load()
+                        _feature_words(data, note)
+                        _feature_save(note)
+                    _json(self, 200, _feature_view(note, admin=True))
+                elif path == "/api/admin/feature/push":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能推送新功能"})
+                        return
+                    with _FEATURE_LOCK:
+                        note = _feature_load()
+                        _feature_words(data, note)
+                        if note.get("tier") not in citydb.TIERS:
+                            raise ValueError("先选这一条给哪一档会员看")
+                        if not note["title"] and not note["text"] and not note["images"]:
+                            raise ValueError("先写标题、说明，或上传一张图")
+                        note["push_id"] += 1
+                        note["pushed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        _feature_save(note)
+                    _json(self, 200, _feature_view(note, admin=True))
+                elif path == "/api/admin/feature/image":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能上传新功能图片"})
+                        return
+                    blob = str(data.get("data") or "").strip()
+                    if blob.startswith("data:") and "," in blob[:80]:
+                        blob = blob.split(",", 1)[1]
+                    try:
+                        raw = base64.b64decode(blob, validate=False)
+                    except (ValueError, TypeError):
+                        raise ValueError("图片数据不对") from None
+                    if len(raw) > 1_800_000:
+                        raise ValueError("图片太大，请换一张小一点的")
+                    kind = _feature_kind(raw)
+                    if not kind:
+                        raise ValueError("只收 png、jpg、gif、webp")
+                    name = secrets.token_hex(8) + "." + kind
+                    with _FEATURE_LOCK:
+                        note = _feature_load()
+                        if len(note["images"]) >= 6:
+                            raise ValueError("最多 6 张图")
+                        folder = user_path(_FEATURE_DIR)
+                        os.makedirs(folder, exist_ok=True)
+                        with open(os.path.join(folder, name), "wb") as f:
+                            f.write(raw)
+                        note["images"].append(name)
+                        _feature_save(note)
+                    _json(self, 200, _feature_view(note, admin=True))
+                elif path == "/api/admin/feature/image/delete":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能删新功能图片"})
+                        return
+                    name = str(data.get("name") or "")
+                    with _FEATURE_LOCK:
+                        note = _feature_load()
+                        if name not in note["images"]:
+                            raise ValueError("没有这张图")
+                        note["images"] = [item for item in note["images"] if item != name]
+                        _feature_save(note)
+                    try:
+                        os.remove(_feature_file(name))
+                    except OSError:
+                        pass
+                    _json(self, 200, _feature_view(note, admin=True))
                 else:
                     self.send_error(404)
             except ValueError as exc:
