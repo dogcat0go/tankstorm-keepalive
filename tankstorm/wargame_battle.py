@@ -9,7 +9,6 @@ RseWarGameOpt.fightReoprt 是 CountryFightData。第 3 号是 PVEFightRecord，
 一辆坦克是 PVEArmyRecord：编号、型号、剩余血、满血，第 7 号字段是带时间的血量。
 同一路第 8 号是我方火炮，第 3 项是等级，第 7 项是固定发射间隔。
 第 9 号是对方火炮，第 3 项是等级，第 5 项是开火时刻，相邻差恒定才算这一路的间隔。
-等级只认 9 到 20 级。
 
 对外只有三件事：
   analyze(report)  从战报得到双方的阶段结果，读不出返回 None
@@ -93,14 +92,14 @@ def _gap(value, timed):
 
 
 def _level(value):
-    """火炮等级。这一档多在 9 到 20 级，范围外的数不当成等级。"""
+    """火炮等级，读这一门火炮的第 3 项。没有这项，或不是正整数，就不写。"""
     node = next(iter(_nodes(value)), None)
     if node is None:
         return None
     level = node.get("nLevel", node.get("nLv", node.get("level")))
     if level is None:
         level = node.get("field3")
-    if _int(level) and 9 <= level <= 20:
+    if _int(level) and level >= 1:
         return level
     return None
 
@@ -235,7 +234,7 @@ def analyze(report):
 
     不到 6 路时，仍看时间轴上有没有明显间断。
     lanes 跟路的顺序一致。第一阶段每一路另有自己的战斗时间。
-    我方火炮是固定间隔，对方是开火时刻的恒定相邻差。双方火炮等级在 9 到 20 级才记下。
+    我方火炮是固定间隔，对方是开火时刻的恒定相邻差。双方火炮等级读第 3 项。
     """
     ways = _ways(report)
     lanes = []
@@ -338,9 +337,9 @@ def _lane_line(lanes):
             parts.append(f"战斗 {_sec_text(seconds)}")
         me, them = lane.get("self"), lane.get("enemy")
         me_lv, them_lv = lane.get("selfLv"), lane.get("enemyLv")
-        if _int(me_lv) and 9 <= me_lv <= 20:
+        if _int(me_lv) and me_lv >= 1:
             parts.append(f"我方火炮 {me_lv} 级")
-        if _int(them_lv) and 9 <= them_lv <= 20:
+        if _int(them_lv) and them_lv >= 1:
             parts.append(f"敌方火炮 {them_lv} 级")
         if _int(me) and me >= 4:
             parts.append(f"我方火炮发射间隔 {me}")
@@ -409,7 +408,7 @@ def _clean_gap(value):
 
 
 def _clean_level(value):
-    if not _int(value) or not (9 <= value <= 20):
+    if not _int(value) or value < 1:
         return None
     return value
 
