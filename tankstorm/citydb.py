@@ -4796,7 +4796,7 @@ def note_wargame(board=None, result=None, battle=None, update_battle=False) -> N
         else:
             prev["occupy"] = None
     if result is not None:
-        prev["result"] = " ".join(str(result or "").split())[:500]
+        prev["result"] = " ".join(str(result or "").split())[:1200]
     if update_battle:
         prev["battle"] = _clean_wargame_battle(battle)
     _upsert_signal(name, json.dumps(prev, ensure_ascii=False))

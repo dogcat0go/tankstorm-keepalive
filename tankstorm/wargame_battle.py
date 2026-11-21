@@ -152,10 +152,15 @@ def _span(tanks):
     return max(ticks) - min(ticks)
 
 
-def _seconds(span):
-    """时间戳跨度。跨度大时按毫秒，短时按逻辑 30 帧/秒。"""
+def _seconds(span, millis=None):
+    """时间戳跨度。跨度大时按毫秒，短时按逻辑 30 帧/秒。
+
+    millis 沿用这一阶段的总跨度，短的一路不再单独换算。
+    """
     span = max(0, int(span))
-    if span >= 8000:
+    if millis is None:
+        millis = span >= 8000
+    if millis:
         return int(round(span / 1000.0))
     return int(round(span / 30.0))
 
@@ -198,11 +203,23 @@ def _collect(ways):
     return ours, theirs
 
 
+def _mark_phase_lanes(ways, lanes, count, clock, end=None):
+    """第一阶段每一路的战斗时间，用这一路自己的血量时间跨度。"""
+    millis = max(0, int(clock)) >= 8000
+    for index in range(min(count, len(ways), len(lanes))):
+        ticks = [tick for tank in ways[index][0] + ways[index][1]
+                 for tick, _hp in tank["samples"]
+                 if end is None or tick <= end]
+        if ticks:
+            lanes[index]["seconds"] = _seconds(max(ticks) - min(ticks), millis)
+
+
 def analyze(report):
     """第一阶段的剩余坦克、总血和耗时。有第 6 路就是决战，决战时间用这一路自己的跨度。
 
     不到 6 路时，仍看时间轴上有没有明显间断。
-    lanes 跟路的顺序一致：我方是固定间隔，对方是开火时刻的恒定相邻差。
+    lanes 跟路的顺序一致。第一阶段每一路另有自己的战斗时间。
+    我方火炮是固定间隔，对方是开火时刻的恒定相邻差。
     """
     ways = _ways(report)
     lanes = []
@@ -218,9 +235,11 @@ def analyze(report):
         climax_ours, climax_theirs = ways[5][0], ways[5][1]
         if not ours or not theirs or not climax_ours or not climax_theirs:
             return None
+        span = _span(ours + theirs)
+        _mark_phase_lanes(ways, lanes, 5, span)
         return {
             "phase1": {
-                "seconds": _seconds(_span(ours + theirs)),
+                "seconds": _seconds(span),
                 "self": _side_at(ours, 0, True),
                 "enemy": _side_at(theirs, 0, True),
             },
@@ -261,6 +280,7 @@ def analyze(report):
             if alive and index > 1 and ticks[index] < end:
                 split = (before, ticks[index])
     if split is None:
+        _mark_phase_lanes(ways, lanes, len(ways), end - start)
         return {
             "climax": None,
             "phase1": {
@@ -271,6 +291,7 @@ def analyze(report):
             "lanes": lanes,
         }
     phase_end, climax_at = split
+    _mark_phase_lanes(ways, lanes, len(ways), phase_end - start, phase_end)
     return {
         "phase1": {
             "seconds": _seconds(phase_end - start),
@@ -292,6 +313,9 @@ def _lane_line(lanes):
         if not isinstance(lane, dict):
             continue
         parts = []
+        seconds = lane.get("seconds")
+        if _int(seconds) and seconds >= 0:
+            parts.append(f"战斗 {_sec_text(seconds)}")
         me, them = lane.get("self"), lane.get("enemy")
         if _int(me) and me >= 4:
             parts.append(f"我方火炮发射间隔 {me}")
@@ -363,7 +387,7 @@ def _clean_lanes(raw):
     if not isinstance(raw, list):
         return None
     lanes = []
-    any_gap = False
+    kept = False
     for item in raw:
         lane = {}
         if isinstance(item, dict):
@@ -371,13 +395,17 @@ def _clean_lanes(raw):
                 gap = _clean_gap(item.get(key))
                 if gap is not None:
                     lane[key] = gap
-                    any_gap = True
+                    kept = True
+            seconds = item.get("seconds")
+            if _int(seconds) and seconds >= 0:
+                lane["seconds"] = seconds
+                kept = True
         lanes.append(lane)
-    return lanes if any_gap else None
+    return lanes if kept else None
 
 
 def clean(raw):
-    """页面和库存只留数字。阶段对不上返回 None，火炮间隔对不上只丢掉这一项。"""
+    """页面和库存只留数字。阶段对不上返回 None，火炮间隔和一路的战斗时间对不上只丢掉这一项。"""
     if not isinstance(raw, dict):
         return None
     phase = _clean_phase(raw.get("phase1"))
