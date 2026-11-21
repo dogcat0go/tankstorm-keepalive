@@ -4,6 +4,7 @@ import { ElSwitch } from "element-plus";
 import "element-plus/es/components/switch/style/css";
 import bundledItems from "../items.json";
 import bundledNew from "../items-new.json";
+import BattleReport from "../components/BattleReport.vue";
 
 const guildLevel = defineModel("guildLevel", { type: String, required: true });
 const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
@@ -122,86 +123,6 @@ const wgSize = 10;
 
 const wgBoard = computed(() => props.wargame || {});
 const wgBattle = computed(() => wgBoard.value.battle || null);
-const wgLanes = computed(() => {
-  const rows = wgBattle.value && wgBattle.value.lanes;
-  return Array.isArray(rows) ? rows : [];
-});
-const wgDeep = computed(() => wgLanes.value.some((lane) => wgLaneDeep(lane)));
-
-function wgGap(n) {
-  const value = Number(n);
-  if (!Number.isFinite(value) || value < 4) return "";
-  return String(Math.trunc(value));
-}
-
-function wgHasSec(lane) {
-  const value = Number(lane && lane.seconds);
-  return Number.isFinite(value) && value >= 0;
-}
-
-function wgLv(n) {
-  const value = Number(n);
-  if (!Number.isFinite(value) || value < 1) return "";
-  return `${Math.trunc(value)}级`;
-}
-
-const wgSides = [
-  { key: "self", label: "我方" },
-  { key: "enemy", label: "对方" },
-];
-const wgGenCols = [
-  ["id", "编号"], ["lv", "等级"], ["train", "训练"],
-  ["atk", "攻击"], ["def", "防御"], ["hp", "生命"], ["crt", "暴击"], ["score", "评分"],
-  ["eqpAtk", "装备攻击"], ["eqpHp", "装备生命"],
-  ["buffAtk", "增益攻击"], ["buffHp", "增益生命"],
-  ["cut", "相性减"], ["add", "相性加"],
-];
-const wgAdvCols = [
-  ["id", "编号"], ["star", "星级"], ["hit", "命中"], ["avoid", "闪避"], ["crt", "暴击"],
-];
-
-function wgNum(person, key) {
-  if (!person || person[key] === undefined || person[key] === null) return "";
-  const value = Number(person[key]);
-  if (!Number.isFinite(value) || value < 0) return "";
-  return Math.trunc(value).toLocaleString("zh-CN");
-}
-
-function wgLaneDeep(lane) {
-  return !!(lane && (lane.general || lane.adviser));
-}
-
-function wgLaneOn(lane) {
-  return wgHasSec(lane) || !!wgLv(lane && lane.selfLv) || !!wgLv(lane && lane.enemyLv)
-    || !!wgGap(lane && lane.self) || !!wgGap(lane && lane.enemy);
-}
-
-function wgSec(seconds) {
-  const n = Number(seconds) || 0;
-  if (n < 60) return `${n}秒`;
-  const minute = Math.floor(n / 60);
-  const second = n % 60;
-  return second ? `${minute}分${second}秒` : `${minute}分`;
-}
-
-function wgWan(n) {
-  const value = Number(n) || 0;
-  if (value < 10000) return String(value);
-  const text = (value / 10000).toFixed(1).replace(/\.0$/, "");
-  return `${text}万`;
-}
-
-function wgTanks(side) {
-  if (!side) return "—";
-  return `${side.tanks}/${side.total}`;
-}
-
-function wgHp(side) {
-  if (!side) return "—";
-  const max = Number(side.maxHp) || 0;
-  const pct = max > 0 ? Math.round((Number(side.hp) || 0) * 100 / max) : 0;
-  return `${wgWan(side.hp)}/${wgWan(side.maxHp)}（${pct}%）`;
-}
 const wgSites = computed(() => (Array.isArray(wgBoard.value.sites) ? wgBoard.value.sites : []));
 const wgLevels = computed(() => {
   const set = new Set();
@@ -345,87 +266,7 @@ function occupyText(occ) {
       </form>
       <p v-if="wgJob && (wgJob.status === '排队' || wgJob.status === '正在做')">{{ wgJob.status }} {{ wgJob.detail }}<button type="button" class="ghost" @click="cancelJob(wgJob).catch((e) => showErr(e.message))">关停</button></p>
       <p v-if="wgBoard.result">{{ wgBoard.result }}</p>
-      <div v-if="wgBattle" class="wg-result">
-        <p>第一阶段 {{ wgSec(wgBattle.phase1.seconds) }}<span v-if="!wgBattle.climax"> · 未进入决战</span></p>
-        <table>
-          <thead>
-            <tr><th></th><th>剩余坦克</th><th>整体血量</th></tr>
-          </thead>
-          <tbody>
-            <tr><td>我方</td><td>{{ wgTanks(wgBattle.phase1.self) }}</td><td>{{ wgHp(wgBattle.phase1.self) }}</td></tr>
-            <tr><td>对方</td><td>{{ wgTanks(wgBattle.phase1.enemy) }}</td><td>{{ wgHp(wgBattle.phase1.enemy) }}</td></tr>
-          </tbody>
-        </table>
-        <template v-if="wgBattle.climax">
-          <p>决战 {{ wgSec(wgBattle.climax.seconds) }}</p>
-          <table>
-            <thead>
-              <tr><th></th><th>剩余坦克</th><th>最终血量</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>我方</td><td>{{ wgTanks(wgBattle.climax.self) }}</td><td>{{ wgHp(wgBattle.climax.self) }}</td></tr>
-              <tr><td>对方</td><td>{{ wgTanks(wgBattle.climax.enemy) }}</td><td>{{ wgHp(wgBattle.climax.enemy) }}</td></tr>
-            </tbody>
-          </table>
-        </template>
-        <table v-if="wgLanes.some((lane) => wgLaneOn(lane))">
-          <thead>
-            <tr><th>路</th><th>战斗时间</th><th>我方火炮</th><th>敌方火炮</th><th>我方火炮发射间隔</th><th>敌方火炮发射间隔</th></tr>
-          </thead>
-          <tbody>
-            <template v-for="(lane, i) in wgLanes" :key="i">
-              <tr v-if="wgLaneOn(lane)">
-                <td>第 {{ i + 1 }} 路</td>
-                <td>{{ wgHasSec(lane) ? wgSec(lane.seconds) : "" }}</td>
-                <td>{{ wgLv(lane && lane.selfLv) }}</td>
-                <td>{{ wgLv(lane && lane.enemyLv) }}</td>
-                <td>{{ wgGap(lane && lane.self) }}</td>
-                <td>{{ wgGap(lane && lane.enemy) }}</td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-        <details v-if="wgDeep" class="campaign-box">
-          <summary>深度解析</summary>
-          <template v-for="(lane, i) in wgLanes" :key="'deep' + i">
-            <div v-if="wgLaneDeep(lane)">
-              <p>第 {{ i + 1 }} 路</p>
-              <div v-if="lane.general" class="wide">
-                <table>
-                  <thead>
-                    <tr>
-                      <th></th>
-                      <th v-for="col in wgGenCols" :key="col[0]">{{ col[1] }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="side in wgSides" :key="side.key">
-                      <td>{{ side.label }}将领</td>
-                      <td v-for="col in wgGenCols" :key="col[0]">{{ wgNum(lane.general[side.key], col[0]) }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-              <div v-if="lane.adviser" class="wide">
-                <table>
-                  <thead>
-                    <tr>
-                      <th></th>
-                      <th v-for="col in wgAdvCols" :key="col[0]">{{ col[1] }}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="side in wgSides" :key="side.key">
-                      <td>{{ side.label }}参谋</td>
-                      <td v-for="col in wgAdvCols" :key="col[0]">{{ wgNum(lane.adviser[side.key], col[0]) }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </template>
-        </details>
-      </div>
+      <BattleReport :battle="wgBattle" />
       <p>剩余次数 {{ liveText(wgBoard.token) }}<span v-if="occupyText(wgBoard.occupy)"> · {{ occupyText(wgBoard.occupy) }}</span>
         <button v-if="wgBoard.occupy && wgBoard.occupy.id" type="button" class="ghost" @click="runWargameRetreat(wgBoard.occupy.id).catch((e) => showErr(e.message))">撤退</button>
       </p>
