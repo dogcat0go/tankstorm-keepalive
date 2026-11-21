@@ -91,7 +91,8 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
 
 <template>
   <div v-if="battle && battle.phase1" class="wg-result">
-    <p>第一阶段 {{ sec(battle.phase1.seconds) }}<span v-if="!battle.climax"> · 未进入决战</span></p>
+    <details class="campaign-box">
+      <summary>第一阶段 {{ sec(battle.phase1.seconds) }}<span v-if="battle.climax"> · 决战 {{ sec(battle.climax.seconds) }}</span><span v-else> · 未进入决战</span></summary>
     <table>
       <thead>
         <tr><th></th><th>剩余坦克</th><th>整体血量</th></tr>
@@ -130,6 +131,7 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
         </template>
       </tbody>
     </table>
+    </details>
     <details v-if="showDeep" class="campaign-box">
       <summary>深度解析</summary>
       <template v-for="(lane, i) in lanes" :key="'deep' + i">
