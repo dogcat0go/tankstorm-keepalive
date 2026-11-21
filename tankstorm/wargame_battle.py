@@ -7,8 +7,8 @@ RseWarGameOpt.fightReoprt 是 CountryFightData。第 3 号是 PVEFightRecord，
 2026-11-20 21:20:51 有决战的那次是 wayIndex 0 到 5。没有决战的那次只到 4。
 每一路第 1 号是我方坦克，第 2 号是对方。
 一辆坦克是 PVEArmyRecord：编号、型号、剩余血、满血，第 7 号字段是带时间的血量。
-同一路第 8 号是我方火炮，第 3 项是等级，第 7 项是固定发射间隔。
-第 9 号是对方火炮，第 3 项是等级，第 5 项是开火时刻，相邻差恒定才算这一路的间隔。
+同一路第 8 号是我方火炮，第 4 项是进阶品阶，第 7 项是固定发射间隔。
+第 9 号是对方火炮，第 4 项是进阶品阶，第 5 项是开火时刻，相邻差恒定才算这一路的间隔。
 第 4 号是我方将领，第 5 号是对方将领。第 11 号是我方参谋，第 12 号是对方参谋。
 将领和参谋只放在深度解析里，不写进一行摘要。
 
@@ -143,16 +143,16 @@ def _pair(node, self_name, self_field, enemy_name, enemy_field, spec):
     return out or None
 
 
-def _level(value):
-    """火炮等级，读这一门火炮的第 3 项。没有这项，或不是正整数，就不写。"""
+def _grade(value):
+    """火炮进阶品阶，读这一门火炮的第 4 项。只留 0 到 30 的整数。"""
     node = next(iter(_nodes(value)), None)
     if node is None:
         return None
-    level = node.get("nLevel", node.get("nLv", node.get("level")))
-    if level is None:
-        level = node.get("field3")
-    if _int(level) and level >= 1:
-        return level
+    grade = node.get("nGrade")
+    if grade is None:
+        grade = node.get("field4")
+    if _int(grade) and 0 <= grade <= 30:
+        return grade
     return None
 
 
@@ -170,8 +170,8 @@ def _ways(report):
                     ours, theirs,
                     _gap(node.get("field8"), False),
                     _gap(node.get("field9"), True),
-                    _level(node.get("field8")),
-                    _level(node.get("field9")),
+                    _grade(node.get("field8")),
+                    _grade(node.get("field9")),
                     _pair(node, "fightGeneralSelf", "field4",
                           "fightGeneralEnemy", "field5", _GENERAL),
                     _pair(node, "rAdviserSelf", "field11",
@@ -290,21 +290,21 @@ def analyze(report):
 
     不到 6 路时，仍看时间轴上有没有明显间断。
     lanes 跟路的顺序一致。第一阶段每一路另有自己的战斗时间。
-    我方火炮是固定间隔，对方是开火时刻的恒定相邻差。双方火炮等级读第 3 项。
+    我方火炮是固定间隔，对方是开火时刻的恒定相邻差。双方火炮进阶品阶读第 4 项。
     每一路的将领和参谋放在 general、adviser 里，给深度解析用。
     """
     ways = _ways(report)
     lanes = []
-    for _left, _right, me, them, me_lv, them_lv, general, adviser in ways:
+    for _left, _right, me, them, me_grade, them_grade, general, adviser in ways:
         lane = {}
         if me is not None:
             lane["self"] = me
         if them is not None:
             lane["enemy"] = them
-        if me_lv is not None:
-            lane["selfLv"] = me_lv
-        if them_lv is not None:
-            lane["enemyLv"] = them_lv
+        if me_grade is not None:
+            lane["selfGrade"] = me_grade
+        if them_grade is not None:
+            lane["enemyGrade"] = them_grade
         if general:
             lane["general"] = general
         if adviser:
@@ -397,11 +397,11 @@ def _lane_line(lanes):
         if _int(seconds) and seconds >= 0:
             parts.append(f"战斗 {_sec_text(seconds)}")
         me, them = lane.get("self"), lane.get("enemy")
-        me_lv, them_lv = lane.get("selfLv"), lane.get("enemyLv")
-        if _int(me_lv) and me_lv >= 1:
-            parts.append(f"我方火炮 {me_lv} 级")
-        if _int(them_lv) and them_lv >= 1:
-            parts.append(f"敌方火炮 {them_lv} 级")
+        me_grade, them_grade = lane.get("selfGrade"), lane.get("enemyGrade")
+        if _int(me_grade) and 0 <= me_grade <= 30:
+            parts.append(f"我方火炮 {me_grade} 阶")
+        if _int(them_grade) and 0 <= them_grade <= 30:
+            parts.append(f"敌方火炮 {them_grade} 阶")
         if _int(me) and me >= 4:
             parts.append(f"我方火炮发射间隔 {me}")
         if _int(them) and them >= 4:
@@ -468,8 +468,8 @@ def _clean_gap(value):
     return value
 
 
-def _clean_level(value):
-    if not _int(value) or value < 1:
+def _clean_grade(value):
+    if not _int(value) or value < 0 or value > 30:
         return None
     return value
 
@@ -509,10 +509,10 @@ def _clean_lanes(raw):
                 if gap is not None:
                     lane[key] = gap
                     kept = True
-            for key in ("selfLv", "enemyLv"):
-                level = _clean_level(item.get(key))
-                if level is not None:
-                    lane[key] = level
+            for key in ("selfGrade", "enemyGrade"):
+                grade = _clean_grade(item.get(key))
+                if grade is not None:
+                    lane[key] = grade
                     kept = True
             seconds = item.get("seconds")
             if _int(seconds) and seconds >= 0:
