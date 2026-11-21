@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     storm_day       TEXT NOT NULL DEFAULT '',
     open_cards      TEXT NOT NULL DEFAULT '',
     clean_items     TEXT NOT NULL DEFAULT '',
+    guide_seen      TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -545,6 +546,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "clean_items" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN clean_items TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "guide_seen" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN guide_seen TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -1286,6 +1291,53 @@ def set_user_tier(username: str, tier: str) -> bool:
         return cur.rowcount > 0
     finally:
         conn.close()
+
+
+def guide_seen_ids(user_id: int) -> list:
+    """这个登录账号确认过的功能说明 id。没记过是空列表。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(guide_seen,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    if not row or not str(row[0] or "").strip():
+        return []
+    try:
+        data = json.loads(row[0])
+    except ValueError:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        name = str(item or "").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def mark_guide_seen(user_id: int, guide_id: str) -> str:
+    """记下这个登录账号看过一条说明。成功返回空字符串。"""
+    guide_id = str(guide_id or "").strip()
+    user_id = int(user_id or 0)
+    if user_id <= 0 or not guide_id:
+        return "没有这条说明"
+    seen = guide_seen_ids(user_id)
+    if guide_id not in seen:
+        seen.append(guide_id)
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET guide_seen=? WHERE id=?",
+            (json.dumps(seen, ensure_ascii=False), user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    return ""
 
 
 def set_member_tier(user_id: int, tier: str) -> str:

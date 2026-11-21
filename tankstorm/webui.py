@@ -40,6 +40,10 @@ _TYPES = {
     ".json": "application/json",
     ".woff2": "font/woff2",
     ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
     ".ico": "image/x-icon",
 }
 
@@ -129,6 +133,66 @@ def _account(data):
     if len(password) < 6 or len(password) > 72:
         raise ValueError("密码至少 6 位")
     return username, password
+
+
+# 功能说明按条目写死在这里。id 用来记已读，tier 是面向的那一档，text 是文案。
+# images 是站内图片路径，按这个顺序显示在文案下面。文件放 web/public/guides/，
+# 构建后从 /guides/文件名 访问。没有图就留空元组。再加一条就在这张表里加一项。
+# 已读记在 app_user.guide_seen，不进管理后台。
+GUIDES = (
+    {
+        "id": "wargame",
+        "tier": "高级pro",
+        "title": "军事演习",
+        "text": (
+            "在「活动助手」里打开「军事演习」。点「刷新场地」拉战争学院的演习场，顺序和游戏里一样，一页 10 个。"
+            "等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。"
+            "选一个人点「进攻」，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时；"
+            "时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。"
+            "次数用完不发。停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。"
+            "自己占着场地时，点「撤退」。"
+            "\n\n"
+            "日常任务的今日进度里有「战争学院·军事演习（打低战力）」。这项开着，跑一轮时："
+            "已经占着这一轮不打；次数用完不发。"
+            "从低到高打战力低于 900 万的，空场、自己、本国和停战中的跳过。"
+            "这一场被拒就换下一个，否则就停。一轮最多打 5 个。今日进度记 1 次。"
+        ),
+        "images": (),
+    },
+)
+
+
+def _guide_images(item: dict) -> list:
+    """只留下站内路径。外链和带 .. 的路径不发给页面。"""
+    raw = item.get("images") or ()
+    if isinstance(raw, str):
+        raw = (raw,)
+    out = []
+    for one in raw:
+        path = str(one or "").strip()
+        if not path.startswith("/") or path.startswith("//") or "://" in path:
+            continue
+        if ".." in path.split("/"):
+            continue
+        out.append(path)
+    return out
+
+
+def _pending_guides(user: dict) -> list:
+    """这个账号还没确认、并且档位对得上的说明。"""
+    tier = user.get("tier") or "初级"
+    seen = set(citydb.guide_seen_ids(int(user.get("id") or 0)))
+    out = []
+    for item in GUIDES:
+        if item["tier"] != tier or item["id"] in seen:
+            continue
+        out.append({
+            "id": item["id"],
+            "title": item["title"],
+            "text": item["text"],
+            "images": _guide_images(item),
+        })
+    return out
 
 
 def _user_out(user: dict) -> dict:
@@ -410,6 +474,7 @@ def _handler(config: dict):
                     schedule_region_from_login(user["id"])
                 who = _user_out(user)
                 who["storm_day"] = citydb.storm_rejects_day(user["id"])
+                who["guides"] = _pending_guides(user)
                 _json(self, 200, {"user": who, "invite": bool(invite)})
                 return
             if path == "/api/regions":
@@ -1176,6 +1241,15 @@ def _handler(config: dict):
                         if why:
                             raise ValueError(why)
                         _json(self, 200, {"ok": True, "removed": removed})
+                elif path == "/api/guide/seen":
+                    guide_id = str(data.get("id") or "").strip()
+                    item = next((g for g in GUIDES if g["id"] == guide_id), None)
+                    if not item or item["tier"] != (user.get("tier") or "初级"):
+                        raise ValueError("没有这条说明")
+                    why = citydb.mark_guide_seen(user["id"], guide_id)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "guides": _pending_guides(user)})
                 elif path == "/api/password":
                     why = citydb.change_password(
                         user["id"], data.get("current"), data.get("password"),

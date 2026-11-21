@@ -133,6 +133,8 @@ fieldset.locked-area {
 .modal-card { background: #fff; border-radius: 10px; padding: 20px 18px 16px; width: min(420px, 100%); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18); }
 .modal-card h2 { margin: 0 0 8px; font-size: 18px; color: #0b6b2f; }
 .modal-card.bad h2 { color: #9b1c1c; }
+.modal-card.guide { max-height: calc(100vh - 32px); overflow: auto; }
+.modal-card.guide img.guide-shot { display: block; width: 100%; height: auto; margin: 0 0 16px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
 .modal-card p { margin: 0 0 16px; }
 .modal-actions { display: flex; gap: 8px; }
 .muted { color: #777; font-size: 13px; }
