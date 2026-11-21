@@ -1127,7 +1127,7 @@ onUnmounted(() => {
       </template>
       <template v-else-if="sheet === 'feature'">
         <h2>新功能</h2>
-        <p class="muted">写好标题和说明，选定会员等级，上传图片，再点推送。只给这一档看，不包含更高或更低的档。这一档的会员下次打开页面会看到，点「确认」之后记在这个登录账号上，不再出现。再推一次，看过的人也会再看到。军事演习说明仍只给高级pro，不从这里改。</p>
+        <p class="muted">这里是唯一的新功能推送，军事演习说明也在这条里改。写好标题和说明，选定会员等级，上传图片，再点推送。只给这一档看，不包含更高或更低的档。点「确认」之后记在这个登录账号上。再推一次，看过的人也会再看到。</p>
         <form class="stack" @submit.prevent="saveFeature()">
           <label>标题<input v-model="featureTitle" maxlength="80" /></label>
           <label>会员等级
@@ -1135,7 +1135,7 @@ onUnmounted(() => {
               <option v-for="t in TIERS" :key="'feature' + t">{{ t }}</option>
             </select>
           </label>
-          <label>说明<textarea v-model="featureText" rows="5" maxlength="2000"></textarea></label>
+          <label>说明<textarea v-model="featureText" rows="12" maxlength="2000"></textarea></label>
           <p>
             <button type="submit" :disabled="featureBusy">保存</button>
             <button type="button" :disabled="featureBusy" @click="pushFeature()">推送给成员</button>
