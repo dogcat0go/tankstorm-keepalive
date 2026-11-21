@@ -36,10 +36,10 @@ function hasSec(lane) {
   return Number.isFinite(value) && value >= 0;
 }
 
-function lv(n) {
+function grade(n) {
   const value = Number(n);
-  if (!Number.isFinite(value) || value < 1) return "";
-  return `${Math.trunc(value)}级`;
+  if (!Number.isFinite(value) || value < 0 || value > 30) return "";
+  return `${Math.trunc(value)}阶`;
 }
 
 function num(person, key) {
@@ -54,7 +54,7 @@ function laneDeep(lane) {
 }
 
 function laneOn(lane) {
-  return hasSec(lane) || !!lv(lane && lane.selfLv) || !!lv(lane && lane.enemyLv)
+  return hasSec(lane) || !!grade(lane && lane.selfGrade) || !!grade(lane && lane.enemyGrade)
     || !!gap(lane && lane.self) || !!gap(lane && lane.enemy);
 }
 
@@ -115,15 +115,15 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
     </template>
     <table v-if="showLanes">
       <thead>
-        <tr><th>路</th><th>战斗时间</th><th>我方火炮</th><th>敌方火炮</th><th>我方火炮发射间隔</th><th>敌方火炮发射间隔</th></tr>
+        <tr><th>路</th><th>战斗时间</th><th>我方火炮品阶</th><th>敌方火炮品阶</th><th>我方火炮发射间隔</th><th>敌方火炮发射间隔</th></tr>
       </thead>
       <tbody>
         <template v-for="(lane, i) in lanes" :key="i">
           <tr v-if="laneOn(lane)">
             <td>第 {{ i + 1 }} 路</td>
             <td>{{ hasSec(lane) ? sec(lane.seconds) : "" }}</td>
-            <td>{{ lv(lane && lane.selfLv) }}</td>
-            <td>{{ lv(lane && lane.enemyLv) }}</td>
+            <td>{{ grade(lane && lane.selfGrade) }}</td>
+            <td>{{ grade(lane && lane.enemyGrade) }}</td>
             <td>{{ gap(lane && lane.self) }}</td>
             <td>{{ gap(lane && lane.enemy) }}</td>
           </tr>
