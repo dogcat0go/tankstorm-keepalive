@@ -216,6 +216,11 @@ def _side_at(tanks, tick, use_final=False):
     return {"tanks": left_n, "total": len(tanks), "hp": left_hp, "maxHp": max_hp}
 
 
+def _end_tick(tanks):
+    ticks = [tick for tank in tanks for tick, _hp in tank["samples"]]
+    return max(ticks) if ticks else 0
+
+
 def _span(tanks):
     ticks = [tick for tank in tanks for tick, _hp in tank["samples"]]
     if not ticks:
@@ -288,6 +293,7 @@ def _mark_phase_lanes(ways, lanes, count, clock, end=None):
 def analyze(report):
     """第一阶段的剩余坦克、总血和耗时。有第 6 路就是决战，决战时间用这一路自己的跨度。
 
+    决战的剩余坦克和血用这一段最后一次血量采样，不用最终血字段。
     不到 6 路时，仍看时间轴上有没有明显间断。
     lanes 跟路的顺序一致。第一阶段每一路另有自己的战斗时间。
     我方火炮是固定间隔，对方是开火时刻的恒定相邻差。双方火炮进阶品阶读第 4 项。
@@ -317,6 +323,7 @@ def analyze(report):
             return None
         span = _span(ours + theirs)
         _mark_phase_lanes(ways, lanes, 5, span)
+        tick = _end_tick(climax_ours + climax_theirs)
         return {
             "phase1": {
                 "seconds": _seconds(span),
@@ -325,8 +332,8 @@ def analyze(report):
             },
             "climax": {
                 "seconds": _seconds(_span(climax_ours + climax_theirs)),
-                "self": _side_at(climax_ours, 0, True),
-                "enemy": _side_at(climax_theirs, 0, True),
+                "self": _side_at(climax_ours, tick),
+                "enemy": _side_at(climax_theirs, tick),
             },
             "lanes": lanes,
         }
@@ -380,8 +387,8 @@ def analyze(report):
         },
         "climax": {
             "seconds": _seconds(end - climax_at),
-            "self": _side_at(ours, end, True),
-            "enemy": _side_at(theirs, end, True),
+            "self": _side_at(ours, end),
+            "enemy": _side_at(theirs, end),
         },
         "lanes": lanes,
     }
