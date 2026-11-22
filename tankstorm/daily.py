@@ -5694,6 +5694,7 @@ def _wargame_board(pages, me, home):
         "occupy": occupy,
         "empty": empty,
         "partial": not any(p.get("bLastMsg") is True for p in pages),
+        "self": str(me or "")[:64],
     }
 
 
@@ -5964,6 +5965,8 @@ def wargame_attack(rec, sock, config, site_id, uid, name="", power=0):
         _publish_wargame(board, err)
         return False, err
     ok, text, battle = _wargame_outcome(data, site_id, shown, shown_power)
+    from . import citydb
+    citydb.save_wargame_brief(me, uid, shown, battle)
     if ok:
         fresh_pages, _fresh_why = _query_wargame_pages(rec, sock, max(timeout, 8))
         if fresh_pages:
@@ -6084,6 +6087,8 @@ def _run_wargame(rec, sock, config):
             battle = wargame_battle.analyze(data.get("fightReoprt"))
             if battle:
                 text += "。" + wargame_battle.line(battle)
+                from . import citydb
+                citydb.save_wargame_brief(me, uid, name, battle)
             if ts:
                 return True, text, ts
             return True, text
@@ -6093,6 +6098,9 @@ def _run_wargame(rec, sock, config):
             _nap(0.4)
             continue
         battle = wargame_battle.analyze(data.get("fightReoprt"))
+        if battle:
+            from . import citydb
+            citydb.save_wargame_brief(me, uid, name, battle)
         if ret == 101 and battle:
             text = f"没打下场地 {sid}（{name}，战力 {power}）。" + wargame_battle.line(battle)
             if refused:
