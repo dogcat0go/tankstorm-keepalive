@@ -94,6 +94,7 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
     <details class="campaign-box">
       <summary>简易战报</summary>
     <p>第一阶段 {{ sec(battle.phase1.seconds) }}<span v-if="!battle.climax"> · 未进入决战</span></p>
+    <div class="wide">
     <table>
       <thead>
         <tr><th></th><th>剩余坦克</th><th>整体血量</th></tr>
@@ -103,8 +104,10 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
         <tr><td>对方</td><td>{{ tanks(battle.phase1.enemy) }}</td><td>{{ hp(battle.phase1.enemy) }}</td></tr>
       </tbody>
     </table>
+    </div>
     <template v-if="battle.climax">
       <p>决战 {{ sec(battle.climax.seconds) }}</p>
+      <div class="wide">
       <table>
         <thead>
           <tr><th></th><th>剩余坦克</th><th>最终血量</th></tr>
@@ -114,8 +117,10 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
           <tr><td>对方</td><td>{{ tanks(battle.climax.enemy) }}</td><td>{{ hp(battle.climax.enemy) }}</td></tr>
         </tbody>
       </table>
+      </div>
     </template>
-    <table v-if="showLanes" class="wg-stack wg-lane">
+    <div v-if="showLanes" class="wide">
+    <table>
       <thead>
         <tr><th>路</th><th>战斗时间</th><th>我方火炮品阶</th><th>敌方火炮品阶</th><th>我方火炮发射间隔</th><th>敌方火炮发射间隔</th></tr>
       </thead>
@@ -123,15 +128,16 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
         <template v-for="(lane, i) in lanes" :key="i">
           <tr v-if="laneOn(lane)">
             <td>第 {{ i + 1 }} 路</td>
-            <td data-k="战斗时间">{{ hasSec(lane) ? sec(lane.seconds) : "" }}</td>
-            <td data-k="我方火炮品阶">{{ grade(lane && lane.selfGrade) }}</td>
-            <td data-k="敌方火炮品阶">{{ grade(lane && lane.enemyGrade) }}</td>
-            <td data-k="我方火炮发射间隔">{{ gap(lane && lane.self) }}</td>
-            <td data-k="敌方火炮发射间隔">{{ gap(lane && lane.enemy) }}</td>
+            <td>{{ hasSec(lane) ? sec(lane.seconds) : "" }}</td>
+            <td>{{ grade(lane && lane.selfGrade) }}</td>
+            <td>{{ grade(lane && lane.enemyGrade) }}</td>
+            <td>{{ gap(lane && lane.self) }}</td>
+            <td>{{ gap(lane && lane.enemy) }}</td>
           </tr>
         </template>
       </tbody>
     </table>
+    </div>
     </details>
     <details v-if="showDeep" class="campaign-box">
       <summary>深度解析</summary>
@@ -139,7 +145,7 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
         <div v-if="laneDeep(lane)">
           <p>第 {{ i + 1 }} 路</p>
           <div v-if="lane.general" class="wide">
-            <table class="wg-stack">
+            <table>
               <thead>
                 <tr>
                   <th></th>
@@ -149,13 +155,13 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
               <tbody>
                 <tr v-for="side in sides" :key="side.key">
                   <td>{{ side.label }}将领</td>
-                  <td v-for="col in generalCols" :key="col[0]" :data-k="col[1]">{{ num(lane.general[side.key], col[0]) }}</td>
+                  <td v-for="col in generalCols" :key="col[0]">{{ num(lane.general[side.key], col[0]) }}</td>
                 </tr>
               </tbody>
             </table>
           </div>
           <div v-if="lane.adviser" class="wide">
-            <table class="wg-stack">
+            <table>
               <thead>
                 <tr>
                   <th></th>
@@ -165,7 +171,7 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
               <tbody>
                 <tr v-for="side in sides" :key="side.key">
                   <td>{{ side.label }}参谋</td>
-                  <td v-for="col in adviserCols" :key="col[0]" :data-k="col[1]">{{ num(lane.adviser[side.key], col[0]) }}</td>
+                  <td v-for="col in adviserCols" :key="col[0]">{{ num(lane.adviser[side.key], col[0]) }}</td>
                 </tr>
               </tbody>
             </table>
