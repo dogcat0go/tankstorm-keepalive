@@ -428,6 +428,40 @@ img.scan-qr { width: 280px; }
   .recent-dock table.daily-jobs td:nth-child(4) { grid-column: 1 / -1; }
   .recent-dock table.daily-jobs td.reason { white-space: pre-line; min-width: 0; }
   .recent-dock table.daily-jobs td:nth-child(4) { color: #777; font-size: 12px; }
+  .wg-result { max-width: 100%; overflow-x: auto; }
+  .wg-result table:not(.wg-stack) th,
+  .wg-result table:not(.wg-stack) td { white-space: normal; padding-right: 8px; }
+  .wg-result .wg-stack,
+  .wg-result .wg-stack tbody { display: block; width: 100%; min-width: 0; }
+  .wg-result .wg-stack thead { display: none; }
+  .wg-result .wg-stack tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid #e6e6e6;
+  }
+  .wg-result .wg-stack td {
+    display: block;
+    width: auto;
+    min-width: 0;
+    border: 0;
+    padding: 0;
+    white-space: normal;
+  }
+  .wg-result .wg-stack td::before {
+    content: attr(data-k);
+    display: block;
+    color: #777;
+    font-size: 12px;
+  }
+  .wg-result .wg-stack td:first-child {
+    grid-column: 1 / -1;
+    font-weight: 700;
+    padding-top: 2px;
+  }
+  .wg-result .wg-stack td:first-child::before { content: none; }
+  .wg-result table.wg-lane td:nth-child(2) { grid-column: 1 / -1; }
   .order-card { background: #fff; border-radius: 8px; padding: 12px; }
   .order-card.fighting { outline: 1px solid #8ebfed; }
   .order-card p { margin: 0 0 6px; }

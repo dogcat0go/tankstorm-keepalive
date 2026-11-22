@@ -115,7 +115,7 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
         </tbody>
       </table>
     </template>
-    <table v-if="showLanes">
+    <table v-if="showLanes" class="wg-stack wg-lane">
       <thead>
         <tr><th>路</th><th>战斗时间</th><th>我方火炮品阶</th><th>敌方火炮品阶</th><th>我方火炮发射间隔</th><th>敌方火炮发射间隔</th></tr>
       </thead>
@@ -123,11 +123,11 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
         <template v-for="(lane, i) in lanes" :key="i">
           <tr v-if="laneOn(lane)">
             <td>第 {{ i + 1 }} 路</td>
-            <td>{{ hasSec(lane) ? sec(lane.seconds) : "" }}</td>
-            <td>{{ grade(lane && lane.selfGrade) }}</td>
-            <td>{{ grade(lane && lane.enemyGrade) }}</td>
-            <td>{{ gap(lane && lane.self) }}</td>
-            <td>{{ gap(lane && lane.enemy) }}</td>
+            <td data-k="战斗时间">{{ hasSec(lane) ? sec(lane.seconds) : "" }}</td>
+            <td data-k="我方火炮品阶">{{ grade(lane && lane.selfGrade) }}</td>
+            <td data-k="敌方火炮品阶">{{ grade(lane && lane.enemyGrade) }}</td>
+            <td data-k="我方火炮发射间隔">{{ gap(lane && lane.self) }}</td>
+            <td data-k="敌方火炮发射间隔">{{ gap(lane && lane.enemy) }}</td>
           </tr>
         </template>
       </tbody>
@@ -139,7 +139,7 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
         <div v-if="laneDeep(lane)">
           <p>第 {{ i + 1 }} 路</p>
           <div v-if="lane.general" class="wide">
-            <table>
+            <table class="wg-stack">
               <thead>
                 <tr>
                   <th></th>
@@ -149,13 +149,13 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
               <tbody>
                 <tr v-for="side in sides" :key="side.key">
                   <td>{{ side.label }}将领</td>
-                  <td v-for="col in generalCols" :key="col[0]">{{ num(lane.general[side.key], col[0]) }}</td>
+                  <td v-for="col in generalCols" :key="col[0]" :data-k="col[1]">{{ num(lane.general[side.key], col[0]) }}</td>
                 </tr>
               </tbody>
             </table>
           </div>
           <div v-if="lane.adviser" class="wide">
-            <table>
+            <table class="wg-stack">
               <thead>
                 <tr>
                   <th></th>
@@ -165,7 +165,7 @@ const showDeep = computed(() => lanes.value.some((lane) => laneDeep(lane)));
               <tbody>
                 <tr v-for="side in sides" :key="side.key">
                   <td>{{ side.label }}参谋</td>
-                  <td v-for="col in adviserCols" :key="col[0]">{{ num(lane.adviser[side.key], col[0]) }}</td>
+                  <td v-for="col in adviserCols" :key="col[0]" :data-k="col[1]">{{ num(lane.adviser[side.key], col[0]) }}</td>
                 </tr>
               </tbody>
             </table>
