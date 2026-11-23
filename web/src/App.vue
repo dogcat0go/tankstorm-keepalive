@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
 import { ElMenu, ElMenuItem } from "element-plus";
 import "element-plus/es/components/menu/style/css";
 import "./base.css";
@@ -12,7 +12,6 @@ import BasePage from "./pages/BasePage.vue";
 import WatchPage from "./pages/WatchPage.vue";
 import QqPage from "./pages/QqPage.vue";
 import ProfilePage from "./pages/ProfilePage.vue";
-import MarkdownDoc from "./components/MarkdownDoc.vue";
 
 const me = ref(null);
 const mode = ref("login");
@@ -123,6 +122,13 @@ let askDone = null;
 const guides = ref([]);
 const guideErr = ref("");
 const guideBusy = ref(false);
+const guideView = shallowRef(null);
+const guidePlain = ref(false);
+import("./components/MarkdownPreview.vue").then((mod) => {
+  guideView.value = mod.default;
+}).catch(() => {
+  guidePlain.value = true;
+});
 const guide = computed(() => guides.value[0] || null);
 const guideImages = computed(() => {
   const raw = guide.value && guide.value.images;
@@ -1979,10 +1985,19 @@ onUnmounted(() => {
         <button type="button" @click="notice = null">知道了</button>
       </div>
     </div>
-    <div v-if="me && guide" class="modal">
+    <div v-if="me && guide && (guideView || guidePlain)" class="modal">
       <div class="modal-card guide" role="dialog" aria-modal="true" aria-labelledby="guide-title">
         <h2 id="guide-title">{{ guide.title }}</h2>
-        <MarkdownDoc :model-value="guide.text || ''" readonly />
+        <component
+          :is="guideView"
+          v-if="guideView"
+          :model-value="guide.text || ''"
+          :no-katex="true"
+          :no-highlight="true"
+          :no-mermaid="true"
+          :no-echarts="true"
+        />
+        <p v-else>{{ guide.text }}</p>
         <img
           v-for="(src, i) in guideImages"
           :key="src + i"
