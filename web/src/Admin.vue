@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import "./base.css";
 import MarkdownDoc from "./components/MarkdownDoc.vue";
+import BattleReport from "./components/BattleReport.vue";
 
 const me = ref(null);
 const username = ref("");
@@ -21,6 +22,10 @@ const tierBusy = ref(0);
 const tierErr = ref({});
 const tierNote = ref({});
 const openPwd = ref(0);
+const openFight = ref(0);
+const fightView = ref({});
+const fightErr = ref({});
+const fightBusy = ref(0);
 const pwdDraft = ref({});
 const pwdBusy = ref(0);
 const pwdErr = ref({});
@@ -624,6 +629,24 @@ function toggleMember(id) {
   openMember.value = openMember.value === id ? 0 : id;
 }
 
+async function toggleFight(m) {
+  if (openFight.value === m.id) {
+    openFight.value = 0;
+    return;
+  }
+  openFight.value = m.id;
+  fightBusy.value = m.id;
+  fightErr.value = { ...fightErr.value, [m.id]: "" };
+  try {
+    const data = await api("/api/admin/members/wargame?user_id=" + m.id);
+    fightView.value = { ...fightView.value, [m.id]: data };
+  } catch (e) {
+    fightErr.value = { ...fightErr.value, [m.id]: e.message };
+  } finally {
+    if (fightBusy.value === m.id) fightBusy.value = 0;
+  }
+}
+
 function toggleTier(m) {
   if (openTier.value === m.id) {
     openTier.value = 0;
@@ -789,6 +812,7 @@ async function deleteMember(m) {
     if (openTier.value === m.id) openTier.value = 0;
     if (openExpiry.value === m.id) openExpiry.value = 0;
     if (openPwd.value === m.id) openPwd.value = 0;
+    if (openFight.value === m.id) openFight.value = 0;
   } finally {
     deleting.value = 0;
   }
@@ -861,6 +885,7 @@ async function logout() {
   openExpiry.value = 0;
   openTier.value = 0;
   openPwd.value = 0;
+  openFight.value = 0;
   fighters.value = [];
   scanRanges.value = [];
   clearMemberFilters();
@@ -1006,6 +1031,7 @@ onUnmounted(() => {
                 <td :class="onlineOf(m) ? 'on' : 'off'">{{ onlineOf(m) ? "在线" : "没在跑" }}</td>
                 <td class="member-ops">
                   <button type="button" class="ghost" @click="toggleMember(m.id)">{{ openMember === m.id ? "收起" : "配置" }}</button>
+                  <button type="button" class="ghost" :class="{ here: openFight === m.id }" :aria-expanded="openFight === m.id" @click="toggleFight(m).catch((e) => (err = e.message))">{{ openFight === m.id ? "收起" : "对战" }}</button>
                   <button type="button" class="ghost" :disabled="clearing === m.id" @click="clearMember(m).catch((e) => (err = e.message))">清空</button>
                   <button type="button" class="ghost" :class="{ here: openTier === m.id }" :aria-expanded="openTier === m.id" @click="toggleTier(m)">{{ openTier === m.id ? "收起" : "会员等级" }}</button>
                   <button type="button" class="ghost" :class="{ here: openExpiry === m.id }" :aria-expanded="openExpiry === m.id" @click="toggleExpiry(m)">{{ openExpiry === m.id ? "收起" : "有效期" }}</button>
@@ -1056,6 +1082,25 @@ onUnmounted(() => {
                   </div>
                   <p v-if="expiryErr[m.id]" class="err">{{ expiryErr[m.id] }}</p>
                   <p v-else-if="expiryNote[m.id]" class="muted">{{ expiryNote[m.id] }}</p>
+                </td>
+              </tr>
+              <tr v-if="openFight === m.id">
+                <td colspan="7" class="member-cfg">
+                  <div class="member-fight-body">
+                  <p v-if="fightBusy === m.id" class="muted">读取中</p>
+                  <p v-else-if="fightErr[m.id]" class="err">{{ fightErr[m.id] }}</p>
+                  <template v-else-if="fightView[m.id]">
+                    <p class="muted">{{ fightView[m.id].username }} 的军事演习。同一对保留最近 10 场简易战报，时间是北京时间。</p>
+                    <p v-if="fightView[m.id].note" class="muted">{{ fightView[m.id].note }}</p>
+                    <template v-for="pair in fightView[m.id].pairs" :key="pair.uid">
+                      <p class="wg-saved">{{ pair.name || pair.uid }}</p>
+                      <template v-for="fight in pair.fights" :key="pair.uid + '-' + fight.id + '-' + fight.at">
+                        <p class="muted">{{ fight.at }}</p>
+                        <BattleReport :battle="fight.battle" />
+                      </template>
+                    </template>
+                  </template>
+                  </div>
                 </td>
               </tr>
               <tr v-if="openMember === m.id">

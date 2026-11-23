@@ -184,6 +184,7 @@ table.fighters button.ghost { padding: 4px 10px; }
 table.members button.ghost { padding: 4px 10px; }
 table.members button.ghost + button.ghost { margin-left: 8px; }
 table.members td.member-cfg { background: #fafaf7; }
+.member-fight-body { width: min(848px, calc(100vw - 48px)); min-width: 0; }
 table.members td.member-cfg p { margin: 4px 0; }
 table.members td.member-cfg form.storm-cap { margin-top: 8px; }
 table.members td.member-cfg form.storm-cap input { width: 7em; }
