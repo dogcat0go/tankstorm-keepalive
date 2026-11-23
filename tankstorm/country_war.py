@@ -18,6 +18,7 @@
              countryID + type:45 + cityID + dailyGiftId。
     type:19  扫荡                 行动力 -15，dayatktimes +3；打玩家时带 atkUserID
     type:14  普通攻击             行动力 -5， dayatktimes +1；打玩家时带 atkUserID
+    type:104 领取图纸奖励         2026-11-20 抓包：只写 type，回包 ret=0
     type:4   移动或占领相邻城市   2026-09-24 抓包：先 type:3 开目标城，
              再 type:4，countryID 填这座城当时的归属国。人从 6201 进 9303
              时行动力 197→182，再占领 9302、9301 各 -5，当前位置改为目标城。
@@ -338,6 +339,33 @@ def _chest_progress(data):
     if not isinstance(flag, int) or isinstance(flag, bool):
         return None, None
     return gain, flag
+
+
+def claim_blueprint(rec, sock, config=None):
+    """领取国战图纸奖励。2026-11-20 19:54:24 抓包：只发 type=104，回包 ret=0。"""
+    country = 0
+    conf = (config or {}).get("国战") or {}
+    try:
+        country = int(conf.get("自己国家ID") or 0)
+    except (TypeError, ValueError):
+        country = 0
+    if country <= 0:
+        country = _daily.read_my_country(rec) or 0
+    if country > 0:
+        since = _send(sock, rec, 2, country=country)
+        _wait(sock, rec, since, 2, timeout=4.0)
+    before = rec.seq_mark() if rec else 0
+    sender.send_frame(
+        sock, OPCODE,
+        encode_message({4: ("int32", 104)}, omit_zero=False),
+        rec.rc4_c2s)
+    got = _wait(sock, rec, before, 104)
+    if not isinstance(got, dict):
+        return False, "图纸奖励没有回包"
+    ret = got.get("ret")
+    if isinstance(ret, int) and not isinstance(ret, bool) and ret != 0:
+        return False, f"图纸奖励服务器返回 ret={ret}"
+    return True, "成功：已领取国战图纸奖励"
 
 
 def _send_chest_gift(sock, rec, gift_id):

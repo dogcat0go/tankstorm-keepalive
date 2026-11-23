@@ -12,6 +12,7 @@ import BasePage from "./pages/BasePage.vue";
 import WatchPage from "./pages/WatchPage.vue";
 import QqPage from "./pages/QqPage.vue";
 import ProfilePage from "./pages/ProfilePage.vue";
+import MarkdownDoc from "./components/MarkdownDoc.vue";
 
 const me = ref(null);
 const mode = ref("login");
@@ -101,13 +102,15 @@ const staffCount = ref("1");
 const labPickCount = ref("1");
 const autoCount = ref("1");
 const lab50Count = ref("1");
+const lab10Count = ref("1");
+const plant50Count = ref("1");
 const auto50Count = ref("1");
 const spreadX1 = ref("");
 const spreadY1 = ref("");
 const spreadX2 = ref("");
 const spreadY2 = ref("");
 const emptyCards = () => ({
-  general: null, staff: null, lab: null, auto: null, drink: null, agent: null, recruit: null, explore: null,
+  general: null, staff: null, lab: null, plant: null, auto: null, drink: null, agent: null, recruit: null, explore: null,
   box_mid: null, box_high: null, box_mid_key: null, box_high_key: null,
 });
 const baseCards = ref(emptyCards());
@@ -117,6 +120,21 @@ const cleanItems = ref(null);
 const resourceCards = ref(null);
 const ask = ref("");
 let askDone = null;
+const guides = ref([]);
+const guideErr = ref("");
+const guideBusy = ref(false);
+const guide = computed(() => guides.value[0] || null);
+const guideImages = computed(() => {
+  const raw = guide.value && guide.value.images;
+  if (!Array.isArray(raw)) return [];
+  const text = String((guide.value && guide.value.text) || "");
+  return raw.filter((src) => {
+    if (typeof src !== "string" || !src.startsWith("/") || src.startsWith("//") || src.includes("://")) return false;
+    if (src.split("/").includes("..")) return false;
+    const name = src.slice(src.lastIndexOf("/") + 1);
+    return !name || !text.includes(name);
+  });
+});
 const baseJobs = ref([]);
 const floatAt = ref(null);
 const floatFolded = ref(true);
@@ -612,22 +630,41 @@ async function runAuto50(count) {
   await refreshAttacks();
 }
 
-async function runLab50(count) {
+async function runExplore(kind, count, cardKey, cardName, batch, note) {
   showErr("", "base");
   baseNote.value = "";
   const n = cardNum(count);
-  const need = n * 50;
-  const have = knownCards(baseCards.value.lab);
+  const need = n * batch;
+  const have = knownCards(baseCards.value[cardKey]);
   if (have !== null && have < need) {
-    tellShortage("实验卡", have, need);
+    tellShortage(cardName, have, need);
     return;
   }
-  const ok = await confirmUse(`使用实验卡 ${need} 张，做 ${n} 次 50 连。`);
+  const ok = await confirmUse(`使用${cardName} ${need} 张，做 ${n} 次 ${batch} 连。`);
   if (!ok) return;
-  await api("/api/base", { kind: "lab50", count: n });
-  baseNote.value = "实验室探索已交给绑定的攻打号";
+  await api("/api/base", { kind, count: n });
+  baseNote.value = note;
   await refreshBase();
   await refreshAttacks();
+}
+
+function runLab50(count) {
+  return runExplore("lab50", count, "lab", "实验室探索卡", 50, "实验室探索已交给绑定的攻打号");
+}
+
+function runLab10(count) {
+  return runExplore("lab10", count, "lab", "实验室探索卡", 10, "实验室探索已交给绑定的攻打号");
+}
+
+function runPlant50(count) {
+  return runExplore("plant50", count, "plant", "工厂探索卡", 50, "工厂探索已交给绑定的攻打号");
+}
+
+async function claimBlueprint() {
+  showErr("", "attack");
+  const ok = await confirmUse("领取国战图纸奖励。");
+  if (!ok) return;
+  await api("/api/daily", { kind: "blueprint" });
 }
 
 async function runGuildCamp() {
@@ -779,6 +816,17 @@ async function runDrop() {
   const ok = await confirmUse("把背包里的建筑修复卡 10127 全部摧毁，不修复建筑。");
   if (!ok) return;
   await api("/api/daily", { kind: "repair_drop" });
+  await refreshDaily();
+  await refreshAttacks();
+}
+
+async function runWargameRetreat(siteId) {
+  showErr("", "activity");
+  const id = Number(siteId) || 0;
+  const where = id > 0 ? `场地 ${id}` : "当前占着的演习场";
+  const ok = await confirmUse(`从${where}撤退。`);
+  if (!ok) return;
+  await api("/api/daily", { kind: "wargame", action: "retreat", site_id: id });
   await refreshDaily();
   await refreshAttacks();
 }
@@ -1071,6 +1119,23 @@ function takeUser(user) {
     rank: String(row.rank),
   }));
   modoCards.value = String(user.modo_cards ?? 0);
+  guides.value = Array.isArray(user.guides) ? user.guides : [];
+  guideErr.value = "";
+}
+
+async function ackGuide() {
+  const cur = guide.value;
+  if (!cur || guideBusy.value) return;
+  guideErr.value = "";
+  guideBusy.value = true;
+  try {
+    const data = await api("/api/guide/seen", { id: cur.id });
+    guides.value = Array.isArray(data.guides) ? data.guides : [];
+  } catch (e) {
+    guideErr.value = e.message || "没记下";
+  } finally {
+    guideBusy.value = false;
+  }
 }
 
 function pinRetreatCity() {
@@ -1431,6 +1496,10 @@ async function loadFailLibrary() {
   return await api("/api/atk-fail");
 }
 
+async function loadWargameHistory() {
+  return await api("/api/wargame/history");
+}
+
 async function loadRegions() {
   return await api("/api/regions");
 }
@@ -1460,6 +1529,8 @@ async function logout() {
   qrSrc.value = "";
   bindWait.value = false;
   notice.value = null;
+  guides.value = [];
+  guideErr.value = "";
   showErr("");
   tab.value = "attack";
   dailyQq.value = "";
@@ -1649,6 +1720,7 @@ onUnmounted(() => {
         :reset-fail-library="resetFailLibrary"
         :load-regions="loadRegions"
         :save-region="saveRegion"
+        :load-wargame-history="loadWargameHistory"
         :show-err="showErr"
       />
       <ActivityPage
@@ -1678,6 +1750,7 @@ onUnmounted(() => {
         :egg-note="eggNote"
         :wargame="wargame"
         :run-wargame="runWargame"
+        :run-wargame-retreat="runWargameRetreat"
         :err="err"
         :err-at="errAt"
         :save-level="saveGuildLevel"
@@ -1818,6 +1891,7 @@ onUnmounted(() => {
         :here-text="hereText"
         :city-text="cityText"
         :add-order="addOrder"
+        :claim-blueprint="claimBlueprint"
         :save-clear-plan="saveClearPlan"
         :add-priority="addPriority"
         :move-to-city="moveToCity"
@@ -1847,6 +1921,8 @@ onUnmounted(() => {
         v-model:lab-pick-count="labPickCount"
         v-model:auto-count="autoCount"
         v-model:lab50-count="lab50Count"
+        v-model:lab10-count="lab10Count"
+        v-model:plant50-count="plant50Count"
         v-model:auto50-count="auto50Count"
         v-model:x1="spreadX1"
         v-model:y1="spreadY1"
@@ -1878,6 +1954,8 @@ onUnmounted(() => {
         :run-box="runBox"
         :run-pick="runPick"
         :run-lab50="runLab50"
+        :run-lab10="runLab10"
+        :run-plant50="runPlant50"
         :run-auto50="runAuto50"
         :cancel-job="cancelBase"
         :show-err="showErr"
@@ -1899,6 +1977,21 @@ onUnmounted(() => {
         <h2 id="notice-title">{{ notice.title }}</h2>
         <p>{{ notice.text }}</p>
         <button type="button" @click="notice = null">知道了</button>
+      </div>
+    </div>
+    <div v-if="me && guide" class="modal">
+      <div class="modal-card guide" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+        <h2 id="guide-title">{{ guide.title }}</h2>
+        <MarkdownDoc :model-value="guide.text || ''" readonly />
+        <img
+          v-for="(src, i) in guideImages"
+          :key="src + i"
+          class="guide-shot"
+          :src="src"
+          :alt="guide.title"
+        />
+        <p v-if="guideErr" class="err">{{ guideErr }}</p>
+        <button type="button" :disabled="guideBusy" @click="ackGuide()">确认</button>
       </div>
     </div>
   </main>

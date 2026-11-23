@@ -41,6 +41,8 @@ span.switch { font-size: 15px; font-weight: 700; }
 .account-bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
 .account-bar .account-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
 .account-bar .account-nav { display: flex; gap: 8px; align-items: center; }
+.profile-nav { display: flex; gap: 8px; margin: 0 0 16px; }
+.profile-nav button.ghost.here { background: #e7e7e3; border-color: #1a1a1a; }
 .account-bar form.hold-set { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
 .account-bar form.hold-set .err { margin: 0; }
 .account-bar button.ghost, .account-bar a.ghost { margin-left: 0; }
@@ -64,8 +66,12 @@ span.switch { font-size: 15px; font-weight: 700; }
 .page-nav.el-menu--horizontal > .el-menu-item { flex: 1 1 0; justify-content: center; min-width: 0; padding: 0 6px; }
 form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
 form.stack { display: grid; max-width: 520px; }
+form.feature-form { max-width: none; }
+form.feature-form .md-editor { width: 100%; }
+.modal-card.guide .md-editor-preview-wrapper { padding: 0 0 8px; }
 form.scan-form { max-width: none; }
-.wide { overflow-x: auto; }
+.wide { overflow-x: auto; max-width: 100%; min-width: 0; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+.wg-result .wide table { width: max-content; min-width: 100%; }
 .proc { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .attack-bar form.off-set { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
 .attack-bar form.off-set .muted { margin: 0; }
@@ -104,8 +110,13 @@ input.when { width: 12.5em; }
   font-size: 12px;
   font-weight: 400;
 }
-label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
-input, select { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
+label, .feature-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: #333; }
+input, select, textarea { font: inherit; padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; background: #fff; max-width: 100%; }
+textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+.feature-imgs { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+.feature-imgs figure { margin: 0; }
+.feature-imgs img { display: block; width: 180px; height: auto; background: #fff; border: 1px solid #ddd; }
+.feature-imgs button { margin-top: 6px; }
 input.mins { width: 6em; }
 input.clock { width: 8em; }
 select.fund-building { min-width: 10em; }
@@ -130,9 +141,15 @@ fieldset.locked-area {
   min-width: 0;
 }
 .modal { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, 0.45); display: flex; align-items: center; justify-content: center; padding: 16px; }
-.modal-card { background: #fff; border-radius: 10px; padding: 20px 18px 16px; width: min(420px, 100%); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18); }
+.modal-card { background: #fff; border-radius: 10px; padding: 20px 18px 16px; width: min(420px, 100%); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18); max-height: calc(100vh - 32px); overflow: auto; }
+.modal-card.feature { width: min(640px, 100%); }
+.modal-card.feature p { white-space: pre-wrap; }
+.modal-card.feature img { display: block; width: 100%; height: auto; margin: 0 0 8px; }
 .modal-card h2 { margin: 0 0 8px; font-size: 18px; color: #0b6b2f; }
 .modal-card.bad h2 { color: #9b1c1c; }
+.modal-card.guide { width: min(640px, 100%); max-height: calc(100vh - 32px); overflow: auto; }
+.modal-card.guide p { white-space: pre-wrap; }
+.modal-card.guide img.guide-shot { display: block; width: 100%; height: auto; margin: 0 0 16px; border: 1px solid #ddd; border-radius: 6px; background: #fff; }
 .modal-card p { margin: 0 0 16px; }
 .modal-actions { display: flex; gap: 8px; }
 .muted { color: #777; font-size: 13px; }
@@ -169,6 +186,7 @@ table.fighters button.ghost { padding: 4px 10px; }
 table.members button.ghost { padding: 4px 10px; }
 table.members button.ghost + button.ghost { margin-left: 8px; }
 table.members td.member-cfg { background: #fafaf7; }
+.member-fight-body { width: min(848px, calc(100vw - 48px)); min-width: 0; }
 table.members td.member-cfg p { margin: 4px 0; }
 table.members td.member-cfg form.storm-cap { margin-top: 8px; }
 table.members td.member-cfg form.storm-cap input { width: 7em; }
@@ -277,6 +295,7 @@ table.daily-jobs button.ghost { margin-left: 8px; padding: 4px 10px; }
 table.wg { margin-top: 8px; min-width: 720px; }
 table.wg th, table.wg td { white-space: nowrap; }
 .wg-result { margin: 8px 0 12px; }
+.wg-saved { margin: 10px 0 0; font-weight: 700; }
 .wg-result p { margin: 8px 0 4px; font-weight: 700; }
 .wg-result table { margin: 0 0 4px; min-width: 0; }
 .wg-result th, .wg-result td { white-space: nowrap; padding-right: 16px; }

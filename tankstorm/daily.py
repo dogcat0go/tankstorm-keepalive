@@ -1918,9 +1918,10 @@ TASKS = [
        {}, "实测",
        "2026-10-11：先 {type:1} 开战争学院，再 {type:1,siteID:0,uID:\"\",forceFlag:false} 拉场地。"
        "有人的场看 field9，从低到高打低于 900 万的。本国、自己、停战中的跳过。"
-       "拉场地和普通进攻的 forceFlag 都是 false。"
-       "true 只在对停战场地确认宣战后再发。普通进攻发 true 会 ret=17，没有战报。"
-       "ret=10 是这一场被拒，换下一个。ret=100 且 bOccupySite=true 算打下",
+       "2026-11-20 20:02:10 进攻 forceFlag 是 false。发 true 会出错。"
+       "先回 type=3、ret=101，详细战报在后面。"
+       "ret=10 是这一场被拒，换下一个。只有 ret=100 且 bOccupySite=true 才算打下。"
+       "ret=101 有战报只是打完了，场地还是别人的",
        max_per_day=1,
        gate=Gate("RseWarGameOpt", "tokenNum"),
        cooldown_until="siteEndTime",
@@ -4139,16 +4140,17 @@ def draw_probe(rec, sock, mode, count=1, on_progress=None, by_card=False):
     text = f"成功：{title}{tail}，{card}剩余={remain}"
     if mode == "agent10":
         text += f"，得到紫色特工令 {gained_all} 个"
-    return True, text
+    return True, _with_gain(text)
 
 
 # 2026-10-17 09:55 抓包。自选包是 RceBagItemUse：selectID 是要换成的物品，
 # id 是包的背包槽，itemID 是包本身，optType=0。回包 ret=0，credit=0、medal=0。
 # 招募包 110011：10020 高级将领卡、10107 高级参谋招募卡。
 # 探索包 110015：10006 实验室探索卡、10116 军备自动化探索卡。
-# 实验室 50 连是 RceWPCExplore：sceneID=10003、expType=0、exploreCnt=0、
-# credit=0、useItemID=实验室卡的槽位、useItemCnt=这次用的张数。
-# 2026-10-31 客户端高级探索就是这组字段，不再写 expType=1、exploreCnt=50。
+# 付费探索是 RceWPCExplore。2026-11-20 19:52–19:53 抓包：
+# 实验室 50 抽、实验室 10 抽都是 sceneID=10003、expType=1、exploreCnt=张数、
+# credit=0、useItemID=实验室探索卡 10006 的槽位、useItemCnt=同一张数。
+# 工厂 50 抽是 sceneID=10002，卡是工厂探索卡 10005，其余字段一样。
 _PACKS = {
     "general": (110011, 10020, "招募卡自选包", "高级将领卡"),
     "staff": (110011, 10107, "招募卡自选包", "高级参谋招募卡"),
@@ -4269,10 +4271,11 @@ def pick_pack(rec, sock, kind, count=1, on_progress=None):
     return True, text
 
 
-def lab50_probe(rec, sock, times=1, on_progress=None):
-    """实验室探索 50 连。一次请求用 50 张实验室探索卡，credit 固定 0。"""
+def _explore_paid(rec, sock, times, scene, card, batch, title, lock, card_name,
+                   on_progress=None):
+    """用探索卡抽一次。expType=1，exploreCnt 和 useItemCnt 都是这次的张数，credit 固定 0。"""
     from . import citydb
-    if "lab50" in citydb.LOCKED_DAILY_KINDS:
+    if lock in citydb.LOCKED_DAILY_KINDS:
         return False, citydb.RECOVERING_TEXT
     try:
         times = int(times)
@@ -4290,33 +4293,33 @@ def lab50_probe(rec, sock, times=1, on_progress=None):
     done = 0
     while done < times:
         raise_if_stopped()
-        known = latest_card(rec, _LAB_CARD)
+        known = latest_card(rec, card)
         head = f"完成 {done}/{times}。" if done else ""
         if known is None:
-            return False, f"{head}还没读到实验室探索卡的数量，不发"
+            return False, f"{head}还没读到{card_name}的数量，不发"
         have, slot = known
-        if have < _LAB_BATCH:
-            return False, _batch_short("实验室探索卡", have, _LAB_BATCH, done, times)
+        if have < batch:
+            return False, _batch_short(card_name, have, batch, done, times)
         if slot is None:
-            return False, f"{head}实验室探索卡有 {have} 张，没读到背包槽位，不发"
+            return False, f"{head}{card_name}有 {have} 张，没读到背包槽位，不发"
         before = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
-        sent = (f"043a scene={_LAB_SCENE} expType=0 exploreCnt=0 "
-                f"credit=0 槽={slot} useItemCnt={_LAB_BATCH}")
+        sent = (f"043a scene={scene} expType=1 exploreCnt={batch} "
+                f"credit=0 槽={slot} useItemCnt={batch}")
         mark = rec.seq_mark()
         sender.send_frame(sock, "043a", encode_message({
-            1: ("int32", _LAB_SCENE), 2: ("int32", 0), 3: ("int32", 0),
-            4: ("int32", 0), 5: ("int32", slot), 6: ("int32", _LAB_BATCH),
+            1: ("int32", scene), 2: ("int32", 1), 3: ("int32", batch),
+            4: ("int32", 0), 5: ("int32", slot), 6: ("int32", batch),
             7: ("int32", 0),
         }, omit_zero=False), rec.rc4_c2s)
         got = _await_response(
             sock, rec, "RseWPCExplore", mark, 8,
-            want=lambda d: isinstance(d, dict) and d.get("sceneID") == _LAB_SCENE)
+            want=lambda d, scene=scene: isinstance(d, dict) and d.get("sceneID") == scene)
         if not isinstance(got, dict):
             head = f"完成 {done}/{times}。" if done else ""
-            return False, f"{head}实验室探索已发出 {sent}，没有回包"
+            return False, f"{head}{title}已发出 {sent}，没有回包"
         if got.get("ret") not in (0, None):
             head = f"完成 {done}/{times}。" if done else ""
-            return False, f"{head}实验室探索已发出 {sent}，ret={got.get('ret')}，未成功"
+            return False, f"{head}{title}已发出 {sent}，ret={got.get('ret')}，未成功"
         deadline = time.time() + 0.8
         while time.time() < deadline:
             _beat()
@@ -4330,19 +4333,44 @@ def lab50_probe(rec, sock, times=1, on_progress=None):
                 break
         after = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
         if before is not None and after is not None and after < before:
-            return False, _medal_short("实验室探索卡", before, after, done)
+            return False, _medal_short(card_name, before, after, done)
         done += 1
         note_bag_cards(rec)
-        left = _bag_left(rec, _LAB_CARD)
+        left = _bag_left(rec, card)
         if on_progress:
-            on_progress(f"{done}/{times}，实验室探索卡剩余={left if left is not None else '未知'}")
+            on_progress(f"{done}/{times}，{card_name}剩余={left if left is not None else '未知'}")
         _nap(0.3)
     note_bag_cards(rec)
-    left = _bag_left(rec, _LAB_CARD)
+    left = _bag_left(rec, card)
     medal = _wallet_credit((rec.latest.get("RseUserInfo") or (None, None))[1])
-    return True, (f"成功：实验室探索 50 连做了 {done} 次，用了 {done * _LAB_BATCH} 张，"
-                  f"实验室探索卡剩余={left if left is not None else '未知'}，"
+    return True, (f"成功：{title}做了 {done} 次，用了 {done * batch} 张，"
+                  f"{card_name}剩余={left if left is not None else '未知'}，"
                   f"勋章={medal if medal is not None else '未知'}")
+
+
+def lab50_probe(rec, sock, times=1, on_progress=None):
+    """实验室探索 50 连。一次请求用 50 张实验室探索卡。"""
+    return _explore_paid(
+        rec, sock, times, _LAB_SCENE, _LAB_CARD, _LAB_BATCH,
+        "实验室探索 50 连", "lab50", "实验室探索卡", on_progress)
+
+
+def lab10_probe(rec, sock, times=1, on_progress=None):
+    """实验室探索 10 连。一次请求用 10 张实验室探索卡。"""
+    return _explore_paid(
+        rec, sock, times, _LAB_SCENE, _LAB_CARD, 10,
+        "实验室探索 10 连", "lab10", "实验室探索卡", on_progress)
+
+
+_PLANT_SCENE = 10002
+_PLANT_CARD = 10005
+
+
+def plant50_probe(rec, sock, times=1, on_progress=None):
+    """工厂探索 50 连。一次请求用 50 张工厂探索卡。"""
+    return _explore_paid(
+        rec, sock, times, _PLANT_SCENE, _PLANT_CARD, 50,
+        "工厂探索 50 连", "plant50", "工厂探索卡", on_progress)
 
 
 _AUTO_CARD = 10116
@@ -5552,9 +5580,19 @@ def _collect_wargame_pages(sock, rec, since, timeout):
 
 
 def _attack_reply(sid, uid):
-    """type=3 才是攻打结果。ret=10 的那条不带 siteID，只带 deftUid。"""
+    """type=3 是攻打结果。详细对战不在这条上：后面另有几条，每条一路。
+
+    2026-11-20 20:02:10 客户端进攻（forceFlag 为 false）先回 type=3、ret=101，
+    没有 fightReoprt。紧接着 5 条 RseWarGameOpt，wayIndex 0 到 4，战报在里面。
+    这几条 type 不一定是 3，只认 type=3 就会把详细对战丢掉。
+    ret=10 的拒绝不带 siteID，只带 deftUid。
+    """
     def want(d):
-        if not isinstance(d, dict) or d.get("type") != 3:
+        if not isinstance(d, dict):
+            return False
+        if _packet_has_report(d):
+            return True
+        if d.get("type") != 3:
             return False
         got_sid = d.get("siteID")
         got_uid = d.get("deftUid")
@@ -5656,6 +5694,7 @@ def _wargame_board(pages, me, home):
         "occupy": occupy,
         "empty": empty,
         "partial": not any(p.get("bLastMsg") is True for p in pages),
+        "self": str(me or "")[:64],
     }
 
 
@@ -5714,10 +5753,14 @@ def _wargame_outcome(data, sid, name, power):
         if ts:
             text += f"，占用至 {(ts - time.time()) / 60:.0f} 分钟后"
         return True, text + detail, battle
+    if ret == 101 and battle:
+        return False, f"没打下{who}{detail}", battle
     if ret == 10:
         text = f"{who}被拒 ret=10"
     elif ret == 17:
         text = f"{who}被拒 ret=17，没有开战"
+    elif ret == 101:
+        text = f"{who}没有战报 ret=101"
     else:
         text = f"{who}没打下来 ret={ret}"
     if not detail:
@@ -5780,7 +5823,7 @@ def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
     """发一次 type=3。失败返回 (None, 原因)。"""
     task = _task_of("军事演习")
     names = _field_names(_schema, task.opcode)
-    # 普通进攻和客户端一样不带强攻标记。true 是停战宣战确认后才发的。
+    # 2026-11-20 20:02:10 客户端进攻第 4 号是 false。发 true 服务器会拒。
     fields = {1: ("int32", 3), 2: ("int32", sid),
               3: ("string", uid), 4: ("bool", False)}
     safe, why = _check_safety(task, names, fields)
@@ -5797,13 +5840,16 @@ def _strike_wargame(rec, sock, sid, uid, name, power, timeout):
     # 战报可能比结果晚到，而且一条帧会拆成多次 recv。至少等 20 秒。
     packets = _collect_attack_replies(
         sock, rec, before, max(timeout, 20), sid, uid)
-    reported = sum(1 for item in packets if _packet_has_report(item))
-    log.info("[军事演习] 攻打回包 %d 条，其中 %d 条带战报", len(packets), reported)
-    data = next((item for item in reversed(packets) if _packet_has_report(item)), None)
+    reported = [item["fightReoprt"] for item in packets if _packet_has_report(item)]
+    log.info("[军事演习] 攻打回包 %d 条，其中 %d 条带战报", len(packets), len(reported))
+    data = next((item for item in packets if item.get("type") == 3), None)
     if data is None and packets:
         data = packets[-1]
     if not isinstance(data, dict):
         return None, "失败：未收到攻打回包"
+    if reported:
+        data = dict(data)
+        data["fightReoprt"] = reported if len(reported) > 1 else reported[0]
     return data, ""
 
 
@@ -5923,6 +5969,8 @@ def wargame_attack(rec, sock, config, site_id, uid, name="", power=0):
         _publish_wargame(board, err)
         return False, err
     ok, text, battle = _wargame_outcome(data, site_id, shown, shown_power)
+    from . import citydb
+    citydb.save_wargame_brief(me, uid, shown, battle)
     if ok:
         fresh_pages, _fresh_why = _query_wargame_pages(rec, sock, max(timeout, 8))
         if fresh_pages:
@@ -5944,6 +5992,58 @@ def wargame_attack(rec, sock, config, site_id, uid, name="", power=0):
             board["token"] = token
     _publish_wargame(board, text, battle, True)
     return ok, text
+
+
+def wargame_retreat(rec, sock, config, site_id=0):
+    """从自己占的演习场撤出。
+
+    2026-11-20 21:20:23 抓包：type=4，siteID 是占着的场，uID 空，forceFlag=false。
+    回包 type=4、ret=0，场地等级和开始时间都清成 0。
+    """
+    if rec is None or sock is None:
+        return False, "没有连接，不撤退"
+    timeout, _gap = _daily_wait(config)
+    try:
+        site_id = int(site_id or 0)
+    except (TypeError, ValueError):
+        site_id = 0
+    pages, why = _query_wargame_pages(rec, sock, max(timeout, 8))
+    if pages is None:
+        return False, why
+    if site_id <= 0:
+        for page in pages:
+            sid = page.get("siteID") if isinstance(page, dict) else None
+            if page.get("bOccupySite") is True and _plain_int(sid) and sid > 0:
+                site_id = sid
+                break
+    if site_id <= 0:
+        return False, "没有占着的演习场，不撤退"
+    task = _task_of("军事演习")
+    fields = {1: ("int32", 4), 2: ("int32", site_id),
+              3: ("string", ""), 4: ("bool", False)}
+    before = rec.seq_mark()
+    try:
+        _send_op(sock, rec, task, fields)
+    except OSError:
+        raise
+    except Exception as exc:
+        return False, f"发送失败：{exc}"
+    got = _await_response(
+        sock, rec, "RseWarGameOpt", before, max(timeout, 8),
+        want=lambda d: isinstance(d, dict) and d.get("type") == 4)
+    if not isinstance(got, dict):
+        return False, f"场地 {site_id} 撤退没有回包"
+    if got.get("ret") not in (0, None):
+        return False, f"场地 {site_id} 撤退失败 ret={got.get('ret')}"
+    text = f"已从场地 {site_id} 撤退"
+    fresh, _why = _query_wargame_pages(rec, sock, max(timeout, 8))
+    if fresh:
+        me = str(getattr(rec, "uid", "") or "")
+        _publish_wargame(
+            _wargame_board(fresh, me, read_my_country(rec)), text)
+    else:
+        _publish_wargame(None, text)
+    return True, text
 
 
 def _run_wargame(rec, sock, config):
@@ -5991,6 +6091,8 @@ def _run_wargame(rec, sock, config):
             battle = wargame_battle.analyze(data.get("fightReoprt"))
             if battle:
                 text += "。" + wargame_battle.line(battle)
+                from . import citydb
+                citydb.save_wargame_brief(me, uid, name, battle)
             if ts:
                 return True, text, ts
             return True, text
@@ -5999,6 +6101,15 @@ def _run_wargame(rec, sock, config):
             log.info("[%s] 场地 %s 被拒 ret=10，换下一个", task.key, sid)
             _nap(0.4)
             continue
+        battle = wargame_battle.analyze(data.get("fightReoprt"))
+        if battle:
+            from . import citydb
+            citydb.save_wargame_brief(me, uid, name, battle)
+        if ret == 101 and battle:
+            text = f"没打下场地 {sid}（{name}，战力 {power}）。" + wargame_battle.line(battle)
+            if refused:
+                text = f"前面 {len(refused)} 个被拒。" + text
+            return False, text
         return False, f"失败：场地 {sid}（{name}，战力 {power}）没打下来 ret={ret}"
     shown = "、".join(str(s) for s in refused)
     return False, f"失败：打了 {len(refused)} 个都被拒 ret=10（场地 {shown}）"

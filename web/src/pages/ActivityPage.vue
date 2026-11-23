@@ -4,6 +4,7 @@ import { ElSwitch } from "element-plus";
 import "element-plus/es/components/switch/style/css";
 import bundledItems from "../items.json";
 import bundledNew from "../items-new.json";
+import BattleReport from "../components/BattleReport.vue";
 
 const guildLevel = defineModel("guildLevel", { type: String, required: true });
 const fundBuilding = defineModel("fundBuilding", { type: String, required: true });
@@ -49,6 +50,7 @@ const props = defineProps({
   runStone: { type: Function, required: true },
   wargame: { type: Object, default: () => ({}) },
   runWargame: { type: Function, required: true },
+  runWargameRetreat: { type: Function, required: true },
   cancelJob: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
@@ -121,31 +123,6 @@ const wgSize = 10;
 
 const wgBoard = computed(() => props.wargame || {});
 const wgBattle = computed(() => wgBoard.value.battle || null);
-
-function wgSec(seconds) {
-  const n = Number(seconds) || 0;
-  if (n < 60) return `${n}秒`;
-  const minute = Math.floor(n / 60);
-  const second = n % 60;
-  return second ? `${minute}分${second}秒` : `${minute}分`;
-}
-
-function wgWan(n) {
-  const value = Number(n) || 0;
-  if (value < 10000) return String(value);
-  const text = (value / 10000).toFixed(1).replace(/\.0$/, "");
-  return `${text}万`;
-}
-
-function wgTanks(side) {
-  if (!side) return "—";
-  return `${side.tanks}/${side.total}`;
-}
-
-function wgHp(side) {
-  if (!side) return "—";
-  return `${wgWan(side.hp)}/${wgWan(side.maxHp)}`;
-}
 const wgSites = computed(() => (Array.isArray(wgBoard.value.sites) ? wgBoard.value.sites : []));
 const wgLevels = computed(() => {
   const set = new Set();
@@ -234,7 +211,7 @@ function occupyText(occ) {
     <p v-if="dailyQq">攻打 QQ {{ dailyQq }}</p>
     <p v-else class="muted">还没绑定攻打 QQ。按页面上方的步骤点登录并扫码。一个登录账号只绑一个攻打号，这里的活动用那个号做。</p>
     <p class="muted">由这个账号的攻打线程执行，不另开连接。开关和日常任务是同一个。</p>
-    <details class="campaign-box" open>
+    <details class="campaign-box">
       <summary>一键献礼</summary>
       <form class="lock-row" @submit.prevent="runTribute().catch((e) => showErr(e.message))">
         <span class="switch">一键献礼</span>
@@ -274,7 +251,7 @@ function occupyText(occ) {
       <p>体力 {{ liveText(thew) }} · 当前积分 {{ liveText(score) }}</p>
       <p class="muted">进入这个页面会读一次体力和当前积分。只在周五 10:00 到周六 22:00（本机时间）进攻。点进攻就按体力打这一轮，不用等整轮日常。同一等级一直打，直到体力不够、体力不再下降或被拒绝。不领奖。等级记在这个登录账号上，没改过就用配置里的等级。</p>
     </details>
-    <details class="campaign-box" open>
+    <details class="campaign-box">
       <summary>军事演习</summary>
       <form class="lock-row" @submit.prevent="runWargame().catch((e) => showErr(e.message))">
         <span class="switch">军事演习</span>
@@ -287,34 +264,13 @@ function occupyText(occ) {
         </label>
         <label>查找<input v-model="wgQuery" placeholder="名字或国家" /></label>
       </form>
-      <p v-if="wgJob">{{ wgJob.status }} {{ wgJob.detail }}<button v-if="wgJob.status === '排队' || wgJob.status === '正在做'" type="button" class="ghost" @click="cancelJob(wgJob).catch((e) => showErr(e.message))">关停</button></p>
+      <p v-if="wgJob && (wgJob.status === '排队' || wgJob.status === '正在做')">{{ wgJob.status }} {{ wgJob.detail }}<button type="button" class="ghost" @click="cancelJob(wgJob).catch((e) => showErr(e.message))">关停</button></p>
       <p v-if="wgBoard.result">{{ wgBoard.result }}</p>
-      <div v-if="wgBattle" class="wg-result">
-        <p>第一阶段 {{ wgSec(wgBattle.phase1.seconds) }}<span v-if="!wgBattle.climax"> · 未进入决战</span></p>
-        <table>
-          <thead>
-            <tr><th></th><th>剩余坦克</th><th>整体血量</th></tr>
-          </thead>
-          <tbody>
-            <tr><td>我方</td><td>{{ wgTanks(wgBattle.phase1.self) }}</td><td>{{ wgHp(wgBattle.phase1.self) }}</td></tr>
-            <tr><td>对方</td><td>{{ wgTanks(wgBattle.phase1.enemy) }}</td><td>{{ wgHp(wgBattle.phase1.enemy) }}</td></tr>
-          </tbody>
-        </table>
-        <template v-if="wgBattle.climax">
-          <p>决战 {{ wgSec(wgBattle.climax.seconds) }}</p>
-          <table>
-            <thead>
-              <tr><th></th><th>剩余坦克</th><th>最终血量</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>我方</td><td>{{ wgTanks(wgBattle.climax.self) }}</td><td>{{ wgHp(wgBattle.climax.self) }}</td></tr>
-              <tr><td>对方</td><td>{{ wgTanks(wgBattle.climax.enemy) }}</td><td>{{ wgHp(wgBattle.climax.enemy) }}</td></tr>
-            </tbody>
-          </table>
-        </template>
-      </div>
-      <p>剩余次数 {{ liveText(wgBoard.token) }}<span v-if="occupyText(wgBoard.occupy)"> · {{ occupyText(wgBoard.occupy) }}</span></p>
-      <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 10 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时；时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
+      <BattleReport :battle="wgBattle" />
+      <p>剩余次数 {{ liveText(wgBoard.token) }}<span v-if="occupyText(wgBoard.occupy)"> · {{ occupyText(wgBoard.occupy) }}</span>
+        <button v-if="wgBoard.occupy && wgBoard.occupy.id" type="button" class="ghost" @click="runWargameRetreat(wgBoard.occupy.id).catch((e) => showErr(e.message))">撤退</button>
+      </p>
+      <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 10 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时，并按路写出第一阶段各自的战斗时间；时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。火炮进阶品阶和发射间隔按路写在下面，没读到的一方留空。简易战报和深度解析都默认收着，点开再看表格、将领和参谋。打过的记录在个人中心的军事演习历史记录里。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
       <p v-if="!wgSites.length" class="muted">还没有场地。点刷新场地。</p>
       <p v-else-if="!wgShown.length" class="muted">这个筛选下没有人</p>
       <div v-else class="wide">

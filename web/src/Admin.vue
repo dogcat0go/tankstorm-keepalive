@@ -1,6 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import "./base.css";
+import MarkdownDoc from "./components/MarkdownDoc.vue";
+import BattleReport from "./components/BattleReport.vue";
 
 const me = ref(null);
 const username = ref("");
@@ -20,6 +22,10 @@ const tierBusy = ref(0);
 const tierErr = ref({});
 const tierNote = ref({});
 const openPwd = ref(0);
+const openFight = ref(0);
+const fightView = ref({});
+const fightErr = ref({});
+const fightBusy = ref(0);
 const pwdDraft = ref({});
 const pwdBusy = ref(0);
 const pwdErr = ref({});
@@ -68,6 +74,15 @@ const logErr = ref("");
 const scanLogin = ref(null);
 const scanQr = ref("");
 const scanErr = ref("");
+const featureTitle = ref("");
+const featureTier = ref("高级pro");
+const featureText = ref("");
+const featureImages = ref([]);
+const featurePushId = ref(0);
+const featurePushedAt = ref("");
+const featureBusy = ref(false);
+const featureErr = ref("");
+const featureNote = ref("");
 const PAGE = 20;
 let fighterTimer = 0;
 let scanTimer = 0;
@@ -377,6 +392,100 @@ function addScanCity() {
   scanRanges.value.push({ city_id: "", city_name: "", pages: "0-0" });
 }
 
+function paintFeature(data) {
+  featureTitle.value = data.title || "";
+  featureTier.value = TIERS.includes(data.tier) ? data.tier : "高级pro";
+  featureText.value = data.text || "";
+  featureImages.value = data.images || [];
+  featurePushId.value = Number(data.id) || 0;
+  featurePushedAt.value = data.pushed_at || "";
+}
+
+async function loadFeature() {
+  paintFeature(await api("/api/feature"));
+}
+
+async function saveFeature() {
+  featureErr.value = "";
+  featureNote.value = "";
+  featureBusy.value = true;
+  try {
+    paintFeature(await api("/api/admin/feature", {
+      title: featureTitle.value,
+      tier: featureTier.value,
+      text: featureText.value,
+    }));
+    featureNote.value = "已保存。还没推送的话，这一档的会员看不到。";
+  } catch (e) {
+    featureErr.value = e.message;
+  } finally {
+    featureBusy.value = false;
+  }
+}
+
+async function pushFeature() {
+  featureErr.value = "";
+  featureNote.value = "";
+  featureBusy.value = true;
+  try {
+    paintFeature(await api("/api/admin/feature/push", {
+      title: featureTitle.value,
+      tier: featureTier.value,
+      text: featureText.value,
+    }));
+    featureNote.value = "已推送。只有这一档的会员打开页面才会看到。";
+  } catch (e) {
+    featureErr.value = e.message;
+  } finally {
+    featureBusy.value = false;
+  }
+}
+
+function readImage(file) {
+  if (file.size > 1_500_000) return Promise.reject(new Error("图片太大，请换一张小一点的"));
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const cut = text.indexOf(",");
+      resolve(cut >= 0 ? text.slice(cut + 1) : text);
+    };
+    reader.onerror = () => reject(new Error("图片读不出来"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addFeatureImage(ev) {
+  const input = ev.target;
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  featureErr.value = "";
+  featureNote.value = "";
+  featureBusy.value = true;
+  try {
+    const data = await readImage(file);
+    paintFeature(await api("/api/admin/feature/image", { data }));
+  } catch (e) {
+    featureErr.value = e.message;
+  } finally {
+    featureBusy.value = false;
+  }
+}
+
+async function dropFeatureImage(name) {
+  featureErr.value = "";
+  featureNote.value = "";
+  featureBusy.value = true;
+  try {
+    paintFeature(await api("/api/admin/feature/image/delete", { name }));
+  } catch (e) {
+    featureErr.value = e.message;
+  } finally {
+    featureBusy.value = false;
+  }
+}
+
 async function refreshFighters() {
   const data = await api("/api/admin/fighters");
   fighters.value = data.fighters || [];
@@ -518,6 +627,24 @@ function prioText(m) {
 
 function toggleMember(id) {
   openMember.value = openMember.value === id ? 0 : id;
+}
+
+async function toggleFight(m) {
+  if (openFight.value === m.id) {
+    openFight.value = 0;
+    return;
+  }
+  openFight.value = m.id;
+  fightBusy.value = m.id;
+  fightErr.value = { ...fightErr.value, [m.id]: "" };
+  try {
+    const data = await api("/api/admin/members/wargame?user_id=" + m.id);
+    fightView.value = { ...fightView.value, [m.id]: data };
+  } catch (e) {
+    fightErr.value = { ...fightErr.value, [m.id]: e.message };
+  } finally {
+    if (fightBusy.value === m.id) fightBusy.value = 0;
+  }
 }
 
 function toggleTier(m) {
@@ -685,6 +812,7 @@ async function deleteMember(m) {
     if (openTier.value === m.id) openTier.value = 0;
     if (openExpiry.value === m.id) openExpiry.value = 0;
     if (openPwd.value === m.id) openPwd.value = 0;
+    if (openFight.value === m.id) openFight.value = 0;
   } finally {
     deleting.value = 0;
   }
@@ -704,7 +832,7 @@ async function clearMember(m) {
 }
 
 async function loadAdmin() {
-  const jobs = await Promise.allSettled([loadCities(), loadMembers(), loadScan(), refreshFighters()]);
+  const jobs = await Promise.allSettled([loadCities(), loadMembers(), loadScan(), refreshFighters(), loadFeature()]);
   const failed = jobs.find((job) => job.status === "rejected");
   if (failed) err.value = failed.reason.message || "有一块没加载出来";
 }
@@ -757,6 +885,7 @@ async function logout() {
   openExpiry.value = 0;
   openTier.value = 0;
   openPwd.value = 0;
+  openFight.value = 0;
   fighters.value = [];
   scanRanges.value = [];
   clearMemberFilters();
@@ -817,6 +946,7 @@ onUnmounted(() => {
         <button type="button" role="tab" :aria-selected="sheet === 'members'" :class="{ ghost: sheet !== 'members' }" @click="sheet = 'members'">成员账号</button>
         <button type="button" role="tab" :aria-selected="sheet === 'fighters'" :class="{ ghost: sheet !== 'fighters' }" @click="sheet = 'fighters'">攻打 QQ</button>
         <button type="button" role="tab" :aria-selected="sheet === 'scan'" :class="{ ghost: sheet !== 'scan' }" @click="sheet = 'scan'">扫描号</button>
+        <button type="button" role="tab" :aria-selected="sheet === 'feature'" :class="{ ghost: sheet !== 'feature' }" @click="sheet = 'feature'">新功能</button>
       </div>
       <template v-if="sheet === 'members'">
       <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。点「改密码」给忘记密码的成员设一个新密码，这个账号已有的登录会退出，之后用新密码登录。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。创建账号不带管理权限，有效期留空就是不限期。删除会连订单、订阅和登录一起去掉，当前登录的管理员不能删自己。</p>
@@ -901,6 +1031,7 @@ onUnmounted(() => {
                 <td :class="onlineOf(m) ? 'on' : 'off'">{{ onlineOf(m) ? "在线" : "没在跑" }}</td>
                 <td class="member-ops">
                   <button type="button" class="ghost" @click="toggleMember(m.id)">{{ openMember === m.id ? "收起" : "配置" }}</button>
+                  <button type="button" class="ghost" :class="{ here: openFight === m.id }" :aria-expanded="openFight === m.id" @click="toggleFight(m).catch((e) => (err = e.message))">{{ openFight === m.id ? "收起" : "对战" }}</button>
                   <button type="button" class="ghost" :disabled="clearing === m.id" @click="clearMember(m).catch((e) => (err = e.message))">清空</button>
                   <button type="button" class="ghost" :class="{ here: openTier === m.id }" :aria-expanded="openTier === m.id" @click="toggleTier(m)">{{ openTier === m.id ? "收起" : "会员等级" }}</button>
                   <button type="button" class="ghost" :class="{ here: openExpiry === m.id }" :aria-expanded="openExpiry === m.id" @click="toggleExpiry(m)">{{ openExpiry === m.id ? "收起" : "有效期" }}</button>
@@ -951,6 +1082,25 @@ onUnmounted(() => {
                   </div>
                   <p v-if="expiryErr[m.id]" class="err">{{ expiryErr[m.id] }}</p>
                   <p v-else-if="expiryNote[m.id]" class="muted">{{ expiryNote[m.id] }}</p>
+                </td>
+              </tr>
+              <tr v-if="openFight === m.id">
+                <td colspan="7" class="member-cfg">
+                  <div class="member-fight-body">
+                  <p v-if="fightBusy === m.id" class="muted">读取中</p>
+                  <p v-else-if="fightErr[m.id]" class="err">{{ fightErr[m.id] }}</p>
+                  <template v-else-if="fightView[m.id]">
+                    <p class="muted">{{ fightView[m.id].username }} 的军事演习。同一对保留最近 10 场简易战报，时间是北京时间。</p>
+                    <p v-if="fightView[m.id].note" class="muted">{{ fightView[m.id].note }}</p>
+                    <template v-for="pair in fightView[m.id].pairs" :key="pair.uid">
+                      <p class="wg-saved">{{ pair.name || pair.uid }}</p>
+                      <template v-for="fight in pair.fights" :key="pair.uid + '-' + fight.id + '-' + fight.at">
+                        <p class="muted">{{ fight.at }}</p>
+                        <BattleReport :battle="fight.battle" />
+                      </template>
+                    </template>
+                  </template>
+                  </div>
                 </td>
               </tr>
               <tr v-if="openMember === m.id">
@@ -1020,6 +1170,42 @@ onUnmounted(() => {
           <p v-if="scanLogin.at" class="muted">{{ scanLogin.at }}</p>
           <img v-if="scanQr" class="qr scan-qr" :src="scanQr" alt="扫描号登录二维码" />
         </template>
+      </template>
+      <template v-else-if="sheet === 'feature'">
+        <h2>新功能</h2>
+        <p class="muted">这里是唯一的新功能推送，军事演习说明也在这条里改。说明用 Markdown，右侧是预览。图片地址单独一行就会显示成图片，也可以写成 ![](地址)。选定会员等级，再点推送。只给这一档看，不包含更高或更低的档。点「确认」之后记在这个登录账号上。再推一次，看过的人也会再看到。</p>
+        <form class="stack feature-form" @submit.prevent="saveFeature()">
+          <label>标题<input v-model="featureTitle" maxlength="80" /></label>
+          <label>会员等级
+            <select v-model="featureTier">
+              <option v-for="t in TIERS" :key="'feature' + t">{{ t }}</option>
+            </select>
+          </label>
+          <div class="feature-field">
+            <span>说明</span>
+            <MarkdownDoc v-model="featureText" />
+          </div>
+          <p>
+            <button type="submit" :disabled="featureBusy">保存</button>
+            <button type="button" :disabled="featureBusy" @click="pushFeature()">推送给成员</button>
+            <span class="muted">{{ featureNote }}</span>
+          </p>
+        </form>
+        <p v-if="featureErr" class="err">{{ featureErr }}</p>
+        <p v-if="featurePushId" class="muted">上次推送 {{ featurePushedAt }}。</p>
+        <p v-else class="muted">还没有推送给成员。</p>
+        <form class="stack" @submit.prevent>
+          <label>图片
+            <input type="file" accept="image/png,image/jpeg,image/gif,image/webp" :disabled="featureBusy" @change="addFeatureImage" />
+          </label>
+        </form>
+        <div class="feature-imgs" v-if="featureImages.length">
+          <figure v-for="img in featureImages" :key="img.name">
+            <img :src="img.url" alt="" />
+            <button type="button" class="ghost" :disabled="featureBusy" @click="dropFeatureImage(img.name)">去掉</button>
+          </figure>
+        </div>
+        <p v-else class="muted">还没有图片。png、jpg、gif、webp 都可以，最多 6 张。</p>
       </template>
       <template v-else-if="logQq">
         <div class="qq-log-head">
@@ -1141,8 +1327,8 @@ onUnmounted(() => {
       <p v-if="!fighters.length" class="muted">还没有绑定攻打 QQ。</p>
       <p v-else-if="!shownFighters.length" class="muted">{{ hiddenExpiredFighters && !fighterFilterOn ? "过期账号的攻打 QQ 已隐藏。" : "没有符合筛选的攻打 QQ。" }}</p>
       </template>
-      <h2 v-if="sheet === 'members' || (sheet !== 'scan' && !logQq)">扫描安排</h2>
-      <form v-if="sheet === 'members' || (sheet !== 'scan' && !logQq)" class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
+      <h2 v-if="sheet === 'members' || (sheet !== 'scan' && sheet !== 'feature' && !logQq)">扫描安排</h2>
+      <form v-if="sheet === 'members' || (sheet !== 'scan' && sheet !== 'feature' && !logQq)" class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
         <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>
         <label>停扫开始<input v-model="quietStart" type="time" /></label>
         <label>停扫结束<input v-model="quietEnd" type="time" /></label>

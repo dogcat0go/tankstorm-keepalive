@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     storm_day       TEXT NOT NULL DEFAULT '',
     open_cards      TEXT NOT NULL DEFAULT '',
     clean_items     TEXT NOT NULL DEFAULT '',
+    guide_seen      TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -205,6 +206,24 @@ CREATE TABLE IF NOT EXISTS watch_sub (
     name         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (user_id, city_id, uid)
 );
+CREATE TABLE IF NOT EXISTS wargame_brief (
+    self_uid    TEXT NOT NULL,
+    enemy_uid   TEXT NOT NULL,
+    enemy_name  TEXT NOT NULL DEFAULT '',
+    battle      TEXT NOT NULL,
+    at          TEXT NOT NULL,
+    PRIMARY KEY (self_uid, enemy_uid)
+);
+CREATE TABLE IF NOT EXISTS wargame_recent (
+    id          INTEGER PRIMARY KEY,
+    self_uid    TEXT NOT NULL,
+    enemy_uid   TEXT NOT NULL,
+    enemy_name  TEXT NOT NULL DEFAULT '',
+    battle      TEXT NOT NULL,
+    at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS wargame_recent_pair
+    ON wargame_recent(self_uid, enemy_uid, id);
 """
 
 
@@ -545,6 +564,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "clean_items" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN clean_items TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "guide_seen" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN guide_seen TEXT NOT NULL DEFAULT ''")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -1286,6 +1309,53 @@ def set_user_tier(username: str, tier: str) -> bool:
         return cur.rowcount > 0
     finally:
         conn.close()
+
+
+def guide_seen_ids(user_id: int) -> list:
+    """这个登录账号确认过的功能说明 id。没记过是空列表。"""
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(guide_seen,'') FROM app_user WHERE id=?",
+            (int(user_id),)).fetchone()
+    finally:
+        conn.close()
+    if not row or not str(row[0] or "").strip():
+        return []
+    try:
+        data = json.loads(row[0])
+    except ValueError:
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        name = str(item or "").strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def mark_guide_seen(user_id: int, guide_id: str) -> str:
+    """记下这个登录账号看过一条说明。成功返回空字符串。"""
+    guide_id = str(guide_id or "").strip()
+    user_id = int(user_id or 0)
+    if user_id <= 0 or not guide_id:
+        return "没有这条说明"
+    seen = guide_seen_ids(user_id)
+    if guide_id not in seen:
+        seen.append(guide_id)
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET guide_seen=? WHERE id=?",
+            (json.dumps(seen, ensure_ascii=False), user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    return ""
 
 
 def set_member_tier(user_id: int, tier: str) -> str:
@@ -3834,7 +3904,8 @@ _LANE_RANK = {
     "war": 0, "daily": 1, "blast": 2, "factory": 3, "cards": 4,
     "haoyin": 5, "admiral": 6, "admiral10": 7, "agent10": 7,
     "box_mid": 7, "box_high": 7,
-    "pick_general": 8, "pick_staff": 8, "pick_lab": 8, "pick_auto": 8, "lab50": 8,
+    "pick_general": 8, "pick_staff": 8, "pick_lab": 8, "pick_auto": 8,
+    "lab50": 8, "lab10": 8, "plant50": 8,
 }
 
 
@@ -4742,8 +4813,11 @@ def note_wargame(board=None, result=None, battle=None, update_battle=False) -> N
                 prev["occupy"] = None
         else:
             prev["occupy"] = None
+        who = board.get("self")
+        if isinstance(who, str) and who.strip():
+            prev["self"] = who.strip()[:64]
     if result is not None:
-        prev["result"] = " ".join(str(result or "").split())[:500]
+        prev["result"] = " ".join(str(result or "").split())[:1200]
     if update_battle:
         prev["battle"] = _clean_wargame_battle(battle)
     _upsert_signal(name, json.dumps(prev, ensure_ascii=False))
@@ -4773,7 +4847,228 @@ def wargame_live(user_id: int) -> dict:
         "empty": empty if isinstance(empty, int) and not isinstance(empty, bool) else 0,
         "result": str(data.get("result") or ""),
         "battle": _clean_wargame_battle(data.get("battle")),
+        "briefs": _wargame_briefs(data.get("self")),
     }
+
+
+def _simple_wargame(battle):
+    """简易战报只留阶段、决战和分路的时间、品阶、间隔。将领和参谋不落盘。"""
+    cleaned = _clean_wargame_battle(battle)
+    if not cleaned:
+        return None
+    lanes = []
+    kept = False
+    for lane in cleaned.get("lanes") or []:
+        row = {}
+        if isinstance(lane, dict):
+            for key in ("seconds", "self", "enemy", "selfGrade", "enemyGrade"):
+                if key in lane:
+                    row[key] = lane[key]
+                    kept = True
+        lanes.append(row)
+    if kept:
+        cleaned["lanes"] = lanes
+    else:
+        cleaned.pop("lanes", None)
+    return cleaned
+
+
+def save_wargame_brief(self_uid, enemy_uid, enemy_name, battle) -> None:
+    """按自己和对方的游戏编号留下简易战报。同一对再打就覆盖。"""
+    me = str(self_uid or "").strip()[:64]
+    them = str(enemy_uid or "").strip()[:64]
+    if not me or not them:
+        return
+    brief = _simple_wargame(battle)
+    if not brief:
+        return
+    name = str(enemy_name or "").strip()[:32]
+    payload = json.dumps(brief, ensure_ascii=False)
+    stamp = now_ts()
+    try:
+        conn = connect()
+        try:
+            old = conn.execute(
+                "SELECT battle, at FROM wargame_brief WHERE self_uid=? AND enemy_uid=?",
+                (me, them)).fetchone()
+            have = conn.execute(
+                "SELECT COUNT(*) FROM wargame_recent WHERE self_uid=? AND enemy_uid=?",
+                (me, them)).fetchone()[0]
+            if not have and old and old[0] != payload:
+                conn.execute(
+                    "INSERT INTO wargame_recent(self_uid, enemy_uid, enemy_name, battle, at) "
+                    "VALUES (?,?,?,?,?)",
+                    (me, them, name, old[0], old[1] or stamp))
+            conn.execute(
+                "INSERT INTO wargame_recent(self_uid, enemy_uid, enemy_name, battle, at) "
+                "VALUES (?,?,?,?,?)",
+                (me, them, name, payload, stamp))
+            stale = conn.execute(
+                "SELECT id FROM wargame_recent WHERE self_uid=? AND enemy_uid=? "
+                "ORDER BY id DESC LIMIT -1 OFFSET 10",
+                (me, them)).fetchall()
+            if stale:
+                conn.execute(
+                    "DELETE FROM wargame_recent WHERE id IN (%s)"
+                    % ",".join("?" * len(stale)),
+                    [row[0] for row in stale])
+            conn.execute(
+                "INSERT INTO wargame_brief(self_uid, enemy_uid, enemy_name, battle, at) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(self_uid, enemy_uid) DO UPDATE SET "
+                "enemy_name=CASE WHEN excluded.enemy_name!='' "
+                "THEN excluded.enemy_name ELSE wargame_brief.enemy_name END, "
+                "battle=excluded.battle, at=excluded.at",
+                (me, them, name, payload, stamp))
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        log.info("简易战报没写上：%s", exc)
+        return
+    if not attack_context_user() and not attack_context_qq():
+        return
+    mark = _mark_name("wargame")
+    try:
+        prev = json.loads(_signal_value(mark) or "{}")
+    except ValueError:
+        prev = {}
+    if not isinstance(prev, dict) or prev.get("self") == me:
+        return
+    prev["self"] = me
+    try:
+        _upsert_signal(mark, json.dumps(prev, ensure_ascii=False))
+    except sqlite3.Error as exc:
+        log.info("简易战报没写上自己的编号：%s", exc)
+
+
+def _wargame_briefs(self_uid) -> list:
+    me = str(self_uid or "").strip()[:64]
+    if not me:
+        return []
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT enemy_uid, enemy_name, battle FROM wargame_brief "
+            "WHERE self_uid=? ORDER BY at DESC",
+            (me,)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    out = []
+    for uid, name, raw in rows:
+        try:
+            battle = json.loads(raw or "")
+        except ValueError:
+            continue
+        battle = _simple_wargame(battle)
+        if not battle:
+            continue
+        out.append({"uid": str(uid or ""), "name": str(name or ""), "battle": battle})
+    return out
+
+
+def _brief_clock(stamp) -> str:
+    text = str(stamp or "").strip()
+    try:
+        dt = datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ""
+    return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+
+
+def _fight_row(uid, name, raw, at, fight_id):
+    try:
+        battle = json.loads(raw or "")
+    except ValueError:
+        return None
+    battle = _simple_wargame(battle)
+    if not battle:
+        return None
+    return {
+        "uid": str(uid or ""),
+        "name": str(name or ""),
+        "id": int(fight_id or 0),
+        "at": _brief_clock(at),
+        "battle": battle,
+    }
+
+
+def _wargame_pairs(self_uid) -> list:
+    """同一对最近 10 场。还没进这张表的旧战报补成一场。"""
+    me = str(self_uid or "").strip()[:64]
+    if not me:
+        return []
+    conn = connect(readonly=True)
+    try:
+        recent = conn.execute(
+            "SELECT id, enemy_uid, enemy_name, battle, at FROM wargame_recent "
+            "WHERE self_uid=? ORDER BY id DESC",
+            (me,)).fetchall()
+        briefs = conn.execute(
+            "SELECT enemy_uid, enemy_name, battle, at FROM wargame_brief WHERE self_uid=?",
+            (me,)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    groups = {}
+    order = []
+
+    def put(row):
+        if row is None:
+            return
+        uid = row["uid"]
+        if uid not in groups:
+            groups[uid] = {"uid": uid, "name": row["name"], "fights": []}
+            order.append(uid)
+        elif row["name"] and not groups[uid]["name"]:
+            groups[uid]["name"] = row["name"]
+        if len(groups[uid]["fights"]) < 10:
+            groups[uid]["fights"].append({"id": row["id"], "at": row["at"], "battle": row["battle"]})
+
+    for fight_id, uid, name, raw, at in recent:
+        put(_fight_row(uid, name, raw, at, fight_id))
+    seen = set(groups)
+    for uid, name, raw, at in briefs:
+        if str(uid or "") in seen:
+            continue
+        put(_fight_row(uid, name, raw, at, 0))
+    return [groups[uid] for uid in order]
+
+
+def member_wargame(user_id: int):
+    """管理员看这个登录账号打过的简易战报。没有这个账号返回 None。"""
+    user_id = int(user_id or 0)
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT username, IFNULL(attack_qq,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    uin = str(row[1] or "").strip()
+    out = {"username": row[0], "attack_qq": uin, "pairs": [], "note": ""}
+    if not uin.isdigit():
+        out["note"] = "还没绑定攻打 QQ"
+        return out
+    try:
+        data = json.loads(_signal_value(f"wargame:{uin}") or "{}")
+    except ValueError:
+        data = {}
+    self_uid = ""
+    if isinstance(data, dict) and isinstance(data.get("self"), str):
+        self_uid = data["self"].strip()[:64]
+    if not self_uid:
+        out["note"] = "还没有军事演习战报"
+        return out
+    out["pairs"] = _wargame_pairs(self_uid)
+    if not out["pairs"]:
+        out["note"] = "还没有军事演习战报"
+    return out
 
 
 def request_camp_live(user_id: int) -> str:
@@ -5800,7 +6095,10 @@ DAILY_KIND_LABEL = {
     "pick_lab": "换实验卡",
     "pick_auto": "换自动化探索卡",
     "lab50": "实验室探索50连",
+    "lab10": "实验室探索10连",
+    "plant50": "工厂探索50连",
     "auto50": "自动化探索50连",
+    "blueprint": "国战图纸奖励",
     "chest": "国家宝箱",
     "guild_camp": "公会战役",
     "guild_claim": "公会任务领奖",
@@ -5821,7 +6119,7 @@ DAILY_KIND_LABEL = {
 _BASE_LANE = (
     "blast", "factory", "cards", "clean", "haoyin", "admiral", "admiral10", "agent10",
     "box_mid", "box_high",
-    "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
+    "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "lab10", "plant50", "auto50",
 )
 _BASE_JOB_KINDS = _BASE_LANE
 # 活动助手页面上的执行记录，含成就拨款。日常任务的最近执行不带这些。
@@ -6987,12 +7285,12 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         elif not (1 <= count <= 399):
             return "数量要在 1 到 399"
         clean["count"] = count
-    elif kind in ("pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50"):
+    elif kind in ("pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "lab10", "plant50", "auto50"):
         try:
             count = int(str(params.get("count") or "").strip())
         except (TypeError, ValueError):
             return "数量要是数字"
-        if kind in ("lab50", "auto50"):
+        if kind in ("lab50", "lab10", "plant50", "auto50"):
             if not (1 <= count <= 999):
                 return "次数要在 1 到 999"
         elif not (1 <= count <= 99999):
@@ -7041,10 +7339,18 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         clean["army"] = army
     elif kind == "wargame":
         action = str(params.get("action") or "list").strip()
-        if action not in ("list", "attack"):
+        if action not in ("list", "attack", "retreat"):
             return "没有这项"
         clean["action"] = action
-        if action == "attack":
+        if action == "retreat":
+            try:
+                sid = int(str(params.get("site_id") or "0").strip() or "0")
+            except (TypeError, ValueError):
+                return "场地不对"
+            if sid < 0:
+                return "场地不对"
+            clean["site_id"] = sid
+        elif action == "attack":
             try:
                 sid = int(str(params.get("site_id") or "").strip())
             except (TypeError, ValueError):

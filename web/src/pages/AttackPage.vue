@@ -36,6 +36,7 @@ const props = defineProps({
   hereText: { type: Function, required: true },
   cityText: { type: Function, required: true },
   addOrder: { type: Function, required: true },
+  claimBlueprint: { type: Function, required: true },
   saveClearPlan: { type: Function, required: true },
   addPriority: { type: Function, required: true },
   moveToCity: { type: Function, required: true },
@@ -96,6 +97,11 @@ function fightingLine(it) {
     <p v-if="err && errAt === 'attack'" class="err">{{ err }}</p>
     <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。打人和清城要中级或高级。刷摩多军团在日常任务。</p>
     <template v-if="me.remote_attack">
+      <form class="lock-row" @submit.prevent="claimBlueprint().catch((e) => showErr(e.message))">
+        <span class="switch">领取图纸奖励</span>
+        <button type="submit" :disabled="!(proc && proc.keepalive)">领取</button>
+      </form>
+      <p class="muted">国战里的图纸奖励。点下去会先确认。要这个号已经挂机保活。</p>
       <form class="attack-row" @submit.prevent="addOrder()">
         <label>城市
           <select v-model="attackCity" required>

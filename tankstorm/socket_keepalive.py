@@ -2801,6 +2801,11 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                     ok, why = country_war.daily_chest(rec, sock, config)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
+            elif kind == "blueprint":
+                from . import country_war
+                ok, why = country_war.claim_blueprint(rec, sock, config)
+                _show(why)
+                citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
             elif kind == "pve":
                 user_id = citydb.attack_context_user()
                 raw = _campaign_end(params, user_id)
@@ -2904,10 +2909,14 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "活动助手需要高级pro订阅")
                     return
-                if str(params.get("action") or "") == "attack":
+                action = str(params.get("action") or "")
+                if action == "attack":
                     ok, why = daily.wargame_attack(
                         rec, sock, config, params.get("site_id"), params.get("uid"),
                         params.get("name") or "", params.get("power") or 0)
+                elif action == "retreat":
+                    ok, why = daily.wargame_retreat(
+                        rec, sock, config, params.get("site_id") or 0)
                 else:
                     ok, why = daily.wargame_list(rec, sock, config)
                 _show(why)
@@ -2992,11 +3001,13 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
                 daily.note_bag_cards(rec)
                 _show(why)
                 citydb.finish_daily_job(job["id"], "done" if ok else "failed", why)
-            elif kind == "lab50":
+            elif kind in ("lab50", "lab10", "plant50"):
                 if not citydb.base_tier(citydb.user_tier(job.get("user_id") or 0)):
                     citydb.finish_daily_job(job["id"], "failed", "基地战需要高级pro订阅")
                     return
-                ok, why = daily.lab50_probe(
+                probe = {"lab50": daily.lab50_probe, "lab10": daily.lab10_probe,
+                         "plant50": daily.plant50_probe}[kind]
+                ok, why = probe(
                     rec, sock, times=params.get("count") or 1, on_progress=_show)
                 daily.note_bag_cards(rec)
                 _show(why)
@@ -3084,13 +3095,14 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         "train_book", "skill_book", "stone",
         "chest", "cards", "clean",
         "haoyin", "admiral", "admiral10", "agent10", "box_mid", "box_high",
-        "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "auto50",
+        "pick_general", "pick_staff", "pick_lab", "pick_auto", "lab50", "lab10", "plant50", "auto50",
+        "blueprint",
     )
 
     def _lane_for(kind):
         if kind in ("daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame",
                     "wish", "gift", "repair_drop", "soul", "badge", "donate", "tribute",
-                    "train_book", "skill_book", "stone", "chest"):
+                    "train_book", "skill_book", "stone", "chest", "blueprint"):
             return "daily"
         if kind == "blast":
             return "blast"
