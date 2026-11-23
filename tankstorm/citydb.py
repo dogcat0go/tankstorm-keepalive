@@ -206,6 +206,14 @@ CREATE TABLE IF NOT EXISTS watch_sub (
     name         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (user_id, city_id, uid)
 );
+CREATE TABLE IF NOT EXISTS wargame_brief (
+    self_uid    TEXT NOT NULL,
+    enemy_uid   TEXT NOT NULL,
+    enemy_name  TEXT NOT NULL DEFAULT '',
+    battle      TEXT NOT NULL,
+    at          TEXT NOT NULL,
+    PRIMARY KEY (self_uid, enemy_uid)
+);
 """
 
 
@@ -4795,8 +4803,11 @@ def note_wargame(board=None, result=None, battle=None, update_battle=False) -> N
                 prev["occupy"] = None
         else:
             prev["occupy"] = None
+        who = board.get("self")
+        if isinstance(who, str) and who.strip():
+            prev["self"] = who.strip()[:64]
     if result is not None:
-        prev["result"] = " ".join(str(result or "").split())[:500]
+        prev["result"] = " ".join(str(result or "").split())[:1200]
     if update_battle:
         prev["battle"] = _clean_wargame_battle(battle)
     _upsert_signal(name, json.dumps(prev, ensure_ascii=False))
@@ -4826,7 +4837,100 @@ def wargame_live(user_id: int) -> dict:
         "empty": empty if isinstance(empty, int) and not isinstance(empty, bool) else 0,
         "result": str(data.get("result") or ""),
         "battle": _clean_wargame_battle(data.get("battle")),
+        "briefs": _wargame_briefs(data.get("self")),
     }
+
+
+def _simple_wargame(battle):
+    """简易战报只留阶段、决战和分路的时间、品阶、间隔。将领和参谋不落盘。"""
+    cleaned = _clean_wargame_battle(battle)
+    if not cleaned:
+        return None
+    lanes = []
+    kept = False
+    for lane in cleaned.get("lanes") or []:
+        row = {}
+        if isinstance(lane, dict):
+            for key in ("seconds", "self", "enemy", "selfGrade", "enemyGrade"):
+                if key in lane:
+                    row[key] = lane[key]
+                    kept = True
+        lanes.append(row)
+    if kept:
+        cleaned["lanes"] = lanes
+    else:
+        cleaned.pop("lanes", None)
+    return cleaned
+
+
+def save_wargame_brief(self_uid, enemy_uid, enemy_name, battle) -> None:
+    """按自己和对方的游戏编号留下简易战报。同一对再打就覆盖。"""
+    me = str(self_uid or "").strip()[:64]
+    them = str(enemy_uid or "").strip()[:64]
+    if not me or not them:
+        return
+    brief = _simple_wargame(battle)
+    if not brief:
+        return
+    name = str(enemy_name or "").strip()[:32]
+    try:
+        conn = connect()
+        try:
+            conn.execute(
+                "INSERT INTO wargame_brief(self_uid, enemy_uid, enemy_name, battle, at) "
+                "VALUES (?,?,?,?,?) "
+                "ON CONFLICT(self_uid, enemy_uid) DO UPDATE SET "
+                "enemy_name=CASE WHEN excluded.enemy_name!='' "
+                "THEN excluded.enemy_name ELSE wargame_brief.enemy_name END, "
+                "battle=excluded.battle, at=excluded.at",
+                (me, them, name, json.dumps(brief, ensure_ascii=False), now_ts()))
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        log.info("简易战报没写上：%s", exc)
+        return
+    if not attack_context_user() and not attack_context_qq():
+        return
+    mark = _mark_name("wargame")
+    try:
+        prev = json.loads(_signal_value(mark) or "{}")
+    except ValueError:
+        prev = {}
+    if not isinstance(prev, dict) or prev.get("self") == me:
+        return
+    prev["self"] = me
+    try:
+        _upsert_signal(mark, json.dumps(prev, ensure_ascii=False))
+    except sqlite3.Error as exc:
+        log.info("简易战报没写上自己的编号：%s", exc)
+
+
+def _wargame_briefs(self_uid) -> list:
+    me = str(self_uid or "").strip()[:64]
+    if not me:
+        return []
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT enemy_uid, enemy_name, battle FROM wargame_brief "
+            "WHERE self_uid=? ORDER BY at DESC",
+            (me,)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    out = []
+    for uid, name, raw in rows:
+        try:
+            battle = json.loads(raw or "")
+        except ValueError:
+            continue
+        battle = _simple_wargame(battle)
+        if not battle:
+            continue
+        out.append({"uid": str(uid or ""), "name": str(name or ""), "battle": battle})
+    return out
 
 
 def request_camp_live(user_id: int) -> str:

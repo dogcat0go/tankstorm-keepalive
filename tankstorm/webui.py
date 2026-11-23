@@ -14,6 +14,7 @@
 按账号有效期返回还剩多少毫秒。
 """
 
+import base64
 import json
 import os
 import re
@@ -99,9 +100,9 @@ def _clear_cookie() -> str:
     return f"{_COOKIE}=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax"
 
 
-def _read_json(handler):
+def _read_json(handler, limit=8192):
     n = int(handler.headers.get("Content-Length") or 0)
-    if n > 8192:
+    if n > limit:
         raise ValueError("内容太长")
     raw = handler.rfile.read(n) if n else b""
     if not raw:
@@ -135,66 +136,23 @@ def _account(data):
     return username, password
 
 
-# 功能说明按条目写死在这里。id 用来记已读，tier 是面向的那一档，text 是文案。
-# images 是站内图片路径，按这个顺序显示在文案下面。文件放 web/public/guides/，
-# 构建后从 /guides/文件名 访问。没有图就留空元组。再加一条就在这张表里加一项。
-# 已读记在 app_user.guide_seen，不进管理后台。
-GUIDES = (
-    {
-        "id": "wargame",
-        "tier": "高级pro",
-        "title": "军事演习",
-        "text": (
-            "在「活动助手」里打开「军事演习」。点「刷新场地」拉战争学院的演习场，顺序和游戏里一样，一页 10 个。"
-            "等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。"
-            "选一个人点「进攻」，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时；"
-            "时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。"
-            "次数用完不发。停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。"
-            "自己占着场地时，点「撤退」。"
-            "\n\n"
-            "日常任务的今日进度里有「战争学院·军事演习（打低战力）」。这项开着，跑一轮时："
-            "已经占着这一轮不打；次数用完不发。"
-            "从低到高打战力低于 900 万的，空场、自己、本国和停战中的跳过。"
-            "这一场被拒就换下一个，否则就停。一轮最多打 5 个。今日进度记 1 次。"
-        ),
-        "images": (),
-    },
-)
-
-
-def _guide_images(item: dict) -> list:
-    """只留下站内路径。外链和带 .. 的路径不发给页面。"""
-    raw = item.get("images") or ()
-    if isinstance(raw, str):
-        raw = (raw,)
-    out = []
-    for one in raw:
-        path = str(one or "").strip()
-        if not path.startswith("/") or path.startswith("//") or "://" in path:
-            continue
-        if ".." in path.split("/"):
-            continue
-        out.append(path)
-    return out
-
-
 def _pending_guides(user: dict) -> list:
-    """还没确认、档位对得上、并且已经绑定攻打 QQ 的说明。没绑定不推送。"""
+    """还没确认、档位对得上、并且已经绑定攻打 QQ 的那一条新功能。没绑定不推送。"""
     if not citydb.attack_qq_of(int(user.get("id") or 0)):
         return []
     tier = user.get("tier") or "初级"
     seen = set(citydb.guide_seen_ids(int(user.get("id") or 0)))
-    out = []
-    for item in GUIDES:
-        if item["tier"] != tier or item["id"] in seen:
-            continue
-        out.append({
-            "id": item["id"],
-            "title": item["title"],
-            "text": item["text"],
-            "images": _guide_images(item),
-        })
-    return out
+    with _FEATURE_LOCK:
+        note = _feature_load()
+    feature_id = f"feature-{note['push_id']}" if note["push_id"] else ""
+    if not feature_id or note.get("tier") != tier or feature_id in seen:
+        return []
+    return [{
+        "id": feature_id,
+        "title": note["title"] or "新功能",
+        "text": note["text"],
+        "images": [f"/api/feature-img/{name}" for name in note["images"]],
+    }]
 
 
 def _user_out(user: dict) -> dict:
@@ -447,6 +405,131 @@ def _scan_login_view() -> dict:
     return {"phase": phase, "detail": detail, "at": at,
             "qr": show, "qr_at": qr_at if show else "",
             "accounts": _scan_accounts()}
+
+
+_FEATURE_LOCK = threading.Lock()
+_FEATURE_FILE = "feature_note.json"
+_FEATURE_DIR = "feature_images"
+_FEATURE_KINDS = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
+
+
+def _feature_kind(raw: bytes) -> str:
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if raw.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "webp"
+    return ""
+
+
+_FEATURE_DRAFT = {
+    "title": "军事演习",
+    "tier": "高级pro",
+    "text": (
+        "在「活动助手」里打开「军事演习」。点「刷新场地」拉战争学院的演习场，顺序和游戏里一样，一页 10 个。"
+        "等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。"
+        "选一个人点「进攻」，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时，"
+        "并按路写出第一阶段各自的战斗时间、双方火炮进阶品阶；"
+        "时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。"
+        "简易战报和深度解析都默认收着，点开再看表格、将领和参谋。"
+        "打过的人按双方编号留下简易战报，再打同一个人就换成新的。"
+        "次数用完不发。停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。"
+        "自己占着场地时，点「撤退」。"
+        "\n\n"
+        "日常任务的今日进度里有「战争学院·军事演习（打低战力）」。这项开着，跑一轮时："
+        "已经占着这一轮不打；次数用完不发。"
+        "从低到高打战力低于 900 万的，空场、自己、本国和停战中的跳过。"
+        "这一场被拒就换下一个，否则就停。一轮最多打 5 个。今日进度记 1 次。"
+    ),
+}
+
+
+def _feature_load() -> dict:
+    try:
+        with open(user_path(_FEATURE_FILE), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = None
+    if not isinstance(data, dict):
+        return {
+            "title": _FEATURE_DRAFT["title"],
+            "text": _FEATURE_DRAFT["text"],
+            "images": [],
+            "push_id": 0,
+            "pushed_at": "",
+            "tier": _FEATURE_DRAFT["tier"],
+        }
+    images = []
+    for name in data.get("images") or []:
+        if isinstance(name, str) and re.fullmatch(r"[0-9a-f]{16}\.(png|jpg|gif|webp)", name):
+            images.append(name)
+    try:
+        push_id = int(data.get("push_id") or 0)
+    except (TypeError, ValueError):
+        push_id = 0
+    return {
+        "title": str(data.get("title") or "")[:80],
+        "text": str(data.get("text") or "")[:2000],
+        "images": images[:6],
+        "push_id": max(0, push_id),
+        "pushed_at": str(data.get("pushed_at") or "")[:32],
+        "tier": data.get("tier") if data.get("tier") in citydb.TIERS else "",
+    }
+
+
+def _feature_save(note: dict) -> None:
+    path = user_path(_FEATURE_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(note, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def _feature_view(note: dict, admin: bool = False) -> dict:
+    if not admin and not note["push_id"]:
+        return {"id": 0}
+    return {
+        "id": note["push_id"],
+        "title": note["title"],
+        "text": note["text"],
+        "images": [{"name": name, "url": "/api/feature-img/" + name} for name in note["images"]],
+        "pushed_at": note["pushed_at"],
+        "tier": note.get("tier") or "",
+    }
+
+
+def _feature_words(data: dict, note: dict) -> None:
+    title = str(data.get("title") if "title" in data else note["title"]).strip()
+    text = str(data.get("text") if "text" in data else note["text"]).strip()
+    if len(title) > 80:
+        raise ValueError("标题最多 80 字")
+    if len(text) > 2000:
+        raise ValueError("说明最多 2000 字")
+    note["title"] = title
+    note["text"] = text
+    if "tier" not in data:
+        return
+    tier = str(data.get("tier") or "").strip()
+    if tier not in citydb.TIERS:
+        raise ValueError("会员等级只能是初级、中级、高级、高级pro")
+    note["tier"] = tier
+
+
+def _feature_file(name: str) -> str:
+    folder = os.path.realpath(user_path(_FEATURE_DIR))
+    path = os.path.realpath(os.path.join(folder, name))
+    if os.path.dirname(path) != folder:
+        raise ValueError("没有这张图")
+    return path
 
 
 def _handler(config: dict):
@@ -715,6 +798,47 @@ def _handler(config: dict):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            if path == "/api/feature":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看新功能配置"})
+                    return
+                with _FEATURE_LOCK:
+                    note = _feature_load()
+                _json(self, 200, _feature_view(note, admin=True))
+                return
+            if path.startswith("/api/feature-img/"):
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                name = path.rsplit("/", 1)[-1]
+                with _FEATURE_LOCK:
+                    note = _feature_load()
+                if name not in note["images"]:
+                    self.send_error(404)
+                    return
+                same = (user.get("tier") or "初级") == (note.get("tier") or "")
+                if not user.get("admin") and not (note["push_id"] and same):
+                    self.send_error(404)
+                    return
+                try:
+                    with open(_feature_file(name), "rb") as f:
+                        body = f.read()
+                except (OSError, ValueError):
+                    self.send_error(404)
+                    return
+                kind = name.rsplit(".", 1)[-1]
+                self.send_response(200)
+                self.send_header("Content-Type", _FEATURE_KINDS.get(kind, "application/octet-stream"))
+                self.send_header("Cache-Control", "private, max-age=3600")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if path == "/api/pwd-lab" or path.startswith("/api/pwd-lab/"):
                 self._pwd_lab_get(path)
                 return
@@ -729,7 +853,7 @@ def _handler(config: dict):
         def do_POST(self):
             path = self.path.split("?", 1)[0]
             try:
-                data = _read_json(self)
+                data = _read_json(self, 2_600_000 if path == "/api/admin/feature/image" else 8192)
             except (ValueError, json.JSONDecodeError) as exc:
                 _json(self, 400, {"error": str(exc) or "格式不对"})
                 return
@@ -1247,8 +1371,11 @@ def _handler(config: dict):
                     if not citydb.attack_qq_of(user["id"]):
                         raise ValueError("还没绑定攻打 QQ")
                     guide_id = str(data.get("id") or "").strip()
-                    item = next((g for g in GUIDES if g["id"] == guide_id), None)
-                    if not item or item["tier"] != (user.get("tier") or "初级"):
+                    tier = user.get("tier") or "初级"
+                    with _FEATURE_LOCK:
+                        note = _feature_load()
+                    feature_id = f"feature-{note['push_id']}" if note["push_id"] else ""
+                    if guide_id != feature_id or (note.get("tier") or "") != tier:
                         raise ValueError("没有这条说明")
                     why = citydb.mark_guide_seen(user["id"], guide_id)
                     if why:
@@ -1280,6 +1407,74 @@ def _handler(config: dict):
                         raise ValueError("QQ 号要是 5 到 12 位数字")
                     citydb.save_push(user["id"], qq_target)
                     _json(self, 200, {"ok": True})
+                elif path == "/api/admin/feature":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能改新功能"})
+                        return
+                    with _FEATURE_LOCK:
+                        note = _feature_load()
+                        _feature_words(data, note)
+                        _feature_save(note)
+                    _json(self, 200, _feature_view(note, admin=True))
+                elif path == "/api/admin/feature/push":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能推送新功能"})
+                        return
+                    with _FEATURE_LOCK:
+                        note = _feature_load()
+                        _feature_words(data, note)
+                        if note.get("tier") not in citydb.TIERS:
+                            raise ValueError("先选这一条给哪一档会员看")
+                        if not note["title"] and not note["text"] and not note["images"]:
+                            raise ValueError("先写标题、说明，或上传一张图")
+                        note["push_id"] += 1
+                        note["pushed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        _feature_save(note)
+                    _json(self, 200, _feature_view(note, admin=True))
+                elif path == "/api/admin/feature/image":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能上传新功能图片"})
+                        return
+                    blob = str(data.get("data") or "").strip()
+                    if blob.startswith("data:") and "," in blob[:80]:
+                        blob = blob.split(",", 1)[1]
+                    try:
+                        raw = base64.b64decode(blob, validate=False)
+                    except (ValueError, TypeError):
+                        raise ValueError("图片数据不对") from None
+                    if len(raw) > 1_800_000:
+                        raise ValueError("图片太大，请换一张小一点的")
+                    kind = _feature_kind(raw)
+                    if not kind:
+                        raise ValueError("只收 png、jpg、gif、webp")
+                    name = secrets.token_hex(8) + "." + kind
+                    with _FEATURE_LOCK:
+                        note = _feature_load()
+                        if len(note["images"]) >= 6:
+                            raise ValueError("最多 6 张图")
+                        folder = user_path(_FEATURE_DIR)
+                        os.makedirs(folder, exist_ok=True)
+                        with open(os.path.join(folder, name), "wb") as f:
+                            f.write(raw)
+                        note["images"].append(name)
+                        _feature_save(note)
+                    _json(self, 200, _feature_view(note, admin=True))
+                elif path == "/api/admin/feature/image/delete":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能删新功能图片"})
+                        return
+                    name = str(data.get("name") or "")
+                    with _FEATURE_LOCK:
+                        note = _feature_load()
+                        if name not in note["images"]:
+                            raise ValueError("没有这张图")
+                        note["images"] = [item for item in note["images"] if item != name]
+                        _feature_save(note)
+                    try:
+                        os.remove(_feature_file(name))
+                    except OSError:
+                        pass
+                    _json(self, 200, _feature_view(note, admin=True))
                 else:
                     self.send_error(404)
             except ValueError as exc:

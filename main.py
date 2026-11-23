@@ -75,7 +75,7 @@ from datetime import date
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from tankstorm import engine, notify, paths, qzone, socket_keepalive  # noqa: E402
+from tankstorm import config_platform, engine, notify, paths, qzone, socket_keepalive  # noqa: E402
 from tankstorm.log import get_logger                 # noqa: E402
 from tankstorm.qq_login import QQSession, try_lock  # noqa: E402
 
@@ -250,7 +250,8 @@ def open_qq(config: dict, name: str, fatal_lock: bool = True):
         if not _lock_cookie(scan_path, fatal=fatal_lock):
             return None
         qq = QQSession(scan_path)
-        qq.apply_config_platform(config)
+        # 扫描号跟「登录.平台」走。cookie 里残留的空间 p_skey 不能把大厅入口盖掉。
+        qq.set_platform(config_platform(config))
         return qq
     accounts = (config.get("登录") or {}).get("账号") or {}
     if not isinstance(accounts, dict):
