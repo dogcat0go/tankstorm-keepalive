@@ -440,7 +440,7 @@ _FEATURE_DRAFT = {
         "并按路写出第一阶段各自的战斗时间、双方火炮进阶品阶；"
         "时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。"
         "简易战报和深度解析都默认收着，点开再看表格、将领和参谋。"
-        "打过的人按双方编号留下简易战报。同一对保留最近 10 场，管理页可以按成员查看。"
+        "打过的人按双方编号留下简易战报。同一对保留最近 10 场，在个人中心的军事演习历史记录里看。"
         "次数用完不发。停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。"
         "自己占着场地时，点「撤退」。"
         "\n\n"
@@ -669,6 +669,14 @@ def _handler(config: dict):
                     return
                 from .items_catalog import live_view
                 _json(self, 200, live_view() or {"live": False})
+                return
+            if path == "/api/wargame/history":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                detail = citydb.member_wargame(user["id"])
+                _json(self, 200, detail or {"pairs": [], "note": "还没有军事演习战报"})
                 return
             if path == "/api/daily":
                 user = self._user()

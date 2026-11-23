@@ -123,7 +123,6 @@ const wgSize = 10;
 
 const wgBoard = computed(() => props.wargame || {});
 const wgBattle = computed(() => wgBoard.value.battle || null);
-const wgBriefs = computed(() => (Array.isArray(wgBoard.value.briefs) ? wgBoard.value.briefs : []));
 const wgSites = computed(() => (Array.isArray(wgBoard.value.sites) ? wgBoard.value.sites : []));
 const wgLevels = computed(() => {
   const set = new Set();
@@ -268,17 +267,10 @@ function occupyText(occ) {
       <p v-if="wgJob && (wgJob.status === '排队' || wgJob.status === '正在做')">{{ wgJob.status }} {{ wgJob.detail }}<button type="button" class="ghost" @click="cancelJob(wgJob).catch((e) => showErr(e.message))">关停</button></p>
       <p v-if="wgBoard.result">{{ wgBoard.result }}</p>
       <BattleReport :battle="wgBattle" />
-      <template v-if="wgBriefs.length">
-        <p class="muted">打过的人</p>
-        <template v-for="item in wgBriefs" :key="item.uid">
-          <p class="wg-saved">{{ item.name || item.uid }}</p>
-          <BattleReport :battle="item.battle" />
-        </template>
-      </template>
       <p>剩余次数 {{ liveText(wgBoard.token) }}<span v-if="occupyText(wgBoard.occupy)"> · {{ occupyText(wgBoard.occupy) }}</span>
         <button v-if="wgBoard.occupy && wgBoard.occupy.id" type="button" class="ghost" @click="runWargameRetreat(wgBoard.occupy.id).catch((e) => showErr(e.message))">撤退</button>
       </p>
-      <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 10 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时，并按路写出第一阶段各自的战斗时间；时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。火炮进阶品阶和发射间隔按路写在下面，没读到的一方留空。简易战报和深度解析都默认收着，点开再看表格、将领和参谋。打过的人按双方编号留下简易战报。同一对保留最近 10 场，管理页可以按成员查看。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
+      <p class="muted">点刷新拉战争学院的演习场，顺序和游戏里一样，一页 10 个。等级选全部、查找留空时，页码和战争学院对得上。空场留在原来的位置。写出占领者的名字和战力。选一个人进攻，打完把结果写在上面。战报按双方写出第一阶段的剩余坦克、整体血量和耗时，并按路写出第一阶段各自的战斗时间；时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。火炮进阶品阶和发射间隔按路写在下面，没读到的一方留空。简易战报和深度解析都默认收着，点开再看表格、将领和参谋。打过的记录在个人中心的军事演习历史记录里。用的还是军事演习原来的查询和进攻。次数用完不发，停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。</p>
       <p v-if="!wgSites.length" class="muted">还没有场地。点刷新场地。</p>
       <p v-else-if="!wgShown.length" class="muted">这个筛选下没有人</p>
       <div v-else class="wide">
