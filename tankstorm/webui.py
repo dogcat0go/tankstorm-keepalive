@@ -137,7 +137,9 @@ def _account(data):
 
 
 def _pending_guides(user: dict) -> list:
-    """这个账号还没确认、并且档位对得上的那一条新功能。"""
+    """还没确认、档位对得上、并且已经绑定攻打 QQ 的那一条新功能。没绑定不推送。"""
+    if not citydb.attack_qq_of(int(user.get("id") or 0)):
+        return []
     tier = user.get("tier") or "初级"
     seen = set(citydb.guide_seen_ids(int(user.get("id") or 0)))
     with _FEATURE_LOCK:
@@ -1366,6 +1368,8 @@ def _handler(config: dict):
                             raise ValueError(why)
                         _json(self, 200, {"ok": True, "removed": removed})
                 elif path == "/api/guide/seen":
+                    if not citydb.attack_qq_of(user["id"]):
+                        raise ValueError("还没绑定攻打 QQ")
                     guide_id = str(data.get("id") or "").strip()
                     tier = user.get("tier") or "初级"
                     with _FEATURE_LOCK:
