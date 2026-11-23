@@ -214,6 +214,16 @@ CREATE TABLE IF NOT EXISTS wargame_brief (
     at          TEXT NOT NULL,
     PRIMARY KEY (self_uid, enemy_uid)
 );
+CREATE TABLE IF NOT EXISTS wargame_recent (
+    id          INTEGER PRIMARY KEY,
+    self_uid    TEXT NOT NULL,
+    enemy_uid   TEXT NOT NULL,
+    enemy_name  TEXT NOT NULL DEFAULT '',
+    battle      TEXT NOT NULL,
+    at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS wargame_recent_pair
+    ON wargame_recent(self_uid, enemy_uid, id);
 """
 
 
@@ -4873,9 +4883,35 @@ def save_wargame_brief(self_uid, enemy_uid, enemy_name, battle) -> None:
     if not brief:
         return
     name = str(enemy_name or "").strip()[:32]
+    payload = json.dumps(brief, ensure_ascii=False)
+    stamp = now_ts()
     try:
         conn = connect()
         try:
+            old = conn.execute(
+                "SELECT battle, at FROM wargame_brief WHERE self_uid=? AND enemy_uid=?",
+                (me, them)).fetchone()
+            have = conn.execute(
+                "SELECT COUNT(*) FROM wargame_recent WHERE self_uid=? AND enemy_uid=?",
+                (me, them)).fetchone()[0]
+            if not have and old and old[0] != payload:
+                conn.execute(
+                    "INSERT INTO wargame_recent(self_uid, enemy_uid, enemy_name, battle, at) "
+                    "VALUES (?,?,?,?,?)",
+                    (me, them, name, old[0], old[1] or stamp))
+            conn.execute(
+                "INSERT INTO wargame_recent(self_uid, enemy_uid, enemy_name, battle, at) "
+                "VALUES (?,?,?,?,?)",
+                (me, them, name, payload, stamp))
+            stale = conn.execute(
+                "SELECT id FROM wargame_recent WHERE self_uid=? AND enemy_uid=? "
+                "ORDER BY id DESC LIMIT -1 OFFSET 10",
+                (me, them)).fetchall()
+            if stale:
+                conn.execute(
+                    "DELETE FROM wargame_recent WHERE id IN (%s)"
+                    % ",".join("?" * len(stale)),
+                    [row[0] for row in stale])
             conn.execute(
                 "INSERT INTO wargame_brief(self_uid, enemy_uid, enemy_name, battle, at) "
                 "VALUES (?,?,?,?,?) "
@@ -4883,7 +4919,7 @@ def save_wargame_brief(self_uid, enemy_uid, enemy_name, battle) -> None:
                 "enemy_name=CASE WHEN excluded.enemy_name!='' "
                 "THEN excluded.enemy_name ELSE wargame_brief.enemy_name END, "
                 "battle=excluded.battle, at=excluded.at",
-                (me, them, name, json.dumps(brief, ensure_ascii=False), now_ts()))
+                (me, them, name, payload, stamp))
             conn.commit()
         finally:
             conn.close()
@@ -4930,6 +4966,108 @@ def _wargame_briefs(self_uid) -> list:
         if not battle:
             continue
         out.append({"uid": str(uid or ""), "name": str(name or ""), "battle": battle})
+    return out
+
+
+def _brief_clock(stamp) -> str:
+    text = str(stamp or "").strip()
+    try:
+        dt = datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return ""
+    return dt.astimezone(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+
+
+def _fight_row(uid, name, raw, at, fight_id):
+    try:
+        battle = json.loads(raw or "")
+    except ValueError:
+        return None
+    battle = _simple_wargame(battle)
+    if not battle:
+        return None
+    return {
+        "uid": str(uid or ""),
+        "name": str(name or ""),
+        "id": int(fight_id or 0),
+        "at": _brief_clock(at),
+        "battle": battle,
+    }
+
+
+def _wargame_pairs(self_uid) -> list:
+    """同一对最近 10 场。还没进这张表的旧战报补成一场。"""
+    me = str(self_uid or "").strip()[:64]
+    if not me:
+        return []
+    conn = connect(readonly=True)
+    try:
+        recent = conn.execute(
+            "SELECT id, enemy_uid, enemy_name, battle, at FROM wargame_recent "
+            "WHERE self_uid=? ORDER BY id DESC",
+            (me,)).fetchall()
+        briefs = conn.execute(
+            "SELECT enemy_uid, enemy_name, battle, at FROM wargame_brief WHERE self_uid=?",
+            (me,)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    groups = {}
+    order = []
+
+    def put(row):
+        if row is None:
+            return
+        uid = row["uid"]
+        if uid not in groups:
+            groups[uid] = {"uid": uid, "name": row["name"], "fights": []}
+            order.append(uid)
+        elif row["name"] and not groups[uid]["name"]:
+            groups[uid]["name"] = row["name"]
+        if len(groups[uid]["fights"]) < 10:
+            groups[uid]["fights"].append({"id": row["id"], "at": row["at"], "battle": row["battle"]})
+
+    for fight_id, uid, name, raw, at in recent:
+        put(_fight_row(uid, name, raw, at, fight_id))
+    seen = set(groups)
+    for uid, name, raw, at in briefs:
+        if str(uid or "") in seen:
+            continue
+        put(_fight_row(uid, name, raw, at, 0))
+    return [groups[uid] for uid in order]
+
+
+def member_wargame(user_id: int):
+    """管理员看这个登录账号打过的简易战报。没有这个账号返回 None。"""
+    user_id = int(user_id or 0)
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT username, IFNULL(attack_qq,'') FROM app_user WHERE id=?",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    uin = str(row[1] or "").strip()
+    out = {"username": row[0], "attack_qq": uin, "pairs": [], "note": ""}
+    if not uin.isdigit():
+        out["note"] = "还没绑定攻打 QQ"
+        return out
+    try:
+        data = json.loads(_signal_value(f"wargame:{uin}") or "{}")
+    except ValueError:
+        data = {}
+    self_uid = ""
+    if isinstance(data, dict) and isinstance(data.get("self"), str):
+        self_uid = data["self"].strip()[:64]
+    if not self_uid:
+        out["note"] = "还没有军事演习战报"
+        return out
+    out["pairs"] = _wargame_pairs(self_uid)
+    if not out["pairs"]:
+        out["note"] = "还没有军事演习战报"
     return out
 
 

@@ -1496,6 +1496,10 @@ async function loadFailLibrary() {
   return await api("/api/atk-fail");
 }
 
+async function loadWargameHistory() {
+  return await api("/api/wargame/history");
+}
+
 async function loadRegions() {
   return await api("/api/regions");
 }
@@ -1716,6 +1720,7 @@ onUnmounted(() => {
         :reset-fail-library="resetFailLibrary"
         :load-regions="loadRegions"
         :save-region="saveRegion"
+        :load-wargame-history="loadWargameHistory"
         :show-err="showErr"
       />
       <ActivityPage

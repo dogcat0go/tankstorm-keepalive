@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, ref, watch } from "vue";
+import BattleReport from "../components/BattleReport.vue";
 
 const props = defineProps({
   me: { type: Object, required: true },
@@ -10,8 +11,14 @@ const props = defineProps({
   resetFailLibrary: { type: Function, required: true },
   loadRegions: { type: Function, required: true },
   saveRegion: { type: Function, required: true },
+  loadWargameHistory: { type: Function, required: true },
   showErr: { type: Function, required: true },
 });
+
+const pane = ref("account");
+const histPairs = ref([]);
+const histNote = ref("");
+const histReady = ref(false);
 
 const currentPwd = ref("");
 const nextPwd = ref("");
@@ -149,6 +156,21 @@ onMounted(() => {
   loadRegions().catch((e) => props.showErr(e.message, "region"));
 });
 
+async function openHistory() {
+  pane.value = "wargame";
+  histReady.value = false;
+  props.showErr("", "wargame");
+  try {
+    const data = await props.loadWargameHistory();
+    histPairs.value = data.pairs || [];
+    histNote.value = data.note || "";
+    histReady.value = true;
+  } catch (e) {
+    histReady.value = true;
+    props.showErr(e.message, "wargame");
+  }
+}
+
 async function submitPwd() {
   pwdNote.value = "";
   props.showErr("", "pwd");
@@ -167,6 +189,27 @@ async function submitPwd() {
 <template>
   <section>
     <h2>个人中心</h2>
+    <nav class="profile-nav" aria-label="个人中心">
+      <button type="button" class="ghost" :class="{ here: pane === 'account' }" @click="pane = 'account'">账号</button>
+      <button type="button" class="ghost" :class="{ here: pane === 'wargame' }" @click="openHistory().catch((e) => showErr(e.message, 'wargame'))">军事演习历史记录</button>
+    </nav>
+    <template v-if="pane === 'wargame'">
+      <p v-if="!histReady" class="muted">正在看军事演习记录。</p>
+      <p v-else-if="err && errAt === 'wargame'" class="err">{{ err }}</p>
+      <p v-else-if="histNote" class="muted">{{ histNote }}</p>
+      <template v-else-if="histPairs.length">
+        <p class="muted">同一对保留最近 10 场简易战报，时间是北京时间。</p>
+        <template v-for="pair in histPairs" :key="pair.uid">
+          <p class="wg-saved">{{ pair.name || pair.uid }}</p>
+          <template v-for="fight in pair.fights" :key="pair.uid + '-' + fight.id + '-' + fight.at">
+            <p v-if="fight.at" class="muted">{{ fight.at }}</p>
+            <BattleReport :battle="fight.battle" />
+          </template>
+        </template>
+      </template>
+      <p v-else class="muted">还没有军事演习记录。</p>
+    </template>
+    <template v-else>
     <p>
       {{ me.username }} · {{ me.tier || "初级" }}<template v-if="me.expires_at"> · 有效期至 {{ me.expires_at }}</template>
     </p>
@@ -254,5 +297,6 @@ async function submitPwd() {
       <span v-if="failNote" class="muted">{{ failNote }}</span>
       <span v-if="err && errAt === 'fail'" class="err">{{ err }}</span>
     </p>
+    </template>
   </section>
 </template>

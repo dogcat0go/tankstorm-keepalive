@@ -440,7 +440,7 @@ _FEATURE_DRAFT = {
         "并按路写出第一阶段各自的战斗时间、双方火炮进阶品阶；"
         "时间轴中间断开且当时两边都还有坦克，就再写出决战耗时和最终血量。"
         "简易战报和深度解析都默认收着，点开再看表格、将领和参谋。"
-        "打过的人按双方编号留下简易战报，再打同一个人就换成新的。"
+        "打过的人按双方编号留下简易战报。同一对保留最近 10 场，在个人中心的军事演习历史记录里看。"
         "次数用完不发。停战和自己占的场不能点。本国的场可以点，服务器不让打会把原因返回来。"
         "自己占着场地时，点「撤退」。"
         "\n\n"
@@ -670,6 +670,14 @@ def _handler(config: dict):
                 from .items_catalog import live_view
                 _json(self, 200, live_view() or {"live": False})
                 return
+            if path == "/api/wargame/history":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                detail = citydb.member_wargame(user["id"])
+                _json(self, 200, detail or {"pairs": [], "note": "还没有军事演习战报"})
+                return
             if path == "/api/daily":
                 user = self._user()
                 if not user:
@@ -731,6 +739,26 @@ def _handler(config: dict):
                     return
                 if detail is None:
                     _json(self, 404, {"error": "没有这个攻打 QQ"})
+                    return
+                _json(self, 200, detail)
+                return
+            if path == "/api/admin/members/wargame":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看成员的对战"})
+                    return
+                query = parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+                try:
+                    user_id = int((query.get("user_id") or ["0"])[0])
+                except (TypeError, ValueError):
+                    _json(self, 400, {"error": "没有这个账号"})
+                    return
+                detail = citydb.member_wargame(user_id)
+                if detail is None:
+                    _json(self, 404, {"error": "没有这个账号"})
                     return
                 _json(self, 200, detail)
                 return
