@@ -5757,10 +5757,14 @@ def _wargame_outcome(data, sid, name, power):
         return False, f"没打下{who}{detail}", battle
     if ret == 10:
         text = f"{who}被拒 ret=10"
+    elif ret == 17:
+        text = f"{who}被拒 ret=17，没有开战"
     elif ret == 101:
         text = f"{who}没有战报 ret=101"
     else:
         text = f"{who}没打下来 ret={ret}"
+    if not detail:
+        detail = "。回包里没有战报"
     return False, text + detail, battle
 
 
