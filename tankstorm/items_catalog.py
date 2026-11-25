@@ -57,7 +57,7 @@ def _log():
 
 
 def beijing_today() -> str:
-    """北京时间的日期，一天只拉一次按这个算。"""
+    """北京时间的日期。同一版本一天只占一次，更新的版本不看这一天。"""
     return datetime.now(_BJ).strftime("%Y-%m-%d")
 
 
@@ -329,8 +329,39 @@ def live_view():
     }
 
 
+def _version_newer(seen: str, saved: str) -> bool:
+    """登录里看到的版本是不是比已保存的新。
+
+    两边都要先收成 8 到 12 位数字。从左往右比，大的就是新的：
+    日期在前，所以后一天更大；同一天后缀 03 比 02、01 大。
+    有一边认不出来，就不算新。
+    """
+    seen = _clean_version(seen)
+    saved = _clean_version(saved)
+    if not seen or not saved:
+        return False
+    return seen > saved
+
+
+def _saved_version() -> str:
+    """已经写好的道具表版本。没有表就返回空字符串。"""
+    data = _read_json(user_path(LIVE_NAME))
+    items = data.get("items")
+    version = _clean_version(str(data.get("version") or ""))
+    if version and isinstance(items, list) and items:
+        return version
+    state = _read_json(user_path(STATE_NAME))
+    if state.get("ok") is True:
+        return _clean_version(str(state.get("version") or ""))
+    return ""
+
+
 def claim_today() -> bool:
-    """这一北京日还没拉过就占上，并返回 True。别的进程同时来也只会有一个成功。"""
+    """这一北京日、当前这个版本还没拉过就占上，并返回 True。
+
+    只挡住同一版本的重复请求。登录里出现更新的版本时，调用方不走这里。
+    别的进程同时来也只会有一个成功。
+    """
     today = beijing_today()
     with _hold_lock(user_path(LOCK_NAME)):
         state = _read_json(user_path(STATE_NAME))
@@ -355,10 +386,12 @@ def _mark_refresh_ok(version: str) -> None:
 
 
 def schedule_refresh(qq, ctx) -> None:
-    """管理员绑定的游戏号登上时，后台拉一次道具表。立刻返回。
+    """管理员绑定的游戏号登上时，后台拉道具表。立刻返回。
 
     绑着这个攻打 QQ 的登录账号里没有管理员，就不拉。
-    同一个北京日期只拉一次，不管成功还是失败，都不在这条连接上等待。
+    同一个北京日期里，已保存的版本没有更新，就不再请求。
+    登录里的版本比已保存的新，再拉一次。这次失败不改已有的表，
+    也不把新版本记成已经拉过，下次登上还会再试。
     """
     global _done_day, _busy
     today = beijing_today()
@@ -369,35 +402,71 @@ def schedule_refresh(qq, ctx) -> None:
             uin = str(ctx.get("uin") or "").strip()
         version = str(ctx.get("version") or "").strip()
     with _state_lock:
-        if _done_day == today or _busy:
+        if _busy:
             return
     try:
         from . import citydb
         if not uin or not citydb.attack_qq_has_admin(uin):
             return
-        if not claim_today():
+        saved = _saved_version()
+        newer = _version_newer(version, saved)
+        if not newer:
             with _state_lock:
+                if _done_day == today or _busy:
+                    return
+            if not claim_today():
+                with _state_lock:
+                    _done_day = today
+                return
+            with _state_lock:
+                if _busy:
+                    return
                 _done_day = today
-            return
-        with _state_lock:
-            _done_day = today
-            _busy = True
+                _busy = True
+        else:
+            with _state_lock:
+                if _busy:
+                    return
+                _busy = True
     except Exception:
         _log().info("道具表没开始更新", exc_info=True)
         return
 
     def work():
-        global _busy
+        global _done_day, _busy
         try:
-            found, rows, fresh = refresh(ctx_version=version or None)
+            if newer:
+                found, rows = "", None
+                for cand in ctx_candidates(version):
+                    if not _version_newer(cand, saved):
+                        break
+                    got = _load_version(cand)
+                    if got:
+                        found, rows = cand, got
+                        break
+                if not rows:
+                    raise RuntimeError(f"{_clean_version(version)} 的道具表还没有")
+            else:
+                found, rows = _resolve(None, version or None)
+                if saved and not _version_newer(found, saved):
+                    _log().info("道具表版本仍是 %s，没有更新", saved)
+                    return
+            fresh = _new_rows(rows)
+            _atomic_json(user_path(LIVE_NAME), {
+                "version": found,
+                "items": rows,
+                "new": fresh,
+            })
             try:
                 _mark_refresh_ok(found)
             except Exception:
                 _log().info("道具表已经写好，日期标记没写上")
+            with _state_lock:
+                _done_day = beijing_today()
             _log().info("道具表已更新到 %s，共 %d 条，新出 %d 条",
                         found, len(rows), len(fresh))
         except Exception as exc:
-            _log().info("道具表这一天没更新成，页面仍用原来的表：%s", exc)
+            _log().info("道具表没更新成，页面仍用原来的表：%s", exc)
         finally:
             with _state_lock:
                 _busy = False
