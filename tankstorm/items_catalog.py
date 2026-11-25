@@ -45,7 +45,6 @@ _BJ = timezone(timedelta(hours=8))
 _MAX_BYTES = 8_000_000
 
 _state_lock = threading.Lock()
-_done_day = ""
 _busy = False
 _baseline_lock = threading.Lock()
 _baseline = None
@@ -57,7 +56,7 @@ def _log():
 
 
 def beijing_today() -> str:
-    """北京时间的日期。同一版本一天只占一次，更新的版本不看这一天。"""
+    """北京时间的日期。最近三周的文件名按这个往回排。"""
     return datetime.now(_BJ).strftime("%Y-%m-%d")
 
 
@@ -356,23 +355,27 @@ def _saved_version() -> str:
     return ""
 
 
-def claim_today() -> bool:
-    """这一北京日、当前这个版本还没拉过就占上，并返回 True。
+def _open_newer(seen: str, saved: str):
+    """打开比已保存更新、并且能解开的那一份。没有就返回 ("", None)。
 
-    只挡住同一版本的重复请求。登录里出现更新的版本时，调用方不走这里。
-    别的进程同时来也只会有一个成功。
+    登录版本和最近三周的文件名合在一起，新的排在前面。
+    不比已保存的新就停，不再下载旧表。解不开的跳过，不写文件。
     """
-    today = beijing_today()
-    with _hold_lock(user_path(LOCK_NAME)):
-        state = _read_json(user_path(STATE_NAME))
-        if str(state.get("day") or "") == today:
-            return False
-        _atomic_json(user_path(STATE_NAME), {
-            "day": today,
-            "version": str(state.get("version") or ""),
-            "ok": False,
-        })
-        return True
+    ordered = []
+    have = set()
+    for cand in list(ctx_candidates(seen)) + list(recent_versions()):
+        if cand in have:
+            continue
+        have.add(cand)
+        ordered.append(cand)
+    ordered.sort(reverse=True)
+    for cand in ordered:
+        if saved and not _version_newer(cand, saved):
+            break
+        rows = _load_version(cand)
+        if rows:
+            return cand, rows
+    return "", None
 
 
 def _mark_refresh_ok(version: str) -> None:
@@ -389,12 +392,10 @@ def schedule_refresh(qq, ctx) -> None:
     """管理员绑定的游戏号登上时，后台拉道具表。立刻返回。
 
     绑着这个攻打 QQ 的登录账号里没有管理员，就不拉。
-    同一个北京日期里，已保存的版本没有更新，就不再请求。
-    登录里的版本比已保存的新，再拉一次。这次失败不改已有的表，
-    也不把新版本记成已经拉过，下次登上还会再试。
+    只打开比已保存版本更新、并且能解开的那一份。没有就不改现有的表，
+    也不把没拉开的版本记成已经完成，下次登上还会再找。
     """
-    global _done_day, _busy
-    today = beijing_today()
+    global _busy
     uin = str(getattr(qq, "uin", "") or "").strip()
     version = ""
     if isinstance(ctx, dict):
@@ -408,49 +409,25 @@ def schedule_refresh(qq, ctx) -> None:
         from . import citydb
         if not uin or not citydb.attack_qq_has_admin(uin):
             return
-        saved = _saved_version()
-        newer = _version_newer(version, saved)
-        if not newer:
-            with _state_lock:
-                if _done_day == today or _busy:
-                    return
-            if not claim_today():
-                with _state_lock:
-                    _done_day = today
+        with _state_lock:
+            if _busy:
                 return
-            with _state_lock:
-                if _busy:
-                    return
-                _done_day = today
-                _busy = True
-        else:
-            with _state_lock:
-                if _busy:
-                    return
-                _busy = True
+            _busy = True
     except Exception:
         _log().info("道具表没开始更新", exc_info=True)
         return
 
     def work():
-        global _done_day, _busy
+        global _busy
         try:
-            if newer:
-                found, rows = "", None
-                for cand in ctx_candidates(version):
-                    if not _version_newer(cand, saved):
-                        break
-                    got = _load_version(cand)
-                    if got:
-                        found, rows = cand, got
-                        break
-                if not rows:
-                    raise RuntimeError(f"{_clean_version(version)} 的道具表还没有")
-            else:
-                found, rows = _resolve(None, version or None)
-                if saved and not _version_newer(found, saved):
-                    _log().info("道具表版本仍是 %s，没有更新", saved)
-                    return
+            saved = _saved_version()
+            found, rows = _open_newer(version, saved)
+            if not rows:
+                if saved:
+                    _log().info("没有比 %s 更新的道具表", saved)
+                else:
+                    _log().info("没有能解开的道具表")
+                return
             fresh = _new_rows(rows)
             _atomic_json(user_path(LIVE_NAME), {
                 "version": found,
@@ -461,8 +438,6 @@ def schedule_refresh(qq, ctx) -> None:
                 _mark_refresh_ok(found)
             except Exception:
                 _log().info("道具表已经写好，日期标记没写上")
-            with _state_lock:
-                _done_day = beijing_today()
             _log().info("道具表已更新到 %s，共 %d 条，新出 %d 条",
                         found, len(rows), len(fresh))
         except Exception as exc:
