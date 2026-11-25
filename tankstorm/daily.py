@@ -3050,24 +3050,36 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
 
     if left <= 0:
         _nap(0.4)
-        got = send(1, {2: ("int32", bid), 3: ("int32", 1),
-                       6: ("int32", army_type)})
-        if not isinstance(got, dict):
-            return False, "开工没有回包"
-        err = got.get("error")
-        credit = _wallet_credit(got)
-        if credit is not None:
-            wallet = credit
-        building = got.get("building")
-        queue = _blast_queue(building) if isinstance(building, dict) else None
-        if queue is None or queue[2] <= 0:
-            queue = _producing(building) or queue
-        ours = (
-            queue is not None and queue[2] > 0
-            and queue[1] in (0, army_type) and queue[0] in (0, army_type))
-        other = (
-            queue is not None and queue[2] > 0 and not ours)
-        rejected = not isinstance(err, int) or isinstance(err, bool) or err != 0
+        got = None
+        err = None
+        building = None
+        queue = None
+        ours = other = rejected = False
+        for attempt in (0, 1):
+            got = send(1, {2: ("int32", bid), 3: ("int32", 1),
+                           6: ("int32", army_type)})
+            if not isinstance(got, dict):
+                return False, "开工没有回包"
+            err = got.get("error")
+            credit = _wallet_credit(got)
+            if credit is not None:
+                wallet = credit
+            building = got.get("building")
+            queue = _blast_queue(building) if isinstance(building, dict) else None
+            if queue is None or queue[2] <= 0:
+                queue = _producing(building) or queue
+            ours = (
+                queue is not None and queue[2] > 0
+                and queue[1] in (0, army_type) and queue[0] in (0, army_type))
+            other = (
+                queue is not None and queue[2] > 0 and not ours)
+            rejected = not isinstance(err, int) or isinstance(err, bool) or err != 0
+            # 槽是空的又回 16 时，等 1 秒再发一次。刚出厂马上开工会撞上这次拒绝。
+            if attempt == 0 and rejected and err == 16 and not ours and not other:
+                say(f"{place} {bid} 开工被拒 error=16，1 秒后重试")
+                _nap(1.0)
+                continue
+            break
         # 只有回包里的槽确实在走，才把拒绝当成「已经在造」并改去加速。
         # 槽是空的就还没开工，不能说成不重复开工。
         if rejected and ours:
@@ -3080,7 +3092,32 @@ def _blast_once(rec, sock, config, assume_idle=False, on_progress=None, *,
         elif rejected:
             slot = building.get("field25") if isinstance(building, dict) else None
             log.info("[爆破兵] 开工回包 error=%s 槽=%s", err, slot)
-            return False, f"开工服务器返回 error={err}，兵营没有进入生产"
+            if err == 16:
+                info = (rec.latest.get("RseUserInfo") or (None, None))[1] if rec else None
+
+                def num(key, info=info):
+                    raw = info.get(key) if isinstance(info, dict) else None
+                    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+                        return None
+                    return int(raw)
+
+                from . import repair
+                pop = repair.population(rec)
+                need = repair.POP.get(army_type)
+                have = []
+                if num("metal") is not None:
+                    have.append(f"金属 {num('metal')}")
+                if num("oil") is not None:
+                    have.append(f"石油 {num('oil')}")
+                if pop is not None:
+                    have.append(f"人口 {pop}")
+                tail = ("现在" + "、".join(have) + "。") if have else ""
+                occupy = f"（{unit}占 {need}）" if isinstance(need, int) else ""
+                return False, (
+                    f"开工被拒 error=16，{place}没有进入生产。"
+                    f"金属、石油不够，或人口放不下这个兵{occupy}，服务器就不让开工。"
+                    f"{tail}")
+            return False, f"开工服务器返回 error={err}，{place}没有进入生产"
         elif queue is None:
             return False, "开工回包读不到剩余时间，不加速"
         elif not ours:
