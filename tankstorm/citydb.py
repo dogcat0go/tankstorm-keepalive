@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     modo_last       TEXT NOT NULL DEFAULT '',
     off_at          TEXT NOT NULL DEFAULT '',
     region          INTEGER NOT NULL DEFAULT 0,
+    game_country    INTEGER NOT NULL DEFAULT 0,
     storm_cap       INTEGER,
     storm_used      INTEGER NOT NULL DEFAULT 0,
     storm_day       TEXT NOT NULL DEFAULT '',
@@ -228,6 +229,18 @@ CREATE TABLE IF NOT EXISTS wargame_recent (
 );
 CREATE INDEX IF NOT EXISTS wargame_recent_pair
     ON wargame_recent(self_uid, enemy_uid, id);
+CREATE TABLE IF NOT EXISTS war_team (
+    id           INTEGER PRIMARY KEY,
+    region       INTEGER NOT NULL,
+    country_id   INTEGER NOT NULL,
+    organizer_id INTEGER NOT NULL,
+    created_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS war_member (
+    team_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    PRIMARY KEY (team_id, user_id)
+);
 """
 
 
@@ -552,6 +565,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "region" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN region INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "game_country" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN game_country INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "storm_cap" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN storm_cap INTEGER")
@@ -4761,6 +4778,23 @@ def note_attack_move_text(text: str, user_id: int = 0) -> None:
             return
 
 
+def note_desk_text(text: str, user_id: int = 0) -> None:
+    """指挥测试写在进程状态上，给管理页看。进程已停则不改。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id and not attack_context_qq():
+        return
+    name = _mark_name("proc", user_id) if user_id else _mark_name("proc")
+    with _proc_lock:
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return
+            data["desk_note"] = " ".join(str(text or "").split())[:200]
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+        except sqlite3.Error:
+            return
+
+
 def request_attack_move(user_id: int, city_id) -> str:
     """让这条攻打线程移动到指定城。只走路，不打那座城。成功返回空字符串。"""
     user_id = int(user_id)
@@ -4826,6 +4860,155 @@ def restore_attack_move(city_id: int) -> None:
         return
     _upsert_signal(_mark_name("move", user_id), str(cid))
     mark_attack_resume(user_id)
+
+
+_DESK_OPS = ("move", "morale", "open", "attack")
+
+
+def _parse_desk(raw) -> tuple:
+    text = str(raw or "").strip()
+    op, _, city = text.partition(":")
+    if op not in _DESK_OPS:
+        return "", 0
+    try:
+        cid = int(city or 0)
+    except ValueError:
+        return "", 0
+    if op != "morale" and cid <= 0:
+        return "", 0
+    return op, cid
+
+
+def note_game_country(country, user_id: int = 0) -> None:
+    """攻打线程读到国家后记在登录账号上。没变就不写。"""
+    try:
+        country = int(country or 0)
+    except (TypeError, ValueError):
+        return
+    if isinstance(country, bool) or country <= 0:
+        return
+    ids = [int(user_id)] if int(user_id or 0) else []
+    if not ids:
+        ids = [int(x) for x in attack_context_users() if int(x or 0) > 0]
+    if not ids:
+        return
+    remembered = getattr(_attack_local, "game_country", None)
+    key = (tuple(ids), country)
+    if remembered == key:
+        return
+    conn = connect()
+    try:
+        conn.executemany(
+            "UPDATE app_user SET game_country=? WHERE id=? AND IFNULL(game_country,0)!=?",
+            [(country, uid, country) for uid in ids])
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+    _attack_local.game_country = key
+
+
+def request_desk(user_id: int, op: str, city_id=0) -> str:
+    """给这条攻打线程排一条指挥。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    op = str(op or "")
+    if op not in _DESK_OPS:
+        return "没有这个操作"
+    try:
+        cid = int(city_id or 0)
+    except (TypeError, ValueError):
+        return "城市不对"
+    label = ""
+    if op != "morale":
+        if cid <= 0:
+            return "要选一座城"
+        label = city_name(cid)
+        if not label:
+            return "这座城不在目录里"
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
+    if not attack_qq_of(user_id):
+        return "还没绑定攻打 QQ"
+    status = attack_status(user_id)
+    if not status.get("online"):
+        return "攻打没在跑，不能操作"
+    if status.get("paused"):
+        return "攻打暂停着，先点继续"
+    verb = {"move": "移动到", "attack": "攻打", "open": "打开", "morale": "补士气"}[op]
+    where = verb if op == "morale" else f"{verb} {cid} {label}".strip()
+    if status.get("phase") == "running":
+        note = f"打完这一单就{where}"
+    else:
+        note = f"开始{where}"
+    _upsert_signal(_mark_name("desk", user_id), f"{op}:{cid}")
+    note_desk_text(note, user_id)
+    return ""
+
+
+def desk_pending(user_id: int = 0) -> tuple:
+    """这条攻打线程还没领走的指挥。没有返回 ("", 0)。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id or (shutdown_due(user_id) and shutdown_covers_context()):
+        return "", 0
+    return _parse_desk(_signal_value(_mark_name("desk", user_id)))
+
+
+def desk_waiting(user_id: int = 0) -> bool:
+    op, _city = desk_pending(user_id)
+    return bool(op)
+
+
+def take_desk() -> tuple:
+    """领走这次指挥。领过就不再做第二次。"""
+    user_id = attack_context_user()
+    op, cid = desk_pending(user_id)
+    if not op:
+        return "", 0
+    _delete_signal(_mark_name("desk", user_id))
+    return op, cid
+
+
+def restore_desk(op: str, city_id: int) -> None:
+    """指挥做到一半被超级强攻打断。放回去，重新登录后再做。"""
+    user_id = int(attack_context_user() or 0)
+    op = str(op or "")
+    try:
+        cid = int(city_id or 0)
+    except (TypeError, ValueError):
+        return
+    if not user_id or op not in _DESK_OPS:
+        return
+    if op != "morale" and cid <= 0:
+        return
+    _upsert_signal(_mark_name("desk", user_id), f"{op}:{cid}")
+    mark_attack_resume(user_id)
+
+
+def save_desk_look(payload: dict, user_id: int = 0) -> None:
+    """打开城市后的玩家列表，给管理页看。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return
+    try:
+        raw = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return
+    try:
+        _upsert_signal(_mark_name("desklook", user_id), raw[:24000])
+    except sqlite3.Error:
+        return
+
+
+def load_desk_look(user_id: int) -> dict:
+    user_id = int(user_id or 0)
+    if not user_id:
+        return {}
+    try:
+        data = json.loads(_signal_value(_mark_name("desklook", user_id)) or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def request_attack_here(user_id: int) -> str:
@@ -5776,6 +5959,7 @@ def attack_status(user_id: int) -> dict:
                      "paused": paused, "keepalive": keeping,
                      "hold_left": int(hold_left) if show_hold else None,
                      "move_note": str(parsed.get("move_note") or ""),
+                     "desk_note": str(parsed.get("desk_note") or ""),
                      "need_login": bool(
                          uin and phase not in ("login", "running", "hold", "daily")
                          and not paused and not attack_cookie_logged_in(user_id, conn=conn))})

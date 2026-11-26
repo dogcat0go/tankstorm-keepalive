@@ -2450,7 +2450,7 @@ _PATH_GAP = 10.0
 
 
 def _my_country(rec, config) -> int:
-    from . import country_war
+    from . import citydb, country_war
 
     conf = config.get("国战") or {}
     try:
@@ -2459,7 +2459,13 @@ def _my_country(rec, config) -> int:
         country = 0
     if country <= 0:
         country = country_war._daily.read_my_country(rec) or 0
-    return int(country or 0)
+    country = int(country or 0)
+    if country > 0:
+        try:
+            citydb.note_game_country(country)
+        except Exception:
+            log.info("记下国家失败", exc_info=True)
+    return country
 
 
 def _blocked_path_open(rec, sock, config, job):
@@ -2659,6 +2665,32 @@ def _run_requested_move(rec, sock, config, beater) -> bool:
     if landed > 0:
         citydb.note_attack_here(landed)
     log.info("移动到 %s 结束，停在 %s", label, landed or "未知")
+    return True
+
+
+def _run_desk_command(rec, sock, config, beater) -> bool:
+    """管理页指挥测试排下来的移动、补士气、打开城市或攻打。"""
+    from . import citydb, desk
+
+    op, city = citydb.take_desk()
+    if not op:
+        return False
+    label = f"{city} {citydb.city_name(city) or ''}".strip()
+    try:
+        desk.run_command(rec, sock, config, beater, op, city)
+    except OSError:
+        if _storm_interrupted():
+            citydb.restore_desk(op, city)
+            citydb.note_desk_text(f"被超级强攻打断，重新登录后再做 {label or op}")
+        else:
+            citydb.note_desk_text(f"{label or op} 时连接中断")
+        raise
+    except Exception as exc:
+        log.info("指挥 %s %s 失败", op, label, exc_info=True)
+        detail = _interrupt_reason(exc)
+        if detail.startswith("攻打中断："):
+            detail = detail[len("攻打中断："):]
+        citydb.note_desk_text(f"{label or op} 时：{detail}")
     return True
 
 
@@ -3121,6 +3153,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
     hold_closed = False
     country_paused = False
     move_told = 0
+    desk_told = ""
     side_kinds = (
         "blast", "factory",
         "daily", "pve", "fund", "guild_camp", "guild_claim", "strike", "egg", "wargame",
@@ -3160,7 +3193,8 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
         orders = citydb.attack_order_open() if _war_on() else False
         return (citydb.daily_job_open() or orders
                 or citydb.attack_move_pending() > 0
-                or citydb.attack_here_pending())
+                or citydb.attack_here_pending()
+                or citydb.desk_waiting())
 
     def _pump():
         """冷却空档。到点的空城改回排队；剩下的时间还够，就先打一单国战。"""
@@ -3238,7 +3272,11 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                     return 0
                 if _war_on():
                     move_told = 0
+                    desk_told = ""
                     if _run_requested_move(rec, sock, config, beater):
+                        stated = False
+                        continue
+                    if _run_desk_command(rec, sock, config, beater):
                         stated = False
                         continue
                 else:
@@ -3250,6 +3288,13 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                         move_told = city
                     elif not city:
                         move_told = 0
+                    op, desk_city = citydb.desk_pending()
+                    mark = f"{op}:{desk_city}" if op else ""
+                    if mark and mark != desk_told:
+                        citydb.note_desk_text("没有国家面板，先不做这一条")
+                        desk_told = mark
+                    elif not mark:
+                        desk_told = ""
                 if _refresh_asked_here(rec, sock, config):
                     continue
                 _refresh_equip_bag(rec, sock)

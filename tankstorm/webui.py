@@ -723,6 +723,17 @@ def _handler(config: dict):
                     return
                 _json(self, 200, {"fighters": citydb.list_attack_fighters()})
                 return
+            if path == "/api/admin/desk":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能用指挥测试"})
+                    return
+                from . import desk
+                _json(self, 200, desk.snapshot())
+                return
             if path == "/api/admin/qq-log":
                 user = self._user()
                 if not user:
@@ -1524,6 +1535,31 @@ def _handler(config: dict):
                     except OSError:
                         pass
                     _json(self, 200, _feature_view(note, admin=True))
+                elif path == "/api/admin/desk":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能用指挥测试"})
+                        return
+                    from . import desk
+                    action = str(data.get("action") or "")
+                    lines = []
+                    if action == "team":
+                        why = desk.create_team(data.get("organizer_id"), data.get("country_id"))
+                    elif action == "drop":
+                        why = desk.drop_team(data.get("team_id"))
+                    elif action == "member":
+                        why = desk.set_member(
+                            data.get("team_id"), data.get("user_id"),
+                            str(data.get("on") or "") in ("1", "true", "on", "True"))
+                    elif action == "command":
+                        why, lines = desk.order(
+                            data.get("team_id"), data.get("op"), data.get("city_id"))
+                    else:
+                        why = "没有这个操作"
+                    if why:
+                        raise ValueError(why)
+                    body = desk.snapshot()
+                    body["lines"] = lines
+                    _json(self, 200, body)
                 else:
                     self.send_error(404)
             except ValueError as exc:

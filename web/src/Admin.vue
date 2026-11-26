@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import "./base.css";
 import MarkdownDoc from "./components/MarkdownDoc.vue";
 import BattleReport from "./components/BattleReport.vue";
+import DeskPage from "./components/DeskPage.vue";
 
 const me = ref(null);
 const username = ref("");
@@ -954,6 +955,7 @@ onUnmounted(() => {
         <button type="button" role="tab" :aria-selected="sheet === 'fighters'" :class="{ ghost: sheet !== 'fighters' }" @click="sheet = 'fighters'">攻打 QQ</button>
         <button type="button" role="tab" :aria-selected="sheet === 'scan'" :class="{ ghost: sheet !== 'scan' }" @click="sheet = 'scan'">扫描号</button>
         <button type="button" role="tab" :aria-selected="sheet === 'feature'" :class="{ ghost: sheet !== 'feature' }" @click="sheet = 'feature'">新功能</button>
+        <button type="button" role="tab" :aria-selected="sheet === 'desk'" :class="{ ghost: sheet !== 'desk' }" @click="sheet = 'desk'">指挥测试</button>
       </div>
       <template v-if="sheet === 'members'">
       <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。点「改密码」给忘记密码的成员设一个新密码，这个账号已有的登录会退出，之后用新密码登录。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。创建账号不带管理权限，有效期留空就是不限期。删除会连订单、订阅和登录一起去掉，当前登录的管理员不能删自己。</p>
@@ -1246,6 +1248,9 @@ onUnmounted(() => {
           </figure>
         </div>
         <p v-else class="muted">还没有图片。png、jpg、gif、webp 都可以，最多 6 张。</p>
+      </template>
+      <template v-else-if="sheet === 'desk'">
+        <DeskPage />
       </template>
       <template v-else-if="logQq">
         <div class="qq-log-head">
