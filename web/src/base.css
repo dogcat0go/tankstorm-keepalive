@@ -443,9 +443,10 @@ img.scan-qr { width: 280px; }
 }
 .desk { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
 .desk-map { overflow: auto; max-height: 72vh; background: #f3efe6; border: 1px solid #d9d1c3; border-radius: 8px; }
-.desk-map svg { display: block; min-width: 720px; width: 100%; height: auto; }
+.desk-map svg { display: block; min-width: 1100px; width: 100%; height: auto; }
 .desk-map circle { cursor: pointer; }
-.desk-map text { font-size: 10px; fill: #3a342c; pointer-events: none; }
+.desk-map line { stroke: #c3b8a4; stroke-width: 1; pointer-events: none; }
+.desk-map text { font-size: 11px; fill: #3a342c; pointer-events: none; }
 .desk-side { display: flex; flex-direction: column; gap: 10px; }
 .desk-tools { display: flex; flex-wrap: wrap; gap: 6px; }
 .desk-tools button { margin: 0; }

@@ -52,6 +52,17 @@ const members = computed(() => {
 });
 
 const supplyCap = computed(() => (team.value ? team.value.country_id * 1000 + 101 : 0));
+const edges = computed(() => {
+  const by = {};
+  for (const c of view.value.cities || []) by[c.id] = c;
+  const lines = [];
+  for (const c of view.value.cities || []) {
+    for (const n of c.near || []) {
+      if (n > c.id && by[n]) lines.push({ id: c.id + "-" + n, x1: c.x, y1: c.y, x2: by[n].x, y2: by[n].y });
+    }
+  }
+  return lines;
+});
 
 function canSupply(c) {
   const cap = supplyCap.value;
@@ -138,17 +149,17 @@ onUnmounted(() => clearInterval(timer));
   <div class="desk">
     <div class="desk-map">
       <svg v-if="view.cities.length" :viewBox="`0 0 ${view.width} ${view.height}`" role="img" aria-label="城市地图">
+        <line v-for="e in edges" :key="e.id" :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2" />
         <g v-for="c in view.cities" :key="c.id">
           <circle
-            :cx="c.x" :cy="c.y" :r="c.capital ? 8 : 5"
+            :cx="c.x" :cy="c.y" :r="c.capital || c.id === 9101 ? 9 : 5.5"
             :fill="fill(c.owner)"
-            :stroke="c.id === cityId ? '#1a1a1a' : (canSupply(c) ? '#2f6f4e' : 'transparent')"
-            :stroke-width="c.id === cityId ? 2 : 1.2"
-            :stroke-dasharray="c.id === cityId ? '' : '2 2'"
+            :stroke="c.id === cityId ? '#1a1a1a' : (canSupply(c) ? '#2f6f4e' : '#fff')"
+            :stroke-width="c.id === cityId ? 2.4 : 1"
             @click="pick(c)">
             <title>{{ c.name }} {{ c.id }}</title>
           </circle>
-          <text v-if="c.capital || c.id === cityId" :x="c.x + 8" :y="c.y + 3">{{ c.name }}</text>
+          <text :x="c.lx || c.x + 8" :y="c.ly || c.y + 3" text-anchor="middle">{{ c.name }}</text>
         </g>
         <g v-for="a in members" :key="'here' + a.id">
           <circle v-if="hereOf(a)" :cx="hereOf(a).x" :cy="hereOf(a).y - 9" r="3" fill="#fff" stroke="#1a1a1a" />

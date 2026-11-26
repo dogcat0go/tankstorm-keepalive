@@ -7,7 +7,8 @@
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
 """管理页的指挥测试：同区同国组队，在地图上点城。
 
-城市表没有坐标。按原属国把城排开，每国从首都往外一圈圈放。
+城市表没有坐标。位置按已经存下的 CityData 连接来排：
+马奇诺在中心，六座内圈城围着它，再往外是一圈中立城，六个国家贴在外圈。
 组织者点一次，队里每个在线的攻打号做同一件事。
 """
 
@@ -25,9 +26,170 @@ _ATTACK_STEPS = 8
 
 
 def layout_cities(graph: dict):
-    """把城市图画成坐标。返回 (城市列表, 宽, 高)。"""
+    """把城市图画成坐标。返回 (城市列表, 宽, 高)。
+
+    目录里有马奇诺和 9301–9318 这一圈时，按这条已经存下的连接来排。
+    缺了这一圈就按原属国分成几块。
+    """
     if not graph:
         return [], 320, 180
+    if _war_cycle(graph):
+        return _layout_war_map(graph)
+    return _layout_blocks(graph)
+
+
+def _war_cycle(graph) -> list:
+    """沿连接把 9301–9318 走成一圈。走不成返回空。"""
+    ring = {i for i in range(9301, 9319) if i in graph}
+    if len(ring) < 18 or 9101 not in graph:
+        return []
+    mates = {}
+    for cid in ring:
+        near = [int(n) for n in (graph[cid].get("near") or ()) if int(n) in ring]
+        if len(near) != 2:
+            return []
+        mates[cid] = near
+    start = 9301 if 9301 in mates else min(mates)
+    forward = start + 1 if start + 1 in mates[start] else min(mates[start])
+    order = [start]
+    prev, cur = start, forward
+    while cur != start and len(order) <= 18:
+        order.append(cur)
+        a, b = mates[cur]
+        prev, cur = cur, a if b == prev else b
+    if len(order) != 18 or cur != start:
+        return []
+    return order
+
+
+# 内圈六座城各对着外圈连续的三座。对应关系是 CityData 的连接，不是另外画的。
+_FORT_OUTERS = {
+    9201: (9302, 9303, 9304),
+    9202: (9317, 9318, 9301),
+    9203: (9314, 9315, 9316),
+    9204: (9311, 9312, 9313),
+    9205: (9308, 9309, 9310),
+    9206: (9305, 9306, 9307),
+}
+_CX = _CY = 700.0
+_MAP = 1400
+
+
+def _at(deg, radius):
+    rad = math.radians(deg)
+    return _CX + radius * math.sin(rad), _CY - radius * math.cos(rad)
+
+
+def _mean_deg(degs):
+    if not degs:
+        return 0.0
+    s = sum(math.sin(math.radians(d)) for d in degs)
+    c = sum(math.cos(math.radians(d)) for d in degs)
+    if s == 0 and c == 0:
+        return float(degs[0])
+    return math.degrees(math.atan2(s, c)) % 360
+
+
+def _layout_war_map(graph):
+    order = _war_cycle(graph)
+    ang = {cid: i * (360 / len(order)) for i, cid in enumerate(order)}
+    pos = {9101: (_CX, _CY)}
+    for cid, deg in ang.items():
+        pos[cid] = _at(deg, 310)
+    fort_ang = {}
+    for fort, outers in _FORT_OUTERS.items():
+        degs = [ang[c] for c in outers if c in ang]
+        if fort in graph and degs:
+            fort_ang[fort] = _mean_deg(degs)
+            pos[fort] = _at(fort_ang[fort], 118)
+    for cid in range(9319, 9331):
+        if cid not in graph:
+            continue
+        degs = [ang[int(n)] for n in (graph[cid].get("near") or ()) if int(n) in ang]
+        if not degs:
+            degs = [fort_ang[int(n)] for n in (graph[cid].get("near") or ()) if int(n) in fort_ang]
+        if degs:
+            pos[cid] = _at(_mean_deg(degs), 210)
+    for cid in range(7301, 7305):
+        if cid not in graph:
+            continue
+        degs = []
+        for n in graph[cid].get("near") or ():
+            n = int(n)
+            if n in ang:
+                degs.append(ang[n])
+            elif n in fort_ang:
+                degs.append(fort_ang[n])
+            elif n in pos and n != cid:
+                dx, dy = pos[n][0] - _CX, _CY - pos[n][1]
+                degs.append(math.degrees(math.atan2(dx, dy)) % 360)
+        if degs:
+            pos[cid] = _at(_mean_deg(degs), 168)
+    for country in range(1, 7):
+        smalls = []
+        for seq in (301, 302, 303):
+            cid = country * 1000 + seq
+            if cid not in graph:
+                continue
+            outers = [int(n) for n in (graph[cid].get("near") or ()) if int(n) in ang]
+            if not outers:
+                continue
+            deg = ang[outers[0]]
+            pos[cid] = _at(deg, 400)
+            big = cid - 100
+            if big in graph:
+                pos[big] = _at(deg, 485)
+            smalls.append(deg)
+        cap = country * 1000 + 101
+        if cap in graph and smalls:
+            pos[cap] = _at(_mean_deg(smalls), 575)
+        for seq, side in ((201, 12), (203, -12)):
+            big = country * 1000 + seq
+            modo = country * 10000 + seq * 10
+            if modo in graph and big in pos:
+                dx, dy = pos[big][0] - _CX, _CY - pos[big][1]
+                deg = math.degrees(math.atan2(dx, dy)) % 360
+                pos[modo] = _at(deg + side, 530)
+    pending = [cid for cid in graph if cid not in pos]
+    for _ in range(4):
+        still = []
+        for cid in pending:
+            nbrs = [pos[int(n)] for n in (graph[cid].get("near") or ()) if int(n) in pos]
+            if not nbrs:
+                still.append(cid)
+                continue
+            pos[cid] = (sum(p[0] for p in nbrs) / len(nbrs), sum(p[1] for p in nbrs) / len(nbrs))
+        pending = still
+        if not pending:
+            break
+    for i, cid in enumerate(sorted(pending)):
+        pos[cid] = (40 + (i % 8) * 28, 24 + (i // 8) * 22)
+    placed = [_city_point(graph, cid, xy[0], xy[1]) for cid, xy in sorted(pos.items()) if cid in graph]
+    return placed, _MAP, _MAP
+
+
+def _city_point(graph, cid, x, y):
+    info = graph[cid]
+    home = int(info.get("home") or 0)
+    dx, dy = x - _CX, y - _CY
+    dist = math.hypot(dx, dy) or 1
+    lx, ly = (x, y + 16) if dist < 2 else (x + dx / dist * 14, y + dy / dist * 14)
+    return {
+        "id": int(cid),
+        "name": info.get("name") or "",
+        "x": round(x, 1),
+        "y": round(y, 1),
+        "lx": round(lx, 1),
+        "ly": round(ly, 1),
+        "home": home,
+        "owner": int(info.get("owner") or 0),
+        "users": int(info.get("users") or 0),
+        "capital": int(cid) == home * 1000 + 101 and home in range(1, 7),
+        "near": sorted(int(n) for n in (info.get("near") or ())),
+    }
+
+
+def _layout_blocks(graph):
     homes = {}
     for cid, info in graph.items():
         homes.setdefault(int(info.get("home") or 0), []).append(int(cid))
