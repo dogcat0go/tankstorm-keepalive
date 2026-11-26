@@ -708,7 +708,7 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
             brief = "、".join(f"{c} 第{a}–{b}页" for c, a, b in page_jobs)
             log.info("页范围监视：每 %.0f 秒刷新 %s", page_gap, brief)
         elif page_mode:
-            log.info("页范围监视已启用，名单还是空的。在订阅页面的扫描安排里加上城市")
+            log.info("页范围监视已启用，名单还是空的。在管理页的扫描号里加上城市")
         if quiet:
             log.info("[扫描] 现在是停扫时段 %s–%s（北京时间）", quiet_start, quiet_end)
 

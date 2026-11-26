@@ -1775,7 +1775,7 @@ def _announce(host, port, config):
     if not _register_open(config):
         log.info("注册已关闭。添加账号：python3 web.py --add-user 用户名 --password 密码 --expires 2026-12-31 --tier 中级")
         log.info("改订阅档：python3 web.py --set-tier 用户名 初级|中级|高级|高级pro。中级及以上可提交远程扫码攻打。自动索敌、自动锁敌和清城高级配置要高级或高级pro。活动助手和基地战只要高级pro。公会战役从初级就能用")
-        log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin，可看成员配置、攻打 QQ 和扫描安排。扫描号登录二维码在「扫描号」一栏")
+        log.info("扫描安排：python3 web.py --set-admin 用户名 开。该账号登录后打开 /admin。扫描安排和扫描号登录二维码都在「扫描号」一栏")
     log.info("密码登录测试页：/pwd-lab（只要管理员。独立票据，不绑攻打号）")
     log.info("攻打号 NapCat 测试：/api/test（只要管理员。登录二维码和 get_cookies，不收发消息）")
     log.info("给攻打号起 NapCat：python3 web.py --napcat QQ号。一台容器一个号，地址和 Token 写入 config.local.json")

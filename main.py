@@ -725,7 +725,7 @@ def main() -> int:
             log.info("读扫描安排失败：%s", exc)
         if not _page_range_jobs(config)[0] and not (saved_plan and saved_plan.get("jobs")):
             log.error("页范围监视没有可用的城市。写成 1201:0-10;20-30 1301:0-8，"
-                      "或在订阅页面的扫描安排里加上，或填 config「页范围监视.范围」")
+                      "或在管理页的扫描号里加上，或填 config「页范围监视.范围」")
             return 1
         config.setdefault("保持活跃", {})["启用"] = True
     if args.watch_cities:
