@@ -578,6 +578,18 @@ async function loadMembers() {
   paintMembers(data.members);
 }
 
+async function saveWatch(m, event) {
+  const on = !!(event.target && event.target.checked);
+  err.value = "";
+  try {
+    const data = await api("/api/admin/members/watch", { user_id: m.id, on });
+    paintMembers(data.members);
+  } catch (e) {
+    if (event.target) event.target.checked = !!m.watch_on;
+    err.value = e.message || "请求失败";
+  }
+}
+
 async function saveStormCap(m) {
   err.value = "";
   stormErr.value = { ...stormErr.value, [m.id]: "" };
@@ -1122,6 +1134,11 @@ onUnmounted(() => {
                     <template v-if="!(Number(m.storm_cap) > 0)">· 不拒绝</template>
                     <template v-else>· 上限 {{ m.storm_cap }} 次<template v-if="(m.storm_used || 0) >= m.storm_cap">，已停</template></template>
                   </p>
+                  <label class="choice">
+                    <input type="checkbox" :checked="!!m.watch_on" @change="saveWatch(m, $event)" />
+                    监控敌人
+                  </label>
+                  <p class="muted">默认关。管理员始终可用。勾上后这个账号也能看到并使用监控敌人。</p>
                   <form class="storm-cap" @submit.prevent="saveStormCap(m)">
                     <label>每日上限
                       <input v-model="m.storm_cap_text" inputmode="numeric" placeholder="不拒绝" />

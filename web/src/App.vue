@@ -296,7 +296,7 @@ async function api(path, body) {
 }
 
 async function refresh() {
-  if (!me.value || !me.value.admin) {
+  if (!me.value || !me.value.watch) {
     items.value = [];
     cityCounts.value = [];
     return;
@@ -1083,7 +1083,7 @@ async function loadMe() {
 function takeUser(user) {
   me.value = user;
   if (!user.base_war && (tab.value === "base" || tab.value === "activity")) tab.value = "attack";
-  if (!user.admin && tab.value === "watch") tab.value = "attack";
+  if (!user.watch && tab.value === "watch") tab.value = "attack";
   pveStagesReady = false;
   guildAcceptReady = false;
   guildAcceptNote.value = "";
@@ -1708,7 +1708,7 @@ onUnmounted(() => {
         <el-menu-item index="daily">日常任务</el-menu-item>
         <el-menu-item v-if="me && me.base_war" index="base">基地战助手</el-menu-item>
         <el-menu-item v-if="me && me.base_war" index="activity">活动助手</el-menu-item>
-        <el-menu-item v-if="me && me.admin" index="watch">监控敌人</el-menu-item>
+        <el-menu-item v-if="me && me.watch" index="watch">监控敌人</el-menu-item>
       </el-menu>
       <ProfilePage
         v-show="tab === 'profile'"
@@ -1820,7 +1820,7 @@ onUnmounted(() => {
         :show-err="showErr"
       />
       <WatchPage
-        v-if="me && me.admin"
+        v-if="me && me.watch"
         v-show="toolsOn && tab === 'watch'"
         v-model:city-id="cityId"
         v-model:uid="uid"
