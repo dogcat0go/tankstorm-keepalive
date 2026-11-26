@@ -1170,6 +1170,38 @@ onUnmounted(() => {
           <p v-if="scanLogin.at" class="muted">{{ scanLogin.at }}</p>
           <img v-if="scanQr" class="qr scan-qr" :src="scanQr" alt="扫描号登录二维码" />
         </template>
+        <h2>扫描安排</h2>
+        <form class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
+          <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>
+          <label>停扫开始<input v-model="quietStart" type="time" /></label>
+          <label>停扫结束<input v-model="quietEnd" type="time" /></label>
+          <p class="muted">北京时间。例如 01:00 到 05:00 这段不翻页，游戏连接保持。23:00 到 05:00 这样跨过零点也可以。两个都空着就是全天扫。页码从 0 起，含结束页；订阅页面上的页数要减 1。一座城可以写多段，用分号隔开，例如 0-10; 20-30; 200-230。挨着或重叠的段会并成一段。</p>
+          <p v-if="scanQuiet">现在处于停扫时段，扫描会跳过。</p>
+          <table class="scan">
+            <thead>
+              <tr><th>城市</th><th>页码段</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, i) in scanRanges" :key="i">
+                <td>
+                  <select v-model="row.city_id" required>
+                    <option value="" disabled>选择城市</option>
+                    <option v-if="row.city_id && !cities.some((c) => String(c.id) === String(row.city_id))" :value="String(row.city_id)">{{ row.city_name || row.city_id }}</option>
+                    <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
+                  </select>
+                </td>
+                <td><input v-model="row.pages" class="pages" required placeholder="0-10; 20-30; 200-230" /></td>
+                <td><button type="button" class="ghost" @click="scanRanges.splice(i, 1)">去掉</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-if="!scanRanges.length" class="muted">还没有城市。加上之后，扫描进程按这里的页范围翻。</p>
+          <p>
+            <button type="button" class="ghost" @click="addScanCity">加一座城</button>
+            <button type="submit">保存扫描安排</button>
+            <span class="muted">{{ scanNote }}</span>
+          </p>
+        </form>
       </template>
       <template v-else-if="sheet === 'feature'">
         <h2>新功能</h2>
@@ -1327,38 +1359,6 @@ onUnmounted(() => {
       <p v-if="!fighters.length" class="muted">还没有绑定攻打 QQ。</p>
       <p v-else-if="!shownFighters.length" class="muted">{{ hiddenExpiredFighters && !fighterFilterOn ? "过期账号的攻打 QQ 已隐藏。" : "没有符合筛选的攻打 QQ。" }}</p>
       </template>
-      <h2 v-if="sheet === 'members' || (sheet !== 'scan' && sheet !== 'feature' && !logQq)">扫描安排</h2>
-      <form v-if="sheet === 'members' || (sheet !== 'scan' && sheet !== 'feature' && !logQq)" class="stack scan-form" @submit.prevent="saveScan().catch((e) => (err = e.message))">
-        <label>间隔秒<input v-model="scanGap" inputmode="numeric" required /></label>
-        <label>停扫开始<input v-model="quietStart" type="time" /></label>
-        <label>停扫结束<input v-model="quietEnd" type="time" /></label>
-        <p class="muted">北京时间。例如 01:00 到 05:00 这段不翻页，游戏连接保持。23:00 到 05:00 这样跨过零点也可以。两个都空着就是全天扫。页码从 0 起，含结束页；订阅页面上的页数要减 1。一座城可以写多段，用分号隔开，例如 0-10; 20-30; 200-230。挨着或重叠的段会并成一段。</p>
-        <p v-if="scanQuiet">现在处于停扫时段，扫描会跳过。</p>
-        <table class="scan">
-          <thead>
-            <tr><th>城市</th><th>页码段</th><th></th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="(row, i) in scanRanges" :key="i">
-              <td>
-                <select v-model="row.city_id" required>
-                  <option value="" disabled>选择城市</option>
-                  <option v-if="row.city_id && !cities.some((c) => String(c.id) === String(row.city_id))" :value="String(row.city_id)">{{ row.city_name || row.city_id }}</option>
-                  <option v-for="c in cities" :key="c.id" :value="String(c.id)">{{ cityLabel(c) }}</option>
-                </select>
-              </td>
-              <td><input v-model="row.pages" class="pages" required placeholder="0-10; 20-30; 200-230" /></td>
-              <td><button type="button" class="ghost" @click="scanRanges.splice(i, 1)">去掉</button></td>
-            </tr>
-          </tbody>
-        </table>
-        <p v-if="!scanRanges.length" class="muted">还没有城市。加上之后，扫描进程按这里的页范围翻。</p>
-        <p>
-          <button type="button" class="ghost" @click="addScanCity">加一座城</button>
-          <button type="submit">保存扫描安排</button>
-          <span class="muted">{{ scanNote }}</span>
-        </p>
-      </form>
     </template>
     <p class="err">{{ err }}</p>
   </main>
