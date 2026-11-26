@@ -1914,6 +1914,27 @@ def _interrupt_reason(exc) -> str:
     return "攻打中断：" + text
 
 
+def _claim_war_blueprint(rec, sock, config, order_id, status, reason=""):
+    """这一单国战打完，领一次图纸奖励。没打完或手动关停不领。领失败不改订单结果。"""
+    if "已手动关停" in str(reason or ""):
+        return
+    if str(status or "") not in ("done", "failed", "ended"):
+        return
+    from . import citydb, country_war
+    try:
+        ok, why = country_war.claim_blueprint(rec, sock, config)
+    except OSError:
+        raise
+    except Exception:
+        log.info("订单 %s 国战图纸奖励没领成", order_id, exc_info=True)
+        return
+    if ok:
+        log.info("订单 %s 打完，已领取国战图纸奖励", order_id)
+        citydb.append_order_reason(order_id, "已领取图纸奖励")
+    else:
+        log.info("订单 %s 打完，图纸奖励没领到：%s", order_id, why)
+
+
 def _fight_modo(rec, sock, config, beater, job) -> None:
     """刷摩多军团。走进离自己最近的一座城，召唤支援兵再打。恢复卡按订单上的数量。"""
     from . import citydb, country_war
@@ -1942,6 +1963,7 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
             log.info("订单 %s %s", job["id"], why, exc_info=True)
             citydb.finish_attack_order(
                 job["id"], "failed", why, beats=int(tally.get("n") or 0))
+            _claim_war_blueprint(rec, sock, config, job["id"], "failed", why)
             return
         why = str(out.get("停止原因") or "")
         note = str(out.get("说明") or "").strip()
@@ -1960,8 +1982,9 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
             citydb.finish_attack_order(job["id"], "ended", "已手动关停", beats=beats)
             return
         if _defeated(why):
-            citydb.finish_attack_order(
-                job["id"], "ended", why or "被别人打败，已回到首都", beats=beats)
+            shown = why or "被别人打败，已回到首都"
+            citydb.finish_attack_order(job["id"], "ended", shown, beats=beats)
+            _claim_war_blueprint(rec, sock, config, job["id"], "ended", shown)
             return
         show = note or why
         if why and _person_blocking(why) and (
@@ -1971,12 +1994,15 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
             return
         if why and _person_blocking(why):
             citydb.finish_attack_order(job["id"], "failed", show or why, beats=beats)
+            _claim_war_blueprint(rec, sock, config, job["id"], "failed", show or why)
             return
         if hits > 0:
             citydb.finish_attack_order(job["id"], "done", show, beats=beats)
+            _claim_war_blueprint(rec, sock, config, job["id"], "done", show)
             return
-        citydb.finish_attack_order(
-            job["id"], "failed", show or why or "未打成", beats=beats)
+        shown = show or why or "未打成"
+        citydb.finish_attack_order(job["id"], "failed", shown, beats=beats)
+        _claim_war_blueprint(rec, sock, config, job["id"], "failed", shown)
     finally:
         if _storm_interrupted() and not citydb.attack_paused() and not citydb.shutdown_due():
             citydb.reopen_interrupted_order(job["id"])
@@ -2162,6 +2188,7 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
             log.info("订单 %s %s", job["id"], why, exc_info=True)
             citydb.finish_attack_order(
                 job["id"], "failed", why, beats=int(tally.get("n") or 0))
+            _claim_war_blueprint(rec, sock, fight_config, job["id"], "failed", why)
             return _cut()
         beats = int(tally.get("n") or 0)
         cycle_min = 0
@@ -2177,6 +2204,7 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
                 "done": False, "failed": True,
                 "stop": _lock_no_chain(why, status), "parked": False,
             }
+            _claim_war_blueprint(rec, sock, fight_config, job["id"], status, why)
             if from_chain:
                 return result
         else:
@@ -2227,6 +2255,7 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
             if from_chain:
                 citydb.finish_attack_order(
                     job["id"], status, why, beats=beats, keep_reason=keep)
+                _claim_war_blueprint(rec, sock, fight_config, job["id"], status, why)
                 return result
 
         any_done = bool(result.get("done"))
@@ -2247,6 +2276,7 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
                     keep = status == "done" and not why and not uid
                     citydb.finish_attack_order(
                         job["id"], status, why, beats=beats, keep_reason=keep)
+                    _claim_war_blueprint(rec, sock, fight_config, job["id"], status, why)
                     finished = True
                 chained = True
                 log.info("同城索敌订单 %s 生效，连着打，打完再后退", nxt["id"])
@@ -2345,11 +2375,13 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
                 log.info("订单 %s 这几页打完了，%d 分钟后再打", job["id"], cycle_min)
             else:
                 log.info("订单 %s 这座城是空的，%d 分钟后再打", job["id"], cycle_min)
+            _claim_war_blueprint(rec, sock, fight_config, job["id"], status, why)
             return _cut()
         if not finished:
             keep = status == "done" and not why and not uid
             citydb.finish_attack_order(
                 job["id"], status, why, beats=beats, keep_reason=keep)
+            _claim_war_blueprint(rec, sock, fight_config, job["id"], status, why)
         return result
     finally:
         if guarding and not from_chain:

@@ -101,7 +101,7 @@ function fightingLine(it) {
         <span class="switch">领取图纸奖励</span>
         <button type="submit" :disabled="!(proc && proc.keepalive)">领取</button>
       </form>
-      <p class="muted">国战里的图纸奖励。点下去会先确认。要这个号已经挂机保活。</p>
+      <p class="muted">国战里的图纸奖励。每打完一单国战助手，也会自动领一次。点下去会先确认。要这个号已经挂机保活。</p>
       <form class="attack-row" @submit.prevent="addOrder()">
         <label>城市
           <select v-model="attackCity" required>
