@@ -1660,32 +1660,45 @@ class QQSession:
         """
         if not self.use_napcat:
             return False
+        # 要票失败不能把登录入口改掉。配置写成空间、NapCat 又连不上时，
+        # 原来按大厅票据连上的游戏会被改去空间，游戏服不再回包。
+        prev_platform = None
+        prev_cookies = None
         if not self.attack_account:
+            prev_platform = self._platform
+            prev_cookies = self._snapshot_cookies()
             self.set_platform(config_platform(config))
-        if self.attack_account:
-            api = str(getattr(self, "napcat_api", "") or "").strip().rstrip("/")
-            token = str(getattr(self, "napcat_token", "") or "").strip()
-            if not api:
-                api, token = attack_napcat_endpoint(
-                    config, getattr(self, "bound_uin", "") or self.uin)
-            if not api:
-                return False
-            wait = 12
-        else:
-            api, token = scan_napcat_endpoint(config)
-            if not api:
-                return False
-            wait = 0
-        if not napcat_begin(napcat_limit(config), wait):
-            self.note_login("NapCat 取票已有 %d 路在进行，这次跳过", napcat_inflight())
-            log.info("NapCat 取票已有 %d 路在进行，这次跳过", napcat_inflight())
-            napcat_log(self._attack_uin() or "未知",
-                       "NapCat 取票已有 %d 路在进行，这次跳过" % napcat_inflight())
-            return False
+        ok = False
         try:
-            return self._adopt_napcat_once(api, token)
+            if self.attack_account:
+                api = str(getattr(self, "napcat_api", "") or "").strip().rstrip("/")
+                token = str(getattr(self, "napcat_token", "") or "").strip()
+                if not api:
+                    api, token = attack_napcat_endpoint(
+                        config, getattr(self, "bound_uin", "") or self.uin)
+                if not api:
+                    return False
+                wait = 12
+            else:
+                api, token = scan_napcat_endpoint(config)
+                if not api:
+                    return False
+                wait = 0
+            if not napcat_begin(napcat_limit(config), wait):
+                self.note_login("NapCat 取票已有 %d 路在进行，这次跳过", napcat_inflight())
+                log.info("NapCat 取票已有 %d 路在进行，这次跳过", napcat_inflight())
+                napcat_log(self._attack_uin() or "未知",
+                           "NapCat 取票已有 %d 路在进行，这次跳过" % napcat_inflight())
+                return False
+            try:
+                ok = self._adopt_napcat_once(api, token)
+                return ok
+            finally:
+                napcat_end()
         finally:
-            napcat_end()
+            if prev_cookies is not None and not ok:
+                self._restore_cookies(prev_cookies)
+                self._platform = prev_platform or ""
 
     def _snapshot_cookies(self) -> list:
         return [(c.name, c.value, c.domain, c.path, c.expires)
