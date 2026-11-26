@@ -720,7 +720,8 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                 # 一条回包都没有：登录没接上。挂着这条空连接，后面每一轮都会
                 # 因为没有国家 ID 立刻停，订阅时间不再更新。
                 if got == "无":
-                    log.warning("登录后没有任何回包，重新连接")
+                    log.warning("登录后没有任何回包（入口 %s），重新连接",
+                                getattr(qq, "platform", "") or "")
                     return "登录后没有任何回包，重新连接"
                 log.warning("登录后没读到国家面板（已有回包：%s）。"
                             "这一轮先不翻，保活继续",
@@ -4434,7 +4435,7 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
         try:
             chunk = sock.recv(8192)
         except socket.timeout:
-            break
+            continue
         except OSError as exc:
             log.error("登录包发出后连接就断了：%s", exc)
             raise
@@ -5314,32 +5315,6 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
                                   with_daily=with_daily)
             log.warning("本次连接结束：%s", reason)
             qq.note_login("游戏连接断开：%s。%s", reason, qq.ticket_brief())
-            if ("没有任何回包" in str(reason)
-                    and not getattr(qq, "attack_account", False)
-                    and not getattr(qq, "_silent_done", False)):
-                origin = getattr(qq, "_silent_from", None)
-                if origin is None:
-                    other = "大厅" if qq.platform != "大厅" else "空间"
-                    needles = ("minigame", "qqgame") if other == "大厅" else ("qzone",)
-                    have = any(
-                        c.name == "p_skey" and any(n in (c.domain or "") for n in needles)
-                        for c in qq.session.cookies)
-                    if have and other != qq.platform:
-                        qq._silent_from = qq.platform
-                        qq.set_platform(other)
-                        qq.note_login("游戏服没有回包，改走%s再连。%s",
-                                      other, qq.ticket_brief())
-                        log.info("游戏服没有回包，改走%s再连", other)
-                else:
-                    qq.set_platform(origin)
-                    qq._silent_done = True
-                    qq.note_login("另一入口也没有回包，改回%s。%s",
-                                  origin, qq.ticket_brief())
-                    log.info("另一入口也没有回包，改回%s", origin)
-            elif "没有任何回包" not in str(reason) and getattr(qq, "_silent_from", None):
-                # 换过的入口已经有回包，就留在这一边，不再因为一次空连接改回去。
-                qq._silent_done = True
-                qq._silent_from = None
             if str(reason).startswith("公会校验失败"):
                 break
             if str(reason).startswith("未取得 openkey"):
