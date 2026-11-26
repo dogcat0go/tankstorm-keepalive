@@ -82,6 +82,11 @@ def _at(deg, radius):
     return _CX - radius * math.sin(rad), _CY - radius * math.cos(rad)
 
 
+def _layout_deg(x, y):
+    """屏幕坐标还原成排版角度。_at 做过左右对调，这里把对调算回去。"""
+    return math.degrees(math.atan2(_CX - x, _CY - y)) % 360
+
+
 def _mean_deg(degs):
     if not degs:
         return 0.0
@@ -123,8 +128,7 @@ def _layout_war_map(graph):
             elif n in fort_ang:
                 degs.append(fort_ang[n])
             elif n in pos and n != cid:
-                dx, dy = pos[n][0] - _CX, _CY - pos[n][1]
-                degs.append(math.degrees(math.atan2(dx, dy)) % 360)
+                degs.append(_layout_deg(*pos[n]))
         if degs:
             pos[cid] = _at(_mean_deg(degs), 168)
     for country in range(1, 7):
@@ -149,9 +153,7 @@ def _layout_war_map(graph):
             big = country * 1000 + seq
             modo = country * 10000 + seq * 10
             if modo in graph and big in pos:
-                dx, dy = pos[big][0] - _CX, _CY - pos[big][1]
-                deg = math.degrees(math.atan2(dx, dy)) % 360
-                pos[modo] = _at(deg + side, 530)
+                pos[modo] = _at(_layout_deg(*pos[big]) + side, 530)
     pending = [cid for cid in graph if cid not in pos]
     for _ in range(4):
         still = []
