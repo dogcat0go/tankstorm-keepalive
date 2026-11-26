@@ -90,6 +90,7 @@ input.when { width: 12.5em; }
 .sub-city { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 8px 0 8px 1.1em; border-top: 1px solid #eee; }
 .sub-where, .sub-status, .sub-time { white-space: nowrap; }
 .sub-city .sub-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.sub-actions .skip-switch { display: flex; align-items: center; gap: 6px; }
 .sub-city .ghost { padding: 4px 10px; }
 .orders { overflow-x: auto; }
 .orders table { min-width: 760px; }

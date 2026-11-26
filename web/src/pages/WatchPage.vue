@@ -1,4 +1,7 @@
 <script setup>
+import { ElSwitch } from "element-plus";
+import "element-plus/es/components/switch/style/css";
+
 const cityId = defineModel("cityId", { type: String, required: true });
 const uid = defineModel("uid", { type: String, required: true });
 const lockCards = defineModel("lockCards", { type: String, required: true });
@@ -26,6 +29,8 @@ defineProps({
   saveLockCards: { type: Function, required: true },
   saveRetreat: { type: Function, required: true },
   lockOne: { type: Function, required: true },
+  saveSkip: { type: Function, required: true },
+  skipSwitching: { type: String, default: "" },
   removeSub: { type: Function, required: true },
   lockKey: { type: Function, required: true },
   isSubOpen: { type: Function, required: true },
@@ -60,7 +65,7 @@ defineProps({
         自动锁敌
       </label>
       <button type="button" class="ghost" @click="advanced = !advanced">{{ advanced ? "收起" : "高级配置" }}</button>
-      <span v-if="me.high_tier" class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。人在城里时，这一行的索敌可以再排一条。</span>
+      <span v-if="me.high_tier" class="muted">{{ autoLock ? "已打开。订阅的人在城里就排队攻打，打开时人已经在的，马上排一条。" : "已关闭。" }}这一单没打完就跳过，等这个人下次再出现才排。同一个人一直在城里，不会重复排。某一行的跳过打开时，自动锁敌不排这个人；还没开打的自动索敌单会停掉。关掉之后，人还在城里并且这一轮还没排过，就补排一条。人在城里时，这一行的索敌可以再排一条。</span>
     </p>
     <div v-if="me.remote_attack && advanced && (!me.region || me.region === 1)" class="advanced">
       <form class="lock-row" @submit.prevent="saveLockCards().catch((e) => showErr(e.message))">
@@ -104,6 +109,19 @@ defineProps({
           <span class="sub-time muted">{{ whenOf(it) }}</span>
           <span class="sub-actions">
             <button v-if="me.high_tier && it.present" type="button" class="ghost" title="给这个人排一条自动索敌" :disabled="locking === lockKey(it)" @click="lockOne(it).catch((e) => showErr(e.message, 'watch'))">索敌</button>
+            <span v-if="me.high_tier" class="skip-switch">
+              <span class="switch">跳过</span>
+              <el-switch
+                class="daily-switch"
+                size="large"
+                inline-prompt
+                active-text="开"
+                inactive-text="关"
+                :model-value="!!it.skip"
+                :loading="skipSwitching === lockKey(it)"
+                @change="saveSkip(it, $event)"
+              />
+            </span>
             <button type="button" class="ghost" @click="removeSub(it)">取消</button>
           </span>
         </div>
