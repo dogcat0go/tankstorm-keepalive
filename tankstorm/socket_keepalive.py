@@ -4992,6 +4992,34 @@ def _login_context() -> str:
     return f"{head}，配置挂机最长{minutes}分钟，{left_text}"
 
 
+def _scan_napcat_on(config: dict) -> bool:
+    from .qq_login import scan_napcat_endpoint
+    return bool(scan_napcat_endpoint(config)[0])
+
+
+def _adopt_scan_napcat(qq, config: dict, tries: int = 1, announce: bool = False) -> bool:
+    """扫描号再向 NapCat 要票。手机登录会先废掉网页票据，NapCat 还在线时过几秒能要到新的。
+
+    没有配扫描号 NapCat 时一次都不问。问到并被游戏入口认了才返回 True。
+    announce 为真时写「不再扫码」，只用于已经走进重新登录的时候。
+    """
+    if getattr(qq, "attack_account", False) or not _scan_napcat_on(config):
+        return False
+    tries = max(1, int(tries))
+    for n in range(tries):
+        if qq.adopt_napcat(config) and note_attack_qq(qq):
+            if announce:
+                _arm_login_hold()
+                qq.note_login("NapCat 已接上，不再扫码。%s。%s",
+                              _login_context(), qq.ticket_brief())
+                log.info("已用扫描号的 NapCat 续上")
+            return True
+        if n + 1 < tries:
+            qq.note_login("网页票据暂时没接上，8 秒后再向 NapCat 要一次")
+            time.sleep(8)
+    return False
+
+
 def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -> bool:
     """需要重新登录时：点了 NapCat 就只向这台要票；点了扫码就出二维码。
     没指定时，配了攻打号 NapCat 就先要票，要不到再扫码。
@@ -5040,8 +5068,13 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
             _citydb.set_page_qr(False)
             return True
     own_napcat = bool(getattr(qq, "attack_account", False) and getattr(qq, "use_napcat", False))
+    scan_napcat = (not getattr(qq, "attack_account", False)
+                   and way != "qr" and not force_qr and _scan_napcat_on(config))
+    if scan_napcat and _adopt_scan_napcat(qq, config, 4, announce=True):
+        return True
     if (way != "qr" and (own_napcat or not force_qr)
             and (own_napcat or not getattr(qq, "attack_account", False))
+            and not scan_napcat
             and qq.adopt_napcat(config)):
         if note_attack_qq(qq):
             _arm_login_hold()
@@ -5116,6 +5149,10 @@ def relogin_with_push(qq, config: dict, force_qr: bool = False, way: str = "") -
                 qq.note_login("登录超过 10 分钟还没完成，停止等待扫码")
                 return False
             attempt += 1
+            if attempt > 1 and _adopt_scan_napcat(qq, config, 1, announce=True):
+                if not getattr(qq, "attack_account", False):
+                    notify.send(config, "坦克风暴：已重新登录", "登录成功，保活已恢复在线。")
+                return True
             # 注意：这里只说"正在尝试"，别在请求发出前就宣称已推送 —— 之前那样写，
             # 推送其实失败了日志却显示"已推送"，很误导。
             log.info("登录态失效，正在%s（第 %d 次尝试）",
@@ -5214,11 +5251,14 @@ def run(qq, config: dict, with_daily: bool = False) -> int:
                 qq.note_login("被超级强攻打断后仍未登上，继续扫描登录。%s", qq.ticket_brief())
                 storm_retry = False
                 storm_started = 0.0
-            try:
-                ticket_ok = bool(qq.is_valid())
-            except Exception as exc:
-                qq.note_login("检查登录态失败，改为重新登录：%s", exc)
-                ticket_ok = False
+            if _adopt_scan_napcat(qq, config, 1):
+                ticket_ok = True
+            else:
+                try:
+                    ticket_ok = bool(qq.is_valid())
+                except Exception as exc:
+                    qq.note_login("检查登录态失败，改为重新登录：%s", exc)
+                    ticket_ok = False
             if not ticket_ok:
                 relogin_with_push(qq, config)
 

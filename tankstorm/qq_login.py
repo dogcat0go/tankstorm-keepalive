@@ -215,6 +215,18 @@ def attack_napcat_endpoint(config: dict | None, uin: str) -> tuple:
     return api, token
 
 
+def scan_napcat_endpoint(config: dict | None) -> tuple:
+    """扫描号的 OneBot。先用「登录.内部QQ」，没有再用「通知」里的地址。"""
+    inner = (((config or {}).get("登录") or {}).get("内部QQ") or {})
+    api = str(inner.get("地址") or "").strip().rstrip("/")
+    token = str(inner.get("Token") or "").strip()
+    if not api:
+        note = (config or {}).get("通知") or {}
+        api = str(note.get("qq_api") or "").strip().rstrip("/")
+        token = str(note.get("qq_token") or "").strip()
+    return api, token
+
+
 def attack_napcat_webui(config: dict | None, uin: str) -> tuple:
     """NapCat 自己的登录页。界面 Token 是 WebUI 口令，和 OneBot 的 Token 不是同一个。"""
     box = _account_napcat_box(config, uin)
@@ -1660,13 +1672,7 @@ class QQSession:
                 return False
             wait = 12
         else:
-            inner = ((config.get("登录") or {}).get("内部QQ") or {})
-            api = str(inner.get("地址") or "").strip().rstrip("/")
-            token = str(inner.get("Token") or "").strip()
-            if not api:
-                note = config.get("通知") or {}
-                api = str(note.get("qq_api") or "").strip().rstrip("/")
-                token = str(note.get("qq_token") or "").strip()
+            api, token = scan_napcat_endpoint(config)
             if not api:
                 return False
             wait = 0
