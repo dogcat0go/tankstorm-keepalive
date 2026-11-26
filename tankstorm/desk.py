@@ -9,6 +9,7 @@
 
 城市表没有坐标。位置按已经存下的 CityData 连接来排：
 马奇诺在中心，六座内圈城围着它，再往外是一圈中立城，六个国家贴在外圈。
+整张图左右对调，巴黎在左边。
 组织者点一次，队里每个在线的攻打号做同一件事。
 """
 
@@ -76,8 +77,9 @@ _MAP = 1400
 
 
 def _at(deg, radius):
+    """角度从正上方起、顺时针增大，再左右对调，巴黎落在左边。"""
     rad = math.radians(deg)
-    return _CX + radius * math.sin(rad), _CY - radius * math.cos(rad)
+    return _CX - radius * math.sin(rad), _CY - radius * math.cos(rad)
 
 
 def _mean_deg(degs):
