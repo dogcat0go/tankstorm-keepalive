@@ -1736,20 +1736,56 @@ def _manual_stop() -> str:
     return ""
 
 
-def order_clear_targets(found, priority=None) -> list:
-    """清城时的出手顺序。优先名单里数字小的先打，同级按第一次扫到的先后。其余人保持扫到的顺序，排在后面。"""
+def _mark_int(player, key) -> int:
+    """名单上的整数。没带、或不是整数，当成 0。"""
+    value = (player or {}).get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
+def clear_vip(player) -> bool:
+    """城里玩家名单上的 VIP。VIP 等级大于 0 客户端才显示标，VIP 类型只选图标。"""
+    return _mark_int(player, "vipLevel") > 0
+
+
+def clear_officer(player) -> bool:
+    """国家官员。官职编号大于 0 才有职位。名单上没带官职的人不是官员。"""
+    return _mark_int(player, "officerPosition") > 0
+
+
+def clear_type_tag(player, prefer) -> str:
+    """这个人命中了哪些已勾选的类型。没勾、或对不上，返回空。"""
+    prefer = prefer or {}
+    bits = []
+    if prefer.get("vip") and clear_vip(player):
+        bits.append("VIP")
+    if prefer.get("officer") and clear_officer(player):
+        bits.append("官员")
+    return "、".join(bits)
+
+
+def order_clear_targets(found, priority=None, prefer=None) -> list:
+    """清城时的出手顺序。优先名单里数字小的先打，同级按第一次扫到的先后。
+
+    勾了 VIP 或官员时，名单以外命中的人排在其他人前面，两种都勾按扫到的先后。
+    其余人保持扫到的顺序，排在后面。
+    """
     priority = priority or {}
-    ranked, rest = [], []
+    ranked, typed, rest = [], [], []
     for i, item in enumerate(found or []):
         page, player = item
         uid = str((player or {}).get("uid") or "").strip()
         rank = priority.get(uid)
-        if rank is None:
-            rest.append((i, page, player))
-        else:
+        if rank is not None:
             ranked.append((int(rank), i, page, player))
+        elif clear_type_tag(player, prefer):
+            typed.append((i, page, player))
+        else:
+            rest.append((i, page, player))
     ranked.sort()
     ordered = [(page, player) for _, _, page, player in ranked]
+    ordered.extend((page, player) for _, page, player in typed)
     ordered.extend((page, player) for _, page, player in rest)
     return ordered
 
@@ -1766,11 +1802,11 @@ def scan_due(last, gap, now=None) -> bool:
     return now - float(last or 0) >= gap
 
 
-def next_clear_target(found, priority, seen, me=""):
+def next_clear_target(found, priority, seen, me="", prefer=None):
     """下一场打谁。跳过自己和这场已经处理过的人，其余仍按优先级。"""
     me = str(me or "")
     seen = seen or set()
-    for page, player in order_clear_targets(found, priority):
+    for page, player in order_clear_targets(found, priority, prefer):
         uid = str((player or {}).get("uid") or "").strip()
         if not uid or uid == me or uid in seen:
             continue
@@ -1780,13 +1816,13 @@ def next_clear_target(found, priority, seen, me=""):
 
 def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
               country=0, beat=None, pass_block=False, tally=None,
-              pages=None, priority=None, scan_sec=0) -> dict:
+              pages=None, priority=None, scan_sec=0, prefer=None) -> dict:
     """现场翻页打这座城。打中后看士气损失，低于 150 才写入 atk_fail；
     打不到不入库。不读玩家库。跳过失败库，行动力低于 15 自动开卡，不迁城。
 
     给定 pages 时只扫这一段。出手后的冷却由攻打号自己再扫同一段页，
     扫完还没到点就把剩余时间睡完。scan_sec 大于 0 时，两次扫页至少隔这么多秒。
-    新出现的人按优先级接着打。"""
+    新出现的人按优先级接着打。prefer 勾了 VIP 或官员时，名单以外的这类人先打。"""
     from . import citydb
 
     conf = (config.get("国战", {}) or {})
@@ -1837,6 +1873,8 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             scan_gap = 0
         if scan_gap < 0:
             scan_gap = 0
+        if not isinstance(prefer, dict):
+            prefer = {}
         last_scan = 0.0
         if limited:
             start_page = max(0, int(pages[0]))
@@ -2093,8 +2131,12 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             if _refresh(True) and not out["停止原因"]:
                 last_scan = time.time()
                 looked = False
+                picked = [name for name, on in (("VIP", prefer.get("vip")),
+                                                ("官员", prefer.get("officer"))) if on]
+                if picked:
+                    log.info("[打人] 优先类型：%s", "、".join(picked))
                 while not out["停止原因"]:
-                    nxt = next_clear_target(scanned, priority, seen, me)
+                    nxt = next_clear_target(scanned, priority, seen, me, prefer)
                     if nxt is None:
                         wait = _cd_wait()
                         if wait > 0.05 and not looked:
@@ -2104,6 +2146,11 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                             continue
                         break
                     looked = False
+                    tag = clear_type_tag(nxt[1], prefer)
+                    who = str((nxt[1] or {}).get("uid") or "").strip()
+                    if tag and who not in (priority or {}):
+                        log.info("[打人] %s 是%s，按勾选先打",
+                                 (nxt[1] or {}).get("name") or who, tag)
                     if _strike(nxt[0], nxt[1]) == "break":
                         break
         else:
@@ -3227,7 +3274,8 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
                                country=my, beat=beat, tally=tally,
                                pages=(int(start), int(end)),
                                priority=plan.get("priority") or {},
-                               scan_sec=gap)
+                               scan_sec=gap,
+                               prefer=plan.get("prefer") or {})
             hit = fought.get("成功") or 0
             reason = fought.get("停止原因") or ""
             out["没打过"] = int(fought.get("失败") or 0) + int(fought.get("跳过") or 0)

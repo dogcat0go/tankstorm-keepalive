@@ -717,6 +717,12 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                 log.info("登录态数据接收完毕，开始翻城")
             else:
                 got = "、".join(getattr(rec, "latest", {}) or {}) or "无"
+                # 一条回包都没有：登录没接上。挂着这条空连接，后面每一轮都会
+                # 因为没有国家 ID 立刻停，订阅时间不再更新。
+                if got == "无":
+                    log.warning("登录后没有任何回包（入口 %s），重新连接",
+                                getattr(qq, "platform", "") or "")
+                    return "登录后没有任何回包，重新连接"
                 log.warning("登录后没读到国家面板（已有回包：%s）。"
                             "这一轮先不翻，保活继续",
                             got)
@@ -744,6 +750,16 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                     city_due = False
                 else:
                     quiet_logged = False
+            if (page_due or city_due) and not _await_role(
+                    sock, rec, spec, ctx, config):
+                if not (getattr(rec, "latest", {}) or {}):
+                    return "登录后没有任何回包，重新连接"
+                log.info("[扫描] 还没有自己的国家ID，这一轮先不翻")
+                if page_due:
+                    last_pages = now
+                if city_due:
+                    last_watch = now
+                continue
             if page_due:
                 if tuple(page_jobs) != shown_pages:
                     shown_pages = tuple(page_jobs)
@@ -1324,7 +1340,8 @@ def _note_watch(config, city_id, cname, changes):
                 citydb.mark_lock_sent(ch["user_id"], city_id, ch["uid"])
                 log.info("[订阅] %s 已在失败库，自动锁敌不排", who)
                 continue
-            queued = citydb.enqueue_online_attack(ch["user_id"], city_id, ch["uid"])
+            why = citydb.enqueue_online_attack(ch["user_id"], city_id, ch["uid"])
+            queued = not why
             if queued or citydb.online_attack_busy(ch["user_id"], city_id, ch["uid"]):
                 citydb.mark_lock_sent(ch["user_id"], city_id, ch["uid"])
         except Exception:
@@ -4432,7 +4449,7 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
         try:
             chunk = sock.recv(8192)
         except socket.timeout:
-            break
+            continue
         except OSError as exc:
             log.error("登录包发出后连接就断了：%s", exc)
             raise

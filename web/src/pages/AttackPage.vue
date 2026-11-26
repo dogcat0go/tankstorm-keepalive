@@ -17,6 +17,8 @@ const clearRetreatFail = defineModel("clearRetreatFail", { type: Boolean, requir
 const awayMorale = defineModel("awayMorale", { type: String, required: true });
 const prioUid = defineModel("prioUid", { type: String, required: true });
 const prioRank = defineModel("prioRank", { type: String, required: true });
+const prioVip = defineModel("prioVip", { type: Boolean, required: true });
+const prioOfficer = defineModel("prioOfficer", { type: Boolean, required: true });
 const moveCity = defineModel("moveCity", { type: String, required: true });
 const clearRows = defineModel("clearRows", { type: Array, required: true });
 
@@ -156,6 +158,11 @@ function fightingLine(it) {
           <span class="switch">扫页冷却</span>
           <label class="choice">秒<input v-model="clearScan" class="mins" inputmode="numeric" required /></label>
         </form>
+        <form class="lock-row" @submit.prevent="saveClearPlan().catch((e) => showErr(e.message))">
+          <span class="switch">优先类型</span>
+          <label class="choice"><input type="checkbox" v-model="prioVip" />VIP</label>
+          <label class="choice"><input type="checkbox" v-model="prioOfficer" />官员</label>
+        </form>
         <form class="lock-row" @submit.prevent="addPriority().catch((e) => showErr(e.message))">
           <span class="switch">优先 UID</span>
           <label>UID<input v-model="prioUid" inputmode="numeric" /></label>
@@ -172,7 +179,7 @@ function fightingLine(it) {
           <button type="submit">保存</button>
           <span class="muted">{{ clearNote }}</span>
         </form>
-        <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。名单以外的人排在后面，再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页打完了、没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示打完、空了或清不完都结束。再启动时先看目标城还有没有别人：还有人就出发继续打，城里没人就留在原地，按空城再等一轮。人已经在要退到的城里，就不再发移动。打完后退只对留空 UID 的清城，和自动锁敌各配各的。打成了按上面的走法退。没打成要打开「没打成也后退」才退。已经回到所在国首都、被打回去或手动关停时不退，也不会为了后退去开恢复卡。空城再打会先退，再按分钟回来打同一条。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
+        <p class="muted">只对留空 UID 的清城。攻打号自己扫这些页。优先名单里数字小的先打，同一级按扫到的先后。勾了优先类型时，名单以外命中的人排在其他人前面。VIP 和官员都勾时按扫到的先后，打完再打其余的人。VIP 等级大于 0 算 VIP。国家官职大于 0 算官员。名单上没有对应数字的人排在这些类型后面。再往后的页不打。扫页冷却是两次扫页至少隔开的秒数，填 0 表示每次出手后的冷却都扫。到点就在那次冷却里再扫，新上来的人按同样的顺序接着打。最多 50 个 UID。这几页打完了、没人，或者还剩打不过的人时，过上面的分钟再启动同一条订单，倒计时写在这一行和下面的订单里。0 表示打完、空了或清不完都结束。再启动时先看目标城还有没有别人：还有人就出发继续打，城里没人就留在原地，按空城再等一轮。人已经在要退到的城里，就不再发移动。打完后退只对留空 UID 的清城，和自动锁敌各配各的。打成了按上面的走法退。没打成要打开「没打成也后退」才退。已经回到所在国首都、被打回去或手动关停时不退，也不会为了后退去开恢复卡。空城再打会先退，再按分钟回来打同一条。后退几座城是朝所选城市走这么远就停，不走进终点。退到指定城市是走进那座城，不打它。两种走法只能选一种。</p>
       </div>
     </template>
     <p v-if="proc && proc.online" class="proc here-row">
@@ -192,7 +199,7 @@ function fightingLine(it) {
       <p class="muted">今天拒绝的超级强攻</p>
       <p v-for="(s, i) in storms" :key="i">{{ s.at }} · {{ s.name }}</p>
     </div>
-    <p class="muted">每 2 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。还没打完的最多两条，下面最多显示三条，正在打的排在最上面。还没绑定的，按页面上方的步骤先扫码。点了登录，就挂机保活 180 分钟，连上之后可以接订单。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。同一个 QQ 可以绑给多个登录账号。</p>
+    <p class="muted">每 2 秒刷新一次。每个攻打 QQ 各有一条线程，状态按 QQ 号分开。自动索敌同一座城可以排多个，不同的城最多两座。手动攻打和刷摩多各占一条名额，和这两座城合在一起最多两条。还没打完的都列在下面，正在打的排在最上面，打完的最多再显示三条。还没绑定的，按页面上方的步骤先扫码。点了登录，就挂机保活 180 分钟，连上之后可以接订单。一个登录账号只绑一个攻打 QQ，绑上之后不能换成另一个。同一个 QQ 可以绑给多个登录账号。</p>
     <p v-if="fightingOrder()" class="now-fighting">
       <span class="k">正在攻打的敌人</span>{{ fightingLine(fightingOrder()) }}
     </p>

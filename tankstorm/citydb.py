@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_retreat_fail INTEGER NOT NULL DEFAULT 0,
     modo_cards      INTEGER NOT NULL DEFAULT 0,
     away_morale     INTEGER NOT NULL DEFAULT 100,
+    clear_prio_vip  INTEGER NOT NULL DEFAULT 0,
+    clear_prio_officer INTEGER NOT NULL DEFAULT 0,
     daily_switch    TEXT,
     daily_at        TEXT NOT NULL DEFAULT '',
     daily_last      TEXT NOT NULL DEFAULT '',
@@ -505,6 +507,14 @@ def connect(readonly=False, timeout=15):
             if ucols and "away_morale" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN away_morale INTEGER NOT NULL DEFAULT 100")
+                setup.commit()
+            if ucols and "clear_prio_vip" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_prio_vip INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "clear_prio_officer" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_prio_officer INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "attack_acct" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
@@ -1542,7 +1552,8 @@ def reset_member_settings(user_id: int) -> str:
             "lock_cards=3, "
             "clear_mode='head', clear_from=1, clear_to=5, clear_wait=0, clear_scan=0, "
             "clear_retreat_mode='off', clear_retreat_hops=3, clear_retreat_city=0, "
-            "clear_retreat_fail=0, modo_cards=0, away_morale=100, daily_switch=NULL, "
+            "clear_retreat_fail=0, modo_cards=0, away_morale=100, "
+            "clear_prio_vip=0, clear_prio_officer=0, daily_switch=NULL, "
             "daily_at='', daily_last='', modo_at='', modo_last='', off_at='', "
             "open_cards='', clean_items='' "
             "WHERE id=?",
@@ -1888,16 +1899,54 @@ def _known_player_name(conn, uid, city_id=0) -> str:
     return str(row[0] or "").strip() if row else ""
 
 
-def _open_attack_count(conn, user_id: int) -> int:
-    row = conn.execute(
-        "SELECT COUNT(*) FROM atk_order WHERE user_id=? "
-        "AND status IN ('pending','running','blocked','wait')",
-        (int(user_id),)).fetchone()
-    return int(row[0] or 0) if row else 0
+def _open_attack_rows(conn, user_id: int):
+    """还没打完的订单。(城市, 是否自动索敌, 种类)。"""
+    return conn.execute(
+        "SELECT city_id, IFNULL(auto,0), IFNULL(kind,'') FROM atk_order "
+        "WHERE user_id=? AND status IN ('pending','running','blocked','wait')",
+        (int(user_id),)).fetchall()
+
+
+def _auto_lock_cities(rows) -> set:
+    """这些还没打完的订单里，自动索敌占了哪几座城。刷摩多不算。"""
+    cities = set()
+    for city_id, auto, kind in rows or []:
+        if int(auto or 0) and str(kind or "") != "modo":
+            cities.add(int(city_id or 0))
+    return cities
+
+
+def _attack_slots(rows) -> int:
+    """还没打完的名额。手动攻打和刷摩多各占一条，同一座城的自动索敌合占一条。"""
+    other = 0
+    for _city_id, auto, kind in rows or []:
+        if int(auto or 0) and str(kind or "") != "modo":
+            continue
+        other += 1
+    return other + len(_auto_lock_cities(rows))
+
+
+def _auto_enqueue_block(rows, city_id) -> str:
+    """这座城还能不能再排自动索敌。能排返回空字符串。
+
+    这座城已经有索敌时，再排同城的人不占新名额。
+    不同的城最多两座。名额已经被手动攻打或刷摩多占满时，新的城也不排。
+    """
+    city_id = int(city_id or 0)
+    cities = _auto_lock_cities(rows)
+    if city_id in cities:
+        return ""
+    if len(cities) >= 2:
+        return "最多同时两座城的索敌"
+    if _attack_slots(rows) >= 2:
+        return "最多同时两条攻打订单"
+    return ""
 
 
 def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
-    """提交一条远程扫码攻打。还没打完的最多两条。成功返回空字符串。
+    """提交一条远程扫码攻打。还没打完的名额最多两条。成功返回空字符串。
+
+    同一座城的自动索敌合占一条名额。手动攻打和刷摩多各占一条。
 
     线程已经退出时，等通路和中断的手动单改回排队。同一城同一人已经在排队就不再加。
     """
@@ -1932,7 +1981,7 @@ def add_attack_order(user_id: int, city_id: int, uid: str, cards=None) -> str:
         if dup:
             conn.commit()
             return ""
-        if _open_attack_count(conn, user_id) >= 2:
+        if _attack_slots(_open_attack_rows(conn, user_id)) >= 2:
             conn.commit()
             return "最多同时两条攻打订单"
         conn.execute(
@@ -2026,7 +2075,7 @@ def add_modo_order(user_id: int, cards, scheduled: bool = False) -> str:
                 _mark_modo_chest(dup[0])
                 mark_attack_resume(user_id)
             return ""
-        if _open_attack_count(conn, user_id) >= 2:
+        if _attack_slots(_open_attack_rows(conn, user_id)) >= 2:
             conn.commit()
             return "最多同时两条攻打订单"
         cur = conn.execute(
@@ -3122,12 +3171,14 @@ def _parse_away_morale(value):
 
 def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
                    wait_min=0, scan_sec=0, retreat_mode="off", retreat_hops=3,
-                   retreat_city=0, retreat_fail=False, away_morale=100) -> str:
+                   retreat_city=0, retreat_fail=False, away_morale=100,
+                   prio_vip=False, prio_officer=False) -> str:
     """清城高级配置。前 5 页，或一个页码范围。优先 UID 最多 50 个。
 
     wait_min 是空城后再打的分钟。0 表示空了就结束。
     scan_sec 是两次扫页至少隔开的秒数。0 表示每次出手冷却都扫。
-    后退是清城自己的走法，不改自动锁敌。成功返回空字符串。
+    后退是清城自己的走法，不改自动锁敌。
+    prio_vip、prio_officer 勾上后，留空 UID 的清城先打这类人。成功返回空字符串。
     """
     mode = str(mode or "head").strip()
     if mode not in ("head", "range"):
@@ -3183,6 +3234,13 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
     line, why = _parse_away_morale(away_morale)
     if why:
         return why
+    flags = []
+    for value in (prio_vip, prio_officer):
+        if isinstance(value, str):
+            flags.append(1 if value.strip().lower() in ("1", "true", "on", "开") else 0)
+        else:
+            flags.append(1 if value else 0)
+    vip_on, officer_on = flags
     why = set_retreat(
         user_id, retreat_mode, retreat_hops, retreat_city, retreat_fail, clear=True)
     if why:
@@ -3191,8 +3249,9 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
     try:
         conn.execute(
             "UPDATE app_user SET clear_mode=?, clear_from=?, clear_to=?, "
-            "clear_wait=?, clear_scan=?, away_morale=? WHERE id=?",
-            (mode, start, end, wait, scan, line, int(user_id)))
+            "clear_wait=?, clear_scan=?, away_morale=?, "
+            "clear_prio_vip=?, clear_prio_officer=? WHERE id=?",
+            (mode, start, end, wait, scan, line, vip_on, officer_on, int(user_id)))
         conn.execute("DELETE FROM clear_prio WHERE user_id=?", (int(user_id),))
         conn.executemany(
             "INSERT INTO clear_prio(user_id, uid, rank, seq) VALUES (?,?,?,?)",
@@ -3207,6 +3266,7 @@ def clear_settings(user_id: int = 0) -> dict:
     """这个登录账号的清城扫页和优先 UID。名单按优先级、再按添加顺序。"""
     mode, start, end, wait, scan, away = "head", 1, 5, 0, 0, 100
     back_mode, back_hops, back_city, back_fail = "off", 3, 0, False
+    prio_vip, prio_officer = False, False
     rows = []
     user_id = int(user_id or 0)
     if user_id:
@@ -3217,7 +3277,8 @@ def clear_settings(user_id: int = 0) -> dict:
                 "IFNULL(clear_wait,0), IFNULL(clear_scan,0), "
                 "IFNULL(clear_retreat_mode,'off'), IFNULL(clear_retreat_hops,3), "
                 "IFNULL(clear_retreat_city,0), IFNULL(clear_retreat_fail,0), "
-                "IFNULL(away_morale,100) "
+                "IFNULL(away_morale,100), IFNULL(clear_prio_vip,0), "
+                "IFNULL(clear_prio_officer,0) "
                 "FROM app_user WHERE id=?",
                 (user_id,)).fetchone()
             if saved:
@@ -3231,6 +3292,8 @@ def clear_settings(user_id: int = 0) -> dict:
                 back_city = int(saved[7] or 0)
                 back_fail = bool(saved[8])
                 away = int(saved[9] if saved[9] is not None else 100)
+                prio_vip = bool(saved[10])
+                prio_officer = bool(saved[11])
             rows = conn.execute(
                 "SELECT uid, rank FROM clear_prio WHERE user_id=? ORDER BY rank, seq, uid",
                 (user_id,)).fetchall()
@@ -3263,6 +3326,8 @@ def clear_settings(user_id: int = 0) -> dict:
         "retreat_city": back_city,
         "retreat_fail": back_fail,
         "away_morale": away,
+        "prio_vip": prio_vip,
+        "prio_officer": prio_officer,
         "priority": [{"uid": str(uid), "rank": int(rank)} for uid, rank in rows],
     }
 
@@ -3405,7 +3470,8 @@ def clear_fight_plan(user_id: int = 0) -> dict:
     if not user_id:
         user_id = attack_context_user()
     if not high_tier(_stored_tier(user_id)):
-        return {"pages": (0, 4), "priority": {}, "scan_sec": 0}
+        return {"pages": (0, 4), "priority": {}, "scan_sec": 0,
+                "prefer": {"vip": False, "officer": False}}
     saved = clear_settings(user_id)
     if saved["mode"] == "range":
         pages = (saved["page_from"] - 1, saved["page_to"] - 1)
@@ -3413,7 +3479,11 @@ def clear_fight_plan(user_id: int = 0) -> dict:
         pages = (0, 4)
     priority = {row["uid"]: int(row["rank"]) for row in saved["priority"]}
     return {"pages": pages, "priority": priority,
-            "scan_sec": int(saved.get("scan_sec") or 0)}
+            "scan_sec": int(saved.get("scan_sec") or 0),
+            "prefer": {
+                "vip": bool(saved.get("prio_vip")),
+                "officer": bool(saved.get("prio_officer")),
+            }}
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:
@@ -3499,21 +3569,34 @@ def lock_target_info(city_id, uid) -> dict:
         conn.close()
 
 
-def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
-    """给这个订阅排一条自动攻打。同一人还没打完就不再排。还没打完的最多两条。没挂在游戏上就不排。"""
+def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> str:
+    """给这个订阅排一条自动攻打。排上返回空字符串，没排上返回原因。
+
+    同一人还没打完就不再排。同一座城可以排多个。不同的城最多两座。
+    没挂在游戏上就不排。
+    """
     uid = str(uid or "").strip()
-    if (not uid or shutdown_due(user_id) or not attack_in_keepalive(user_id)
-            or online_attack_busy(user_id, city_id, uid)):
-        return False
+    if not uid:
+        return "没有这个人"
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
+    if not attack_in_keepalive(user_id):
+        return "不在保活，下了订单游戏也登不进去"
+    if online_attack_busy(user_id, city_id, uid):
+        return "这个人已经有一条还没打完的订单"
     conn = connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        if _open_attack_count(conn, user_id) >= 2:
+        why = _auto_enqueue_block(_open_attack_rows(conn, user_id), city_id)
+        if why:
             conn.commit()
-            return False
+            if why == "最多同时两座城的索敌":
+                log.info("登录账号 %s 的索敌已有两座城，城市 %s UID %s 先不排",
+                         username_of(user_id), int(city_id), uid)
+            return why
         if online_attack_busy(user_id, city_id, uid):
             conn.commit()
-            return False
+            return "这个人已经有一条还没打完的订单"
         saved = conn.execute(
             "SELECT IFNULL(card_max,100) FROM app_user WHERE id=?",
             (int(user_id),)).fetchone()
@@ -3525,7 +3608,7 @@ def enqueue_online_attack(user_id: int, city_id: int, uid: str) -> bool:
             (int(user_id), int(city_id), uid, "pending", "", 1, cards,
              _known_player_name(conn, uid, city_id), now, now))
         conn.commit()
-        return True
+        return ""
     finally:
         conn.close()
 
@@ -3565,10 +3648,10 @@ def queue_present_locks(user_id: int) -> int:
             log.info("登录账号 %s 自动锁敌跳过 UID %s，已在失败库",
                      username_of(user_id), uid)
             continue
-        queued = enqueue_online_attack(user_id, city_id, uid)
-        if queued or online_attack_busy(user_id, city_id, uid):
+        why = enqueue_online_attack(user_id, city_id, uid)
+        if not why or online_attack_busy(user_id, city_id, uid):
             mark_lock_sent(user_id, city_id, uid)
-        if queued:
+        if not why:
             n += 1
     return n
 
@@ -3576,7 +3659,8 @@ def queue_present_locks(user_id: int) -> int:
 def queue_watch_lock(user_id: int, city_id: int, uid: str) -> str:
     """手动给这条订阅排一条自动索敌。人要正在这座城里。成功返回空字符串。
 
-    和扫描自动排的是同一种订单。这一单还没打完时不再排第二条。
+    和扫描自动排的是同一种订单。这个人还没打完时不再排。
+    同一座城可以排多个，不同的城最多两座。
     """
     user_id = int(user_id)
     try:
@@ -3608,10 +3692,9 @@ def queue_watch_lock(user_id: int, city_id: int, uid: str) -> str:
         return "不在保活，下了订单游戏也登不进去"
     if online_attack_busy(user_id, city_id, uid):
         return "这个人已经有一条还没打完的订单"
-    if not enqueue_online_attack(user_id, city_id, uid):
-        if online_attack_busy(user_id, city_id, uid):
-            return "这个人已经有一条还没打完的订单"
-        return "最多同时两条攻打订单"
+    why = enqueue_online_attack(user_id, city_id, uid)
+    if why:
+        return why
     mark_lock_sent(user_id, city_id, uid)
     log.info("登录账号 %s 手动索敌，城市 %s UID %s", username_of(user_id), city_id, uid)
     return ""
@@ -3686,10 +3769,10 @@ def set_watch_skip(user_id: int, city_id: int, uid: str, on: bool):
             or account_expired(user[2]) or shutdown_due(user_id)
             or not attack_in_keepalive(user_id)):
         return "", False
-    queued = enqueue_online_attack(user_id, city_id, uid)
-    if queued or online_attack_busy(user_id, city_id, uid):
+    why = enqueue_online_attack(user_id, city_id, uid)
+    if not why or online_attack_busy(user_id, city_id, uid):
         mark_lock_sent(user_id, city_id, uid)
-    return "", bool(queued)
+    return "", not why
 
 
 def _order_row(r) -> dict:
@@ -3728,8 +3811,11 @@ def _order_list_key(r):
 
 
 def list_attack_orders(user_id: int, limit: int = 3) -> list:
-    """页面上的订单。还没打完的最多带上两条，总共最多三条。正在打的排最前。"""
-    limit = max(1, min(int(limit or 3), 3))
+    """页面上的订单。还没打完的都列出。打完的最多再补 limit 条。正在打的排最前。
+
+    同一座城的自动索敌可以有很多条，页面不再只留两条没打完的。
+    """
+    done_limit = max(0, min(int(limit or 3), 3))
     user_id = int(user_id)
     cols = ("id, city_id, IFNULL(uid,''), status, IFNULL(reason,''), created_at, beats, "
             "IFNULL(kind,''), IFNULL(run_at,''), IFNULL(name,'')")
@@ -3737,18 +3823,17 @@ def list_attack_orders(user_id: int, limit: int = 3) -> list:
     try:
         valid = conn.execute(
             f"SELECT {cols} FROM atk_order WHERE user_id=? "
-            "AND status IN ('pending','running','blocked','wait') ORDER BY id DESC LIMIT 2",
+            "AND status IN ('pending','running','blocked','wait') ORDER BY id DESC LIMIT 40",
             (user_id,)).fetchall()
-        room = limit - len(valid)
         done = []
-        if room > 0:
+        if done_limit > 0:
             skip = [int(r[0]) for r in valid]
             extra = ""
             args = [user_id]
             if skip:
                 extra = " AND id NOT IN (" + ",".join("?" for _ in skip) + ")"
                 args.extend(skip)
-            args.append(room)
+            args.append(done_limit)
             done = conn.execute(
                 f"SELECT {cols} FROM atk_order WHERE user_id=? "
                 "AND status NOT IN ('pending','running','blocked','wait')"
