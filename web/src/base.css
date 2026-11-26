@@ -35,6 +35,7 @@ form.retreat-row { margin-top: 8px; }
 .prio-row .mins { width: 4em; }
 label.switch { flex-direction: row; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; }
 label.choice { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; }
+label.choice input[type="checkbox"] { width: auto; min-width: 0; padding: 0; border: 0; background: transparent; }
 span.switch { font-size: 15px; font-weight: 700; }
 .card-have { color: #16375f; font-weight: 700; white-space: nowrap; }
 .lead { margin: 0 0 16px; color: #444; }

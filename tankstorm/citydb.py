@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS app_user (
     clear_retreat_fail INTEGER NOT NULL DEFAULT 0,
     modo_cards      INTEGER NOT NULL DEFAULT 0,
     away_morale     INTEGER NOT NULL DEFAULT 100,
+    clear_prio_vip  INTEGER NOT NULL DEFAULT 0,
+    clear_prio_officer INTEGER NOT NULL DEFAULT 0,
     daily_switch    TEXT,
     daily_at        TEXT NOT NULL DEFAULT '',
     daily_last      TEXT NOT NULL DEFAULT '',
@@ -505,6 +507,14 @@ def connect(readonly=False, timeout=15):
             if ucols and "away_morale" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN away_morale INTEGER NOT NULL DEFAULT 100")
+                setup.commit()
+            if ucols and "clear_prio_vip" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_prio_vip INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "clear_prio_officer" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN clear_prio_officer INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "attack_acct" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN attack_acct TEXT")
@@ -1542,7 +1552,8 @@ def reset_member_settings(user_id: int) -> str:
             "lock_cards=3, "
             "clear_mode='head', clear_from=1, clear_to=5, clear_wait=0, clear_scan=0, "
             "clear_retreat_mode='off', clear_retreat_hops=3, clear_retreat_city=0, "
-            "clear_retreat_fail=0, modo_cards=0, away_morale=100, daily_switch=NULL, "
+            "clear_retreat_fail=0, modo_cards=0, away_morale=100, "
+            "clear_prio_vip=0, clear_prio_officer=0, daily_switch=NULL, "
             "daily_at='', daily_last='', modo_at='', modo_last='', off_at='', "
             "open_cards='', clean_items='' "
             "WHERE id=?",
@@ -3122,12 +3133,14 @@ def _parse_away_morale(value):
 
 def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
                    wait_min=0, scan_sec=0, retreat_mode="off", retreat_hops=3,
-                   retreat_city=0, retreat_fail=False, away_morale=100) -> str:
+                   retreat_city=0, retreat_fail=False, away_morale=100,
+                   prio_vip=False, prio_officer=False) -> str:
     """清城高级配置。前 5 页，或一个页码范围。优先 UID 最多 50 个。
 
     wait_min 是空城后再打的分钟。0 表示空了就结束。
     scan_sec 是两次扫页至少隔开的秒数。0 表示每次出手冷却都扫。
-    后退是清城自己的走法，不改自动锁敌。成功返回空字符串。
+    后退是清城自己的走法，不改自动锁敌。
+    prio_vip、prio_officer 勾上后，留空 UID 的清城先打这类人。成功返回空字符串。
     """
     mode = str(mode or "head").strip()
     if mode not in ("head", "range"):
@@ -3183,6 +3196,13 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
     line, why = _parse_away_morale(away_morale)
     if why:
         return why
+    flags = []
+    for value in (prio_vip, prio_officer):
+        if isinstance(value, str):
+            flags.append(1 if value.strip().lower() in ("1", "true", "on", "开") else 0)
+        else:
+            flags.append(1 if value else 0)
+    vip_on, officer_on = flags
     why = set_retreat(
         user_id, retreat_mode, retreat_hops, retreat_city, retreat_fail, clear=True)
     if why:
@@ -3191,8 +3211,9 @@ def set_clear_plan(user_id: int, mode, page_from, page_to, priority,
     try:
         conn.execute(
             "UPDATE app_user SET clear_mode=?, clear_from=?, clear_to=?, "
-            "clear_wait=?, clear_scan=?, away_morale=? WHERE id=?",
-            (mode, start, end, wait, scan, line, int(user_id)))
+            "clear_wait=?, clear_scan=?, away_morale=?, "
+            "clear_prio_vip=?, clear_prio_officer=? WHERE id=?",
+            (mode, start, end, wait, scan, line, vip_on, officer_on, int(user_id)))
         conn.execute("DELETE FROM clear_prio WHERE user_id=?", (int(user_id),))
         conn.executemany(
             "INSERT INTO clear_prio(user_id, uid, rank, seq) VALUES (?,?,?,?)",
@@ -3207,6 +3228,7 @@ def clear_settings(user_id: int = 0) -> dict:
     """这个登录账号的清城扫页和优先 UID。名单按优先级、再按添加顺序。"""
     mode, start, end, wait, scan, away = "head", 1, 5, 0, 0, 100
     back_mode, back_hops, back_city, back_fail = "off", 3, 0, False
+    prio_vip, prio_officer = False, False
     rows = []
     user_id = int(user_id or 0)
     if user_id:
@@ -3217,7 +3239,8 @@ def clear_settings(user_id: int = 0) -> dict:
                 "IFNULL(clear_wait,0), IFNULL(clear_scan,0), "
                 "IFNULL(clear_retreat_mode,'off'), IFNULL(clear_retreat_hops,3), "
                 "IFNULL(clear_retreat_city,0), IFNULL(clear_retreat_fail,0), "
-                "IFNULL(away_morale,100) "
+                "IFNULL(away_morale,100), IFNULL(clear_prio_vip,0), "
+                "IFNULL(clear_prio_officer,0) "
                 "FROM app_user WHERE id=?",
                 (user_id,)).fetchone()
             if saved:
@@ -3231,6 +3254,8 @@ def clear_settings(user_id: int = 0) -> dict:
                 back_city = int(saved[7] or 0)
                 back_fail = bool(saved[8])
                 away = int(saved[9] if saved[9] is not None else 100)
+                prio_vip = bool(saved[10])
+                prio_officer = bool(saved[11])
             rows = conn.execute(
                 "SELECT uid, rank FROM clear_prio WHERE user_id=? ORDER BY rank, seq, uid",
                 (user_id,)).fetchall()
@@ -3263,6 +3288,8 @@ def clear_settings(user_id: int = 0) -> dict:
         "retreat_city": back_city,
         "retreat_fail": back_fail,
         "away_morale": away,
+        "prio_vip": prio_vip,
+        "prio_officer": prio_officer,
         "priority": [{"uid": str(uid), "rank": int(rank)} for uid, rank in rows],
     }
 
@@ -3405,7 +3432,8 @@ def clear_fight_plan(user_id: int = 0) -> dict:
     if not user_id:
         user_id = attack_context_user()
     if not high_tier(_stored_tier(user_id)):
-        return {"pages": (0, 4), "priority": {}, "scan_sec": 0}
+        return {"pages": (0, 4), "priority": {}, "scan_sec": 0,
+                "prefer": {"vip": False, "officer": False}}
     saved = clear_settings(user_id)
     if saved["mode"] == "range":
         pages = (saved["page_from"] - 1, saved["page_to"] - 1)
@@ -3413,7 +3441,11 @@ def clear_fight_plan(user_id: int = 0) -> dict:
         pages = (0, 4)
     priority = {row["uid"]: int(row["rank"]) for row in saved["priority"]}
     return {"pages": pages, "priority": priority,
-            "scan_sec": int(saved.get("scan_sec") or 0)}
+            "scan_sec": int(saved.get("scan_sec") or 0),
+            "prefer": {
+                "vip": bool(saved.get("prio_vip")),
+                "officer": bool(saved.get("prio_officer")),
+            }}
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:

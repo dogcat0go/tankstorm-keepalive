@@ -75,6 +75,8 @@ const clearRows = ref([]);
 const clearNote = ref("");
 const prioUid = ref("");
 const prioRank = ref("1");
+const prioVip = ref(false);
+const prioOfficer = ref(false);
 const modoCards = ref("0");
 const tab = ref("attack");
 const dailyQq = ref("");
@@ -1115,6 +1117,8 @@ function takeUser(user) {
   clearRetreatCity.value = String(user.clear_retreat_city || 0);
   clearRetreatFail.value = !!user.clear_retreat_fail;
   awayMorale.value = String(user.away_morale ?? 100);
+  prioVip.value = !!user.clear_prio_vip;
+  prioOfficer.value = !!user.clear_prio_officer;
   clearRows.value = (user.clear_priority || []).map((row) => ({
     uid: String(row.uid),
     rank: String(row.rank),
@@ -1175,6 +1179,8 @@ async function saveClearPlan() {
     retreat_city: clearRetreatCity.value,
     retreat_fail: clearRetreatFail.value,
     away_morale: awayMorale.value,
+    prio_vip: prioVip.value,
+    prio_officer: prioOfficer.value,
     priority: clearRows.value.map((row) => ({ uid: row.uid, rank: row.rank })),
   });
   if (data.user) takeUser(data.user);
@@ -1897,6 +1903,8 @@ onUnmounted(() => {
         v-model:away-morale="awayMorale"
         v-model:prio-uid="prioUid"
         v-model:prio-rank="prioRank"
+        v-model:prio-vip="prioVip"
+        v-model:prio-officer="prioOfficer"
         v-model:move-city="moveCity"
         v-model:clear-rows="clearRows"
         :me="me"

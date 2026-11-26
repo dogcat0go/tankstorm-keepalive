@@ -625,6 +625,13 @@ function prioText(m) {
   return rows.map((row) => row.uid + "（" + row.rank + "）").join("、");
 }
 
+function prioTypeText(m) {
+  const bits = [];
+  if (m.clear_prio_vip) bits.push("VIP");
+  if (m.clear_prio_officer) bits.push("官员");
+  return bits.length ? bits.join("、") : "无";
+}
+
 function toggleMember(id) {
   openMember.value = openMember.value === id ? 0 : id;
 }
@@ -1114,6 +1121,7 @@ onUnmounted(() => {
                   <p>打完后退：{{ retreatText(m.retreat_mode, m.retreat_hops, m.retreat_city, m.retreat_fail) }}</p>
                   <p>清城扫页：{{ clearPages(m) }} · 空城再打 {{ m.clear_wait ? m.clear_wait + " 分钟" : "结束" }} · 扫页冷却 {{ m.clear_scan ? m.clear_scan + " 秒" : "每次出手" }}</p>
                   <p>清城后退：{{ retreatText(m.clear_retreat_mode, m.clear_retreat_hops, m.clear_retreat_city, m.clear_retreat_fail) }}</p>
+                  <p>优先类型：{{ prioTypeText(m) }}</p>
                   <p>优先 UID：{{ prioText(m) }}</p>
                   <p>日常定时：{{ m.daily_at || "未设" }}</p>
                   <p>刷摩多定时：{{ m.modo_at || "未设" }} · 恢复卡 {{ m.modo_cards || 0 }}</p>
