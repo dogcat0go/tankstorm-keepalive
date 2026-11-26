@@ -1320,7 +1320,8 @@ def _note_watch(config, city_id, cname, changes):
         if not ch.get("arm"):
             continue
         try:
-            queued = citydb.enqueue_online_attack(ch["user_id"], city_id, ch["uid"])
+            why = citydb.enqueue_online_attack(ch["user_id"], city_id, ch["uid"])
+            queued = not why
             if queued or citydb.online_attack_busy(ch["user_id"], city_id, ch["uid"]):
                 citydb.mark_lock_sent(ch["user_id"], city_id, ch["uid"])
         except Exception:
