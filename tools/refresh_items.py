@@ -12,7 +12,7 @@
 带了版本号就只解那一版，找不到也不改去猜别的。
 
 结果写到程序目录的 items-live.json，不改仓库里的 web/src/items.json。
-新出列表仍按随包那两份表的差做基线，不会把原来的新出编号清掉。
+新出列表是这一份和上一份道具表的差。上一份优先用已经写好的表。
 
     python3 tools/refresh_items.py
     python3 tools/refresh_items.py 2026111801

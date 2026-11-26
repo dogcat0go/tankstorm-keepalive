@@ -14,8 +14,8 @@ Item_版本.dat 末尾若是 03a33cd9a31ee58c，先去掉再做 Base64，然后�
 游戏页 FlashVars 的 version 不一定就是这份表的文件名。先试它，以及同一天的
 01、02、03 后缀。这些都不在或解不开，再按北京日期往回找最近三周里能解开的最新一份。
 
-新出编号的基线是随包 web/src/items.json 去掉 web/src/items-new.json。
-这两份文件不在刷新时改写。解开的结果放在程序目录的 items-live.json。
+新出编号是这一份和上一份道具表的差。上一份优先用已经写好的
+items-live.json，还没有就用随包 web/src/items.json。这两份随包文件不在刷新时改写。
 """
 
 import base64
@@ -46,8 +46,6 @@ _MAX_BYTES = 8_000_000
 
 _state_lock = threading.Lock()
 _busy = False
-_baseline_lock = threading.Lock()
-_baseline = None
 
 
 def _log():
@@ -191,22 +189,28 @@ def _id_set(rows: list) -> set:
     return found
 
 
-def baseline_ids() -> frozenset:
-    """随包全表去掉随包新出列表。刷新之后这两份文件仍是基线。"""
-    global _baseline
-    with _baseline_lock:
-        if _baseline is None:
-            old = _id_set(_read_list(_bundled_json("items.json")))
-            fresh = _id_set(_read_list(_bundled_json("items-new.json")))
-            if not old:
-                raise ValueError("随包道具表是空的")
-            _baseline = frozenset(old - fresh)
-        return _baseline
+def _bundled_ids() -> set:
+    """随包全表。没有或读不出来就是空集。"""
+    try:
+        return _id_set(_read_list(_bundled_json("items.json")))
+    except (OSError, ValueError):
+        return set()
 
 
-def _new_rows(rows: list) -> list:
-    base = baseline_ids()
-    return [row for row in rows if row[0] not in base]
+def _previous_ids() -> set:
+    """上一份道具表。已经写过就用那一份，否则用随包全表。"""
+    data = _read_json(user_path(LIVE_NAME))
+    items = data.get("items")
+    if isinstance(items, list) and items:
+        return _id_set(items)
+    return _bundled_ids()
+
+
+def _new_rows(rows: list, previous=None) -> list:
+    """这一份里、上一份没有的编号。"""
+    if previous is None:
+        previous = _previous_ids()
+    return [row for row in rows if isinstance(row, list) and row and row[0] not in previous]
 
 
 def _read_json(path: str) -> dict:
@@ -306,6 +310,7 @@ def refresh(version: str | None = None, ctx_version: str | None = None):
         "version": found,
         "items": rows,
         "new": fresh,
+        "compared": "previous",
     })
     return found, rows, fresh
 
@@ -315,11 +320,14 @@ def live_view():
     data = _read_json(user_path(LIVE_NAME))
     items = data.get("items")
     fresh = data.get("new")
-    if not isinstance(items, list) or not items or not isinstance(fresh, list):
+    if not isinstance(items, list) or not items:
         return None
     head = items[0]
     if not isinstance(head, list) or len(head) < 2:
         return None
+    # 旧算法把随包新出列表永远算成新的。那种结果里会带上随包全表已有的编号。
+    if data.get("compared") != "previous" or not isinstance(fresh, list):
+        fresh = _new_rows(items, _bundled_ids())
     return {
         "live": True,
         "version": str(data.get("version") or ""),
@@ -433,6 +441,7 @@ def schedule_refresh(qq, ctx) -> None:
                 "version": found,
                 "items": rows,
                 "new": fresh,
+                "compared": "previous",
             })
             try:
                 _mark_refresh_ok(found)

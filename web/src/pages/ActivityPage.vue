@@ -3,7 +3,6 @@ import { computed, onMounted, ref, watch } from "vue";
 import { ElSwitch } from "element-plus";
 import "element-plus/es/components/switch/style/css";
 import bundledItems from "../items.json";
-import bundledNew from "../items-new.json";
 import BattleReport from "../components/BattleReport.vue";
 
 const guildLevel = defineModel("guildLevel", { type: String, required: true });
@@ -56,7 +55,7 @@ const props = defineProps({
 });
 
 const itemRows = ref(bundledItems);
-const newItems = ref(bundledNew.map(([id, name, desc]) => ({ id, name, desc })));
+const newItems = ref([]);
 const itemQuery = ref("");
 let itemLoad = 0;
 
