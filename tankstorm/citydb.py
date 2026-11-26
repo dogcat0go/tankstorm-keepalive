@@ -3560,6 +3560,11 @@ def queue_present_locks(user_id: int) -> int:
         conn.close()
     n = 0
     for city_id, uid in rows:
+        if uid_failed_for(user_id, uid):
+            mark_lock_sent(user_id, city_id, uid)
+            log.info("登录账号 %s 自动锁敌跳过 UID %s，已在失败库",
+                     username_of(user_id), uid)
+            continue
         queued = enqueue_online_attack(user_id, city_id, uid)
         if queued or online_attack_busy(user_id, city_id, uid):
             mark_lock_sent(user_id, city_id, uid)
@@ -3663,6 +3668,11 @@ def set_watch_skip(user_id: int, city_id: int, uid: str, on: bool):
     log.info("登录账号 %s 自动索敌不再跳过，城市 %s UID %s",
              username_of(user_id), city_id, uid)
     if not present or sent:
+        return "", False
+    if uid_failed_for(user_id, uid):
+        mark_lock_sent(user_id, city_id, uid)
+        log.info("登录账号 %s 自动索敌不再跳过，但 UID %s 已在失败库，不排",
+                 username_of(user_id), uid)
         return "", False
     conn = connect(readonly=True)
     try:
@@ -8768,6 +8778,28 @@ def same_failed(uid, live_name, names=None) -> bool:
     if live and recorded != live:
         return False
     return True
+
+
+def uid_failed_for(user_id: int, uid: str) -> bool:
+    """这个登录账号的攻打号，是不是已经打不过这个 UID。"""
+    uid = str(uid or "").strip()
+    qq = attack_qq_of(int(user_id or 0))
+    if not uid or not qq:
+        return False
+    if _fail_acct() == qq:
+        return in_atk_fail(uid)
+
+    def _read():
+        conn = connect(readonly=True, timeout=DB_OP_TIMEOUT)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM atk_fail WHERE acct=? AND uid=? AND IFNULL(ret,0) NOT IN (21)",
+                (qq, uid)).fetchone()
+            return bool(row)
+        finally:
+            conn.close()
+
+    return bool(_run_timeout(_read, default=False))
 
 
 def in_atk_fail(uid) -> bool:

@@ -1320,6 +1320,10 @@ def _note_watch(config, city_id, cname, changes):
         if not ch.get("arm"):
             continue
         try:
+            if citydb.uid_failed_for(ch["user_id"], ch["uid"]):
+                citydb.mark_lock_sent(ch["user_id"], city_id, ch["uid"])
+                log.info("[订阅] %s 已在失败库，自动锁敌不排", who)
+                continue
             queued = citydb.enqueue_online_attack(ch["user_id"], city_id, ch["uid"])
             if queued or citydb.online_attack_busy(ch["user_id"], city_id, ch["uid"]):
                 citydb.mark_lock_sent(ch["user_id"], city_id, ch["uid"])
@@ -1765,11 +1769,11 @@ def _ready_for_same_city(here, city_id) -> bool:
 
 
 def _lock_no_retreat(why: str, status: str) -> bool:
-    """被打回首都或手动停，不要再执行后退。"""
+    """被打回首都、手动停，或这个人已经打不过，不要再执行后退。"""
     if status == "ended":
         return True
     text = str(why or "")
-    return _defeated(text) or text == "已手动关停"
+    return _defeated(text) or text == "已手动关停" or "已在失败库" in text
 
 
 def _lock_no_chain(why: str, status: str) -> bool:
@@ -1916,7 +1920,7 @@ def _interrupt_reason(exc) -> str:
 
 def _claim_war_blueprint(rec, sock, config, order_id, status, reason=""):
     """这一单国战打完，领一次图纸奖励。没打完或手动关停不领。领失败不改订单结果。"""
-    if "已手动关停" in str(reason or ""):
+    if "已手动关停" in str(reason or "") or "已在失败库" in str(reason or ""):
         return
     if str(status or "") not in ("done", "failed", "ended"):
         return
@@ -2158,6 +2162,16 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
         fight_config["国战"] = war
         log.info("订单 %s 最多用 %d 张恢复卡", job["id"], int(job["cards"]))
     guarding = bool(job.get("auto"))
+    if guarding and uid and citydb.in_atk_fail(uid):
+        why = "已在失败库，跳过"
+        log.info("订单 %s 自动锁敌 %s，不执行", job["id"], why)
+        citydb.finish_attack_order(job["id"], "failed", why, beats=start_beats)
+        citydb.set_fighting_order(0)
+        return {
+            "id": job["id"], "status": "failed", "why": why,
+            "here": citydb.attack_here_id(),
+            "done": False, "failed": True, "stop": True, "parked": False,
+        }
     if guarding and not from_chain:
         citydb.begin_lock_cards()
     try:
