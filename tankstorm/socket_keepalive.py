@@ -1363,7 +1363,7 @@ def _scan_one_city(rec, sock, config, city_id, beat, country_id=0, start_page=0,
         if full:
             gone = citydb.drop_stale(city_id, ts)
             if gone:
-                log.info("已清掉本城过期记录 %d 条", gone)
+                log.info("本城 %d 人这次没扫到，记录留着", gone)
         _note_watch(config, city_id, cname, changes)
     oname = citydb.country_name(owner) if owner else ""
     log.info("―― 城市 %s %s ―― 归属国家 %s%s，面板人数 %s，本轮写入 %d 人，最后一页 %s",

@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS player (
     pic               TEXT,
     fetched_at        TEXT NOT NULL,
     page              INTEGER,
+    absent            INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (uid, city_id)
 );
 CREATE INDEX IF NOT EXISTS player_city ON player(city_id);
@@ -368,6 +369,10 @@ def connect(readonly=False, timeout=15):
             cols = {r[1] for r in setup.execute("PRAGMA table_info(player)")}
             if "page" not in cols:
                 setup.execute("ALTER TABLE player ADD COLUMN page INTEGER")
+                setup.commit()
+            if cols and "absent" not in cols:
+                setup.execute(
+                    "ALTER TABLE player ADD COLUMN absent INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             ccols = {r[1] for r in setup.execute("PRAGMA table_info(city)")}
             if "near_city" not in ccols:
@@ -1072,7 +1077,8 @@ def upsert_players(city_id: int, players: list, fetched_at: str, page=None):
             "vip_type=excluded.vip_type, vip_level=excluded.vip_level, "
             "officer_position=excluded.officer_position, "
             "league_point=excluded.league_point, league_title=excluded.league_title, "
-            "pic=excluded.pic, fetched_at=excluded.fetched_at, page=excluded.page",
+            "pic=excluded.pic, fetched_at=excluded.fetched_at, page=excluded.page, "
+            "absent=0",
             rows)
         conn.commit()
         return len(rows)
@@ -1081,7 +1087,7 @@ def upsert_players(city_id: int, players: list, fetched_at: str, page=None):
 
 
 def drop_stale(city_id: int, fetched_at: str) -> int:
-    """删掉这座城里本次没再出现的人（完整拉完才调用）。名字先留在订阅上。"""
+    """整城拉完后，这次没再见到的人记成不在，行还留着。名字先补到订阅上。"""
     conn = connect()
     try:
         conn.execute(
@@ -1095,7 +1101,8 @@ def drop_stale(city_id: int, fetched_at: str) -> int:
             ")",
             (int(city_id), fetched_at, int(city_id), fetched_at))
         cur = conn.execute(
-            "DELETE FROM player WHERE city_id=? AND fetched_at<?",
+            "UPDATE player SET absent=1 WHERE city_id=? AND fetched_at<? "
+            "AND IFNULL(absent,0)=0",
             (int(city_id), fetched_at))
         conn.commit()
         return cur.rowcount
@@ -8559,7 +8566,8 @@ def list_city_targets(city_id: int, skip_failed=True, exclude_uid=""):
             "IFNULL(o.occupy_country, IFNULL(c.country_id, p.country_id)) "
             "FROM player p LEFT JOIN city c ON c.id=p.city_id "
             "LEFT JOIN city_occupy o ON o.city_id=p.city_id "
-            "WHERE p.city_id=? ORDER BY p.fetched_at DESC",
+            "WHERE p.city_id=? AND IFNULL(p.absent,0)=0 "
+            "ORDER BY p.fetched_at DESC",
             (city_id,)).fetchall()
     finally:
         conn.close()
