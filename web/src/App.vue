@@ -57,6 +57,7 @@ const retreatNote = ref("");
 const lockCards = ref("3");
 const lockHint = ref("");
 const locking = ref("");
+const skipSwitching = ref("");
 const lockNote = ref("");
 const advanced = ref(false);
 const attackAdvanced = ref(false);
@@ -1239,6 +1240,26 @@ async function lockOne(it) {
   }
 }
 
+async function saveSkip(it, on) {
+  const prev = !!it.skip;
+  const next = !!on;
+  const key = lockKey(it);
+  if (next === prev || skipSwitching.value) return;
+  it.skip = next;
+  skipSwitching.value = key;
+  showErr("", "watch");
+  try {
+    const data = await api("/api/subs/skip", { city_id: it.city_id, uid: it.uid, on: next });
+    it.skip = !!data.skip;
+    showErr(attackLoginError(data.login), "watch");
+  } catch (e) {
+    it.skip = prev;
+    showErr(e.message, "watch");
+  } finally {
+    skipSwitching.value = "";
+  }
+}
+
 async function addSub() {
   showErr("");
   await api("/api/subs", { city_id: cityId.value, uid: uid.value });
@@ -1847,6 +1868,8 @@ onUnmounted(() => {
         :save-lock-cards="saveLockCards"
         :save-retreat="saveRetreat"
         :lock-one="lockOne"
+        :save-skip="saveSkip"
+        :skip-switching="skipSwitching"
         :remove-sub="removeSub"
         :lock-key="lockKey"
         :is-sub-open="isSubOpen"

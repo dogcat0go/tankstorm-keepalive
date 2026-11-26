@@ -1270,6 +1270,24 @@ def _handler(config: dict):
                         login = kick_attack_login(config, user["id"])
                     _json(self, 200, {"ok": True, "auto_lock": on, "queued": queued,
                                       "login": login})
+                elif path == "/api/subs/skip":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能监控敌人"})
+                        return
+                    if not citydb.high_tier(user.get("tier") or ""):
+                        _json(self, 403, {"error": "自动索敌需要高级订阅"})
+                        return
+                    city_id, uid = _pair(data)
+                    why, queued = citydb.set_watch_skip(
+                        user["id"], city_id, uid, bool(data.get("on")))
+                    if why:
+                        raise ValueError(why)
+                    login = ""
+                    if queued:
+                        from .socket_keepalive import kick_attack_login
+                        login = kick_attack_login(config, user["id"])
+                    _json(self, 200, {"ok": True, "skip": bool(data.get("on")),
+                                      "queued": queued, "login": login})
                 elif path == "/api/watch-lock":
                     if not user.get("admin"):
                         _json(self, 403, {"error": "只有管理员能监控敌人"})
