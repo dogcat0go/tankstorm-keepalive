@@ -5,7 +5,6 @@ import "element-plus/es/components/menu/style/css";
 import "./base.css";
 import AccountBar from "./pages/AccountBar.vue";
 import AttackStatus from "./pages/AttackStatus.vue";
-import SquadPanel from "./components/SquadPanel.vue";
 import AttackPage from "./pages/AttackPage.vue";
 import DailyPage from "./pages/DailyPage.vue";
 import ActivityPage from "./pages/ActivityPage.vue";
@@ -35,7 +34,6 @@ const attackCity = ref("");
 const attackUid = ref("");
 const orders = ref([]);
 const storms = ref([]);
-const command = ref(null);
 const proc = ref(null);
 const qrSrc = ref("");
 const bindWait = ref(false);
@@ -974,7 +972,6 @@ async function refreshAttacks() {
   if (!me.value) {
     orders.value = [];
     storms.value = [];
-    command.value = null;
     proc.value = null;
     attackHereOn = false;
     return;
@@ -982,7 +979,6 @@ async function refreshAttacks() {
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
   storms.value = atk.storms || [];
-  command.value = atk.command && atk.command.team_id ? atk.command : null;
   if (me.value && typeof atk.storm_day === "number") {
     me.value = { ...me.value, storm_day: atk.storm_day };
   }
@@ -1021,27 +1017,6 @@ function procText(p) {
   if (!p.online) return p.detail || "没在跑";
   if (p.paused && p.phase !== "login") return p.detail || "已暂停";
   return p.detail || "空闲，等订单";
-}
-
-function takeCommand(data) {
-  command.value = data.command && data.command.team_id ? data.command : null;
-}
-
-async function saveCommandAccept(on) {
-  takeCommand(await api("/api/desk/accept", { on: !!on }));
-}
-
-async function inviteMember(username) {
-  takeCommand(await api("/api/desk/invite", { username }));
-}
-
-async function kickMember(member) {
-  const userId = member && typeof member === "object" ? member.id : member;
-  takeCommand(await api("/api/desk/kick", { user_id: userId }));
-}
-
-async function renameSquad(name) {
-  takeCommand(await api("/api/desk/name", { name }));
 }
 
 async function enter() {
@@ -1749,17 +1724,6 @@ onUnmounted(() => {
         :reload-qr="reloadQr"
         :show-err="showErr"
       />
-      <SquadPanel
-        v-if="command && command.team_id && !toolsOn"
-        v-show="!sideOn"
-        :squad="command"
-        :lead="!!command.self"
-        :rename-squad="renameSquad"
-        :invite-member="inviteMember"
-        :kick-member="kickMember"
-        :answer="saveCommandAccept"
-        :show-err="(message) => showErr(message, 'bar')"
-      />
       <div v-if="toolsOn && me.base_war && floatJobs.length && (tab === 'base' || tab === 'activity')" class="job-float" :class="{ 'is-collapsed': floatFolded }" :style="floatStyle">
         <header @pointerdown="dragFloat">任务状态</header>
         <div class="job-float-body">
@@ -1970,11 +1934,6 @@ onUnmounted(() => {
         :order-open="orderOpen"
         :hold-cell="holdCell"
         :show-err="showErr"
-        :squad="command"
-        :rename-squad="renameSquad"
-        :invite-member="inviteMember"
-        :kick-member="kickMember"
-        :save-command-accept="saveCommandAccept"
       />
       <BasePage
         v-show="toolsOn && me && me.base_war && tab === 'base'"

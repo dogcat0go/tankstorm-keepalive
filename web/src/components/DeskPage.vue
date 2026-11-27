@@ -182,8 +182,50 @@ onUnmounted(() => clearInterval(timer));
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；没在线是离线，退出或被踢出是已退出。指挥者可以踢人。队员在自己的页面能看到这支编队。先选一支编队和一种操作，再点地图上的城。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
+  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；没在线是离线，退出或被踢出是已退出。指挥者可以踢人。编队只在这个测试页里看。先选一支编队和一种操作，再点地图上的城。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
+  <div class="desk-manage">
+    <form class="lock-row" @submit.prevent="makeTeam()">
+      <label>指挥者
+        <select v-model="organizerId" required>
+          <option value="" disabled>选一个已绑定攻打 QQ 的号</option>
+          <option v-for="a in accounts" :key="a.id" :value="String(a.id)">
+            {{ a.username }} · {{ a.region ? a.region + "区" : "区号未记" }} · {{ a.country_name || "国家未确认" }}
+          </option>
+        </select>
+      </label>
+      <label>国家
+        <select v-model="countryId" required>
+          <option value="" disabled>选国家</option>
+          <option v-for="c in view.countries" :key="c.id" :value="String(c.id)">{{ c.name }}</option>
+        </select>
+      </label>
+      <label>编队名称
+        <input v-model="newName" maxlength="16" placeholder="国战编队" />
+      </label>
+      <button type="submit" :disabled="busy">创建编队</button>
+    </form>
+    <div class="lock-row">
+      <label>当前编队
+        <select v-model.number="teamId">
+          <option :value="0">还没有编队</option>
+          <option v-for="t in view.teams" :key="t.id" :value="t.id">
+            {{ t.name || "国战编队" }} · {{ t.region }}区 {{ t.country_name || t.country_id }} · {{ byId[t.organizer_id]?.username || "指挥者" }}
+          </option>
+        </select>
+      </label>
+      <button v-if="team" type="button" class="ghost" :disabled="busy" @click="send('drop', { team_id: team.id })">解散</button>
+    </div>
+    <SquadPanel
+      v-if="squad"
+      lead
+      :squad="squad"
+      :busy="busy"
+      :rename-squad="renameSquad"
+      :invite-member="inviteMember"
+      :kick-member="kickMember"
+    />
+  </div>
   <div class="desk">
     <div class="desk-map">
       <svg v-if="view.cities.length" :viewBox="`0 0 ${view.width} ${view.height}`" role="img" aria-label="城市地图">
@@ -206,37 +248,6 @@ onUnmounted(() => clearInterval(timer));
       <p v-else class="muted">城市目录还没装上。</p>
     </div>
     <div class="desk-side">
-      <form class="stack" @submit.prevent="makeTeam()">
-        <label>指挥者
-          <select v-model="organizerId" required>
-            <option value="" disabled>选一个已绑定攻打 QQ 的号</option>
-            <option v-for="a in accounts" :key="a.id" :value="String(a.id)">
-              {{ a.username }} · {{ a.region ? a.region + "区" : "区号未记" }} · {{ a.country_name || "国家未确认" }}
-            </option>
-          </select>
-        </label>
-        <label>国家
-          <select v-model="countryId" required>
-            <option value="" disabled>选国家</option>
-            <option v-for="c in view.countries" :key="c.id" :value="String(c.id)">{{ c.name }}</option>
-          </select>
-        </label>
-        <label>编队名称
-          <input v-model="newName" maxlength="16" placeholder="国战编队" />
-        </label>
-        <button type="submit" :disabled="busy">创建编队</button>
-      </form>
-      <label>当前编队
-        <select v-model.number="teamId">
-          <option :value="0">还没有编队</option>
-          <option v-for="t in view.teams" :key="t.id" :value="t.id">
-            {{ t.name || "国战编队" }} · {{ t.region }}区 {{ t.country_name || t.country_id }} · {{ byId[t.organizer_id]?.username || "指挥者" }}
-          </option>
-        </select>
-      </label>
-      <p v-if="team">
-        <button type="button" class="ghost" :disabled="busy" @click="send('drop', { team_id: team.id })">解散</button>
-      </p>
       <div v-if="team" class="desk-tools" role="group" aria-label="操作">
         <button type="button" :class="{ ghost: tool !== 'move' }" @click="tool = 'move'">移动</button>
         <button type="button" :class="{ ghost: tool !== 'attack' }" @click="tool = 'attack'">攻打</button>
@@ -247,15 +258,6 @@ onUnmounted(() => clearInterval(timer));
       <ul v-if="lines.length" class="desk-lines">
         <li v-for="(line, i) in lines" :key="i">{{ line }}</li>
       </ul>
-      <SquadPanel
-        v-if="squad"
-        lead
-        :squad="squad"
-        :busy="busy"
-        :rename-squad="renameSquad"
-        :invite-member="inviteMember"
-        :kick-member="kickMember"
-      />
       <div v-if="shownLook">
         <h3>{{ shownLook.who.username }} 打开 {{ shownLook.look.name || shownLook.look.city }}</h3>
         <p class="muted">{{ shownLook.look.note }}<template v-if="shownLook.look.owner_name"> · 归属 {{ shownLook.look.owner_name }}</template></p>
