@@ -367,6 +367,7 @@ def drop_team(team_id) -> str:
         conn.commit()
     finally:
         conn.close()
+    citydb.clear_team_hits(team_id)
     return ""
 
 
@@ -421,6 +422,7 @@ def kick(team_id, user_id) -> str:
     finally:
         conn.close()
     citydb.clear_desk(user_id)
+    citydb.clear_team_hits(team_id)
     citydb.note_desk_text(f"已被请出编队「{title}」", user_id)
     return ""
 
@@ -498,6 +500,7 @@ def order(team_id, op, city_id) -> tuple:
         owner = int((citydb.city_map().get(city_id) or {}).get("owner") or 0)
         if owner == int(team["country_id"]):
             return "这是己方城市", []
+        citydb.clear_team_hits(team_id)
     members = _member_rows(team_id)
     if not members:
         return "队里还没有人", []
@@ -949,17 +952,18 @@ def set_accept(user_id, on) -> str:
     conn = citydb.connect()
     try:
         row = conn.execute(
-            "SELECT t.organizer_id, IFNULL(m.status,'wait'), IFNULL(t.name,'') "
+            "SELECT t.id, t.organizer_id, IFNULL(m.status,'wait'), IFNULL(t.name,'') "
             "FROM war_member m JOIN war_team t ON t.id=m.team_id "
             "WHERE m.user_id=? AND IFNULL(m.status,'wait')!='out' "
             "ORDER BY t.id DESC LIMIT 1",
             (user_id,)).fetchone()
         if not row:
             return "没有这份邀请"
-        if int(row[0]) == user_id:
+        team_id = int(row[0])
+        if int(row[1]) == user_id:
             return "指挥者不用接受自己的邀请"
-        title = row[2] or _TEAM_NAME
-        was_in = row[1] == "in"
+        title = row[3] or _TEAM_NAME
+        was_in = row[2] == "in"
         if on:
             conn.execute(
                 "UPDATE war_member SET accept=1, status='in' WHERE user_id=? "
@@ -973,6 +977,7 @@ def set_accept(user_id, on) -> str:
         conn.commit()
     finally:
         conn.close()
+    citydb.clear_team_hits(team_id)
     if on:
         citydb.note_desk_text(f"已加入编队「{title}」", user_id)
     else:
