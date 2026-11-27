@@ -454,6 +454,10 @@ img.scan-qr { width: 280px; }
 .desk-map line { stroke: #c3b8a4; stroke-width: 1; pointer-events: none; }
 .desk-map text { font-size: 11px; fill: #3a342c; pointer-events: none; }
 .desk-side { display: flex; flex-direction: column; gap: 10px; }
+.desk-look { max-height: 46vh; overflow: auto; background: #fff; border: 1px solid #e4e4e0; border-radius: 8px; padding: 10px 12px; }
+.desk-look h3 { margin: 0 0 6px; font-size: 15px; }
+.desk-look table { margin-top: 8px; }
+.desk-look th, .desk-look td { padding: 6px 8px; }
 .desk-tools { display: flex; flex-wrap: wrap; gap: 6px; }
 .desk-tools button { margin: 0; }
 .desk-lines { margin: 0; padding-left: 18px; }

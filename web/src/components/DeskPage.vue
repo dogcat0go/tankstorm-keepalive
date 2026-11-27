@@ -14,7 +14,9 @@ const hitWho = ref("");
 const hitResult = ref("");
 const hitQ = ref("");
 const teamId = ref(0);
-const tool = ref("move");
+const tool = ref("");
+const armed = ref(false);
+const asked = ref(0);
 const cityId = ref(0);
 const organizerId = ref("");
 const countryId = ref("");
@@ -215,9 +217,24 @@ const looks = computed(() => {
   return rows;
 });
 
-const shownLook = computed(() => {
-  const picked = looks.value.find((row) => row.look.city === cityId.value);
-  return picked || looks.value[0] || null;
+const shownLook = computed(() => looks.value.find((row) => row.look.city === cityId.value) || null);
+const enemies = computed(() => {
+  const look = shownLook.value && shownLook.value.look;
+  if (!look) return [];
+  const mine = team.value ? Number(team.value.country_id) || 0 : 0;
+  return (look.players || []).filter((p) => {
+    const side = Number(p.country) || 0;
+    return !mine || !side || side !== mine;
+  });
+});
+const opening = computed(() => {
+  if (!city.value || shownLook.value) return "";
+  const id = String(city.value.id);
+  for (const a of members.value) {
+    const note = a.desk_note || "";
+    if (note.includes("打开") && note.includes(id)) return note;
+  }
+  return "";
 });
 
 async function loadHits() {
@@ -294,29 +311,47 @@ async function setTask(state) {
   if (err.value) throw new Error(err.value);
 }
 
-function pick(c) {
-  if (dragMoved) return;
-  cityId.value = c.id;
-  if (!team.value || tool.value === "morale" || busy.value) return;
-  if (team.value.task !== "run") {
-    err.value = team.value.task === "pause" ? "编队任务暂停着，先继续" : "先开始编队任务";
-    return;
-  }
-  if (tool.value === "attack") {
-    const owner = c.owner ? (view.value.countries.find((x) => x.id === c.owner)?.name || c.owner) : "归属未知";
-    if (!window.confirm(`攻打 ${c.name}（${owner}）？队里在线的号会一起走。敌城有人就打，空城会占领。一次最多走进 8 座城。`)) return;
-  }
-  send("command", { team_id: team.value.id, op: tool.value, city_id: c.id });
-}
-
-function fillMorale() {
+function runOn(c, op) {
   if (!team.value || busy.value) return;
   if (team.value.task !== "run") {
     err.value = team.value.task === "pause" ? "编队任务暂停着，先继续" : "先开始编队任务";
     return;
   }
-  if (!window.confirm("用体力补士气？人要在本国首都或相邻城，体力要大于 70。")) return;
-  send("command", { team_id: team.value.id, op: "morale", city_id: 0 });
+  if (op === "attack") {
+    const owner = c.owner ? (view.value.countries.find((x) => x.id === c.owner)?.name || c.owner) : "归属未知";
+    if (!window.confirm(`攻打 ${c.name}（${owner}）？队里在线的号会一起走。敌城有人就打，空城会占领。一次最多走进 8 座城。`)) return;
+  }
+  if (op === "morale") {
+    if (!window.confirm("用体力补士气？人要在本国首都或相邻城，体力要大于 70。")) return;
+    send("command", { team_id: team.value.id, op: "morale", city_id: 0 });
+    return;
+  }
+  if (op === "open") asked.value = c.id;
+  send("command", { team_id: team.value.id, op, city_id: c.id });
+}
+
+function pick(c) {
+  if (dragMoved) return;
+  cityId.value = c.id;
+  if (!armed.value || !tool.value) return;
+  armed.value = false;
+  runOn(c, tool.value);
+}
+
+function useTool(op) {
+  tool.value = op;
+  if (op === "morale") {
+    armed.value = false;
+    runOn(city.value, op);
+    return;
+  }
+  if (!city.value) {
+    armed.value = true;
+    err.value = "先点一座城";
+    return;
+  }
+  armed.value = false;
+  runOn(city.value, op);
 }
 
 onMounted(() => {
@@ -331,7 +366,7 @@ onUnmounted(() => {
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先开始任务，再选一种操作，点地图上的城。按住地图拖动，滚轮缩放。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
+  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先点一座城，再点移动、攻打或打开城市。按住地图拖动，滚轮缩放。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市在旁边列出敌方，并写出城里一共有多少人。只看前 5 页，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
   <div class="desk-manage">
     <form class="lock-row" @submit.prevent="makeTeam()">
@@ -403,33 +438,40 @@ onUnmounted(() => {
     </div>
     <div class="desk-side">
       <div v-if="team" class="desk-tools" role="group" aria-label="操作">
-        <button type="button" :class="{ ghost: tool !== 'move' }" @click="tool = 'move'">移动</button>
-        <button type="button" :class="{ ghost: tool !== 'attack' }" @click="tool = 'attack'">攻打</button>
-        <button type="button" :class="{ ghost: tool !== 'open' }" @click="tool = 'open'">打开城市</button>
-        <button type="button" class="ghost" :disabled="busy" @click="fillMorale()">补士气</button>
+        <button type="button" :class="{ ghost: tool !== 'move' }" @click="useTool('move')">移动</button>
+        <button type="button" :class="{ ghost: tool !== 'attack' }" @click="useTool('attack')">攻打</button>
+        <button type="button" :class="{ ghost: tool !== 'open' }" @click="useTool('open')">打开城市</button>
+        <button type="button" class="ghost" :disabled="busy" @click="useTool('morale')">补士气</button>
       </div>
       <p v-if="city" class="muted">选中 {{ city.name }} {{ city.id }}<template v-if="canSupply(city)">，在这里可以用体力补士气</template></p>
       <ul v-if="lines.length" class="desk-lines">
         <li v-for="(line, i) in lines" :key="i">{{ line }}</li>
       </ul>
-      <div v-if="shownLook">
-        <h3>{{ shownLook.who.username }} 打开 {{ shownLook.look.name || shownLook.look.city }}</h3>
-        <p class="muted">{{ shownLook.look.note }}<template v-if="shownLook.look.owner_name"> · 归属 {{ shownLook.look.owner_name }}</template></p>
-        <table v-if="(shownLook.look.players || []).length">
-          <thead>
-            <tr><th>名字</th><th>UID</th><th>等级</th><th>士气</th><th>战力</th><th></th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="p in shownLook.look.players" :key="p.uid">
-              <td>{{ p.name || "—" }}</td>
-              <td>{{ p.uid }}</td>
-              <td>{{ p.lvl }}</td>
-              <td>{{ p.morale }}</td>
-              <td>{{ p.power }}</td>
-              <td>{{ p.vip ? "VIP" : "" }}<template v-if="p.officer"> 官职{{ p.officer }}</template></td>
-            </tr>
-          </tbody>
-        </table>
+      <div v-if="city" class="desk-look">
+        <h3>打开 {{ city.name }}</h3>
+        <p v-if="opening" class="muted">{{ opening }}</p>
+        <template v-else-if="shownLook">
+          <p class="muted">城里共 {{ shownLook.look.count == null ? "人数未知" : shownLook.look.count + " 人" }}<template v-if="shownLook.look.owner_name"> · 归属 {{ shownLook.look.owner_name }}</template> · 敌方 {{ enemies.length }} 人</p>
+          <p class="muted">{{ shownLook.look.note }}</p>
+          <table v-if="enemies.length">
+            <thead>
+              <tr><th>名字</th><th>UID</th><th>等级</th><th>士气</th><th>战力</th><th></th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in enemies" :key="p.uid">
+                <td>{{ p.name || "—" }}</td>
+                <td>{{ p.uid }}</td>
+                <td>{{ p.lvl }}</td>
+                <td>{{ p.morale }}</td>
+                <td>{{ p.power }}</td>
+                <td>{{ p.vip ? "VIP" : "" }}<template v-if="p.officer"> 官职{{ p.officer }}</template></td>
+              </tr>
+            </tbody>
+          </table>
+          <p v-else class="muted">前 5 页没有敌方。</p>
+        </template>
+        <p v-else-if="asked === city.id" class="muted">正在打开，敌方名单和总人数马上出现在这里。</p>
+        <p v-else class="muted">点「打开城市」看这座城里的敌方，并写出总人数。只看前 5 页。</p>
       </div>
     </div>
   </div>
