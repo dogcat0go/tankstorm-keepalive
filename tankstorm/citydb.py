@@ -6,7 +6,8 @@
 # 本程序希望能有用，但不提供任何担保；甚至不含适销性或特定用途适用性的默示担保。
 # 详见随附的 LICENSE 文件，或 <https://www.gnu.org/licenses/>。
 """城市玩家 SQLite：目录表来自游戏 CDN 的 CityData / CountryName，玩家表由
-`--city-players` 翻页写入。库文件在程序目录 `city_players.db`。
+`--city-players` 翻页写入。一个 uid 一行，扫到就改他所在的城市和页数。
+库文件在程序目录 `city_players.db`。
 """
 
 import json
@@ -62,7 +63,7 @@ CREATE TABLE IF NOT EXISTS player (
     fetched_at        TEXT NOT NULL,
     page              INTEGER,
     absent            INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (uid, city_id)
+    PRIMARY KEY (uid)
 );
 CREATE INDEX IF NOT EXISTS player_city ON player(city_id);
 CREATE TABLE IF NOT EXISTS atk_fail (
@@ -358,6 +359,58 @@ def sideline_poison_wal():
         return False
 
 
+def _player_uid_key(conn) -> None:
+    """旧库主键是 (uid, city_id)。收成 uid，同一个人只留最近一次出现的那一行。"""
+    info = list(conn.execute("PRAGMA table_info(player)"))
+    if not info:
+        return
+    pks = [r[1] for r in sorted(info, key=lambda r: r[5]) if r[5]]
+    if pks == ["uid"]:
+        return
+    before = conn.execute("SELECT COUNT(*) FROM player").fetchone()[0]
+    prev = conn.isolation_level
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TABLE IF EXISTS player_uid")
+        conn.execute(
+            "CREATE TABLE player_uid ("
+            "uid TEXT NOT NULL, city_id INTEGER NOT NULL, name TEXT, lvl INTEGER, "
+            "morale INTEGER, combat_power INTEGER, country_id INTEGER, "
+            "vip_type INTEGER, vip_level INTEGER, officer_position INTEGER, "
+            "league_point INTEGER, league_title INTEGER, pic TEXT, "
+            "fetched_at TEXT NOT NULL, page INTEGER, "
+            "absent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (uid))")
+        conn.execute(
+            "INSERT INTO player_uid("
+            "uid, city_id, name, lvl, morale, combat_power, country_id, "
+            "vip_type, vip_level, officer_position, league_point, league_title, "
+            "pic, fetched_at, page, absent) "
+            "SELECT uid, city_id, name, lvl, morale, combat_power, country_id, "
+            "vip_type, vip_level, officer_position, league_point, league_title, "
+            "pic, fetched_at, page, absent FROM ("
+            " SELECT uid, city_id, name, lvl, morale, combat_power, country_id, "
+            " vip_type, vip_level, officer_position, league_point, league_title, "
+            " pic, fetched_at, page, IFNULL(absent,0) AS absent, "
+            " ROW_NUMBER() OVER (PARTITION BY uid "
+            "  ORDER BY fetched_at DESC, IFNULL(absent,0), rowid DESC) AS rn "
+            " FROM player) WHERE rn=1")
+        conn.execute("DROP TABLE player")
+        conn.execute("ALTER TABLE player_uid RENAME TO player")
+        conn.execute("CREATE INDEX IF NOT EXISTS player_city ON player(city_id)")
+        conn.execute("COMMIT")
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    finally:
+        conn.isolation_level = prev
+    after = conn.execute("SELECT COUNT(*) FROM player").fetchone()[0]
+    log.info("player 主键改为 uid：%d 行收成 %d 行", before, after)
+
+
 def connect(readonly=False, timeout=15):
     """打开库。只读不改 journal，避免 DB Browser 开着时 PRAGMA 抢锁失败。
 
@@ -395,6 +448,7 @@ def connect(readonly=False, timeout=15):
                 setup.execute(
                     "ALTER TABLE player ADD COLUMN absent INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
+            _player_uid_key(setup)
             ccols = {r[1] for r in setup.execute("PRAGMA table_info(city)")}
             if "near_city" not in ccols:
                 setup.execute("ALTER TABLE city ADD COLUMN near_city TEXT")
@@ -1115,7 +1169,10 @@ def list_cities() -> list:
 
 
 def upsert_players(city_id: int, players: list, fetched_at: str, page=None):
-    """写入一页玩家。同一座城从第 0 页拉全量且成功结束后，再调 drop_stale。"""
+    """按 uid 写入一页玩家。同一个人只留一行，扫到就改他所在的城市和页数。
+
+    同一座城从第 0 页拉全量且成功结束后，再调 drop_stale。
+    """
     if not players:
         return 0
     city_id = int(city_id)
@@ -1140,7 +1197,8 @@ def upsert_players(city_id: int, players: list, fetched_at: str, page=None):
             "country_id, vip_type, vip_level, officer_position, league_point, "
             "league_title, pic, fetched_at, page) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
-            "ON CONFLICT(uid, city_id) DO UPDATE SET "
+            "ON CONFLICT(uid) DO UPDATE SET "
+            "city_id=excluded.city_id, "
             "name=excluded.name, lvl=excluded.lvl, morale=excluded.morale, "
             "combat_power=excluded.combat_power, country_id=excluded.country_id, "
             "vip_type=excluded.vip_type, vip_level=excluded.vip_level, "
@@ -1156,7 +1214,10 @@ def upsert_players(city_id: int, players: list, fetched_at: str, page=None):
 
 
 def drop_stale(city_id: int, fetched_at: str) -> int:
-    """整城拉完后，这次没再见到的人记成不在，行还留着。名字先补到订阅上。"""
+    """整城拉完后，库里还停在这座城、这次又没见到的人记成不在。行留着。
+
+    人已经被扫到别的城时，城市已经改掉，这里不动。名字先补到订阅上。
+    """
     conn = connect()
     try:
         conn.execute(
