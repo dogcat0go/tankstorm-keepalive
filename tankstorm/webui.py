@@ -23,7 +23,7 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 from . import citydb
 from .log import get_logger
@@ -748,7 +748,6 @@ def _handler(config: dict):
                 if not user.get("admin"):
                     _json(self, 403, {"error": "只有管理员能看攻打状态"})
                     return
-                from urllib.parse import parse_qs, urlparse
                 q = parse_qs(urlparse(self.path).query)
                 def _one(key):
                     return (q.get(key) or [""])[0]
