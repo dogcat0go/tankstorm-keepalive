@@ -34,6 +34,7 @@ const attackCity = ref("");
 const attackUid = ref("");
 const orders = ref([]);
 const storms = ref([]);
+const command = ref(null);
 const proc = ref(null);
 const qrSrc = ref("");
 const bindWait = ref(false);
@@ -972,6 +973,7 @@ async function refreshAttacks() {
   if (!me.value) {
     orders.value = [];
     storms.value = [];
+    command.value = null;
     proc.value = null;
     attackHereOn = false;
     return;
@@ -979,6 +981,7 @@ async function refreshAttacks() {
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
   storms.value = atk.storms || [];
+  command.value = atk.command && atk.command.team_id ? atk.command : null;
   if (me.value && typeof atk.storm_day === "number") {
     me.value = { ...me.value, storm_day: atk.storm_day };
   }
@@ -1017,6 +1020,11 @@ function procText(p) {
   if (!p.online) return p.detail || "没在跑";
   if (p.paused && p.phase !== "login") return p.detail || "已暂停";
   return p.detail || "空闲，等订单";
+}
+
+async function saveCommandAccept(on) {
+  const data = await api("/api/desk/accept", { on: !!on });
+  command.value = data.command && data.command.team_id ? data.command : null;
 }
 
 async function enter() {
@@ -1723,6 +1731,8 @@ onUnmounted(() => {
         :off-note="offNote"
         :reload-qr="reloadQr"
         :show-err="showErr"
+        :command="command"
+        :save-command-accept="saveCommandAccept"
       />
       <div v-if="toolsOn && me.base_war && floatJobs.length && (tab === 'base' || tab === 'activity')" class="job-float" :class="{ 'is-collapsed': floatFolded }" :style="floatStyle">
         <header @pointerdown="dragFloat">任务状态</header>

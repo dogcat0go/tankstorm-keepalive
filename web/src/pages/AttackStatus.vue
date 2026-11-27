@@ -19,7 +19,19 @@ const props = defineProps({
   reloadQr: { type: Function, required: true },
   showErr: { type: Function, required: true },
   loginPlatDefault: { type: String, default: "空间" },
+  command: { type: Object, default: null },
+  saveCommandAccept: { type: Function, required: true },
 });
+
+async function onAccept(ev) {
+  const on = ev.target.checked;
+  try {
+    await props.saveCommandAccept(on);
+  } catch (e) {
+    ev.target.checked = !on;
+    props.showErr(e.message, "bar");
+  }
+}
 
 const loginPlat = ref("空间");
 try {
@@ -80,6 +92,16 @@ watch(() => props.loginPlatDefault, (value) => {
     </div>
     <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
     <p v-if="qrSrc && !(proc && proc.qq)" class="muted bind-foot">扫上之后，页面上的「还没绑定」会变成这个 QQ 号。</p>
+    <div v-if="command && command.team_id" class="proc">
+      <span v-if="command.self" class="proc-text">你在指挥 {{ command.region }}区 {{ command.country_name }}。队员要在自己的页面打开「接受指挥」，才会跟着做。</span>
+      <template v-else>
+        <label class="choice">
+          <input type="checkbox" :checked="command.accept" @change="onAccept" />
+          接受 {{ command.organizer }} 的指挥
+        </label>
+        <span class="muted">{{ command.region }}区 {{ command.country_name }}。没打开时，这个号不跟着走。</span>
+      </template>
+    </div>
     <p v-if="err && errAt === 'bar'" class="err">{{ err }}</p>
   </section>
 </template>

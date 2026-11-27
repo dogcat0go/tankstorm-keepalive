@@ -10,7 +10,7 @@
 城市表没有坐标。位置按已经存下的 CityData 连接来排：
 马奇诺在中心，六座内圈城围着它，再往外是一圈中立城，六个国家贴在外圈。
 整张图左右对调，巴黎在左边。
-组织者点一次，队里每个在线的攻打号做同一件事。
+组织者点一次，自己会做。其他队员要在自己的页面打开接受指挥，才会跟着做。
 """
 
 import math
@@ -308,7 +308,7 @@ def create_team(organizer_id, country_id) -> str:
             (who["region"], country_id, organizer_id, citydb.now_ts()))
         team_id = int(cur.lastrowid)
         conn.execute(
-            "INSERT INTO war_member(team_id, user_id) VALUES (?,?)",
+            "INSERT INTO war_member(team_id, user_id, accept) VALUES (?,?,1)",
             (team_id, organizer_id))
         conn.commit()
     finally:
@@ -371,7 +371,7 @@ def set_member(team_id, user_id, on) -> str:
         if other:
             return "这个号已经在另一支队伍里"
         conn.execute(
-            "INSERT OR IGNORE INTO war_member(team_id, user_id) VALUES (?,?)",
+            "INSERT OR IGNORE INTO war_member(team_id, user_id, accept) VALUES (?,?,0)",
             (team_id, user_id))
         conn.commit()
     finally:
@@ -380,7 +380,7 @@ def set_member(team_id, user_id, on) -> str:
 
 
 def order(team_id, op, city_id) -> tuple:
-    """让整队做同一件事。返回 (错误, 每人一行的说明)。错误非空时说明为空。"""
+    """让接受了指挥的队员做同一件事。组织者自己总是做。返回 (错误, 每人一行的说明)。"""
     op = str(op or "")
     if op not in _OPS:
         return "没有这个操作", []
@@ -405,6 +405,9 @@ def order(team_id, op, city_id) -> tuple:
     seen = {}
     for who in members:
         name = who["username"] or str(who["id"])
+        if who["id"] != int(team["organizer_id"]) and not who["accept"]:
+            lines.append(f"{name}：没有接受指挥，跳过")
+            continue
         if who["country"] and who["country"] != int(team["country_id"]):
             got = citydb.country_name(who["country"]) or who["country"]
             lines.append(f"{name}：国家是{got}，和队伍不是一个国家，跳过")
@@ -692,7 +695,8 @@ def _member_rows(team_id: int) -> list:
     try:
         rows = conn.execute(
             "SELECT u.id, u.username, IFNULL(u.region,0), IFNULL(u.game_country,0), "
-            "IFNULL(u.attack_qq,'') FROM war_member m JOIN app_user u ON u.id=m.user_id "
+            "IFNULL(u.attack_qq,''), IFNULL(m.accept,0) "
+            "FROM war_member m JOIN app_user u ON u.id=m.user_id "
             "WHERE m.team_id=? ORDER BY u.id",
             (int(team_id),)).fetchall()
     finally:
@@ -703,6 +707,7 @@ def _member_rows(team_id: int) -> list:
         "region": int(row[2] or 0),
         "country": int(row[3] or 0),
         "qq": str(row[4] or ""),
+        "accept": bool(row[5]),
     } for row in rows]
 
 
@@ -713,13 +718,16 @@ def _teams() -> list:
             "SELECT id, region, country_id, organizer_id FROM war_team ORDER BY id"
         ).fetchall()
         members = conn.execute(
-            "SELECT team_id, user_id FROM war_member"
+            "SELECT team_id, user_id, IFNULL(accept,0) FROM war_member"
         ).fetchall()
     finally:
         conn.close()
     by_team = {}
-    for team_id, user_id in members:
+    accepted = {}
+    for team_id, user_id, accept in members:
         by_team.setdefault(int(team_id), []).append(int(user_id))
+        if accept:
+            accepted.setdefault(int(team_id), []).append(int(user_id))
     out = []
     for team_id, region, country_id, organizer_id in teams:
         out.append({
@@ -729,8 +737,71 @@ def _teams() -> list:
             "country_name": citydb.country_name(int(country_id or 0)),
             "organizer_id": int(organizer_id or 0),
             "members": by_team.get(int(team_id), []),
+            "accepted": accepted.get(int(team_id), []),
         })
     return out
+
+
+def command_of(user_id) -> dict:
+    """这个登录账号被编进的队伍。没有则空。"""
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return {}
+    conn = citydb.connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT t.id, t.region, t.country_id, t.organizer_id, IFNULL(m.accept,0), "
+            "IFNULL(o.username,'') "
+            "FROM war_member m JOIN war_team t ON t.id=m.team_id "
+            "LEFT JOIN app_user o ON o.id=t.organizer_id "
+            "WHERE m.user_id=?",
+            (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return {}
+    country_id = int(row[2] or 0)
+    organizer_id = int(row[3] or 0)
+    return {
+        "team_id": int(row[0]),
+        "region": int(row[1] or 0),
+        "country_id": country_id,
+        "country_name": citydb.country_name(country_id),
+        "organizer_id": organizer_id,
+        "organizer": row[5] or "组织者",
+        "self": organizer_id == user_id,
+        "accept": bool(row[4]) or organizer_id == user_id,
+    }
+
+
+def set_accept(user_id, on) -> str:
+    """这个号自己决定接不接受组织者的指挥。成功返回空字符串。"""
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        return "没有这个账号"
+    on = str(on).lower() in ("1", "true", "on", "yes") if not isinstance(on, bool) else on
+    conn = citydb.connect()
+    try:
+        row = conn.execute(
+            "SELECT t.organizer_id FROM war_member m JOIN war_team t ON t.id=m.team_id "
+            "WHERE m.user_id=?",
+            (user_id,)).fetchone()
+        if not row:
+            return "还没有人把这个号编进队伍"
+        if int(row[0]) == user_id:
+            return "组织者自己发令，不用切换接受指挥"
+        conn.execute(
+            "UPDATE war_member SET accept=? WHERE user_id=?",
+            (1 if on else 0, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+    if not on:
+        citydb.clear_desk(user_id)
+        citydb.note_desk_text("已关闭接受指挥", user_id)
+    return ""
 
 
 def _countries() -> list:

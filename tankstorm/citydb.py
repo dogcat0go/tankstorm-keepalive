@@ -239,6 +239,7 @@ CREATE TABLE IF NOT EXISTS war_team (
 CREATE TABLE IF NOT EXISTS war_member (
     team_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
+    accept  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (team_id, user_id)
 );
 """
@@ -605,6 +606,15 @@ def connect(readonly=False, timeout=15):
             if ucols and "guide_seen" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN guide_seen TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            mcols = {r[1] for r in setup.execute("PRAGMA table_info(war_member)")}
+            if mcols and "accept" not in mcols:
+                setup.execute(
+                    "ALTER TABLE war_member ADD COLUMN accept INTEGER NOT NULL DEFAULT 0")
+                setup.execute(
+                    "UPDATE war_member SET accept=1 WHERE user_id=("
+                    " SELECT organizer_id FROM war_team"
+                    " WHERE war_team.id=war_member.team_id)")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -4944,6 +4954,13 @@ def request_desk(user_id: int, op: str, city_id=0) -> str:
     _upsert_signal(_mark_name("desk", user_id), f"{op}:{cid}")
     note_desk_text(note, user_id)
     return ""
+
+
+def clear_desk(user_id: int) -> None:
+    """丢掉还没领走的指挥。关掉接受指挥时用。"""
+    user_id = int(user_id or 0)
+    if user_id:
+        _delete_signal(_mark_name("desk", user_id))
 
 
 def desk_pending(user_id: int = 0) -> tuple:

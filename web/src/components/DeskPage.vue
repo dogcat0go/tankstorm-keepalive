@@ -144,7 +144,7 @@ onUnmounted(() => clearInterval(timer));
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">同一区、同一国家的号编成一队，组织者是领队账号。先选一支队伍和一种操作，再点地图上的城。队里每个在线的攻打号做同一件事。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
+  <p class="muted">同一区、同一国家的号编成一队，组织者是领队账号。先选一支队伍和一种操作，再点地图上的城。组织者自己会做。其他号要在自己的页面打开接受指挥，才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
   <div class="desk">
     <div class="desk-map">
@@ -207,7 +207,7 @@ onUnmounted(() => clearInterval(timer));
         <li v-for="(line, i) in lines" :key="i">{{ line }}</li>
       </ul>
       <div v-if="team">
-        <p class="muted">同区的号。勾上就进这支队伍。国家还没从游戏读到的可以先加，读到别的国家后这一条会跳过。</p>
+        <p class="muted">同区的号。勾上就进这支队伍。进队之后，要这个号自己打开接受指挥，点地图才会让它跟着做。国家还没从游戏读到的可以先加，读到别的国家后这一条会跳过。</p>
         <label v-for="a in accounts.filter((x) => x.region === team.region)" :key="a.id" class="choice">
           <input
             type="checkbox"
@@ -215,6 +215,8 @@ onUnmounted(() => clearInterval(timer));
             :disabled="busy || a.id === team.organizer_id"
             @change="send('member', { team_id: team.id, user_id: a.id, on: $event.target.checked })" />
           {{ a.username }}
+          <span v-if="a.id === team.organizer_id" class="muted">组织者，自己发令</span>
+          <span v-else-if="team.members.includes(a.id)" class="muted">{{ (team.accepted || []).includes(a.id) ? "已接受指挥" : "还没接受指挥" }}</span>
           <span class="muted">{{ a.country_name || "国家未确认" }} · {{ a.online ? (a.paused ? "暂停" : "在线") : "不在线" }} · 体力 {{ a.power ?? "—" }} · 士气 {{ a.morale ?? "—" }} · {{ a.here || "位置未知" }}</span>
           <span v-if="a.desk_note" class="muted">{{ a.desk_note }}</span>
         </label>

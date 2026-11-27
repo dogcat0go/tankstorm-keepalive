@@ -631,11 +631,13 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
+                from . import desk
                 _json(self, 200, {
                     "items": citydb.list_attack_orders(user["id"]),
                     "process": citydb.attack_status(user["id"]),
                     "storms": citydb.list_storm_rejects(user["id"]),
                     "storm_day": citydb.storm_rejects_day(user["id"]),
+                    "command": desk.command_of(user["id"]),
                 })
                 return
             if path == "/api/base":
@@ -1133,6 +1135,12 @@ def _handler(config: dict):
                         "ok": True, "login": "busy",
                         "modo_cards": int(saved.get("modo_cards") or 0),
                     })
+                elif path == "/api/desk/accept":
+                    from . import desk
+                    why = desk.set_accept(user["id"], data.get("on"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
                 elif path == "/api/attacks/cancel":
                     try:
                         order_id = int(str(data.get("id", "")).strip())
