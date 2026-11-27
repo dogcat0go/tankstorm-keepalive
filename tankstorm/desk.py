@@ -635,6 +635,7 @@ def _open_city(rec, sock, config, city, country_war):
             continue
         vip = row.get("vipLevel")
         office = row.get("officerPosition")
+        country = row.get("countryID")
         players.append({
             "uid": uid,
             "name": row.get("name") or "",
@@ -643,6 +644,7 @@ def _open_city(rec, sock, config, city, country_war):
             "vip": bool(isinstance(vip, int) and not isinstance(vip, bool) and vip > 0),
             "officer": office if isinstance(office, int) and not isinstance(office, bool) else 0,
             "power": row.get("combatPowerValue") or 0,
+            "country": int(country) if isinstance(country, int) and not isinstance(country, bool) else 0,
         })
         if len(players) >= 80:
             break
@@ -651,13 +653,19 @@ def _open_city(rec, sock, config, city, country_war):
     count = (out or {}).get("userCnt")
     if owner_id:
         citydb.record_occupy(city, owner_id, count if isinstance(count, int) else None)
-    note = why or f"前 5 页看到 {len(players)} 人"
+    total = count if isinstance(count, int) and not isinstance(count, bool) else None
+    if why:
+        note = why
+    elif total is None:
+        note = f"前 5 页看到 {len(players)} 人"
+    else:
+        note = f"城里共 {total} 人，前 5 页看到 {len(players)} 人"
     citydb.save_desk_look({
         "city": city,
         "name": citydb.city_name(city) or "",
         "owner": owner_id,
         "owner_name": citydb.country_name(owner_id) if owner_id else "",
-        "count": count if isinstance(count, int) and not isinstance(count, bool) else None,
+        "count": total,
         "players": players,
         "note": note,
     })
