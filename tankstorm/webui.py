@@ -167,6 +167,8 @@ def _user_out(user: dict) -> dict:
         "high_tier": citydb.high_tier(user.get("tier") or ""),
         "base_war": citydb.base_tier(user.get("tier") or ""),
         "admin": bool(user.get("admin")),
+        "watch_on": bool(user.get("watch_on")),
+        "watch": citydb.can_watch(user),
         "auto_lock": bool(user.get("auto_lock")),
         "hold_min": int(user.get("hold_min") or 0),
         "hold_all": bool(user.get("hold_all")),
@@ -600,8 +602,8 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
-                if not user.get("admin"):
-                    _json(self, 403, {"error": "只有管理员能监控敌人"})
+                if not citydb.can_watch(user):
+                    _json(self, 403, {"error": "没有监控敌人的权限"})
                     return
                 try:
                     items = citydb.list_watches(user["id"])
@@ -933,8 +935,8 @@ def _handler(config: dict):
                 return
             try:
                 if path == "/api/subs":
-                    if not user.get("admin"):
-                        _json(self, 403, {"error": "只有管理员能监控敌人"})
+                    if not citydb.can_watch(user):
+                        _json(self, 403, {"error": "没有监控敌人的权限"})
                         return
                     region = int(user.get("region") or 0)
                     if region and region != 1:
@@ -943,8 +945,8 @@ def _handler(config: dict):
                     citydb.add_watch(user["id"], city_id, uid)
                     _json(self, 200, {"ok": True})
                 elif path == "/api/subs/delete":
-                    if not user.get("admin"):
-                        _json(self, 403, {"error": "只有管理员能监控敌人"})
+                    if not citydb.can_watch(user):
+                        _json(self, 403, {"error": "没有监控敌人的权限"})
                         return
                     city_id, uid = _pair(data)
                     citydb.remove_watch(user["id"], city_id, uid)
@@ -1217,8 +1219,8 @@ def _handler(config: dict):
                             out["login"] = kick_attack_login(config, user["id"])
                     _json(self, 200, out)
                 elif path == "/api/lock-cards":
-                    if not user.get("admin"):
-                        _json(self, 403, {"error": "只有管理员能监控敌人"})
+                    if not citydb.can_watch(user):
+                        _json(self, 403, {"error": "没有监控敌人的权限"})
                         return
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "锁敌恢复卡限制需要中级或高级订阅"})
@@ -1244,8 +1246,8 @@ def _handler(config: dict):
                     saved = citydb.user_by_token(_cookie_token(self)) or user
                     _json(self, 200, {"ok": True, "user": _user_out(saved)})
                 elif path == "/api/retreat":
-                    if not user.get("admin"):
-                        _json(self, 403, {"error": "只有管理员能监控敌人"})
+                    if not citydb.can_watch(user):
+                        _json(self, 403, {"error": "没有监控敌人的权限"})
                         return
                     if not citydb.attack_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "打完后退需要中级或高级订阅"})
@@ -1258,8 +1260,8 @@ def _handler(config: dict):
                     saved = citydb.user_by_token(_cookie_token(self)) or user
                     _json(self, 200, {"ok": True, "user": _user_out(saved)})
                 elif path == "/api/auto-lock":
-                    if not user.get("admin"):
-                        _json(self, 403, {"error": "只有管理员能监控敌人"})
+                    if not citydb.can_watch(user):
+                        _json(self, 403, {"error": "没有监控敌人的权限"})
                         return
                     if not citydb.high_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "自动锁敌需要高级订阅"})
@@ -1292,8 +1294,8 @@ def _handler(config: dict):
                     _json(self, 200, {"ok": True, "skip": bool(data.get("on")),
                                       "queued": queued, "login": login})
                 elif path == "/api/watch-lock":
-                    if not user.get("admin"):
-                        _json(self, 403, {"error": "只有管理员能监控敌人"})
+                    if not citydb.can_watch(user):
+                        _json(self, 403, {"error": "没有监控敌人的权限"})
                         return
                     if not citydb.high_tier(user.get("tier") or ""):
                         _json(self, 403, {"error": "自动索敌需要高级订阅"})
@@ -1324,6 +1326,23 @@ def _handler(config: dict):
                     except (TypeError, ValueError):
                         raise ValueError("账号编号不对") from None
                     why = citydb.reset_member_settings(user_id)
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "members": _member_views()})
+                elif path == "/api/admin/members/watch":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能改监控敌人权限"})
+                        return
+                    try:
+                        user_id = int(str(data.get("user_id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("账号编号不对") from None
+                    raw = data.get("on")
+                    if isinstance(raw, str):
+                        on = raw.strip().lower() in ("1", "true", "on", "开")
+                    else:
+                        on = bool(raw)
+                    why = citydb.set_member_watch(user_id, on)
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "members": _member_views()})

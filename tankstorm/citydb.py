@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     tier            TEXT NOT NULL DEFAULT '初级',
     admin           INTEGER NOT NULL DEFAULT 0,
     auto_lock       INTEGER NOT NULL DEFAULT 0,
+    watch_on        INTEGER NOT NULL DEFAULT 0,
     hold_min        INTEGER NOT NULL DEFAULT 0,
     hold_all        INTEGER NOT NULL DEFAULT 0,
     card_max        INTEGER NOT NULL DEFAULT 100,
@@ -431,6 +432,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "auto_lock" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN auto_lock INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "watch_on" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN watch_on INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "hold_min" not in ucols:
                 setup.execute(
@@ -1154,6 +1159,11 @@ def base_tier(tier: str) -> bool:
     return (tier or "") == "高级pro"
 
 
+def can_watch(user: dict) -> bool:
+    """管理员始终可以监控敌人。别的账号要单独打开。"""
+    return bool(user.get("admin")) or bool(user.get("watch_on"))
+
+
 def user_tier(user_id: int) -> str:
     conn = connect(readonly=True)
     try:
@@ -1500,7 +1510,7 @@ def list_members() -> list:
             "IFNULL(lock_cards,3), IFNULL(modo_cards,0), IFNULL(region,0), "
             "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,''), "
             "storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,''), "
-            "IFNULL(modo_at,'') "
+            "IFNULL(modo_at,''), IFNULL(watch_on,0) "
             "FROM app_user ORDER BY id").fetchall()
     finally:
         conn.close()
@@ -1530,6 +1540,7 @@ def list_members() -> list:
             "storm_cap": None if row[20] is None else int(row[20]),
             "storm_used": int(row[21] or 0) if str(row[22] or "") == beijing_day() else 0,
             "modo_at": str(row[23] or "").strip(),
+            "watch_on": bool(row[24]),
         })
     return items
 
@@ -1719,7 +1730,7 @@ def user_by_token(token: str, allow_expired: bool = False):
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
             "IFNULL(u.retreat_fail,0), "
             "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0), IFNULL(u.region,0), "
-            "IFNULL(u.off_at,'') "
+            "IFNULL(u.off_at,''), IFNULL(u.watch_on,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or (account_expired(row[3]) and not allow_expired):
@@ -1736,7 +1747,8 @@ def user_by_token(token: str, allow_expired: bool = False):
                 "lock_cards": int(row[14] if row[14] is not None else 3),
                 "modo_cards": int(row[15] if row[15] is not None else 0),
                 "region": int(row[16] or 0),
-                "off_at": str(row[17] or "").strip()}
+                "off_at": str(row[17] or "").strip(),
+                "watch_on": bool(row[18])}
     finally:
         conn.close()
 
@@ -3484,6 +3496,25 @@ def clear_fight_plan(user_id: int = 0) -> dict:
                 "vip": bool(saved.get("prio_vip")),
                 "officer": bool(saved.get("prio_officer")),
             }}
+
+
+def set_member_watch(user_id: int, on: bool) -> str:
+    """给这个登录账号打开或关掉监控敌人。管理员不用这一项也能用。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET watch_on=? WHERE id=?",
+            (1 if on else 0, user_id))
+        if cur.rowcount != 1:
+            conn.commit()
+            return "没有这个账号"
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
 
 
 def set_auto_lock(user_id: int, on: bool) -> None:
