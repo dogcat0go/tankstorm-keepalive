@@ -236,6 +236,7 @@ CREATE TABLE IF NOT EXISTS war_team (
     country_id   INTEGER NOT NULL,
     organizer_id INTEGER NOT NULL,
     name         TEXT NOT NULL DEFAULT '国战编队',
+    task         TEXT NOT NULL DEFAULT 'idle',
     created_at   TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS war_member (
@@ -636,6 +637,11 @@ def connect(readonly=False, timeout=15):
             if tcols and "name" not in tcols:
                 setup.execute(
                     "ALTER TABLE war_team ADD COLUMN name TEXT NOT NULL DEFAULT '国战编队'")
+                setup.commit()
+                tcols.add("name")
+            if tcols and "task" not in tcols:
+                setup.execute(
+                    "ALTER TABLE war_team ADD COLUMN task TEXT NOT NULL DEFAULT 'idle'")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -4962,6 +4968,56 @@ def note_game_country(country, user_id: int = 0) -> None:
     _attack_local.game_country = key
 
 
+def squad_seat(user_id: int = 0) -> str:
+    """已加入，而且编队任务在进行或暂停时，返回 run 或 pause。否则空。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if user_id <= 0:
+        return ""
+    try:
+        conn = connect(readonly=True)
+    except sqlite3.Error:
+        return ""
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(t.task,'idle') FROM war_member m "
+            "JOIN war_team t ON t.id=m.team_id "
+            "WHERE m.user_id=? AND IFNULL(m.status,'wait')='in' "
+            "AND IFNULL(t.task,'idle') IN ('run','pause') "
+            "ORDER BY t.id DESC LIMIT 1",
+            (user_id,)).fetchone()
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+    return str(row[0]) if row else ""
+
+
+def squad_holds(user_id: int = 0) -> bool:
+    """这个号正在编队任务里。自己的攻打和日常先不领。"""
+    return bool(squad_seat(user_id))
+
+
+def note_desk_driving(on: bool) -> None:
+    """这条线程正在做编队指令。这段时间个人任务的停手不要打断它。"""
+    _attack_local.desk_cmd = bool(on)
+
+
+def desk_driving() -> bool:
+    return bool(getattr(_attack_local, "desk_cmd", False))
+
+
+def fight_hold() -> str:
+    """个人任务该停时的原因。编队指令自己在做时，只在编队暂停时停。"""
+    if attack_paused():
+        return "已暂停"
+    seat = squad_seat()
+    if desk_driving():
+        return "编队已暂停" if seat == "pause" else ""
+    if seat in ("run", "pause"):
+        return "编队任务中"
+    return ""
+
+
 def request_desk(user_id: int, op: str, city_id=0) -> str:
     """给这条攻打线程排一条指挥。成功返回空字符串。"""
     user_id = int(user_id or 0)
@@ -7803,12 +7859,29 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         conn.close()
 
 
+def release_running_daily(detail="编队任务中，这项先停下") -> None:
+    """正在做的日常放回排队。编队任务占着这个号时用，结束后再领。"""
+    job_id = int(getattr(_attack_local, "daily_job", 0) or 0)
+    if not job_id:
+        return
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE daily_job SET status='pending', ready_at='', detail=?, updated_at=? "
+            "WHERE id=? AND status='running'",
+            (_job_detail(detail), now_ts(), job_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def claim_daily_job(kinds=None):
     """领这个攻打 QQ 上最早的一条日常。没有就返回 None。到点关闭的账号不领。
 
     kinds 给定时只领这些项目，基地战、国战和日常才能各领各的。
+    编队任务进行或暂停时，已加入的号不领自己的日常。
     """
-    ids = executable_users()
+    ids = [i for i in executable_users() if not squad_holds(i)]
     if not ids:
         return None
     slot = ",".join("?" * len(ids))
@@ -7904,6 +7977,10 @@ def finish_daily_job(job_id: int, status: str, detail: str) -> None:
 def set_running_daily(job_id: int) -> None:
     """这条线程正在做的日常。关停后 daily_job_stopped 变成真。"""
     _attack_local.daily_job = int(job_id or 0)
+
+
+def running_daily_id() -> int:
+    return int(getattr(_attack_local, "daily_job", 0) or 0)
 
 
 def daily_job_stopped() -> bool:
@@ -8167,8 +8244,9 @@ def claim_attack_order(city_id=None, auto_only=False):
     """领这个攻打 QQ 上最新的一条排队订单。后提交的优先。没绑上的账号不领。
 
     city_id 有值时只领这座城的。auto_only 只领自动索敌，不领摩多。
+    编队任务进行或暂停时，已加入的号不领自己的订单。
     """
-    ids = executable_users()
+    ids = [i for i in executable_users() if not squad_holds(i)]
     if not ids:
         return None
     try:

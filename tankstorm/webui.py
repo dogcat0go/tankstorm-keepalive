@@ -1185,6 +1185,14 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
+                elif path == "/api/desk/task":
+                    from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
+                    why = desk.set_task_own(user["id"], data.get("state"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
                 elif path == "/api/attacks/cancel":
                     try:
                         order_id = int(str(data.get("id", "")).strip())
@@ -1617,6 +1625,8 @@ def _handler(config: dict):
                         why = desk.invite(data.get("team_id"), data.get("username"))
                     elif action == "kick":
                         why = desk.kick(data.get("team_id"), data.get("user_id"))
+                    elif action == "task":
+                        why = desk.set_task(data.get("team_id"), data.get("state"))
                     elif action == "command":
                         why, lines = desk.order(
                             data.get("team_id"), data.get("op"), data.get("city_id"))

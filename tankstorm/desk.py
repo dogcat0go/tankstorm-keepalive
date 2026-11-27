@@ -11,6 +11,8 @@
 马奇诺在中心，六座内圈城围着它，再往外是一圈中立城，六个国家贴在外圈。
 整张图左右对调，巴黎在左边。
 编队名称默认是国战编队。填写对方账号发出邀请，对方接受后才入队。
+编队任务有开始、暂停和结束。结束之后队员还在，下次可以再开始。
+任务进行或暂停时，已加入的号自己的攻打和日常先停。
 """
 
 import math
@@ -356,6 +358,7 @@ def drop_team(team_id) -> str:
         team_id = int(team_id)
     except (TypeError, ValueError):
         return "没有这支编队"
+    members = _member_rows(team_id)
     conn = citydb.connect()
     try:
         row = conn.execute(
@@ -367,6 +370,8 @@ def drop_team(team_id) -> str:
         conn.commit()
     finally:
         conn.close()
+    for who in members:
+        citydb.clear_desk(who["id"])
     citydb.clear_team_hits(team_id)
     return ""
 
@@ -494,6 +499,10 @@ def order(team_id, op, city_id) -> tuple:
     team = _team_row(team_id)
     if not team:
         return "没有这支编队", []
+    if team["task"] == "pause":
+        return "编队任务暂停着，先继续", []
+    if team["task"] != "run":
+        return "先开始编队任务", []
     if op != "morale" and city_id <= 0:
         return "要选一座城", []
     if op == "attack":
@@ -661,14 +670,18 @@ def run_command(rec, sock, config, beater, op: str, city: int) -> None:
 
     op = str(op or "")
     city = int(city or 0)
-    if op == "move":
-        _run_move(rec, sock, config, beater, city, country_war)
-    elif op == "morale":
-        _run_morale(rec, sock, config, country_war)
-    elif op == "open":
-        _open_city(rec, sock, config, city, country_war)
-    elif op == "attack":
-        _run_attack(rec, sock, config, beater, city, country_war)
+    citydb.note_desk_driving(True)
+    try:
+        if op == "move":
+            _run_move(rec, sock, config, beater, city, country_war)
+        elif op == "morale":
+            _run_morale(rec, sock, config, country_war)
+        elif op == "open":
+            _open_city(rec, sock, config, city, country_war)
+        elif op == "attack":
+            _run_attack(rec, sock, config, beater, city, country_war)
+    finally:
+        citydb.note_desk_driving(False)
 
 
 def _lane():
@@ -782,18 +795,21 @@ def _team_row(team_id: int):
     conn = citydb.connect(readonly=True)
     try:
         row = conn.execute(
-            "SELECT id, region, country_id, organizer_id, IFNULL(name,'') FROM war_team WHERE id=?",
+            "SELECT id, region, country_id, organizer_id, IFNULL(name,''), "
+            "IFNULL(task,'idle') FROM war_team WHERE id=?",
             (int(team_id),)).fetchone()
     finally:
         conn.close()
     if not row:
         return None
+    task = row[5] if row[5] in ("run", "pause", "idle") else "idle"
     return {
         "id": int(row[0]),
         "region": int(row[1] or 0),
         "country_id": int(row[2] or 0),
         "organizer_id": int(row[3] or 0),
         "name": row[4] or _TEAM_NAME,
+        "task": task,
     }
 
 
@@ -818,16 +834,16 @@ def _member_rows(team_id: int) -> list:
     } for row in rows]
 
 
-def _seat(state, online, paused) -> str:
+def _seat(state) -> str:
     if state == "out":
         return "已退出"
     if state != "in":
         return "等待加入"
-    if not online:
-        return "离线"
-    if paused:
-        return "暂停"
     return "已加入"
+
+
+def _task_text(task) -> str:
+    return {"run": "进行中", "pause": "已暂停"}.get(task, "未开始")
 
 
 def _roster(team_id, organizer_id) -> list:
@@ -835,12 +851,20 @@ def _roster(team_id, organizer_id) -> list:
     for who in _member_rows(team_id):
         status = citydb.attack_status(who["id"])
         online = bool(status.get("online"))
-        paused = bool(status.get("paused"))
+        if not online:
+            presence = "离线"
+        elif status.get("paused"):
+            presence = "在线 · 攻打暂停"
+        else:
+            presence = "在线"
         out.append({
             "id": who["id"],
+            "user_id": who["id"],
             "username": who["username"],
             "state": who["state"],
-            "status": _seat(who["state"], online, paused),
+            "status": _seat(who["state"]),
+            "online": online,
+            "presence": presence,
             "organizer": who["id"] == int(organizer_id),
         })
     return out
@@ -850,13 +874,14 @@ def _teams() -> list:
     conn = citydb.connect(readonly=True)
     try:
         teams = conn.execute(
-            "SELECT id, region, country_id, organizer_id, IFNULL(name,'') "
-            "FROM war_team ORDER BY id"
+            "SELECT id, region, country_id, organizer_id, IFNULL(name,''), "
+            "IFNULL(task,'idle') FROM war_team ORDER BY id"
         ).fetchall()
     finally:
         conn.close()
     out = []
-    for team_id, region, country_id, organizer_id, name in teams:
+    for team_id, region, country_id, organizer_id, name, task in teams:
+        task = task if task in ("run", "pause", "idle") else "idle"
         roster = _roster(team_id, organizer_id)
         out.append({
             "id": int(team_id),
@@ -865,6 +890,8 @@ def _teams() -> list:
             "country_id": int(country_id or 0),
             "country_name": citydb.country_name(int(country_id or 0)),
             "organizer_id": int(organizer_id or 0),
+            "task": task,
+            "task_text": _task_text(task),
             "members": [item["id"] for item in roster if item["state"] == "in"],
             "roster": roster,
         })
@@ -876,7 +903,7 @@ def _active_row(user_id):
     try:
         return conn.execute(
             "SELECT t.id, t.region, t.country_id, t.organizer_id, IFNULL(t.name,''), "
-            "IFNULL(m.status,'wait'), IFNULL(o.username,'') "
+            "IFNULL(m.status,'wait'), IFNULL(o.username,''), IFNULL(t.task,'idle') "
             "FROM war_member m JOIN war_team t ON t.id=m.team_id "
             "LEFT JOIN app_user o ON o.id=t.organizer_id "
             "WHERE m.user_id=? AND IFNULL(m.status,'wait')!='out' "
@@ -898,6 +925,7 @@ def command_of(user_id) -> dict:
     country_id = int(row[2] or 0)
     organizer_id = int(row[3] or 0)
     state = row[5] if row[5] in ("wait", "in") else "wait"
+    task = row[7] if row[7] in ("run", "pause", "idle") else "idle"
     return {
         "team_id": int(row[0]),
         "name": row[4] or _TEAM_NAME,
@@ -909,6 +937,8 @@ def command_of(user_id) -> dict:
         "self": organizer_id == user_id,
         "state": state,
         "accept": state == "in",
+        "task": task,
+        "task_text": _task_text(task),
         "roster": _roster(row[0], organizer_id),
     }
 
@@ -940,6 +970,61 @@ def rename_own(user_id, name) -> str:
     if not team_id:
         return "你不是编队的指挥者"
     return rename_team(team_id, name)
+
+
+def set_task(team_id, state) -> str:
+    """开始、暂停或结束编队任务。结束不散伙，队员还在。成功返回空字符串。"""
+    state = str(state or "")
+    if state not in ("run", "pause", "idle"):
+        return "没有这个操作"
+    try:
+        team_id = int(team_id)
+    except (TypeError, ValueError):
+        return "没有这支编队"
+    conn = citydb.connect()
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(task,'idle') FROM war_team WHERE id=?",
+            (team_id,)).fetchone()
+        if not row:
+            return "没有这支编队"
+        current = row[0] if row[0] in ("run", "pause", "idle") else "idle"
+        if state == current:
+            if state == "run":
+                return "编队任务已经在进行"
+            if state == "pause":
+                return "编队任务已经暂停"
+            return "编队任务还没开始"
+        if state == "pause" and current != "run":
+            return "编队任务还没开始"
+        conn.execute("UPDATE war_team SET task=? WHERE id=?", (state, team_id))
+        conn.commit()
+    finally:
+        conn.close()
+    note = {
+        ("idle", "run"): "编队任务开始，自己的攻打和日常先停",
+        ("pause", "run"): "编队任务继续",
+        ("run", "pause"): "编队任务暂停，自己的任务仍停着",
+        ("run", "idle"): "编队任务结束，自己的任务可以继续",
+        ("pause", "idle"): "编队任务结束，自己的任务可以继续",
+    }.get((current, state), "")
+    if state == "idle" or (state == "run" and current == "idle"):
+        citydb.clear_team_hits(team_id)
+    for who in _member_rows(team_id):
+        if who["state"] != "in":
+            continue
+        if state == "idle":
+            citydb.clear_desk(who["id"])
+        if note:
+            citydb.note_desk_text(note, who["id"])
+    return ""
+
+
+def set_task_own(user_id, state) -> str:
+    team_id = _led_by(user_id)
+    if not team_id:
+        return "你不是编队的指挥者"
+    return set_task(team_id, state)
 
 
 def set_accept(user_id, on) -> str:

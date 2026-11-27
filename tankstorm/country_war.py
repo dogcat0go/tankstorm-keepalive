@@ -691,8 +691,9 @@ def _loop(rec, sock, rounds, country, npc_country, npc_city, cooldown, out,
         if stopped:
             out["停止原因"] = stopped
             break
-        if citydb.attack_paused():
-            out["停止原因"] = "已暂停"
+        held = citydb.fight_hold()
+        if held:
+            out["停止原因"] = held
             break
         power, city, atk_times, panel = _panel(sock, rec, country)
         if power is None:
@@ -1920,8 +1921,9 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             if stopped:
                 out["停止原因"] = stopped
                 return "break"
-            if citydb.attack_paused():
-                out["停止原因"] = "已暂停"
+            held = citydb.fight_hold()
+            if held:
+                out["停止原因"] = held
                 return "break"
             uid = str(p.get("uid") or "").strip()
             if not uid or uid == me or uid in seen:
@@ -2017,8 +2019,9 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
             if stopped:
                 out["停止原因"] = stopped
                 return "stop", None
-            if citydb.attack_paused():
-                out["停止原因"] = "已暂停"
+            held = citydb.fight_hold()
+            if held:
+                out["停止原因"] = held
                 return "stop", None
             power, loc, _, panel = _panel(sock, rec, country)
             if loc is not None and start_loc is not None and loc != start_loc:
@@ -2924,8 +2927,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     if citydb.shutdown_due():
         out["停止原因"] = "已定时关闭"
         return out
-    if citydb.attack_paused():
-        out["停止原因"] = "已暂停"
+    held = citydb.fight_hold()
+    if held:
+        out["停止原因"] = held
         return out
     stopped = _manual_stop()
     if stopped:
@@ -2955,8 +2959,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
     if citydb.shutdown_due():
         out["停止原因"] = "已定时关闭"
         return out
-    if citydb.attack_paused():
-        out["停止原因"] = "已暂停"
+    held = citydb.fight_hold()
+    if held:
+        out["停止原因"] = held
         return out
     seq = list(plan["路径"])
     if max_steps is not None:
@@ -3041,8 +3046,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             if stopped:
                 out["停止原因"] = stopped
                 break
-            if citydb.attack_paused():
-                out["停止原因"] = "已暂停"
+            held = citydb.fight_hold()
+            if held:
+                out["停止原因"] = held
                 break
             if city == target and not march_only:
                 break
@@ -3351,7 +3357,7 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             out["没打过"] = int(fought.get("失败") or 0) + int(fought.get("跳过") or 0)
             if reason in ("这座城打完了", "这一页没有可打的人", "这几页没有可打的人"):
                 out["停止原因"] = "" if (fought.get("打过") or hit) else "这几页没有可打的人"
-            elif any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停", "已定时关闭", "被别人打败", "已手动关停")):
+            elif any(k in reason for k in ("行动力", "遣返", "不相邻", "恢复卡", "位置变了", "已暂停", "编队", "已定时关闭", "被别人打败", "已手动关停")):
                 out["停止原因"] = reason
             elif fought.get("失败") and not fought.get("成功") and not hit:
                 out["停止原因"] = f"{target} {tname} 剩下的人都打不过，这座城清不完，已停止"
@@ -3369,8 +3375,9 @@ def walk_to(rec, sock, config, target, sweep=False, beat=None,
             if stopped:
                 out["停止原因"] = stopped
                 break
-            if citydb.attack_paused():
-                out["停止原因"] = "已暂停"
+            held = citydb.fight_hold()
+            if held:
+                out["停止原因"] = held
                 break
             info = _open_city(sock, rec, target, my)
             if not info:

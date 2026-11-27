@@ -1046,6 +1046,16 @@ async function renameSquad(name) {
   }
 }
 
+async function setSquadTask(state) {
+  commandBusy.value = true;
+  try {
+    const data = await api("/api/desk/task", { state });
+    command.value = data.command && data.command.team_id ? data.command : null;
+  } finally {
+    commandBusy.value = false;
+  }
+}
+
 let qrWait = 0;
 function reloadQr() {
   if (!qrSrc.value || qrWait >= 12) return;
@@ -1784,6 +1794,7 @@ onUnmounted(() => {
         :rename-squad="renameSquad"
         :invite-member="inviteMember"
         :kick-member="kickMember"
+        :set-task="setSquadTask"
         :answer="saveCommandAccept"
         :show-err="showErr"
       />

@@ -1778,7 +1778,7 @@ def _lock_no_chain(why: str, status: str) -> bool:
     if _lock_no_retreat(why, status):
         return True
     text = str(why or "")
-    if text in ("已暂停", "已定时关闭"):
+    if text in ("已暂停", "已定时关闭", "编队任务中", "编队已暂停"):
         return True
     if "连接中断" in text or "攻打中断" in text:
         return True
@@ -1833,7 +1833,7 @@ def _clear_hard_stop(reason: str) -> bool:
     """这种停手不能过一会儿再清。"""
     text = str(reason or "")
     return any(k in text for k in (
-        "行动力", "体力不够", "已暂停", "已定时关闭", "已手动关停", "被别人打败", "回到首都", "出不了首都",
+        "行动力", "体力不够", "已暂停", "编队", "已定时关闭", "已手动关停", "被别人打败", "回到首都", "出不了首都",
         "遣返", "不相邻", "恢复卡", "位置变了", "连接中断", "攻打中断"))
 
 
@@ -1874,7 +1874,7 @@ def _order_result(job, out) -> tuple:
     reason = str((out or {}).get("停止原因") or "")
     auto = bool((job or {}).get("auto"))
     attacked = bool((out or {}).get("攻击")) if uid else (out or {}).get("攻击") is not None
-    if reason in ("已暂停", "已定时关闭"):
+    if reason in ("已暂停", "已定时关闭", "编队任务中", "编队已暂停"):
         return "defer", "", reason
     if reason == "已手动关停":
         return "finish", "ended", reason
@@ -2498,14 +2498,14 @@ def _watch_blocked_path(rec, sock, config, beater, path_at: float) -> float:
     now = time.time()
     if now - path_at < _PATH_GAP:
         return path_at
-    if citydb.attack_paused():
+    if citydb.attack_paused() or citydb.squad_holds():
         return now
     try:
         open_path, why = _blocked_path_open(rec, sock, config, job)
     except Exception:
         log.info("订单 %s 看路径失败", job["id"], exc_info=True)
         return time.time()
-    if citydb.attack_paused():
+    if citydb.attack_paused() or citydb.squad_holds():
         return time.time()
     if not open_path:
         citydb.note_blocked_reason(job["id"], why)
@@ -3091,6 +3091,10 @@ def _run_one_daily(rec, sock, config, beater, job) -> None:
             citydb.shelve_shutdown_work()
             task_log(citydb.attack_context_qq(), label, "定时关闭，停下")
             log.info("定时关闭，日常停下：%s", label)
+        elif citydb.squad_holds() and not citydb.desk_driving():
+            citydb.release_running_daily()
+            task_log(citydb.attack_context_qq(), label, "编队任务中，这项先停下")
+            log.info("编队任务中，日常先停下：%s", label)
         else:
             task_log(citydb.attack_context_qq(), label, "已手动关停")
             log.info("日常已手动关停：%s", label)
@@ -3198,7 +3202,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
 
     def _pump():
         """冷却空档。到点的空城改回排队；剩下的时间还够，就先打一单国战。"""
-        if citydb.attack_paused() or not _war_on():
+        if citydb.attack_paused() or citydb.squad_holds() or not _war_on():
             return False
         try:
             citydb.release_due_waits()
@@ -3268,15 +3272,18 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                 if asked:
                     _arm_push_keepalive()
                 if (hold_closed and not citydb.attack_hold_on()
-                        and not _jobs_open() and not citydb.attack_paused()):
+                        and not _jobs_open() and not citydb.attack_paused()
+                        and not citydb.squad_holds()):
                     return 0
                 if _war_on():
                     move_told = 0
                     desk_told = ""
-                    if _run_requested_move(rec, sock, config, beater):
+                    held = citydb.squad_holds()
+                    if not held and _run_requested_move(rec, sock, config, beater):
                         stated = False
                         continue
-                    if _run_desk_command(rec, sock, config, beater):
+                    if (not held or citydb.squad_seat() == "run") and _run_desk_command(
+                            rec, sock, config, beater):
                         stated = False
                         continue
                 else:

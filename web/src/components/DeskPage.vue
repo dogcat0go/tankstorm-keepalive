@@ -70,6 +70,8 @@ const squad = computed(() => {
     organizer: who && who.username ? who.username : "指挥者",
     self: false,
     state: "in",
+    task: current.task || "idle",
+    task_text: current.task_text || "未开始",
     roster: current.roster || [],
   };
 });
@@ -189,9 +191,18 @@ async function kickMember(member) {
   if (err.value) throw new Error(err.value);
 }
 
+async function setTask(state) {
+  await send("task", { team_id: team.value.id, state });
+  if (err.value) throw new Error(err.value);
+}
+
 function pick(c) {
   cityId.value = c.id;
   if (!team.value || tool.value === "morale" || busy.value) return;
+  if (team.value.task !== "run") {
+    err.value = team.value.task === "pause" ? "编队任务暂停着，先继续" : "先开始编队任务";
+    return;
+  }
   if (tool.value === "attack") {
     const owner = c.owner ? (view.value.countries.find((x) => x.id === c.owner)?.name || c.owner) : "归属未知";
     if (!window.confirm(`攻打 ${c.name}（${owner}）？队里在线的号会一起走。敌城有人就打，空城会占领。一次最多走进 8 座城。`)) return;
@@ -201,6 +212,10 @@ function pick(c) {
 
 function fillMorale() {
   if (!team.value || busy.value) return;
+  if (team.value.task !== "run") {
+    err.value = team.value.task === "pause" ? "编队任务暂停着，先继续" : "先开始编队任务";
+    return;
+  }
   if (!window.confirm("用体力补士气？人要在本国首都或相邻城，体力要大于 70。")) return;
   send("command", { team_id: team.value.id, op: "morale", city_id: 0 });
 }
@@ -214,7 +229,7 @@ onUnmounted(() => clearInterval(timer));
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；没在线是离线，退出或被踢出是已退出。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。下面是这一次攻打的现场战报，最近 50 条，可以按人和结果筛。重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先选一支编队和一种操作，再点地图上的城。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
+  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先开始任务，再选一种操作，点地图上的城。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
   <div class="desk-manage">
     <form class="lock-row" @submit.prevent="makeTeam()">
@@ -256,6 +271,7 @@ onUnmounted(() => clearInterval(timer));
       :rename-squad="renameSquad"
       :invite-member="inviteMember"
       :kick-member="kickMember"
+      :set-task="setTask"
     />
   </div>
   <div class="desk">
