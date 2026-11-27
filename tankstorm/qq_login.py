@@ -259,6 +259,12 @@ def pull_napcat_cookies(api: str, token: str, domain: str, qq: str = ""):
             timeout=10,
         )
         data = r.json()
+    except requests.ConnectionError:
+        from .napcat_up import wake_http
+        note = wake_http(api)
+        text = "向 NapCat 要票据失败。" + (note or "连接被拒绝")
+        napcat_log(who, text)
+        return False, text
     except Exception as exc:
         text = f"向 NapCat 要票据失败：{exc}"
         napcat_log(who, text)

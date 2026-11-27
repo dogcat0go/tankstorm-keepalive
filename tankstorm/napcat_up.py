@@ -530,6 +530,50 @@ def _published(bindings) -> tuple:
     return http_port, web_port
 
 
+def wake_http(api: str) -> str:
+    """本机 OneBot 连不上时，把映射到这个端口的 NapCat 拉起来。不是本机端口返回空。"""
+    from urllib.parse import urlparse
+    text = str(api or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlparse(text if "://" in text else "http://" + text)
+        port = int(parsed.port or 0)
+    except (TypeError, ValueError):
+        return ""
+    host = (parsed.hostname or "").lower()
+    if host not in ("127.0.0.1", "localhost", "::1") or port <= 0:
+        return ""
+    if not shutil.which("docker"):
+        return "这台机器没有 docker"
+    try:
+        code, stdout, stderr = _docker(["ps", "-a", "--format", "{{.Names}}"], 30)
+    except OSError as exc:
+        return str(exc).splitlines()[0][:160]
+    if code != 0:
+        return ((stderr or stdout).strip() or "docker ps 失败").splitlines()[0][:160]
+    name = ""
+    running = False
+    for item in stdout.split():
+        if not item.startswith("napcat-"):
+            continue
+        try:
+            found, is_on, http_port, _web, _logs = _container(item)
+        except OSError:
+            continue
+        if found and http_port == port:
+            name, running = item, is_on
+            break
+    if not name:
+        return f"没有 NapCat 映射到 {port}"
+    if running:
+        return f"{name} 在跑，但 {port} 没有接受连接"
+    code, stdout, stderr = _docker(["start", name], 60)
+    if code != 0:
+        return ((stderr or stdout).strip() or f"启动 {name} 失败").splitlines()[0][:160]
+    return f"已启动 {name}，下一次再发"
+
+
 def _taken_ports() -> set:
     code, stdout, stderr = _docker(["ps", "-a", "--format", "{{.Names}}"], 30)
     used = set()
