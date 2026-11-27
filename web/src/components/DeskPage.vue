@@ -323,15 +323,19 @@ function applySeats(rows) {
   for (const m of team.roster) {
     const next = by.get(m.id);
     if (!next) continue;
-    m.here = next.here || "";
-    m.here_id = next.here_id || 0;
-    m.cards = next.cards;
+    const here = next.here || "";
+    const hereId = next.here_id || 0;
+    if (m.here !== here) m.here = here;
+    if (m.here_id !== hereId) m.here_id = hereId;
+    if (m.cards !== next.cards) m.cards = next.cards;
   }
   for (const a of view.value.accounts || []) {
     const next = by.get(a.id);
     if (!next) continue;
-    a.here = next.here || "";
-    a.here_id = next.here_id || 0;
+    const here = next.here || "";
+    const hereId = next.here_id || 0;
+    if (a.here !== here) a.here = here;
+    if (a.here_id !== hereId) a.here_id = hereId;
   }
 }
 
@@ -462,7 +466,7 @@ onUnmounted(() => {
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线、当前所在城市，以及这个号配置的最多恢复卡。城市每秒更新一次。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先点一座城，再点移动、攻打或打开城市。按住地图拖动，滚轮缩放。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市在旁边列出城里的人，敌我都看，并写出城里一共有多少人。只看前 5 页，不打。</p>
+  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线、当前所在城市，以及这个号配置的最多恢复卡。城市用保活已经记下的位置，页面每秒看一次。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先点一座城，再点移动、攻打或打开城市。按住地图拖动，滚轮缩放。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市在旁边列出城里的人，敌我都看，并写出城里一共有多少人。只看前 5 页，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
   <div class="desk-manage">
     <form class="lock-row" @submit.prevent="makeTeam()">

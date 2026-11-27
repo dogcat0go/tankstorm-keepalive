@@ -16,6 +16,7 @@
 """
 
 import math
+import time
 
 from . import citydb
 
@@ -843,14 +844,11 @@ def _member_rows(team_id: int) -> list:
     } for row in rows]
 
 
-def _place(who, status, ask=False) -> dict:
-    """当前城市，以及这个号配置的最多恢复卡。指挥页每秒来问时，在线的号再读一次面板。"""
+def _place(who, status) -> dict:
+    """当前城市，以及这个号配置的最多恢复卡。城市用状态里已经记下的位置。"""
     here = str(status.get("here") or "")
     head = here.split(" ", 1)[0]
     here_id = int(head) if head.isdigit() else 0
-    if ask and status.get("online") and status.get("phase") != "login" and not status.get("need_login"):
-        if not citydb.attack_here_pending(who["id"]):
-            citydb.request_attack_here(who["id"])
     return {
         "here": here,
         "here_id": here_id,
@@ -895,21 +893,48 @@ def _roster(team_id, organizer_id) -> list:
     return out
 
 
+_SEAT_WAIT = 1.0
+_seat_at = {}
+_seat_box = {}
+
+
+def _stored_spots(team_id) -> list:
+    """只读保活已经记下的城市。同一秒里多开的页面共用这一次结果。"""
+    members = _member_rows(team_id)
+    conn = citydb.connect(readonly=True)
+    try:
+        rows = []
+        for who in members:
+            here_id, here = citydb.stored_attack_here(who["id"], conn=conn)
+            rows.append({
+                "id": who["id"],
+                "here": here,
+                "here_id": here_id,
+                "cards": who["cards"],
+            })
+        return rows
+    finally:
+        conn.close()
+
+
 def seats(team_id) -> dict:
-    """编队成员当前城市和配置的恢复卡。在线的号顺便再读一次所在城市。"""
+    """编队成员当前城市和配置的恢复卡。不向游戏重读面板。"""
     try:
         team_id = int(team_id)
     except (TypeError, ValueError):
         return {"roster": []}
-    if team_id <= 0 or not _team_row(team_id):
+    if team_id <= 0:
         return {"roster": []}
-    rows = []
-    for who in _member_rows(team_id):
-        status = citydb.attack_status(who["id"])
-        spot = _place(who, status, ask=True)
-        spot["id"] = who["id"]
-        rows.append(spot)
-    return {"roster": rows}
+    now = time.monotonic()
+    last = _seat_at.get(team_id)
+    if last is not None and now - last < _SEAT_WAIT and team_id in _seat_box:
+        return _seat_box[team_id]
+    if not _team_row(team_id):
+        return {"roster": []}
+    payload = {"roster": _stored_spots(team_id)}
+    _seat_at[team_id] = now
+    _seat_box[team_id] = payload
+    return payload
 
 
 def own_seats(user_id) -> dict:

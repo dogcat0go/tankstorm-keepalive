@@ -1015,9 +1015,11 @@ async function loadCommandSeats() {
     for (const m of command.value.roster || []) {
       const next = by.get(m.id) || by.get(m.user_id);
       if (!next) continue;
-      m.here = next.here || "";
-      m.here_id = next.here_id || 0;
-      m.cards = next.cards;
+      const here = next.here || "";
+      const hereId = next.here_id || 0;
+      if (m.here !== here) m.here = here;
+      if (m.here_id !== hereId) m.here_id = hereId;
+      if (m.cards !== next.cards) m.cards = next.cards;
     }
   } catch (e) {
     /* 城市刷新失败时留着上一次的位置 */

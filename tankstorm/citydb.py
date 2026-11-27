@@ -4659,6 +4659,19 @@ def attack_here_id() -> int:
     return _kept_here(parsed)
 
 
+def stored_attack_here(user_id: int, conn=None) -> tuple:
+    """保活线程已经记下的所在城市。不向游戏再要一次。离线或还没读到返回 (0, "")。"""
+    parsed, _seen, online = _read_user_proc(int(user_id or 0), conn=conn)
+    if not online:
+        return 0, ""
+    here_id = _kept_here(parsed)
+    if not here_id:
+        return 0, ""
+    name = city_name(here_id, conn=conn)
+    text = f"{here_id} {name}".strip() if name else str(here_id)
+    return here_id, text
+
+
 def note_attack_here(city_id, power=None, morale=None) -> None:
     """记下这个攻打 QQ 当前所在城市，以及面板上的体力和士气。
 
