@@ -218,15 +218,12 @@ const looks = computed(() => {
 });
 
 const shownLook = computed(() => looks.value.find((row) => row.look.city === cityId.value) || null);
-const enemies = computed(() => {
-  const look = shownLook.value && shownLook.value.look;
-  if (!look) return [];
+function sideOf(p) {
   const mine = team.value ? Number(team.value.country_id) || 0 : 0;
-  return (look.players || []).filter((p) => {
-    const side = Number(p.country) || 0;
-    return !mine || !side || side !== mine;
-  });
-});
+  const side = Number(p.country) || 0;
+  if (!mine || !side) return "";
+  return side === mine ? "己方" : "敌方";
+}
 const opening = computed(() => {
   if (!city.value || shownLook.value) return "";
   const id = String(city.value.id);
@@ -366,7 +363,7 @@ onUnmounted(() => {
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先点一座城，再点移动、攻打或打开城市。按住地图拖动，滚轮缩放。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市在旁边列出敌方，并写出城里一共有多少人。只看前 5 页，不打。</p>
+  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先点一座城，再点移动、攻打或打开城市。按住地图拖动，滚轮缩放。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市在旁边列出城里的人，敌我都看，并写出城里一共有多少人。只看前 5 页，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
   <div class="desk-manage">
     <form class="lock-row" @submit.prevent="makeTeam()">
@@ -451,15 +448,16 @@ onUnmounted(() => {
         <h3>打开 {{ city.name }}</h3>
         <p v-if="opening" class="muted">{{ opening }}</p>
         <template v-else-if="shownLook">
-          <p class="muted">城里共 {{ shownLook.look.count == null ? "人数未知" : shownLook.look.count + " 人" }}<template v-if="shownLook.look.owner_name"> · 归属 {{ shownLook.look.owner_name }}</template> · 敌方 {{ enemies.length }} 人</p>
+          <p class="muted">城里共 {{ shownLook.look.count == null ? "人数未知" : shownLook.look.count + " 人" }}<template v-if="shownLook.look.owner_name"> · 归属 {{ shownLook.look.owner_name }}</template> · 列出 {{ (shownLook.look.players || []).length }} 人</p>
           <p class="muted">{{ shownLook.look.note }}</p>
-          <table v-if="enemies.length">
+          <table v-if="(shownLook.look.players || []).length">
             <thead>
-              <tr><th>名字</th><th>UID</th><th>等级</th><th>士气</th><th>战力</th><th></th></tr>
+              <tr><th>名字</th><th>阵营</th><th>UID</th><th>等级</th><th>士气</th><th>战力</th><th></th></tr>
             </thead>
             <tbody>
-              <tr v-for="p in enemies" :key="p.uid">
+              <tr v-for="p in shownLook.look.players" :key="p.uid">
                 <td>{{ p.name || "—" }}</td>
+                <td>{{ sideOf(p) }}</td>
                 <td>{{ p.uid }}</td>
                 <td>{{ p.lvl }}</td>
                 <td>{{ p.morale }}</td>
@@ -468,10 +466,10 @@ onUnmounted(() => {
               </tr>
             </tbody>
           </table>
-          <p v-else class="muted">前 5 页没有敌方。</p>
+          <p v-else class="muted">前 5 页没有人。</p>
         </template>
-        <p v-else-if="asked === city.id" class="muted">正在打开，敌方名单和总人数马上出现在这里。</p>
-        <p v-else class="muted">点「打开城市」看这座城里的敌方，并写出总人数。只看前 5 页。</p>
+        <p v-else-if="asked === city.id" class="muted">正在打开，名单和总人数马上出现在这里。</p>
+        <p v-else class="muted">点「打开城市」看这座城里的人，敌我都列出来，并写出总人数。只看前 5 页。</p>
       </div>
     </div>
   </div>
