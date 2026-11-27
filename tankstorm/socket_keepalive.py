@@ -717,6 +717,12 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                 log.info("登录态数据接收完毕，开始翻城")
             else:
                 got = "、".join(getattr(rec, "latest", {}) or {}) or "无"
+                # 一条回包都没有：登录没接上。挂着这条空连接，后面每一轮都会
+                # 因为没有国家 ID 立刻停，订阅时间不再更新。
+                if got == "无":
+                    log.warning("登录后没有任何回包（入口 %s），重新连接",
+                                getattr(qq, "platform", "") or "")
+                    return "登录后没有任何回包，重新连接"
                 log.warning("登录后没读到国家面板（已有回包：%s）。"
                             "这一轮先不翻，保活继续",
                             got)
@@ -744,6 +750,16 @@ def _one_session(qq, spec: dict, conf: dict, config: dict, rec=None,
                     city_due = False
                 else:
                     quiet_logged = False
+            if (page_due or city_due) and not _await_role(
+                    sock, rec, spec, ctx, config):
+                if not (getattr(rec, "latest", {}) or {}):
+                    return "登录后没有任何回包，重新连接"
+                log.info("[扫描] 还没有自己的国家ID，这一轮先不翻")
+                if page_due:
+                    last_pages = now
+                if city_due:
+                    last_watch = now
+                continue
             if page_due:
                 if tuple(page_jobs) != shown_pages:
                     shown_pages = tuple(page_jobs)
@@ -1320,6 +1336,10 @@ def _note_watch(config, city_id, cname, changes):
         if not ch.get("arm"):
             continue
         try:
+            if citydb.uid_failed_for(ch["user_id"], ch["uid"]):
+                citydb.mark_lock_sent(ch["user_id"], city_id, ch["uid"])
+                log.info("[订阅] %s 已在失败库，自动锁敌不排", who)
+                continue
             why = citydb.enqueue_online_attack(ch["user_id"], city_id, ch["uid"])
             queued = not why
             if queued or citydb.online_attack_busy(ch["user_id"], city_id, ch["uid"]):
@@ -1766,11 +1786,11 @@ def _ready_for_same_city(here, city_id) -> bool:
 
 
 def _lock_no_retreat(why: str, status: str) -> bool:
-    """被打回首都或手动停，不要再执行后退。"""
+    """被打回首都、手动停，或这个人已经打不过，不要再执行后退。"""
     if status == "ended":
         return True
     text = str(why or "")
-    return _defeated(text) or text == "已手动关停"
+    return _defeated(text) or text == "已手动关停" or "已在失败库" in text
 
 
 def _lock_no_chain(why: str, status: str) -> bool:
@@ -1917,7 +1937,7 @@ def _interrupt_reason(exc) -> str:
 
 def _claim_war_blueprint(rec, sock, config, order_id, status, reason=""):
     """这一单国战打完，领一次图纸奖励。没打完或手动关停不领。领失败不改订单结果。"""
-    if "已手动关停" in str(reason or ""):
+    if "已手动关停" in str(reason or "") or "已在失败库" in str(reason or ""):
         return
     if str(status or "") not in ("done", "failed", "ended"):
         return
@@ -2159,6 +2179,16 @@ def _fight_locked(rec, sock, config, beater, job, from_chain=False) -> dict:
         fight_config["国战"] = war
         log.info("订单 %s 最多用 %d 张恢复卡", job["id"], int(job["cards"]))
     guarding = bool(job.get("auto"))
+    if guarding and uid and citydb.in_atk_fail(uid):
+        why = "已在失败库，跳过"
+        log.info("订单 %s 自动锁敌 %s，不执行", job["id"], why)
+        citydb.finish_attack_order(job["id"], "failed", why, beats=start_beats)
+        citydb.set_fighting_order(0)
+        return {
+            "id": job["id"], "status": "failed", "why": why,
+            "here": citydb.attack_here_id(),
+            "done": False, "failed": True, "stop": True, "parked": False,
+        }
     if guarding and not from_chain:
         citydb.begin_lock_cards()
     try:
@@ -4471,7 +4501,7 @@ def _await_role(sock, rec, spec, ctx, config=None, timeout=12) -> bool:
         try:
             chunk = sock.recv(8192)
         except socket.timeout:
-            break
+            continue
         except OSError as exc:
             log.error("登录包发出后连接就断了：%s", exc)
             raise

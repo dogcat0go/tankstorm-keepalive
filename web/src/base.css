@@ -265,6 +265,7 @@ form.campaign-line { margin: 0 0 10px; grid-template-columns: 1fr; }
 .campaign-ops input { width: 14em; }
 .campaign-box > .muted { margin: 0 0 12px; }
 .guild-fold { margin: 28px 0 8px; }
+.guild-fold + .guild-fold { margin-top: 8px; }
 .guild-fold > summary {
   cursor: pointer;
   font-size: 16px;

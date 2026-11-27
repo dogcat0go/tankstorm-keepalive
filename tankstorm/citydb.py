@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     tier            TEXT NOT NULL DEFAULT '初级',
     admin           INTEGER NOT NULL DEFAULT 0,
     auto_lock       INTEGER NOT NULL DEFAULT 0,
+    watch_on        INTEGER NOT NULL DEFAULT 0,
     hold_min        INTEGER NOT NULL DEFAULT 0,
     hold_all        INTEGER NOT NULL DEFAULT 0,
     card_max        INTEGER NOT NULL DEFAULT 100,
@@ -449,6 +450,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "auto_lock" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN auto_lock INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            if ucols and "watch_on" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN watch_on INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             if ucols and "hold_min" not in ucols:
                 setup.execute(
@@ -1208,6 +1213,11 @@ def base_tier(tier: str) -> bool:
     return (tier or "") == "高级pro"
 
 
+def can_watch(user: dict) -> bool:
+    """管理员始终可以监控敌人。别的账号要单独打开。"""
+    return bool(user.get("admin")) or bool(user.get("watch_on"))
+
+
 def user_tier(user_id: int) -> str:
     conn = connect(readonly=True)
     try:
@@ -1573,7 +1583,7 @@ def list_members() -> list:
             "IFNULL(lock_cards,3), IFNULL(modo_cards,0), IFNULL(region,0), "
             "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,''), "
             "storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,''), "
-            "IFNULL(modo_at,''), IFNULL(desk_test,0) "
+            "IFNULL(modo_at,''), IFNULL(desk_test,0), IFNULL(watch_on,0) "
             "FROM app_user ORDER BY id").fetchall()
     finally:
         conn.close()
@@ -1604,6 +1614,7 @@ def list_members() -> list:
             "storm_used": int(row[21] or 0) if str(row[22] or "") == beijing_day() else 0,
             "modo_at": str(row[23] or "").strip(),
             "desk_test": bool(row[24]),
+            "watch_on": bool(row[25]),
         })
     return items
 
@@ -1793,7 +1804,7 @@ def user_by_token(token: str, allow_expired: bool = False):
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
             "IFNULL(u.retreat_fail,0), "
             "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0), IFNULL(u.region,0), "
-            "IFNULL(u.off_at,''), IFNULL(u.desk_test,0) "
+            "IFNULL(u.off_at,''), IFNULL(u.desk_test,0), IFNULL(u.watch_on,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or (account_expired(row[3]) and not allow_expired):
@@ -1811,7 +1822,8 @@ def user_by_token(token: str, allow_expired: bool = False):
                 "modo_cards": int(row[15] if row[15] is not None else 0),
                 "region": int(row[16] or 0),
                 "off_at": str(row[17] or "").strip(),
-                "desk_test": bool(row[18])}
+                "desk_test": bool(row[18]),
+                "watch_on": bool(row[19])}
     finally:
         conn.close()
 
@@ -3561,6 +3573,25 @@ def clear_fight_plan(user_id: int = 0) -> dict:
             }}
 
 
+def set_member_watch(user_id: int, on: bool) -> str:
+    """给这个登录账号打开或关掉监控敌人。管理员不用这一项也能用。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET watch_on=? WHERE id=?",
+            (1 if on else 0, user_id))
+        if cur.rowcount != 1:
+            conn.commit()
+            return "没有这个账号"
+        conn.commit()
+    finally:
+        conn.close()
+    return ""
+
+
 def set_auto_lock(user_id: int, on: bool) -> None:
     conn = connect()
     try:
@@ -3718,6 +3749,11 @@ def queue_present_locks(user_id: int) -> int:
         conn.close()
     n = 0
     for city_id, uid in rows:
+        if uid_failed_for(user_id, uid):
+            mark_lock_sent(user_id, city_id, uid)
+            log.info("登录账号 %s 自动锁敌跳过 UID %s，已在失败库",
+                     username_of(user_id), uid)
+            continue
         why = enqueue_online_attack(user_id, city_id, uid)
         if not why or online_attack_busy(user_id, city_id, uid):
             mark_lock_sent(user_id, city_id, uid)
@@ -3821,6 +3857,11 @@ def set_watch_skip(user_id: int, city_id: int, uid: str, on: bool):
     log.info("登录账号 %s 自动索敌不再跳过，城市 %s UID %s",
              username_of(user_id), city_id, uid)
     if not present or sent:
+        return "", False
+    if uid_failed_for(user_id, uid):
+        mark_lock_sent(user_id, city_id, uid)
+        log.info("登录账号 %s 自动索敌不再跳过，但 UID %s 已在失败库，不排",
+                 username_of(user_id), uid)
         return "", False
     conn = connect(readonly=True)
     try:
@@ -9175,6 +9216,28 @@ def same_failed(uid, live_name, names=None) -> bool:
     if live and recorded != live:
         return False
     return True
+
+
+def uid_failed_for(user_id: int, uid: str) -> bool:
+    """这个登录账号的攻打号，是不是已经打不过这个 UID。"""
+    uid = str(uid or "").strip()
+    qq = attack_qq_of(int(user_id or 0))
+    if not uid or not qq:
+        return False
+    if _fail_acct() == qq:
+        return in_atk_fail(uid)
+
+    def _read():
+        conn = connect(readonly=True, timeout=DB_OP_TIMEOUT)
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM atk_fail WHERE acct=? AND uid=? AND IFNULL(ret,0) NOT IN (21)",
+                (qq, uid)).fetchone()
+            return bool(row)
+        finally:
+            conn.close()
+
+    return bool(_run_timeout(_read, default=False))
 
 
 def in_atk_fail(uid) -> bool:
