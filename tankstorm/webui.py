@@ -756,6 +756,30 @@ def _handler(config: dict):
                     _one("team_id"), _one("page") or 1, _one("who"),
                     _one("result"), _one("q")))
                 return
+            if path == "/api/admin/desk/seats":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能用指挥测试"})
+                    return
+                from urllib.parse import parse_qs, urlparse
+                from . import desk
+                q = parse_qs(urlparse(self.path).query)
+                _json(self, 200, desk.seats((q.get("team_id") or ["0"])[0]))
+                return
+            if path == "/api/desk/seats":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("desk_test"):
+                    _json(self, 403, {"error": "这个号没开指挥测试"})
+                    return
+                from . import desk
+                _json(self, 200, desk.own_seats(user["id"]))
+                return
             if path == "/api/admin/qq-log":
                 user = self._user()
                 if not user:

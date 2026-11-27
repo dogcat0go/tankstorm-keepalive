@@ -105,6 +105,8 @@ function task(state) {
       <div v-for="m in squad.roster || []" :key="m.id" class="squad-member">
         <span class="who">{{ m.username }}</span>
         <span class="muted">{{ m.organizer ? "指挥者 · " : "" }}{{ m.status }} · {{ m.presence || (m.online ? "在线" : "离线") }}</span>
+        <span v-if="lead || squad.self" class="muted">{{ m.here || "城市未知" }}</span>
+        <span v-if="lead || squad.self" class="muted">恢复卡 {{ m.cards ?? 0 }}</span>
         <button v-if="lead && !m.organizer && m.state !== 'out'" type="button" class="ghost" :disabled="busy" @click="kick(m)">踢出</button>
       </div>
     </div>

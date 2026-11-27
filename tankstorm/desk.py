@@ -826,7 +826,7 @@ def _member_rows(team_id: int) -> list:
     try:
         rows = conn.execute(
             "SELECT u.id, u.username, IFNULL(u.region,0), IFNULL(u.game_country,0), "
-            "IFNULL(u.attack_qq,''), IFNULL(m.status,'wait') "
+            "IFNULL(u.attack_qq,''), IFNULL(m.status,'wait'), IFNULL(u.card_max,100) "
             "FROM war_member m JOIN app_user u ON u.id=m.user_id "
             "WHERE m.team_id=? ORDER BY u.id",
             (int(team_id),)).fetchall()
@@ -839,7 +839,23 @@ def _member_rows(team_id: int) -> list:
         "country": int(row[3] or 0),
         "qq": str(row[4] or ""),
         "state": row[5] if row[5] in ("wait", "in", "out") else "wait",
+        "cards": int(row[6] if row[6] is not None else 100),
     } for row in rows]
+
+
+def _place(who, status, ask=False) -> dict:
+    """当前城市，以及这个号配置的最多恢复卡。指挥页每秒来问时，在线的号再读一次面板。"""
+    here = str(status.get("here") or "")
+    head = here.split(" ", 1)[0]
+    here_id = int(head) if head.isdigit() else 0
+    if ask and status.get("online") and status.get("phase") != "login" and not status.get("need_login"):
+        if not citydb.attack_here_pending(who["id"]):
+            citydb.request_attack_here(who["id"])
+    return {
+        "here": here,
+        "here_id": here_id,
+        "cards": int(who.get("cards") if who.get("cards") is not None else 100),
+    }
 
 
 def _seat(state) -> str:
@@ -874,8 +890,31 @@ def _roster(team_id, organizer_id) -> list:
             "online": online,
             "presence": presence,
             "organizer": who["id"] == int(organizer_id),
+            **_place(who, status),
         })
     return out
+
+
+def seats(team_id) -> dict:
+    """编队成员当前城市和配置的恢复卡。在线的号顺便再读一次所在城市。"""
+    try:
+        team_id = int(team_id)
+    except (TypeError, ValueError):
+        return {"roster": []}
+    if team_id <= 0 or not _team_row(team_id):
+        return {"roster": []}
+    rows = []
+    for who in _member_rows(team_id):
+        status = citydb.attack_status(who["id"])
+        spot = _place(who, status, ask=True)
+        spot["id"] = who["id"]
+        rows.append(spot)
+    return {"roster": rows}
+
+
+def own_seats(user_id) -> dict:
+    """指挥者自己的编队。不是指挥者则空。"""
+    return seats(_led_by(user_id))
 
 
 def _teams() -> list:
