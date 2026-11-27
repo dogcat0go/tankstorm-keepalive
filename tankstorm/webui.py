@@ -192,6 +192,7 @@ def _user_out(user: dict) -> dict:
         "modo_cards": int(user.get("modo_cards") or 0),
         "region": int(user.get("region") or 0),
         "off_at": user.get("off_at") or "",
+        "desk_test": bool(user.get("desk_test")),
     }
 
 
@@ -637,7 +638,8 @@ def _handler(config: dict):
                     "process": citydb.attack_status(user["id"]),
                     "storms": citydb.list_storm_rejects(user["id"]),
                     "storm_day": citydb.storm_rejects_day(user["id"]),
-                    "command": desk.command_of(user["id"]),
+                    "command": desk.command_of(user["id"]) if user.get("desk_test") else {},
+                    "desk_test": bool(user.get("desk_test")),
                 })
                 return
             if path == "/api/base":
@@ -1137,24 +1139,32 @@ def _handler(config: dict):
                     })
                 elif path == "/api/desk/accept":
                     from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
                     why = desk.set_accept(user["id"], data.get("on"))
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
                 elif path == "/api/desk/invite":
                     from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
                     why = desk.invite_own(user["id"], data.get("username"))
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
                 elif path == "/api/desk/kick":
                     from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
                     why = desk.kick_own(user["id"], data.get("user_id"))
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
                 elif path == "/api/desk/name":
                     from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
                     why = desk.rename_own(user["id"], data.get("name"))
                     if why:
                         raise ValueError(why)
@@ -1386,6 +1396,18 @@ def _handler(config: dict):
                         raise ValueError("账号编号不对") from None
                     why = citydb.apply_member_expiry(
                         user_id, data.get("action"), data.get("expires_at"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "members": _member_views()})
+                elif path == "/api/admin/members/desk-test":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能改指挥测试"})
+                        return
+                    try:
+                        user_id = int(str(data.get("user_id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("账号编号不对") from None
+                    why = citydb.set_desk_test(user_id, data.get("on"))
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "members": _member_views()})

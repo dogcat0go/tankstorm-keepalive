@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS app_user (
     open_cards      TEXT NOT NULL DEFAULT '',
     clean_items     TEXT NOT NULL DEFAULT '',
     guide_seen      TEXT NOT NULL DEFAULT '',
+    desk_test       INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -608,6 +609,10 @@ def connect(readonly=False, timeout=15):
             if ucols and "guide_seen" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN guide_seen TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "desk_test" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN desk_test INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
             mcols = {r[1] for r in setup.execute("PRAGMA table_info(war_member)")}
             if mcols and "accept" not in mcols:
@@ -1442,6 +1447,25 @@ def set_member_tier(user_id: int, tier: str) -> str:
     return ""
 
 
+def set_desk_test(user_id: int, on) -> str:
+    """打开或关掉这个号的指挥测试。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    flag = str(on).lower() in ("1", "true", "on", "yes") if not isinstance(on, bool) else on
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET desk_test=? WHERE id=?",
+            (1 if flag else 0, user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    return ""
+
+
 def set_user_expiry(username: str, expires_at: str) -> bool:
     """改这个账号的有效期。没有这个用户返回 False。"""
     conn = connect()
@@ -1541,7 +1565,7 @@ def list_members() -> list:
             "IFNULL(lock_cards,3), IFNULL(modo_cards,0), IFNULL(region,0), "
             "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,''), "
             "storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,''), "
-            "IFNULL(modo_at,'') "
+            "IFNULL(modo_at,''), IFNULL(desk_test,0) "
             "FROM app_user ORDER BY id").fetchall()
     finally:
         conn.close()
@@ -1571,6 +1595,7 @@ def list_members() -> list:
             "storm_cap": None if row[20] is None else int(row[20]),
             "storm_used": int(row[21] or 0) if str(row[22] or "") == beijing_day() else 0,
             "modo_at": str(row[23] or "").strip(),
+            "desk_test": bool(row[24]),
         })
     return items
 
@@ -1760,7 +1785,7 @@ def user_by_token(token: str, allow_expired: bool = False):
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
             "IFNULL(u.retreat_fail,0), "
             "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0), IFNULL(u.region,0), "
-            "IFNULL(u.off_at,'') "
+            "IFNULL(u.off_at,''), IFNULL(u.desk_test,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or (account_expired(row[3]) and not allow_expired):
@@ -1777,7 +1802,8 @@ def user_by_token(token: str, allow_expired: bool = False):
                 "lock_cards": int(row[14] if row[14] is not None else 3),
                 "modo_cards": int(row[15] if row[15] is not None else 0),
                 "region": int(row[16] or 0),
-                "off_at": str(row[17] or "").strip()}
+                "off_at": str(row[17] or "").strip(),
+                "desk_test": bool(row[18])}
     finally:
         conn.close()
 
