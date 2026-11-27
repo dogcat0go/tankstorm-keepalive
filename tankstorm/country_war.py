@@ -1698,7 +1698,30 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         out["停止原因"] = f"只打成 {out['成功']}/{cap} 次"
     if out.get("击退"):
         citydb.mark_watch_repelled(city, uid)
+    _note_desk_hit(out, uid, who, city)
     return out
+
+
+def _note_desk_hit(out, uid, who, city) -> None:
+    """这一场的结果写进编队战报。没打起来的不记。"""
+    from . import citydb
+
+    reason = str(out.get("停止原因") or "")
+    if out.get("遣返") or "击败" in reason:
+        result, pressing = "down", True
+    elif out.get("击退"):
+        result, pressing = "repel", False
+    elif out.get("记失败"):
+        result, pressing = "lose", False
+    elif out.get("成功"):
+        result, pressing = "win", False
+    else:
+        return
+    detail = reason
+    if not detail and result == "win":
+        detail = f"击伤 {out.get('击伤')}，对方士气 {out.get('对方剩余')}"
+    citydb.note_desk_hit(
+        result, uid, who or out.get("名字") or "", city, detail, pressing=pressing)
 
 
 def _note_repel(out, tally, name: str = "") -> None:
@@ -1857,7 +1880,15 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                  loc, here_name, city_id, cname, link, power)
 
         fail = citydb.failed_names()
+        threats = citydb.team_threats()
+        threat_uids = threats.get("uids") or set()
+        threat_names = threats.get("names") or set()
         me = str(getattr(rec, "uid", "") or "")
+
+        def _threat(p):
+            uid = str((p or {}).get("uid") or "").strip()
+            name = str((p or {}).get("name") or "").strip()
+            return bool(uid and uid in threat_uids) or bool(name and name in threat_names)
         seen = set()
         last_act = 0.0
         cd_until = 0.0
@@ -1906,6 +1937,9 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     out["停止原因"] = f"{city_id} {cname} 有 {who} 挡路，路径不通"
                     return "break"
                 return "continue"
+            if _threat(p):
+                log.info("[打人] %s 正在打队员，这个号打得过，先打",
+                         p.get("name") or uid)
             citydb.note_current_enemy(p.get("name"), p.get("morale"))
             one = attack_player(
                 rec, sock, config, uid, times=0, sweep=sweep,
@@ -2125,6 +2159,12 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 _nap_here(sock, rec, country, left)
             return not out["停止原因"]
 
+        if not isinstance(priority, dict):
+            priority = {}
+        else:
+            priority = dict(priority)
+        for uid in threat_uids:
+            priority[uid] = -1
         if limited:
             if scan_gap > 0:
                 log.info("[打人] 扫页冷却 %d 秒", scan_gap)
@@ -2136,6 +2176,11 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                 if picked:
                     log.info("[打人] 优先类型：%s", "、".join(picked))
                 while not out["停止原因"]:
+                    for _page, p in scanned or []:
+                        if _threat(p):
+                            mark = str((p or {}).get("uid") or "").strip()
+                            if mark:
+                                priority[mark] = -1
                     nxt = next_clear_target(scanned, priority, seen, me, prefer)
                     if nxt is None:
                         wait = _cd_wait()
@@ -2154,24 +2199,49 @@ def farm_city(rec, sock, config: dict, city_id, sweep=False, times=1,
                     if _strike(nxt[0], nxt[1]) == "break":
                         break
         else:
-            for page in range(start_page, max_pages):
-                kind, batch = _pull(page, True)
-                if kind != "ok":
-                    break
-                for p in batch:
-                    if _strike(page, p) == "break":
+            lead = []
+            for uid in list(threat_uids)[:8]:
+                info = citydb.find_player(uid) or {}
+                try:
+                    same_city = int(info.get("city_id") or 0) == int(city_id)
+                    pg = int(info.get("page") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if same_city and pg not in lead:
+                    lead.append(pg)
+            if lead:
+                log.info("[打人] 先找正在打队员的人，第 %s 页",
+                         "、".join(str(p + 1) for p in lead))
+                for pg in lead:
+                    kind, batch = _pull(pg, True)
+                    if kind != "ok":
+                        continue
+                    for p in batch:
+                        if not _threat(p):
+                            continue
+                        if _strike(pg, p) == "break":
+                            break
+                    if out["停止原因"]:
                         break
-                if out["停止原因"]:
-                    break
-                if total is not None:
-                    max_pages = min(2000, max(page + 2,
-                                              (int(total) + page_size - 1)
-                                              // page_size + 2))
-                    if (page + 1) * page_size >= int(total) and page > 0:
+            if not out["停止原因"]:
+                for page in range(start_page, max_pages):
+                    kind, batch = _pull(page, True)
+                    if kind != "ok":
                         break
-                    if page == 0 and len(seen) + out["跳过"] >= int(total):
+                    for p in sorted(batch, key=lambda p: 0 if _threat(p) else 1):
+                        if _strike(page, p) == "break":
+                            break
+                    if out["停止原因"]:
                         break
-                _nap(0.4)
+                    if total is not None:
+                        max_pages = min(2000, max(page + 2,
+                                                  (int(total) + page_size - 1)
+                                                  // page_size + 2))
+                        if (page + 1) * page_size >= int(total) and page > 0:
+                            break
+                        if page == 0 and len(seen) + out["跳过"] >= int(total):
+                            break
+                    _nap(0.4)
         if not out["停止原因"]:
             if limited and not out["打过"]:
                 out["停止原因"] = "这几页没有可打的人"

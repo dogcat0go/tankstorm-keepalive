@@ -738,6 +738,22 @@ def _handler(config: dict):
                 from . import desk
                 _json(self, 200, desk.snapshot())
                 return
+            if path == "/api/admin/desk/hits":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看攻打状态"})
+                    return
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(self.path).query)
+                def _one(key):
+                    return (q.get(key) or [""])[0]
+                _json(self, 200, citydb.list_desk_hits(
+                    _one("team_id"), _one("page") or 1, _one("who"),
+                    _one("result"), _one("q")))
+                return
             if path == "/api/admin/qq-log":
                 user = self._user()
                 if not user:

@@ -245,6 +245,19 @@ CREATE TABLE IF NOT EXISTS war_member (
     status  TEXT NOT NULL DEFAULT 'wait',
     PRIMARY KEY (team_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS desk_hit (
+    id          INTEGER PRIMARY KEY,
+    team_id     INTEGER NOT NULL,
+    user_id     INTEGER NOT NULL,
+    enemy_uid   TEXT NOT NULL DEFAULT '',
+    enemy_name  TEXT NOT NULL DEFAULT '',
+    city_id     INTEGER NOT NULL DEFAULT 0,
+    result      TEXT NOT NULL,
+    detail      TEXT NOT NULL DEFAULT '',
+    pressing    INTEGER NOT NULL DEFAULT 0,
+    at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS desk_hit_team ON desk_hit(team_id, id);
 """
 
 
@@ -4205,6 +4218,7 @@ def note_self_defeated(name: str) -> None:
     if not name:
         return
     _attack_local.defeater = name
+    note_desk_hit("down", enemy_name=name, detail=f"自己被 {name} 击败", pressing=True)
     clause = defeat_clause(name)
     order_id = fighting_order_id()
     if not order_id:
@@ -9261,10 +9275,171 @@ def reset_atk_fail_uid(user_id: int, uid: str) -> tuple:
     return had, name, ""
 
 
+_HIT_KEEP = 50
+_hit_q = []
+_HIT_TEXT = {"win": "打过", "lose": "打不过", "repel": "击退", "down": "被打"}
+
+
+def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pressing=False) -> None:
+    """编队攻打记一条战报。先排队，战斗结束再写，避免打人时卡在写库上。"""
+    user_id = int(attack_context_user() or 0)
+    result = str(result or "")
+    if user_id <= 0 or result not in _HIT_TEXT:
+        return
+    enemy_uid = str(enemy_uid or "").strip()[:40]
+    enemy_name = " ".join(str(enemy_name or "").split())[:40]
+    detail = " ".join(str(detail or "").split())[:160]
+    if not enemy_uid and not enemy_name and not detail:
+        return
+    try:
+        city_id = int(city_id or 0)
+    except (TypeError, ValueError):
+        city_id = 0
+    row = (user_id, result, enemy_uid, enemy_name, city_id, detail,
+           1 if pressing else 0, now_ts())
+    if _hit_q and _hit_q[-1][:4] == row[:4]:
+        return
+    _hit_q.append(row)
+
+
+def _flush_desk_hits(conn) -> None:
+    global _hit_q
+    if not _hit_q:
+        return
+    batch, _hit_q = _hit_q, []
+    teams = {}
+    for row in batch:
+        user_id = int(row[0])
+        if user_id not in teams:
+            found = conn.execute(
+                "SELECT team_id FROM war_member WHERE user_id=? "
+                "AND IFNULL(status,'wait')='in' ORDER BY team_id DESC LIMIT 1",
+                (user_id,)).fetchone()
+            teams[user_id] = int(found[0]) if found else 0
+        team_id = teams[user_id]
+        if not team_id:
+            continue
+        prev = conn.execute(
+            "SELECT result, enemy_uid, enemy_name FROM desk_hit "
+            "WHERE team_id=? AND user_id=? ORDER BY id DESC LIMIT 1",
+            (team_id, user_id)).fetchone()
+        if prev and prev[0] == row[1] and prev[1] == row[2] and prev[2] == row[3]:
+            continue
+        conn.execute(
+            "INSERT INTO desk_hit(team_id, user_id, enemy_uid, enemy_name, city_id, "
+            "result, detail, pressing, at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (team_id, user_id, row[2], row[3], row[4], row[1], row[5], row[6], row[7]))
+        conn.execute(
+            "DELETE FROM desk_hit WHERE team_id=? AND id NOT IN ("
+            " SELECT id FROM desk_hit WHERE team_id=? ORDER BY id DESC LIMIT ?)",
+            (team_id, team_id, _HIT_KEEP))
+
+
+def team_threats() -> dict:
+    """正在打我方队员、而且这个号还没打不过的人。uids 和 names 都可能是空的。"""
+    user_id = int(attack_context_user() or 0)
+    empty = {"uids": set(), "names": set()}
+    if user_id <= 0:
+        return empty
+    failed = failed_names()
+    failed_nameset = {str(v).strip() for v in failed.values() if str(v).strip()}
+
+    def _read():
+        conn = connect(readonly=True, timeout=DB_OP_TIMEOUT)
+        try:
+            team = conn.execute(
+                "SELECT team_id FROM war_member WHERE user_id=? "
+                "AND IFNULL(status,'wait')='in' ORDER BY team_id DESC LIMIT 1",
+                (user_id,)).fetchone()
+            if not team:
+                return empty
+            rows = conn.execute(
+                "SELECT enemy_uid, enemy_name FROM desk_hit "
+                "WHERE team_id=? AND pressing=1 AND user_id!=? "
+                "ORDER BY id DESC LIMIT ?",
+                (int(team[0]), user_id, _HIT_KEEP)).fetchall()
+        finally:
+            conn.close()
+        uids, names = set(), set()
+        for uid, name in rows:
+            uid = str(uid or "").strip()
+            name = str(name or "").strip()
+            if uid and uid not in failed:
+                uids.add(uid)
+            elif name and name not in failed_nameset:
+                names.add(name)
+        return {"uids": uids, "names": names}
+
+    got = _run_timeout(_read, default=empty)
+    return got if isinstance(got, dict) else empty
+
+
+def list_desk_hits(team_id, page=1, who="", result="", q="") -> dict:
+    """一支编队最近 50 条攻打状态。按队员、结果和关键字筛过再分页。"""
+    try:
+        team_id = int(team_id or 0)
+        page = int(page or 1)
+    except (TypeError, ValueError):
+        return {"items": [], "total": 0, "page": 1, "pages": 1}
+    if team_id <= 0:
+        return {"items": [], "total": 0, "page": 1, "pages": 1}
+    who = str(who or "").strip().lower()
+    result = str(result or "").strip()
+    q = str(q or "").strip().lower()
+    size = 10
+    conn = connect(readonly=True)
+    try:
+        rows = conn.execute(
+            "SELECT h.id, h.user_id, IFNULL(u.username,''), h.enemy_uid, h.enemy_name, "
+            "h.city_id, h.result, h.detail, h.pressing, h.at "
+            "FROM desk_hit h LEFT JOIN app_user u ON u.id=h.user_id "
+            "WHERE h.team_id=? ORDER BY h.id DESC LIMIT ?",
+            (team_id, _HIT_KEEP)).fetchall()
+        items = []
+        for row in rows:
+            label = _HIT_TEXT.get(row[6]) or row[6]
+            city = int(row[5] or 0)
+            city_label = city_name(city, conn) if city else ""
+            item = {
+                "id": int(row[0]),
+                "user_id": int(row[1]),
+                "username": row[2] or "",
+                "enemy_uid": row[3] or "",
+                "enemy_name": row[4] or "",
+                "city_id": city,
+                "city_name": city_label,
+                "result": row[6],
+                "result_text": label,
+                "detail": row[7] or "",
+                "pressing": bool(row[8]),
+                "at": beijing_ts(row[9]),
+            }
+            if who and who not in item["username"].lower():
+                continue
+            if result and item["result"] != result:
+                continue
+            if q:
+                blob = " ".join((
+                    item["enemy_name"], item["enemy_uid"], item["city_name"],
+                    str(item["city_id"] or ""), item["detail"], item["username"],
+                )).lower()
+                if q not in blob:
+                    continue
+            items.append(item)
+    finally:
+        conn.close()
+    total = len(items)
+    pages = max(1, (total + size - 1) // size)
+    page = min(max(1, page), pages)
+    start = (page - 1) * size
+    return {"items": items[start:start + size], "total": total, "page": page, "pages": pages}
+
+
 def flush_atk_fail():
     """战斗结束再写盘。打人线程最多等 DB_OP_TIMEOUT，写入仍会做完再关库。只动记下时那个攻打号的记录。"""
     global _atk_q
-    if not _atk_q:
+    hits = bool(_hit_q)
+    if not _atk_q and not hits:
         return
     batch, _atk_q = _atk_q, []
 
@@ -9297,6 +9472,7 @@ def flush_atk_fail():
                         "name=excluded.name, city_id=excluded.city_id, "
                         "ret=excluded.ret, reason=excluded.reason, at=excluded.at",
                         (acct, uid, name, city_id, ret, reason, now_ts()))
+            _flush_desk_hits(conn)
             conn.commit()
         finally:
             conn.close()

@@ -6,6 +6,13 @@ const view = ref({ cities: [], accounts: [], teams: [], countries: [], width: 32
 const err = ref("");
 const lines = ref([]);
 const busy = ref(false);
+const hits = ref([]);
+const hitTotal = ref(0);
+const hitPage = ref(1);
+const hitPages = ref(1);
+const hitWho = ref("");
+const hitResult = ref("");
+const hitQ = ref("");
 const teamId = ref(0);
 const tool = ref("move");
 const cityId = ref(0);
@@ -46,6 +53,9 @@ const organizer = computed(() => byId.value[Number(organizerId.value)] || null);
 
 watch(organizer, (who) => {
   if (who && who.country) countryId.value = String(who.country);
+});
+watch([teamId, hitWho, hitResult, hitQ], () => {
+  hitPage.value = 1;
 });
 
 const squad = computed(() => {
@@ -110,9 +120,31 @@ const shownLook = computed(() => {
   return picked || looks.value[0] || null;
 });
 
+async function loadHits() {
+  if (!teamId.value) {
+    hits.value = [];
+    hitTotal.value = 0;
+    hitPages.value = 1;
+    return;
+  }
+  const q = new URLSearchParams({
+    team_id: String(teamId.value),
+    page: String(hitPage.value),
+    who: hitWho.value.trim(),
+    result: hitResult.value,
+    q: hitQ.value.trim(),
+  });
+  const data = await api("/api/admin/desk/hits?" + q.toString());
+  hits.value = data.items || [];
+  hitTotal.value = data.total || 0;
+  hitPage.value = data.page || 1;
+  hitPages.value = data.pages || 1;
+}
+
 async function refresh() {
   try {
     await load();
+    await loadHits();
     err.value = "";
   } catch (e) {
     err.value = e.message;
@@ -182,7 +214,7 @@ onUnmounted(() => clearInterval(timer));
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；没在线是离线，退出或被踢出是已退出。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。先选一支编队和一种操作，再点地图上的城。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
+  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；没在线是离线，退出或被踢出是已退出。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。下面是这支编队最近 50 条攻打状态，可以按人和结果筛。有人打不过、或者被敌人打回去时，没在战败库里的队员会先打这个敌人。先选一支编队和一种操作，再点地图上的城。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
   <div class="desk-manage">
     <form class="lock-row" @submit.prevent="makeTeam()">
@@ -279,4 +311,45 @@ onUnmounted(() => clearInterval(timer));
       </div>
     </div>
   </div>
+  <section v-if="team" class="desk-hits" aria-label="攻打状态">
+    <div class="squad-head">
+      <h3 class="squad-title">攻打状态</h3>
+      <p class="muted squad-meta">最近 50 条，{{ hitTotal }} 条在当前筛选里</p>
+    </div>
+    <form class="lock-row" @submit.prevent="hitPage = 1; loadHits().catch((e) => (err = e.message))">
+      <label>队员
+        <input v-model="hitWho" placeholder="账号" />
+      </label>
+      <label>结果
+        <select v-model="hitResult">
+          <option value="">全部</option>
+          <option value="win">打过</option>
+          <option value="lose">打不过</option>
+          <option value="repel">击退</option>
+          <option value="down">被打</option>
+        </select>
+      </label>
+      <label>关键字
+        <input v-model="hitQ" placeholder="敌人、城市" />
+      </label>
+      <button type="submit" class="ghost">筛选</button>
+    </form>
+    <p v-if="!hits.length" class="muted">还没有攻打状态。编队打起来之后，新的战报会出现在这里。</p>
+    <ul v-else class="hit-list">
+      <li v-for="row in hits" :key="row.id" :class="'hit-' + row.result">
+        <span class="hit-at">{{ row.at }}</span>
+        <span class="who">{{ row.username }}</span>
+        <span class="hit-result">{{ row.result_text }}</span>
+        <span>{{ row.enemy_name || row.enemy_uid || "敌人" }}</span>
+        <span v-if="row.city_name || row.city_id" class="muted">{{ row.city_name || row.city_id }}</span>
+        <span v-if="row.pressing" class="hit-press">正在打队员</span>
+        <span v-if="row.detail" class="muted hit-detail">{{ row.detail }}</span>
+      </li>
+    </ul>
+    <p v-if="hitPages > 1" class="muted pager">
+      <button type="button" class="ghost" :disabled="hitPage <= 1" @click="hitPage -= 1; loadHits().catch((e) => (err = e.message))">上一页</button>
+      第 {{ hitPage }} / {{ hitPages }} 页
+      <button type="button" class="ghost" :disabled="hitPage >= hitPages" @click="hitPage += 1; loadHits().catch((e) => (err = e.message))">下一页</button>
+    </p>
+  </section>
 </template>

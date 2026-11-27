@@ -467,6 +467,17 @@ img.scan-qr { width: 280px; }
 .squad-member .who { font-weight: 600; }
 .squad-member button { margin-left: auto; padding: 4px 10px; }
 .desk-side .squad { margin: 0; }
+.desk-hits { margin-top: 16px; background: #fff; border: 1px solid #e4e4e0; border-radius: 8px; padding: 12px 14px; }
+.desk-hits .lock-row { margin: 10px 0; align-items: flex-end; }
+.desk-hits input, .desk-hits select { width: 9em; max-width: 100%; }
+.hit-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow: auto; }
+.hit-list li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid #eee; }
+.hit-at { color: #777; font-size: 12px; }
+.hit-result { font-weight: 600; }
+.hit-lose .hit-result, .hit-down .hit-result { color: #8c3a4b; }
+.hit-win .hit-result, .hit-repel .hit-result { color: #2f6f4e; }
+.hit-press { color: #8c3a4b; }
+.hit-detail { flex-basis: 100%; }
 .desk-side .choice { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
 @media (max-width: 900px) {
   .desk { grid-template-columns: 1fr; }
