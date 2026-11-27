@@ -8175,6 +8175,23 @@ def attack_order_open() -> bool:
         conn.close()
 
 
+def attack_order_ready() -> bool:
+    """有可以马上领的攻打订单。编队任务占着的号先不算，那些单还不能领。"""
+    ids = [i for i in executable_users() if not squad_holds(i)]
+    if not ids:
+        return False
+    slot = ",".join("?" * len(ids))
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM atk_order WHERE user_id IN (" + slot + ") "
+            "AND status IN ('pending','running') LIMIT 1",
+            tuple(ids)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def requeue_running_orders() -> None:
     """拿到攻打号之后调用。标着正在打的是上一轮进程留下的，改回排队。同一个 QQ 上的单都改。"""
     ids = attack_context_users()

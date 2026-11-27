@@ -414,12 +414,15 @@ def kick(team_id, user_id) -> str:
         if int(team[0]) == user_id:
             return "指挥者不能踢出自己。要散伙就解散这支编队"
         row = conn.execute(
-            "SELECT IFNULL(status,'wait') FROM war_member WHERE team_id=? AND user_id=?",
+            "SELECT IFNULL(m.status,'wait'), IFNULL(t.task,'idle') "
+            "FROM war_member m JOIN war_team t ON t.id=m.team_id "
+            "WHERE m.team_id=? AND m.user_id=?",
             (team_id, user_id)).fetchone()
         if not row:
             return "这个号不在这支编队里"
         if row[0] == "out":
             return "已经退出了"
+        was_held = row[0] == "in" and row[1] in ("run", "pause")
         conn.execute(
             "UPDATE war_member SET accept=0, status='out' WHERE team_id=? AND user_id=?",
             (team_id, user_id))
@@ -427,6 +430,8 @@ def kick(team_id, user_id) -> str:
         title = team[1] or _TEAM_NAME
     finally:
         conn.close()
+    if was_held:
+        citydb.mark_attack_resume(user_id)
     citydb.clear_desk(user_id)
     citydb.clear_team_hits(team_id)
     citydb.note_desk_text(f"已被请出编队「{title}」", user_id)
@@ -1087,6 +1092,8 @@ def set_task(team_id, state) -> str:
             continue
         if state == "idle":
             citydb.clear_desk(who["id"])
+            if current in ("run", "pause"):
+                citydb.mark_attack_resume(who["id"])
         if note:
             citydb.note_desk_text(note, who["id"])
     return ""
@@ -1109,7 +1116,8 @@ def set_accept(user_id, on) -> str:
     conn = citydb.connect()
     try:
         row = conn.execute(
-            "SELECT t.id, t.organizer_id, IFNULL(m.status,'wait'), IFNULL(t.name,'') "
+            "SELECT t.id, t.organizer_id, IFNULL(m.status,'wait'), IFNULL(t.name,''), "
+            "IFNULL(t.task,'idle') "
             "FROM war_member m JOIN war_team t ON t.id=m.team_id "
             "WHERE m.user_id=? AND IFNULL(m.status,'wait')!='out' "
             "ORDER BY t.id DESC LIMIT 1",
@@ -1121,6 +1129,7 @@ def set_accept(user_id, on) -> str:
             return "指挥者不用接受自己的邀请"
         title = row[3] or _TEAM_NAME
         was_in = row[2] == "in"
+        was_held = was_in and row[4] in ("run", "pause")
         if on:
             conn.execute(
                 "UPDATE war_member SET accept=1, status='in' WHERE user_id=? "
@@ -1139,6 +1148,8 @@ def set_accept(user_id, on) -> str:
         citydb.note_desk_text(f"已加入编队「{title}」", user_id)
     else:
         citydb.clear_desk(user_id)
+        if was_held:
+            citydb.mark_attack_resume(user_id)
         citydb.note_desk_text("已退出编队" if was_in else "已拒绝邀请", user_id)
     return ""
 
