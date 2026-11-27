@@ -128,6 +128,10 @@ def send_qq(api: str, token: str, target: str, text: str, message=None) -> bool:
             log.info("QQ 机器人推送成功")
             return True
         log.warning("QQ 机器人返回异常 %s: %s", _host(api), data)
+    except requests.ConnectionError:
+        from .napcat_up import wake_http
+        note = wake_http(api)
+        log.warning("QQ 机器人推送失败 %s。%s", _host(api), note or "连接被拒绝")
     except Exception as exc:
         log.warning("QQ 机器人推送失败 %s: %s", _host(api), exc)
     return False
