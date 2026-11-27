@@ -215,28 +215,12 @@ function toggleGuild(id, on) {
         </div>
       </template>
     </details>
-    <div class="lock-row">
-      <h2>最近执行</h2>
-      <button type="button" @click="runDaily('guild_claim').catch((e) => showErr(e.message))">一键领取</button>
-    </div>
-    <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
-    <div v-else class="wide">
-      <table class="daily-jobs">
-        <thead>
-          <tr><th>项目</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="it in dailyJobs" :key="it.id">
-            <td>{{ it.label }}</td>
-            <td>{{ it.status }}<button v-if="it.status === '排队' || it.status === '正在做'" type="button" class="ghost" @click="cancelDaily(it).catch((e) => showErr(e.message))">关停</button></td>
-            <td class="reason">{{ it.detail || "—" }}</td>
-            <td>{{ it.created_at || "—" }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <details v-if="showCamp" class="campaign-box" open>
-      <summary>公会战役</summary>
+    <details v-if="showCamp" class="guild-fold">
+      <summary>
+        公会战役
+        <span v-if="campTask" class="muted">今日 {{ campTask.done }}/{{ campTask.max }}</span>
+        <span class="muted">体力 {{ liveText(thew) }} · 当前积分 {{ liveText(score) }}</span>
+      </summary>
       <div v-if="campTask" class="campaign-line">
         <span class="switch">{{ campTask.name }}</span>
         <span class="campaign-ops">
@@ -266,6 +250,26 @@ function toggleGuild(id, on) {
       <p>体力 {{ liveText(thew) }} · 当前积分 {{ liveText(score) }}</p>
       <p class="muted">进入这一页会读一次体力和当前积分。只在周五 10:00 到周六 22:00（本机时间）进攻。点进攻就按体力打这一轮。同一等级一直打，直到体力不够、体力不再下降或被拒绝。不领奖。等级记在这个登录账号上。</p>
     </details>
+    <div class="lock-row">
+      <h2>最近执行</h2>
+      <button type="button" @click="runDaily('guild_claim').catch((e) => showErr(e.message))">一键领取</button>
+    </div>
+    <p v-if="!dailyJobs.length" class="muted">还没有执行记录。</p>
+    <div v-else class="wide">
+      <table class="daily-jobs">
+        <thead>
+          <tr><th>项目</th><th>状态</th><th>说明</th><th>北京时间</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="it in dailyJobs" :key="it.id">
+            <td>{{ it.label }}</td>
+            <td>{{ it.status }}<button v-if="it.status === '排队' || it.status === '正在做'" type="button" class="ghost" @click="cancelDaily(it).catch((e) => showErr(e.message))">关停</button></td>
+            <td class="reason">{{ it.detail || "—" }}</td>
+            <td>{{ it.created_at || "—" }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
     <h2>今日进度</h2>
     <p class="muted">点开关就保存。跑一轮时按这里的开和关做。标着恢复中的项先不能开。</p>
     <p v-if="!progressTasks.length" class="muted">还没有任务表。</p>
