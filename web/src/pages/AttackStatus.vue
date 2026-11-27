@@ -23,12 +23,10 @@ const props = defineProps({
   saveCommandAccept: { type: Function, required: true },
 });
 
-async function onAccept(ev) {
-  const on = ev.target.checked;
+async function answer(on) {
   try {
     await props.saveCommandAccept(on);
   } catch (e) {
-    ev.target.checked = !on;
     props.showErr(e.message, "bar");
   }
 }
@@ -92,15 +90,17 @@ watch(() => props.loginPlatDefault, (value) => {
     </div>
     <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
     <p v-if="qrSrc && !(proc && proc.qq)" class="muted bind-foot">扫上之后，页面上的「还没绑定」会变成这个 QQ 号。</p>
-    <div v-if="command && command.team_id" class="proc">
-      <span v-if="command.self" class="proc-text">你在指挥 {{ command.region }}区 {{ command.country_name }}。队员要在自己的页面打开「接受指挥」，才会跟着做。</span>
-      <template v-else>
-        <label class="choice">
-          <input type="checkbox" :checked="command.accept" @change="onAccept" />
-          接受 {{ command.organizer }} 的指挥
-        </label>
-        <span class="muted">{{ command.region }}区 {{ command.country_name }}。没打开时，这个号不跟着走。</span>
-      </template>
+    <div v-if="command && command.team_id && command.self" class="proc">
+      <span class="proc-text">你在指挥 {{ command.region }}区 {{ command.country_name }}。邀请发出去之后，对方接受了，指挥页才显示已接受。</span>
+    </div>
+    <div v-else-if="command && command.team_id && !command.accept" class="proc">
+      <span class="proc-text">{{ command.organizer }} 邀请这个号加入 {{ command.region }}区 {{ command.country_name }}。</span>
+      <button type="button" @click="answer(true)">接受</button>
+      <button type="button" class="ghost" @click="answer(false)">拒绝</button>
+    </div>
+    <div v-else-if="command && command.team_id" class="proc">
+      <span class="proc-text">已加入 {{ command.organizer }} 的 {{ command.region }}区 {{ command.country_name }}。组织者点地图时，这个号会跟着做。</span>
+      <button type="button" class="ghost" @click="answer(false)">退出</button>
     </div>
     <p v-if="err && errAt === 'bar'" class="err">{{ err }}</p>
   </section>

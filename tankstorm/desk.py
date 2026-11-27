@@ -10,7 +10,7 @@
 城市表没有坐标。位置按已经存下的 CityData 连接来排：
 马奇诺在中心，六座内圈城围着它，再往外是一圈中立城，六个国家贴在外圈。
 整张图左右对调，巴黎在左边。
-组织者点一次，自己会做。其他队员要在自己的页面打开接受指挥，才会跟着做。
+组织者先邀请。对方接受之后才入队，点地图时才会跟着做。
 """
 
 import math
@@ -406,7 +406,7 @@ def order(team_id, op, city_id) -> tuple:
     for who in members:
         name = who["username"] or str(who["id"])
         if who["id"] != int(team["organizer_id"]) and not who["accept"]:
-            lines.append(f"{name}：没有接受指挥，跳过")
+            lines.append(f"{name}：还没接受邀请，跳过")
             continue
         if who["country"] and who["country"] != int(team["country_id"]):
             got = citydb.country_name(who["country"]) or who["country"]
@@ -743,7 +743,7 @@ def _teams() -> list:
 
 
 def command_of(user_id) -> dict:
-    """这个登录账号被编进的队伍。没有则空。"""
+    """这个号收到的入队邀请。没有则空。"""
     try:
         user_id = int(user_id)
     except (TypeError, ValueError):
@@ -776,7 +776,7 @@ def command_of(user_id) -> dict:
 
 
 def set_accept(user_id, on) -> str:
-    """这个号自己决定接不接受组织者的指挥。成功返回空字符串。"""
+    """接受邀请就入队。拒绝或退出会离开这支队伍。成功返回空字符串。"""
     try:
         user_id = int(user_id)
     except (TypeError, ValueError):
@@ -785,22 +785,27 @@ def set_accept(user_id, on) -> str:
     conn = citydb.connect()
     try:
         row = conn.execute(
-            "SELECT t.organizer_id FROM war_member m JOIN war_team t ON t.id=m.team_id "
+            "SELECT t.organizer_id, IFNULL(m.accept,0) "
+            "FROM war_member m JOIN war_team t ON t.id=m.team_id "
             "WHERE m.user_id=?",
             (user_id,)).fetchone()
         if not row:
-            return "还没有人把这个号编进队伍"
+            return "没有这份邀请"
         if int(row[0]) == user_id:
-            return "组织者自己发令，不用切换接受指挥"
-        conn.execute(
-            "UPDATE war_member SET accept=? WHERE user_id=?",
-            (1 if on else 0, user_id))
+            return "组织者不用接受自己的邀请"
+        if on:
+            conn.execute(
+                "UPDATE war_member SET accept=1 WHERE user_id=?", (user_id,))
+        else:
+            conn.execute("DELETE FROM war_member WHERE user_id=?", (user_id,))
         conn.commit()
     finally:
         conn.close()
-    if not on:
+    if on:
+        citydb.note_desk_text("已接受邀请", user_id)
+    else:
         citydb.clear_desk(user_id)
-        citydb.note_desk_text("已关闭接受指挥", user_id)
+        citydb.note_desk_text("已退出队伍" if row[1] else "已拒绝邀请", user_id)
     return ""
 
 
