@@ -1141,6 +1141,24 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
+                elif path == "/api/desk/invite":
+                    from . import desk
+                    why = desk.invite_own(user["id"], data.get("username"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
+                elif path == "/api/desk/kick":
+                    from . import desk
+                    why = desk.kick_own(user["id"], data.get("user_id"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
+                elif path == "/api/desk/name":
+                    from . import desk
+                    why = desk.rename_own(user["id"], data.get("name"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
                 elif path == "/api/attacks/cancel":
                     try:
                         order_id = int(str(data.get("id", "")).strip())
@@ -1551,13 +1569,16 @@ def _handler(config: dict):
                     action = str(data.get("action") or "")
                     lines = []
                     if action == "team":
-                        why = desk.create_team(data.get("organizer_id"), data.get("country_id"))
+                        why = desk.create_team(
+                            data.get("organizer_id"), data.get("country_id"), data.get("name"))
+                    elif action == "rename":
+                        why = desk.rename_team(data.get("team_id"), data.get("name"))
                     elif action == "drop":
                         why = desk.drop_team(data.get("team_id"))
-                    elif action == "member":
-                        why = desk.set_member(
-                            data.get("team_id"), data.get("user_id"),
-                            str(data.get("on") or "") in ("1", "true", "on", "True"))
+                    elif action == "invite":
+                        why = desk.invite(data.get("team_id"), data.get("username"))
+                    elif action == "kick":
+                        why = desk.kick(data.get("team_id"), data.get("user_id"))
                     elif action == "command":
                         why, lines = desk.order(
                             data.get("team_id"), data.get("op"), data.get("city_id"))

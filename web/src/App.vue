@@ -1022,9 +1022,24 @@ function procText(p) {
   return p.detail || "空闲，等订单";
 }
 
-async function saveCommandAccept(on) {
-  const data = await api("/api/desk/accept", { on: !!on });
+function takeCommand(data) {
   command.value = data.command && data.command.team_id ? data.command : null;
+}
+
+async function saveCommandAccept(on) {
+  takeCommand(await api("/api/desk/accept", { on: !!on }));
+}
+
+async function inviteMember(username) {
+  takeCommand(await api("/api/desk/invite", { username }));
+}
+
+async function kickMember(userId) {
+  takeCommand(await api("/api/desk/kick", { user_id: userId }));
+}
+
+async function renameSquad(name) {
+  takeCommand(await api("/api/desk/name", { name }));
 }
 
 async function enter() {
@@ -1733,6 +1748,9 @@ onUnmounted(() => {
         :show-err="showErr"
         :command="command"
         :save-command-accept="saveCommandAccept"
+        :invite-member="inviteMember"
+        :kick-member="kickMember"
+        :rename-squad="renameSquad"
       />
       <div v-if="toolsOn && me.base_war && floatJobs.length && (tab === 'base' || tab === 'activity')" class="job-float" :class="{ 'is-collapsed': floatFolded }" :style="floatStyle">
         <header @pointerdown="dragFloat">任务状态</header>

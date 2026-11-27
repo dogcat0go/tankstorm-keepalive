@@ -451,6 +451,7 @@ img.scan-qr { width: 280px; }
 .desk-tools { display: flex; flex-wrap: wrap; gap: 6px; }
 .desk-tools button { margin: 0; }
 .desk-lines { margin: 0; padding-left: 18px; }
+.attack-bar .desk-lines { flex: 1 1 100%; }
 .desk-side .choice { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
 @media (max-width: 900px) {
   .desk { grid-template-columns: 1fr; }

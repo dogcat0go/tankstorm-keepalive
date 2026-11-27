@@ -10,6 +10,9 @@ const tool = ref("move");
 const cityId = ref(0);
 const organizerId = ref("");
 const countryId = ref("");
+const newName = ref("国战编队");
+const editName = ref("国战编队");
+const inviteWho = ref("");
 let timer = 0;
 
 const PALETTE = ["#c45c26", "#2f6f4e", "#3d5a80", "#8c3a4b", "#6b5b2a", "#3f6f8c", "#7a4e2d", "#4d5d3a", "#6a4c7a", "#8a5a2b", "#2c6e6a", "#7d3b3b", "#4a6741", "#5c4a32", "#345e7d", "#6e4b3a"];
@@ -46,9 +49,14 @@ watch(organizer, (who) => {
   if (who && who.country) countryId.value = String(who.country);
 });
 
+watch(() => team.value && team.value.id, () => {
+  editName.value = team.value && team.value.name ? team.value.name : "国战编队";
+});
+
 const members = computed(() => {
   if (!team.value) return [];
-  return team.value.members.map((id) => byId.value[id]).filter(Boolean);
+  const ids = (team.value.roster || []).filter((m) => m.state === "in").map((m) => m.id);
+  return ids.map((id) => byId.value[id]).filter(Boolean);
 });
 
 const supplyCap = computed(() => (team.value ? team.value.country_id * 1000 + 101 : 0));
@@ -115,8 +123,17 @@ async function send(action, extra) {
 }
 
 async function makeTeam() {
-  await send("team", { organizer_id: Number(organizerId.value), country_id: Number(countryId.value) });
+  await send("team", {
+    organizer_id: Number(organizerId.value),
+    country_id: Number(countryId.value),
+    name: newName.value,
+  });
   teamId.value = view.value.teams[view.value.teams.length - 1]?.id || teamId.value;
+}
+
+async function sendInvite() {
+  await send("invite", { team_id: team.value.id, username: inviteWho.value.trim() });
+  if (!err.value) inviteWho.value = "";
 }
 
 function pick(c) {
@@ -144,7 +161,7 @@ onUnmounted(() => clearInterval(timer));
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">同一区、同一国家的号编成一队，组织者是领队账号。先邀请，对方在自己的页面接受之后才入队。先选一支队伍和一种操作，再点地图上的城。组织者自己会做。接受了邀请的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
+  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；没在线是离线，退出或被踢出是已退出。指挥者可以踢人。队员在自己的页面能看到这支编队。先选一支编队和一种操作，再点地图上的城。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市看前 5 页的人，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
   <div class="desk">
     <div class="desk-map">
@@ -169,7 +186,7 @@ onUnmounted(() => clearInterval(timer));
     </div>
     <div class="desk-side">
       <form class="stack" @submit.prevent="makeTeam()">
-        <label>组织者
+        <label>指挥者
           <select v-model="organizerId" required>
             <option value="" disabled>选一个已绑定攻打 QQ 的号</option>
             <option v-for="a in accounts" :key="a.id" :value="String(a.id)">
@@ -183,13 +200,16 @@ onUnmounted(() => clearInterval(timer));
             <option v-for="c in view.countries" :key="c.id" :value="String(c.id)">{{ c.name }}</option>
           </select>
         </label>
-        <button type="submit" :disabled="busy">编成队伍</button>
+        <label>编队名称
+          <input v-model="newName" maxlength="16" placeholder="国战编队" />
+        </label>
+        <button type="submit" :disabled="busy">创建编队</button>
       </form>
-      <label>当前队伍
+      <label>当前编队
         <select v-model.number="teamId">
-          <option :value="0">还没有队伍</option>
+          <option :value="0">还没有编队</option>
           <option v-for="t in view.teams" :key="t.id" :value="t.id">
-            {{ t.region }}区 {{ t.country_name || t.country_id }} · {{ byId[t.organizer_id]?.username || "组织者" }}
+            {{ t.name || "国战编队" }} · {{ t.region }}区 {{ t.country_name || t.country_id }} · {{ byId[t.organizer_id]?.username || "指挥者" }}
           </option>
         </select>
       </label>
@@ -206,21 +226,25 @@ onUnmounted(() => clearInterval(timer));
       <ul v-if="lines.length" class="desk-lines">
         <li v-for="(line, i) in lines" :key="i">{{ line }}</li>
       </ul>
-      <div v-if="team">
-        <p class="muted">同区的号。勾上是邀请，对方接受之后这里才显示已接受。取消勾选就是收回邀请或请出队伍。国家还没从游戏读到的可以先邀请，读到别的国家后这一条会跳过。</p>
-        <label v-for="a in accounts.filter((x) => x.region === team.region)" :key="a.id" class="choice">
-          <input
-            type="checkbox"
-            :checked="team.members.includes(a.id)"
-            :disabled="busy || a.id === team.organizer_id"
-            @change="send('member', { team_id: team.id, user_id: a.id, on: $event.target.checked })" />
-          {{ a.username }}
-          <span v-if="a.id === team.organizer_id" class="muted">组织者，自己发令</span>
-          <span v-else-if="(team.accepted || []).includes(a.id)" class="muted">已接受</span>
-          <span v-else-if="team.members.includes(a.id)" class="muted">已邀请</span>
-          <span class="muted">{{ a.country_name || "国家未确认" }} · {{ a.online ? (a.paused ? "暂停" : "在线") : "不在线" }} · 体力 {{ a.power ?? "—" }} · 士气 {{ a.morale ?? "—" }} · {{ a.here || "位置未知" }}</span>
-          <span v-if="a.desk_note" class="muted">{{ a.desk_note }}</span>
+      <form v-if="team" class="stack" @submit.prevent="send('rename', { team_id: team.id, name: editName })">
+        <label>编队名称
+          <input v-model="editName" maxlength="16" />
         </label>
+        <button type="submit" :disabled="busy">保存名称</button>
+      </form>
+      <form v-if="team" class="stack" @submit.prevent="sendInvite()">
+        <label>对方账号
+          <input v-model="inviteWho" required placeholder="登录账号" />
+        </label>
+        <button type="submit" :disabled="busy">邀请</button>
+      </form>
+      <div v-if="team">
+        <p class="muted">同区同国家才能邀请。还没从游戏读到国家的可以先邀请，读到别的国家后这一条会跳过。</p>
+        <p v-for="m in team.roster || []" :key="m.id">
+          {{ m.username }}
+          <span class="muted">{{ m.organizer ? "指挥者 · " : "" }}{{ m.status }}</span>
+          <button v-if="!m.organizer && m.state !== 'out'" type="button" class="ghost" :disabled="busy" @click="send('kick', { team_id: team.id, user_id: m.id })">踢出</button>
+        </p>
       </div>
       <div v-if="shownLook">
         <h3>{{ shownLook.who.username }} 打开 {{ shownLook.look.name || shownLook.look.city }}</h3>

@@ -234,12 +234,14 @@ CREATE TABLE IF NOT EXISTS war_team (
     region       INTEGER NOT NULL,
     country_id   INTEGER NOT NULL,
     organizer_id INTEGER NOT NULL,
+    name         TEXT NOT NULL DEFAULT '国战编队',
     created_at   TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS war_member (
     team_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL,
     accept  INTEGER NOT NULL DEFAULT 0,
+    status  TEXT NOT NULL DEFAULT 'wait',
     PRIMARY KEY (team_id, user_id)
 );
 """
@@ -615,6 +617,18 @@ def connect(readonly=False, timeout=15):
                     "UPDATE war_member SET accept=1 WHERE user_id=("
                     " SELECT organizer_id FROM war_team"
                     " WHERE war_team.id=war_member.team_id)")
+                setup.commit()
+                mcols.add("accept")
+            if mcols and "status" not in mcols:
+                setup.execute(
+                    "ALTER TABLE war_member ADD COLUMN status TEXT NOT NULL DEFAULT 'wait'")
+                setup.execute(
+                    "UPDATE war_member SET status='in' WHERE accept=1")
+                setup.commit()
+            tcols = {r[1] for r in setup.execute("PRAGMA table_info(war_team)")}
+            if tcols and "name" not in tcols:
+                setup.execute(
+                    "ALTER TABLE war_team ADD COLUMN name TEXT NOT NULL DEFAULT '国战编队'")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
