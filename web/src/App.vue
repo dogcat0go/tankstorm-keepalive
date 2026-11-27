@@ -13,6 +13,7 @@ import WatchPage from "./pages/WatchPage.vue";
 import QqPage from "./pages/QqPage.vue";
 import ProfilePage from "./pages/ProfilePage.vue";
 import MarkdownDoc from "./components/MarkdownDoc.vue";
+import SquadPanel from "./components/SquadPanel.vue";
 
 const me = ref(null);
 const mode = ref("login");
@@ -35,6 +36,8 @@ const attackUid = ref("");
 const orders = ref([]);
 const storms = ref([]);
 const proc = ref(null);
+const command = ref(null);
+const commandBusy = ref(false);
 const qrSrc = ref("");
 const bindWait = ref(false);
 const devLogin = ref(false);
@@ -973,14 +976,18 @@ async function refreshAttacks() {
     orders.value = [];
     storms.value = [];
     proc.value = null;
+    command.value = null;
     attackHereOn = false;
     return;
   }
   const atk = await api("/api/attacks");
   orders.value = atk.items || [];
   storms.value = atk.storms || [];
-  if (me.value && typeof atk.storm_day === "number") {
-    me.value = { ...me.value, storm_day: atk.storm_day };
+  command.value = atk.command && atk.command.team_id ? atk.command : null;
+  if (me.value) {
+    const next = { ...me.value, desk_test: !!atk.desk_test };
+    if (typeof atk.storm_day === "number") next.storm_day = atk.storm_day;
+    me.value = next;
   }
   proc.value = atk.process || null;
   const left = proc.value && proc.value.hold_left;
@@ -994,6 +1001,59 @@ async function refreshAttacks() {
   } else if (!qrSrc.value) qrSrc.value = "/api/attack-qr?t=" + Date.now();
   if (wantQr) qrWait = 0;
   markAttackHere();
+}
+
+async function saveCommandAccept(on) {
+  commandBusy.value = true;
+  try {
+    const data = await api("/api/desk/accept", { on: !!on });
+    command.value = data.command && data.command.team_id ? data.command : null;
+  } finally {
+    commandBusy.value = false;
+  }
+}
+
+async function inviteMember(username) {
+  const name = String(username || "").trim();
+  if (!name) throw new Error("要填对方的账号");
+  commandBusy.value = true;
+  try {
+    const data = await api("/api/desk/invite", { username: name });
+    command.value = data.command && data.command.team_id ? data.command : null;
+  } finally {
+    commandBusy.value = false;
+  }
+}
+
+async function kickMember(member) {
+  if (!member || !member.user_id) return;
+  commandBusy.value = true;
+  try {
+    const data = await api("/api/desk/kick", { user_id: member.user_id });
+    command.value = data.command && data.command.team_id ? data.command : null;
+  } finally {
+    commandBusy.value = false;
+  }
+}
+
+async function renameSquad(name) {
+  commandBusy.value = true;
+  try {
+    const data = await api("/api/desk/name", { name });
+    command.value = data.command && data.command.team_id ? data.command : null;
+  } finally {
+    commandBusy.value = false;
+  }
+}
+
+async function setSquadTask(state) {
+  commandBusy.value = true;
+  try {
+    const data = await api("/api/desk/task", { state });
+    command.value = data.command && data.command.team_id ? data.command : null;
+  } finally {
+    commandBusy.value = false;
+  }
 }
 
 let qrWait = 0;
@@ -1722,6 +1782,20 @@ onUnmounted(() => {
         :save-off-at="saveOffAt"
         :off-note="offNote"
         :reload-qr="reloadQr"
+        :show-err="showErr"
+      />
+      <SquadPanel
+        v-if="me.desk_test"
+        v-show="!sideOn"
+        :squad="command"
+        :lead="!!(command && command.self)"
+        :idle="!command"
+        :busy="commandBusy"
+        :rename-squad="renameSquad"
+        :invite-member="inviteMember"
+        :kick-member="kickMember"
+        :set-task="setSquadTask"
+        :answer="saveCommandAccept"
         :show-err="showErr"
       />
       <div v-if="toolsOn && me.base_war && floatJobs.length && (tab === 'base' || tab === 'activity')" class="job-float" :class="{ 'is-collapsed': floatFolded }" :style="floatStyle">

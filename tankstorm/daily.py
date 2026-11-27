@@ -273,6 +273,9 @@ def raise_if_stopped() -> None:
     from . import citydb
     if citydb.shutdown_due() or citydb.daily_job_stopped():
         raise Stopped()
+    if (citydb.squad_holds() and not citydb.desk_driving()
+            and citydb.running_daily_id()):
+        raise Stopped()
 
 
 def _stop_set() -> bool:

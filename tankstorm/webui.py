@@ -194,6 +194,7 @@ def _user_out(user: dict) -> dict:
         "modo_cards": int(user.get("modo_cards") or 0),
         "region": int(user.get("region") or 0),
         "off_at": user.get("off_at") or "",
+        "desk_test": bool(user.get("desk_test")),
     }
 
 
@@ -633,11 +634,14 @@ def _handler(config: dict):
                 if not user:
                     _json(self, 401, {"error": "请先登录"})
                     return
+                from . import desk
                 _json(self, 200, {
                     "items": citydb.list_attack_orders(user["id"]),
                     "process": citydb.attack_status(user["id"]),
                     "storms": citydb.list_storm_rejects(user["id"]),
                     "storm_day": citydb.storm_rejects_day(user["id"]),
+                    "command": desk.command_of(user["id"]) if user.get("desk_test") else {},
+                    "desk_test": bool(user.get("desk_test")),
                 })
                 return
             if path == "/api/base":
@@ -724,6 +728,33 @@ def _handler(config: dict):
                     _json(self, 403, {"error": "只有管理员能看全部攻打 QQ"})
                     return
                 _json(self, 200, {"fighters": citydb.list_attack_fighters()})
+                return
+            if path == "/api/admin/desk":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能用指挥测试"})
+                    return
+                from . import desk
+                _json(self, 200, desk.snapshot())
+                return
+            if path == "/api/admin/desk/hits":
+                user = self._user()
+                if not user:
+                    _json(self, 401, {"error": "请先登录"})
+                    return
+                if not user.get("admin"):
+                    _json(self, 403, {"error": "只有管理员能看攻打状态"})
+                    return
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(self.path).query)
+                def _one(key):
+                    return (q.get(key) or [""])[0]
+                _json(self, 200, citydb.list_desk_hits(
+                    _one("team_id"), _one("page") or 1, _one("who"),
+                    _one("result"), _one("q")))
                 return
             if path == "/api/admin/qq-log":
                 user = self._user()
@@ -1124,6 +1155,46 @@ def _handler(config: dict):
                         "ok": True, "login": "busy",
                         "modo_cards": int(saved.get("modo_cards") or 0),
                     })
+                elif path == "/api/desk/accept":
+                    from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
+                    why = desk.set_accept(user["id"], data.get("on"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
+                elif path == "/api/desk/invite":
+                    from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
+                    why = desk.invite_own(user["id"], data.get("username"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
+                elif path == "/api/desk/kick":
+                    from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
+                    why = desk.kick_own(user["id"], data.get("user_id"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
+                elif path == "/api/desk/name":
+                    from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
+                    why = desk.rename_own(user["id"], data.get("name"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
+                elif path == "/api/desk/task":
+                    from . import desk
+                    if not user.get("desk_test"):
+                        raise ValueError("这个号没开指挥测试")
+                    why = desk.set_task_own(user["id"], data.get("state"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "command": desk.command_of(user["id"])})
                 elif path == "/api/attacks/cancel":
                     try:
                         order_id = int(str(data.get("id", "")).strip())
@@ -1371,6 +1442,18 @@ def _handler(config: dict):
                     if why:
                         raise ValueError(why)
                     _json(self, 200, {"ok": True, "members": _member_views()})
+                elif path == "/api/admin/members/desk-test":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能改指挥测试"})
+                        return
+                    try:
+                        user_id = int(str(data.get("user_id", "")).strip())
+                    except (TypeError, ValueError):
+                        raise ValueError("账号编号不对") from None
+                    why = citydb.set_desk_test(user_id, data.get("on"))
+                    if why:
+                        raise ValueError(why)
+                    _json(self, 200, {"ok": True, "members": _member_views()})
                 elif path == "/api/admin/members/tier":
                     if not user.get("admin"):
                         _json(self, 403, {"error": "只有管理员能改会员等级"})
@@ -1543,6 +1626,36 @@ def _handler(config: dict):
                     except OSError:
                         pass
                     _json(self, 200, _feature_view(note, admin=True))
+                elif path == "/api/admin/desk":
+                    if not user.get("admin"):
+                        _json(self, 403, {"error": "只有管理员能用指挥测试"})
+                        return
+                    from . import desk
+                    action = str(data.get("action") or "")
+                    lines = []
+                    if action == "team":
+                        why = desk.create_team(
+                            data.get("organizer_id"), data.get("country_id"), data.get("name"))
+                    elif action == "rename":
+                        why = desk.rename_team(data.get("team_id"), data.get("name"))
+                    elif action == "drop":
+                        why = desk.drop_team(data.get("team_id"))
+                    elif action == "invite":
+                        why = desk.invite(data.get("team_id"), data.get("username"))
+                    elif action == "kick":
+                        why = desk.kick(data.get("team_id"), data.get("user_id"))
+                    elif action == "task":
+                        why = desk.set_task(data.get("team_id"), data.get("state"))
+                    elif action == "command":
+                        why, lines = desk.order(
+                            data.get("team_id"), data.get("op"), data.get("city_id"))
+                    else:
+                        why = "没有这个操作"
+                    if why:
+                        raise ValueError(why)
+                    body = desk.snapshot()
+                    body["lines"] = lines
+                    _json(self, 200, body)
                 else:
                     self.send_error(404)
             except ValueError as exc:

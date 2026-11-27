@@ -122,12 +122,14 @@ CREATE TABLE IF NOT EXISTS app_user (
     modo_last       TEXT NOT NULL DEFAULT '',
     off_at          TEXT NOT NULL DEFAULT '',
     region          INTEGER NOT NULL DEFAULT 0,
+    game_country    INTEGER NOT NULL DEFAULT 0,
     storm_cap       INTEGER,
     storm_used      INTEGER NOT NULL DEFAULT 0,
     storm_day       TEXT NOT NULL DEFAULT '',
     open_cards      TEXT NOT NULL DEFAULT '',
     clean_items     TEXT NOT NULL DEFAULT '',
     guide_seen      TEXT NOT NULL DEFAULT '',
+    desk_test       INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS scan_plan (
@@ -229,6 +231,22 @@ CREATE TABLE IF NOT EXISTS wargame_recent (
 );
 CREATE INDEX IF NOT EXISTS wargame_recent_pair
     ON wargame_recent(self_uid, enemy_uid, id);
+CREATE TABLE IF NOT EXISTS war_team (
+    id           INTEGER PRIMARY KEY,
+    region       INTEGER NOT NULL,
+    country_id   INTEGER NOT NULL,
+    organizer_id INTEGER NOT NULL,
+    name         TEXT NOT NULL DEFAULT '国战编队',
+    task         TEXT NOT NULL DEFAULT 'idle',
+    created_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS war_member (
+    team_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    accept  INTEGER NOT NULL DEFAULT 0,
+    status  TEXT NOT NULL DEFAULT 'wait',
+    PRIMARY KEY (team_id, user_id)
+);
 """
 
 
@@ -558,6 +576,10 @@ def connect(readonly=False, timeout=15):
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN region INTEGER NOT NULL DEFAULT 0")
                 setup.commit()
+            if ucols and "game_country" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN game_country INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
             if ucols and "storm_cap" not in ucols:
                 setup.execute("ALTER TABLE app_user ADD COLUMN storm_cap INTEGER")
                 setup.commit()
@@ -593,6 +615,38 @@ def connect(readonly=False, timeout=15):
             if ucols and "guide_seen" not in ucols:
                 setup.execute(
                     "ALTER TABLE app_user ADD COLUMN guide_seen TEXT NOT NULL DEFAULT ''")
+                setup.commit()
+            if ucols and "desk_test" not in ucols:
+                setup.execute(
+                    "ALTER TABLE app_user ADD COLUMN desk_test INTEGER NOT NULL DEFAULT 0")
+                setup.commit()
+            setup.execute("DROP TABLE IF EXISTS desk_hit")
+            setup.commit()
+            mcols = {r[1] for r in setup.execute("PRAGMA table_info(war_member)")}
+            if mcols and "accept" not in mcols:
+                setup.execute(
+                    "ALTER TABLE war_member ADD COLUMN accept INTEGER NOT NULL DEFAULT 0")
+                setup.execute(
+                    "UPDATE war_member SET accept=1 WHERE user_id=("
+                    " SELECT organizer_id FROM war_team"
+                    " WHERE war_team.id=war_member.team_id)")
+                setup.commit()
+                mcols.add("accept")
+            if mcols and "status" not in mcols:
+                setup.execute(
+                    "ALTER TABLE war_member ADD COLUMN status TEXT NOT NULL DEFAULT 'wait'")
+                setup.execute(
+                    "UPDATE war_member SET status='in' WHERE accept=1")
+                setup.commit()
+            tcols = {r[1] for r in setup.execute("PRAGMA table_info(war_team)")}
+            if tcols and "name" not in tcols:
+                setup.execute(
+                    "ALTER TABLE war_team ADD COLUMN name TEXT NOT NULL DEFAULT '国战编队'")
+                setup.commit()
+                tcols.add("name")
+            if tcols and "task" not in tcols:
+                setup.execute(
+                    "ALTER TABLE war_team ADD COLUMN task TEXT NOT NULL DEFAULT 'idle'")
                 setup.commit()
             _fix_region_face(setup)
             _forget_page_names(setup)
@@ -1411,6 +1465,25 @@ def set_member_tier(user_id: int, tier: str) -> str:
     return ""
 
 
+def set_desk_test(user_id: int, on) -> str:
+    """打开或关掉这个号的指挥测试。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return "没有这个账号"
+    flag = str(on).lower() in ("1", "true", "on", "yes") if not isinstance(on, bool) else on
+    conn = connect()
+    try:
+        cur = conn.execute(
+            "UPDATE app_user SET desk_test=? WHERE id=?",
+            (1 if flag else 0, user_id))
+        conn.commit()
+        if cur.rowcount != 1:
+            return "没有这个账号"
+    finally:
+        conn.close()
+    return ""
+
+
 def set_user_expiry(username: str, expires_at: str) -> bool:
     """改这个账号的有效期。没有这个用户返回 False。"""
     conn = connect()
@@ -1510,7 +1583,7 @@ def list_members() -> list:
             "IFNULL(lock_cards,3), IFNULL(modo_cards,0), IFNULL(region,0), "
             "IFNULL(off_at,''), IFNULL(attack_qq,''), IFNULL(daily_at,''), "
             "storm_cap, IFNULL(storm_used,0), IFNULL(storm_day,''), "
-            "IFNULL(modo_at,''), IFNULL(watch_on,0) "
+            "IFNULL(modo_at,''), IFNULL(desk_test,0), IFNULL(watch_on,0) "
             "FROM app_user ORDER BY id").fetchall()
     finally:
         conn.close()
@@ -1540,7 +1613,8 @@ def list_members() -> list:
             "storm_cap": None if row[20] is None else int(row[20]),
             "storm_used": int(row[21] or 0) if str(row[22] or "") == beijing_day() else 0,
             "modo_at": str(row[23] or "").strip(),
-            "watch_on": bool(row[24]),
+            "desk_test": bool(row[24]),
+            "watch_on": bool(row[25]),
         })
     return items
 
@@ -1730,7 +1804,7 @@ def user_by_token(token: str, allow_expired: bool = False):
             "IFNULL(u.retreat_mode,'hops'), IFNULL(u.retreat_hops,3), IFNULL(u.retreat_city,0), "
             "IFNULL(u.retreat_fail,0), "
             "IFNULL(u.lock_cards,3), IFNULL(u.modo_cards,0), IFNULL(u.region,0), "
-            "IFNULL(u.off_at,''), IFNULL(u.watch_on,0) "
+            "IFNULL(u.off_at,''), IFNULL(u.desk_test,0), IFNULL(u.watch_on,0) "
             "FROM app_session s JOIN app_user u ON u.id=s.user_id WHERE s.token=?",
             (token,)).fetchone()
         if not row or (account_expired(row[3]) and not allow_expired):
@@ -1748,7 +1822,8 @@ def user_by_token(token: str, allow_expired: bool = False):
                 "modo_cards": int(row[15] if row[15] is not None else 0),
                 "region": int(row[16] or 0),
                 "off_at": str(row[17] or "").strip(),
-                "watch_on": bool(row[18])}
+                "desk_test": bool(row[18]),
+                "watch_on": bool(row[19])}
     finally:
         conn.close()
 
@@ -4179,6 +4254,7 @@ def note_self_defeated(name: str) -> None:
     if not name:
         return
     _attack_local.defeater = name
+    note_desk_hit("down", enemy_name=name, detail=f"自己被 {name} 击败", pressing=True)
     clause = defeat_clause(name)
     order_id = fighting_order_id()
     if not order_id:
@@ -4802,6 +4878,23 @@ def note_attack_move_text(text: str, user_id: int = 0) -> None:
             return
 
 
+def note_desk_text(text: str, user_id: int = 0) -> None:
+    """指挥测试写在进程状态上，给管理页看。进程已停则不改。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id and not attack_context_qq():
+        return
+    name = _mark_name("proc", user_id) if user_id else _mark_name("proc")
+    with _proc_lock:
+        try:
+            data = _proc_payload(_signal_value(name))
+            if not data or data.get("phase") == "offline":
+                return
+            data["desk_note"] = " ".join(str(text or "").split())[:200]
+            _upsert_signal(name, json.dumps(data, ensure_ascii=False))
+        except sqlite3.Error:
+            return
+
+
 def request_attack_move(user_id: int, city_id) -> str:
     """让这条攻打线程移动到指定城。只走路，不打那座城。成功返回空字符串。"""
     user_id = int(user_id)
@@ -4867,6 +4960,212 @@ def restore_attack_move(city_id: int) -> None:
         return
     _upsert_signal(_mark_name("move", user_id), str(cid))
     mark_attack_resume(user_id)
+
+
+_DESK_OPS = ("move", "morale", "open", "attack")
+
+
+def _parse_desk(raw) -> tuple:
+    text = str(raw or "").strip()
+    op, _, city = text.partition(":")
+    if op not in _DESK_OPS:
+        return "", 0
+    try:
+        cid = int(city or 0)
+    except ValueError:
+        return "", 0
+    if op != "morale" and cid <= 0:
+        return "", 0
+    return op, cid
+
+
+def note_game_country(country, user_id: int = 0) -> None:
+    """攻打线程读到国家后记在登录账号上。没变就不写。"""
+    try:
+        country = int(country or 0)
+    except (TypeError, ValueError):
+        return
+    if isinstance(country, bool) or country <= 0:
+        return
+    ids = [int(user_id)] if int(user_id or 0) else []
+    if not ids:
+        ids = [int(x) for x in attack_context_users() if int(x or 0) > 0]
+    if not ids:
+        return
+    remembered = getattr(_attack_local, "game_country", None)
+    key = (tuple(ids), country)
+    if remembered == key:
+        return
+    conn = connect()
+    try:
+        conn.executemany(
+            "UPDATE app_user SET game_country=? WHERE id=? AND IFNULL(game_country,0)!=?",
+            [(country, uid, country) for uid in ids])
+        conn.commit()
+    except sqlite3.Error:
+        return
+    finally:
+        conn.close()
+    _attack_local.game_country = key
+
+
+def squad_seat(user_id: int = 0) -> str:
+    """已加入，而且编队任务在进行或暂停时，返回 run 或 pause。否则空。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if user_id <= 0:
+        return ""
+    try:
+        conn = connect(readonly=True)
+    except sqlite3.Error:
+        return ""
+    try:
+        row = conn.execute(
+            "SELECT IFNULL(t.task,'idle') FROM war_member m "
+            "JOIN war_team t ON t.id=m.team_id "
+            "WHERE m.user_id=? AND IFNULL(m.status,'wait')='in' "
+            "AND IFNULL(t.task,'idle') IN ('run','pause') "
+            "ORDER BY t.id DESC LIMIT 1",
+            (user_id,)).fetchone()
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+    return str(row[0]) if row else ""
+
+
+def squad_holds(user_id: int = 0) -> bool:
+    """这个号正在编队任务里。自己的攻打和日常先不领。"""
+    return bool(squad_seat(user_id))
+
+
+def note_desk_driving(on: bool) -> None:
+    """这条线程正在做编队指令。这段时间个人任务的停手不要打断它。"""
+    _attack_local.desk_cmd = bool(on)
+
+
+def desk_driving() -> bool:
+    return bool(getattr(_attack_local, "desk_cmd", False))
+
+
+def fight_hold() -> str:
+    """个人任务该停时的原因。编队指令自己在做时，只在编队暂停时停。"""
+    if attack_paused():
+        return "已暂停"
+    seat = squad_seat()
+    if desk_driving():
+        return "编队已暂停" if seat == "pause" else ""
+    if seat in ("run", "pause"):
+        return "编队任务中"
+    return ""
+
+
+def request_desk(user_id: int, op: str, city_id=0) -> str:
+    """给这条攻打线程排一条指挥。成功返回空字符串。"""
+    user_id = int(user_id or 0)
+    op = str(op or "")
+    if op not in _DESK_OPS:
+        return "没有这个操作"
+    try:
+        cid = int(city_id or 0)
+    except (TypeError, ValueError):
+        return "城市不对"
+    label = ""
+    if op != "morale":
+        if cid <= 0:
+            return "要选一座城"
+        label = city_name(cid)
+        if not label:
+            return "这座城不在目录里"
+    if shutdown_due(user_id):
+        return "已定时关闭，不再执行任务"
+    if not attack_qq_of(user_id):
+        return "还没绑定攻打 QQ"
+    status = attack_status(user_id)
+    if not status.get("online"):
+        return "攻打没在跑，不能操作"
+    if status.get("paused"):
+        return "攻打暂停着，先点继续"
+    verb = {"move": "移动到", "attack": "攻打", "open": "打开", "morale": "补士气"}[op]
+    where = verb if op == "morale" else f"{verb} {cid} {label}".strip()
+    if status.get("phase") == "running":
+        note = f"打完这一单就{where}"
+    else:
+        note = f"开始{where}"
+    _upsert_signal(_mark_name("desk", user_id), f"{op}:{cid}")
+    note_desk_text(note, user_id)
+    return ""
+
+
+def clear_desk(user_id: int) -> None:
+    """丢掉还没领走的指挥。关掉接受指挥时用。"""
+    user_id = int(user_id or 0)
+    if user_id:
+        _delete_signal(_mark_name("desk", user_id))
+
+
+def desk_pending(user_id: int = 0) -> tuple:
+    """这条攻打线程还没领走的指挥。没有返回 ("", 0)。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id or (shutdown_due(user_id) and shutdown_covers_context()):
+        return "", 0
+    return _parse_desk(_signal_value(_mark_name("desk", user_id)))
+
+
+def desk_waiting(user_id: int = 0) -> bool:
+    op, _city = desk_pending(user_id)
+    return bool(op)
+
+
+def take_desk() -> tuple:
+    """领走这次指挥。领过就不再做第二次。"""
+    user_id = attack_context_user()
+    op, cid = desk_pending(user_id)
+    if not op:
+        return "", 0
+    _delete_signal(_mark_name("desk", user_id))
+    return op, cid
+
+
+def restore_desk(op: str, city_id: int) -> None:
+    """指挥做到一半被超级强攻打断。放回去，重新登录后再做。"""
+    user_id = int(attack_context_user() or 0)
+    op = str(op or "")
+    try:
+        cid = int(city_id or 0)
+    except (TypeError, ValueError):
+        return
+    if not user_id or op not in _DESK_OPS:
+        return
+    if op != "morale" and cid <= 0:
+        return
+    _upsert_signal(_mark_name("desk", user_id), f"{op}:{cid}")
+    mark_attack_resume(user_id)
+
+
+def save_desk_look(payload: dict, user_id: int = 0) -> None:
+    """打开城市后的玩家列表，给管理页看。"""
+    user_id = int(user_id or attack_context_user() or 0)
+    if not user_id:
+        return
+    try:
+        raw = json.dumps(payload, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return
+    try:
+        _upsert_signal(_mark_name("desklook", user_id), raw[:24000])
+    except sqlite3.Error:
+        return
+
+
+def load_desk_look(user_id: int) -> dict:
+    user_id = int(user_id or 0)
+    if not user_id:
+        return {}
+    try:
+        data = json.loads(_signal_value(_mark_name("desklook", user_id)) or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def request_attack_here(user_id: int) -> str:
@@ -5817,6 +6116,7 @@ def attack_status(user_id: int) -> dict:
                      "paused": paused, "keepalive": keeping,
                      "hold_left": int(hold_left) if show_hold else None,
                      "move_note": str(parsed.get("move_note") or ""),
+                     "desk_note": str(parsed.get("desk_note") or ""),
                      "need_login": bool(
                          uin and phase not in ("login", "running", "hold", "daily")
                          and not paused and not attack_cookie_logged_in(user_id, conn=conn))})
@@ -7600,12 +7900,29 @@ def enqueue_daily_job(user_id: int, kind: str, params=None) -> str:
         conn.close()
 
 
+def release_running_daily(detail="编队任务中，这项先停下") -> None:
+    """正在做的日常放回排队。编队任务占着这个号时用，结束后再领。"""
+    job_id = int(getattr(_attack_local, "daily_job", 0) or 0)
+    if not job_id:
+        return
+    conn = connect()
+    try:
+        conn.execute(
+            "UPDATE daily_job SET status='pending', ready_at='', detail=?, updated_at=? "
+            "WHERE id=? AND status='running'",
+            (_job_detail(detail), now_ts(), job_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def claim_daily_job(kinds=None):
     """领这个攻打 QQ 上最早的一条日常。没有就返回 None。到点关闭的账号不领。
 
     kinds 给定时只领这些项目，基地战、国战和日常才能各领各的。
+    编队任务进行或暂停时，已加入的号不领自己的日常。
     """
-    ids = executable_users()
+    ids = [i for i in executable_users() if not squad_holds(i)]
     if not ids:
         return None
     slot = ",".join("?" * len(ids))
@@ -7701,6 +8018,10 @@ def finish_daily_job(job_id: int, status: str, detail: str) -> None:
 def set_running_daily(job_id: int) -> None:
     """这条线程正在做的日常。关停后 daily_job_stopped 变成真。"""
     _attack_local.daily_job = int(job_id or 0)
+
+
+def running_daily_id() -> int:
+    return int(getattr(_attack_local, "daily_job", 0) or 0)
 
 
 def daily_job_stopped() -> bool:
@@ -7964,8 +8285,9 @@ def claim_attack_order(city_id=None, auto_only=False):
     """领这个攻打 QQ 上最新的一条排队订单。后提交的优先。没绑上的账号不领。
 
     city_id 有值时只领这座城的。auto_only 只领自动索敌，不领摩多。
+    编队任务进行或暂停时，已加入的号不领自己的订单。
     """
-    ids = executable_users()
+    ids = [i for i in executable_users() if not squad_holds(i)]
     if not ids:
         return None
     try:
@@ -9081,6 +9403,184 @@ def reset_atk_fail_uid(user_id: int, uid: str) -> tuple:
     log.info("登录账号 %s 从攻打 QQ %s 的战败库去掉 %s",
              username_of(user_id), acct, who)
     return had, name, ""
+
+
+_HIT_KEEP = 50
+_hit_lock = threading.Lock()
+_hits = {}
+_user_team = {}
+_hit_seq = 0
+_HIT_TEXT = {"win": "打过", "lose": "打不过", "repel": "击退", "down": "被打"}
+
+
+def _team_of(user_id: int) -> int:
+    """这个号当前已加入的编队。没加入是 0。结果记在内存里，队员变动时清掉。"""
+    user_id = int(user_id or 0)
+    if user_id <= 0:
+        return 0
+    with _hit_lock:
+        if user_id in _user_team:
+            return int(_user_team[user_id] or 0)
+
+    def _read():
+        conn = connect(readonly=True, timeout=DB_OP_TIMEOUT)
+        try:
+            row = conn.execute(
+                "SELECT team_id FROM war_member WHERE user_id=? "
+                "AND IFNULL(status,'wait')='in' ORDER BY team_id DESC LIMIT 1",
+                (user_id,)).fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+
+    team_id = _run_timeout(_read, default=0) or 0
+    with _hit_lock:
+        _user_team[user_id] = int(team_id)
+    return int(team_id)
+
+
+def clear_team_hits(team_id) -> None:
+    """这一支编队的现场战报丢掉。队员变动或重新攻打时用。"""
+    try:
+        team_id = int(team_id or 0)
+    except (TypeError, ValueError):
+        return
+    if team_id <= 0:
+        return
+    with _hit_lock:
+        _hits.pop(team_id, None)
+        for uid, tid in list(_user_team.items()):
+            if int(tid or 0) == team_id:
+                _user_team.pop(uid, None)
+
+
+def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pressing=False) -> None:
+    """编队攻打记一条现场战报。只放内存，不写库。"""
+    global _hit_seq
+    user_id = int(attack_context_user() or 0)
+    result = str(result or "")
+    if user_id <= 0 or result not in _HIT_TEXT:
+        return
+    team_id = _team_of(user_id)
+    if not team_id:
+        return
+    enemy_uid = str(enemy_uid or "").strip()[:40]
+    enemy_name = " ".join(str(enemy_name or "").split())[:40]
+    detail = " ".join(str(detail or "").split())[:160]
+    if not enemy_uid and not enemy_name and not detail:
+        return
+    try:
+        city_id = int(city_id or 0)
+    except (TypeError, ValueError):
+        city_id = 0
+    with _hit_lock:
+        rows = _hits.setdefault(team_id, [])
+        prev = rows[0] if rows else None
+        if (prev and prev["user_id"] == user_id and prev["result"] == result
+                and prev["enemy_uid"] == enemy_uid and prev["enemy_name"] == enemy_name):
+            return
+        _hit_seq += 1
+        rows.insert(0, {
+            "id": _hit_seq,
+            "user_id": user_id,
+            "enemy_uid": enemy_uid,
+            "enemy_name": enemy_name,
+            "city_id": city_id,
+            "result": result,
+            "detail": detail,
+            "pressing": bool(pressing),
+            "at": now_ts(),
+        })
+        del rows[_HIT_KEEP:]
+
+
+def team_threats() -> dict:
+    """正在打我方队员、而且这个号还没打不过的人。uids 和 names 都可能是空的。"""
+    user_id = int(attack_context_user() or 0)
+    empty = {"uids": set(), "names": set()}
+    if user_id <= 0:
+        return empty
+    team_id = _team_of(user_id)
+    if not team_id:
+        return empty
+    failed = failed_names()
+    failed_nameset = {str(v).strip() for v in failed.values() if str(v).strip()}
+    with _hit_lock:
+        rows = list(_hits.get(team_id) or [])
+    uids, names = set(), set()
+    for row in rows:
+        if not row.get("pressing") or int(row.get("user_id") or 0) == user_id:
+            continue
+        uid = str(row.get("enemy_uid") or "").strip()
+        name = str(row.get("enemy_name") or "").strip()
+        if uid and uid not in failed:
+            uids.add(uid)
+        elif name and name not in failed_nameset:
+            names.add(name)
+    return {"uids": uids, "names": names}
+
+
+def list_desk_hits(team_id, page=1, who="", result="", q="") -> dict:
+    """一支编队内存里最近 50 条攻打状态。按队员、结果和关键字筛过再分页。"""
+    try:
+        team_id = int(team_id or 0)
+        page = int(page or 1)
+    except (TypeError, ValueError):
+        return {"items": [], "total": 0, "page": 1, "pages": 1}
+    if team_id <= 0:
+        return {"items": [], "total": 0, "page": 1, "pages": 1}
+    who = str(who or "").strip().lower()
+    result = str(result or "").strip()
+    q = str(q or "").strip().lower()
+    size = 10
+    with _hit_lock:
+        rows = [dict(row) for row in (_hits.get(team_id) or [])]
+    conn = connect(readonly=True)
+    try:
+        ids = sorted({int(row["user_id"]) for row in rows})
+        names = {}
+        if ids:
+            marks = ",".join("?" * len(ids))
+            found = conn.execute(
+                f"SELECT id, IFNULL(username,'') FROM app_user WHERE id IN ({marks})",
+                ids).fetchall()
+            names = {int(row[0]): row[1] for row in found}
+        items = []
+        for row in rows:
+            city = int(row["city_id"] or 0)
+            item = {
+                "id": int(row["id"]),
+                "user_id": int(row["user_id"]),
+                "username": names.get(int(row["user_id"]), ""),
+                "enemy_uid": row["enemy_uid"],
+                "enemy_name": row["enemy_name"],
+                "city_id": city,
+                "city_name": city_name(city, conn) if city else "",
+                "result": row["result"],
+                "result_text": _HIT_TEXT.get(row["result"]) or row["result"],
+                "detail": row["detail"],
+                "pressing": bool(row["pressing"]),
+                "at": beijing_ts(row["at"]),
+            }
+            if who and who not in item["username"].lower():
+                continue
+            if result and item["result"] != result:
+                continue
+            if q:
+                blob = " ".join((
+                    item["enemy_name"], item["enemy_uid"], item["city_name"],
+                    str(item["city_id"] or ""), item["detail"], item["username"],
+                )).lower()
+                if q not in blob:
+                    continue
+            items.append(item)
+    finally:
+        conn.close()
+    total = len(items)
+    pages = max(1, (total + size - 1) // size)
+    page = min(max(1, page), pages)
+    start = (page - 1) * size
+    return {"items": items[start:start + size], "total": total, "page": page, "pages": pages}
 
 
 def flush_atk_fail():

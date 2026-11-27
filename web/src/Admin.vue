@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import "./base.css";
 import MarkdownDoc from "./components/MarkdownDoc.vue";
 import BattleReport from "./components/BattleReport.vue";
+import DeskPage from "./components/DeskPage.vue";
 
 const me = ref(null);
 const username = ref("");
@@ -19,6 +20,7 @@ const expiryNote = ref({});
 const openTier = ref(0);
 const tierDraft = ref({});
 const tierBusy = ref(0);
+const deskBusy = ref(0);
 const tierErr = ref({});
 const tierNote = ref({});
 const openPwd = ref(0);
@@ -675,6 +677,21 @@ function toggleTier(m) {
   tierDraft.value = { ...tierDraft.value, [m.id]: m.tier || "初级" };
 }
 
+async function saveDeskTest(m, on, event) {
+  if (deskBusy.value) return;
+  err.value = "";
+  deskBusy.value = m.id;
+  try {
+    const data = await api("/api/admin/members/desk-test", { user_id: m.id, on: !!on });
+    paintMembers(data.members);
+  } catch (e) {
+    err.value = e.message || "请求失败";
+    if (event && event.target) event.target.checked = !!m.desk_test;
+  } finally {
+    deskBusy.value = 0;
+  }
+}
+
 async function saveTier(m) {
   if (tierBusy.value) return;
   const tier = String(tierDraft.value[m.id] || "").trim();
@@ -839,7 +856,7 @@ async function deleteMember(m) {
 
 async function clearMember(m) {
   if (clearing.value) return;
-  if (!window.confirm("清空 " + m.username + " 的账号配置？档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限会留下。")) return;
+  if (!window.confirm("清空 " + m.username + " 的账号配置？档位、有效期、管理、指挥测试、攻打 QQ 和超级强攻拒绝上限会留下。")) return;
   err.value = "";
   clearing.value = m.id;
   try {
@@ -966,9 +983,10 @@ onUnmounted(() => {
         <button type="button" role="tab" :aria-selected="sheet === 'fighters'" :class="{ ghost: sheet !== 'fighters' }" @click="sheet = 'fighters'">攻打 QQ</button>
         <button type="button" role="tab" :aria-selected="sheet === 'scan'" :class="{ ghost: sheet !== 'scan' }" @click="sheet = 'scan'">扫描号</button>
         <button type="button" role="tab" :aria-selected="sheet === 'feature'" :class="{ ghost: sheet !== 'feature' }" @click="sheet = 'feature'">新功能</button>
+        <button type="button" role="tab" :aria-selected="sheet === 'desk'" :class="{ ghost: sheet !== 'desk' }" @click="sheet = 'desk'">指挥测试</button>
       </div>
       <template v-if="sheet === 'members'">
-      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。点「改密码」给忘记密码的成员设一个新密码，这个账号已有的登录会退出，之后用新密码登录。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。创建账号不带管理权限，有效期留空就是不限期。删除会连订单、订阅和登录一起去掉，当前登录的管理员不能删自己。</p>
+      <p class="muted">看每个登录账号自己改过的配置。清空后回到默认，档位、有效期、管理、指挥测试、攻打 QQ 和超级强攻拒绝上限不动。点「会员等级」可以改成初级、中级、高级或高级pro。点「有效期」可以设为过期、延长一个月，或改成指定日期。点「改密码」给忘记密码的成员设一个新密码，这个账号已有的登录会退出，之后用新密码登录。过期账号默认不显示，有效期当天仍然有效，没填有效期的一直显示。每页 20 个，点表头可以排序。创建账号不带管理权限，有效期留空就是不限期。删除会连订单、订阅和登录一起去掉，当前登录的管理员不能删自己。</p>
       <form class="filters" @submit.prevent="createMember()">
         <label>用户名<input v-model="newName" autocomplete="off" required /></label>
         <label>密码<input v-model="newPassword" type="password" autocomplete="new-password" required /></label>
@@ -1042,7 +1060,7 @@ onUnmounted(() => {
           <tbody>
             <template v-for="m in memberView.rows" :key="m.id">
               <tr>
-                <td>{{ m.username }}<span v-if="m.admin" class="muted"> · 管理</span></td>
+                <td>{{ m.username }}<span v-if="m.admin" class="muted"> · 管理</span><span v-if="m.desk_test" class="muted"> · 测试</span></td>
                 <td>{{ m.tier || "初级" }}</td>
                 <td>{{ m.expires_at || "不限期" }}<span v-if="memberExpired(m)" class="off"> 已过期</span></td>
                 <td>{{ m.attack_qq || "—" }}</td>
@@ -1124,6 +1142,11 @@ onUnmounted(() => {
               </tr>
               <tr v-if="openMember === m.id">
                 <td colspan="7" class="member-cfg">
+                  <label class="choice">
+                    <input type="checkbox" :checked="!!m.desk_test" :disabled="deskBusy === m.id" @change="saveDeskTest(m, $event.target.checked, $event)" />
+                    参与指挥测试
+                  </label>
+                  <p class="muted">勾上之后，这个号在自己的页面能看到编队，可以接受邀请或退出。没勾的号看不到，也不能操作。</p>
                   <p>订阅 QQ：{{ m.qq_target || "—" }}</p>
                   <p>挂机：{{ m.hold_min || 0 }} 分钟<template v-if="m.hold_all"> · 全天候</template></p>
                   <p>定时关闭：{{ m.off_at || "未设" }}</p>
@@ -1263,6 +1286,9 @@ onUnmounted(() => {
           </figure>
         </div>
         <p v-else class="muted">还没有图片。png、jpg、gif、webp 都可以，最多 6 张。</p>
+      </template>
+      <template v-else-if="sheet === 'desk'">
+        <DeskPage />
       </template>
       <template v-else-if="logQq">
         <div class="qq-log-head">
