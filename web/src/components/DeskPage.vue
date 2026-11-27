@@ -566,6 +566,7 @@ onUnmounted(() => {
         <span class="who">{{ row.username }}</span>
         <span class="hit-result">{{ row.result_text }}</span>
         <span>{{ row.enemy_name || row.enemy_uid || "敌人" }}</span>
+        <span v-if="row.hurt != null">击伤士气 {{ row.hurt }}</span>
         <span v-if="row.city_name || row.city_id" class="muted">{{ row.city_name || row.city_id }}</span>
         <span v-if="row.pressing" class="hit-press">正在打队员</span>
         <span v-if="row.detail" class="muted hit-detail">{{ row.detail }}</span>

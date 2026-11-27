@@ -9454,7 +9454,7 @@ def clear_team_hits(team_id) -> None:
                 _user_team.pop(uid, None)
 
 
-def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pressing=False) -> None:
+def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pressing=False, hurt=None) -> None:
     """编队攻打记一条现场战报。只放内存，不写库。"""
     global _hit_seq
     user_id = int(attack_context_user() or 0)
@@ -9480,6 +9480,7 @@ def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pre
                 and prev["enemy_uid"] == enemy_uid and prev["enemy_name"] == enemy_name):
             return
         _hit_seq += 1
+        dealt = hurt if isinstance(hurt, int) and not isinstance(hurt, bool) else None
         rows.insert(0, {
             "id": _hit_seq,
             "user_id": user_id,
@@ -9488,6 +9489,7 @@ def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pre
             "city_id": city_id,
             "result": result,
             "detail": detail,
+            "hurt": dealt,
             "pressing": bool(pressing),
             "at": now_ts(),
         })
@@ -9559,6 +9561,7 @@ def list_desk_hits(team_id, page=1, who="", result="", q="") -> dict:
                 "result": row["result"],
                 "result_text": _HIT_TEXT.get(row["result"]) or row["result"],
                 "detail": row["detail"],
+                "hurt": row["hurt"] if isinstance(row.get("hurt"), int) and not isinstance(row.get("hurt"), bool) else None,
                 "pressing": bool(row["pressing"]),
                 "at": beijing_ts(row["at"]),
             }

@@ -1645,6 +1645,8 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
             drop = mine_before - mine_n
         out["击伤"] = lost_n
         out["对方剩余"] = after_n
+        if lost_n is not None:
+            out["击伤合计"] = int(out.get("击伤合计") or 0) + lost_n
         out["自己降低"] = drop
         out["自己剩余"] = mine_n
         citydb.note_lock_morale(after_n, confirmed=True)
@@ -1718,11 +1720,18 @@ def _note_desk_hit(out, uid, who, city) -> None:
         result, pressing = "win", False
     else:
         return
+    hurt = out.get("击伤合计")
+    if isinstance(hurt, bool) or not isinstance(hurt, int):
+        raw = out.get("击伤")
+        hurt = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
     detail = reason
-    if not detail and result == "win":
-        detail = f"击伤 {out.get('击伤')}，对方士气 {out.get('对方剩余')}"
+    if not detail and result == "win" and hurt is None:
+        left = out.get("对方剩余")
+        if isinstance(left, int) and not isinstance(left, bool):
+            detail = f"对方士气 {left}"
     citydb.note_desk_hit(
-        result, uid, who or out.get("名字") or "", city, detail, pressing=pressing)
+        result, uid, who or out.get("名字") or "", city, detail,
+        pressing=pressing, hurt=hurt)
 
 
 def _note_repel(out, tally, name: str = "") -> None:
