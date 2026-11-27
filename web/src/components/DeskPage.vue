@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import SquadPanel from "./SquadPanel.vue";
 
 const view = ref({ cities: [], accounts: [], teams: [], countries: [], width: 320, height: 180 });
 const err = ref("");
@@ -11,8 +12,6 @@ const cityId = ref(0);
 const organizerId = ref("");
 const countryId = ref("");
 const newName = ref("国战编队");
-const editName = ref("国战编队");
-const inviteWho = ref("");
 let timer = 0;
 
 const PALETTE = ["#c45c26", "#2f6f4e", "#3d5a80", "#8c3a4b", "#6b5b2a", "#3f6f8c", "#7a4e2d", "#4d5d3a", "#6a4c7a", "#8a5a2b", "#2c6e6a", "#7d3b3b", "#4a6741", "#5c4a32", "#345e7d", "#6e4b3a"];
@@ -49,8 +48,20 @@ watch(organizer, (who) => {
   if (who && who.country) countryId.value = String(who.country);
 });
 
-watch(() => team.value && team.value.id, () => {
-  editName.value = team.value && team.value.name ? team.value.name : "国战编队";
+const squad = computed(() => {
+  const current = team.value;
+  if (!current) return null;
+  const who = byId.value[current.organizer_id];
+  return {
+    team_id: current.id,
+    name: current.name || "国战编队",
+    region: current.region,
+    country_name: current.country_name || "",
+    organizer: who && who.username ? who.username : "指挥者",
+    self: false,
+    state: "in",
+    roster: current.roster || [],
+  };
 });
 
 const members = computed(() => {
@@ -131,9 +142,19 @@ async function makeTeam() {
   teamId.value = view.value.teams[view.value.teams.length - 1]?.id || teamId.value;
 }
 
-async function sendInvite() {
-  await send("invite", { team_id: team.value.id, username: inviteWho.value.trim() });
-  if (!err.value) inviteWho.value = "";
+async function renameSquad(name) {
+  await send("rename", { team_id: team.value.id, name });
+  if (err.value) throw new Error(err.value);
+}
+
+async function inviteMember(username) {
+  await send("invite", { team_id: team.value.id, username });
+  if (err.value) throw new Error(err.value);
+}
+
+async function kickMember(member) {
+  await send("kick", { team_id: team.value.id, user_id: member.id });
+  if (err.value) throw new Error(err.value);
 }
 
 function pick(c) {
@@ -226,26 +247,15 @@ onUnmounted(() => clearInterval(timer));
       <ul v-if="lines.length" class="desk-lines">
         <li v-for="(line, i) in lines" :key="i">{{ line }}</li>
       </ul>
-      <form v-if="team" class="stack" @submit.prevent="send('rename', { team_id: team.id, name: editName })">
-        <label>编队名称
-          <input v-model="editName" maxlength="16" />
-        </label>
-        <button type="submit" :disabled="busy">保存名称</button>
-      </form>
-      <form v-if="team" class="stack" @submit.prevent="sendInvite()">
-        <label>对方账号
-          <input v-model="inviteWho" required placeholder="登录账号" />
-        </label>
-        <button type="submit" :disabled="busy">邀请</button>
-      </form>
-      <div v-if="team">
-        <p class="muted">同区同国家才能邀请。还没从游戏读到国家的可以先邀请，读到别的国家后这一条会跳过。</p>
-        <p v-for="m in team.roster || []" :key="m.id">
-          {{ m.username }}
-          <span class="muted">{{ m.organizer ? "指挥者 · " : "" }}{{ m.status }}</span>
-          <button v-if="!m.organizer && m.state !== 'out'" type="button" class="ghost" :disabled="busy" @click="send('kick', { team_id: team.id, user_id: m.id })">踢出</button>
-        </p>
-      </div>
+      <SquadPanel
+        v-if="squad"
+        lead
+        :squad="squad"
+        :busy="busy"
+        :rename-squad="renameSquad"
+        :invite-member="inviteMember"
+        :kick-member="kickMember"
+      />
       <div v-if="shownLook">
         <h3>{{ shownLook.who.username }} 打开 {{ shownLook.look.name || shownLook.look.city }}</h3>
         <p class="muted">{{ shownLook.look.note }}<template v-if="shownLook.look.owner_name"> · 归属 {{ shownLook.look.owner_name }}</template></p>

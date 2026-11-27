@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from "vue";
+import SquadPanel from "../components/SquadPanel.vue";
 
 const attackCity = defineModel("attackCity", { type: String, required: true });
 const attackUid = defineModel("attackUid", { type: String, required: true });
@@ -50,6 +51,11 @@ const props = defineProps({
   orderOpen: { type: Function, required: true },
   holdCell: { type: Function, required: true },
   showErr: { type: Function, required: true },
+  squad: { type: Object, default: null },
+  renameSquad: { type: Function, default: null },
+  inviteMember: { type: Function, default: null },
+  kickMember: { type: Function, default: null },
+  saveCommandAccept: { type: Function, default: null },
 });
 
 function dropPriority(uid) {
@@ -97,6 +103,16 @@ function fightingLine(it) {
   <section>
     <h2>国战助手</h2>
     <p v-if="err && errAt === 'attack'" class="err">{{ err }}</p>
+    <SquadPanel
+      idle
+      :squad="squad"
+      :lead="!!(squad && squad.self)"
+      :rename-squad="renameSquad"
+      :invite-member="inviteMember"
+      :kick-member="kickMember"
+      :answer="saveCommandAccept"
+      :show-err="showErr"
+    />
     <p v-if="!me.remote_attack" class="muted">当前是{{ me.tier || "初级" }}。打人和清城要中级或高级。刷摩多军团在日常任务。</p>
     <template v-if="me.remote_attack">
       <form class="lock-row" @submit.prevent="claimBlueprint().catch((e) => showErr(e.message))">

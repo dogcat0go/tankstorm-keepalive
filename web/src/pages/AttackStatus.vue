@@ -19,51 +19,7 @@ const props = defineProps({
   reloadQr: { type: Function, required: true },
   showErr: { type: Function, required: true },
   loginPlatDefault: { type: String, default: "空间" },
-  command: { type: Object, default: null },
-  saveCommandAccept: { type: Function, required: true },
-  inviteMember: { type: Function, required: true },
-  kickMember: { type: Function, required: true },
-  renameSquad: { type: Function, required: true },
 });
-
-const inviteWho = ref("");
-const squadName = ref("国战编队");
-watch(() => props.command && props.command.team_id, () => {
-  squadName.value = props.command && props.command.name ? props.command.name : "国战编队";
-});
-
-async function answer(on) {
-  try {
-    await props.saveCommandAccept(on);
-  } catch (e) {
-    props.showErr(e.message, "bar");
-  }
-}
-
-async function sendInvite() {
-  try {
-    await props.inviteMember(inviteWho.value.trim());
-    inviteWho.value = "";
-  } catch (e) {
-    props.showErr(e.message, "bar");
-  }
-}
-
-async function rename() {
-  try {
-    await props.renameSquad(squadName.value);
-  } catch (e) {
-    props.showErr(e.message, "bar");
-  }
-}
-
-async function kick(member) {
-  try {
-    await props.kickMember(member.id);
-  } catch (e) {
-    props.showErr(e.message, "bar");
-  }
-}
 
 const loginPlat = ref("空间");
 try {
@@ -124,39 +80,6 @@ watch(() => props.loginPlatDefault, (value) => {
     </div>
     <img v-if="qrSrc" class="qr" :src="qrSrc" alt="攻打号登录二维码" @error="reloadQr" />
     <p v-if="qrSrc && !(proc && proc.qq)" class="muted bind-foot">扫上之后，页面上的「还没绑定」会变成这个 QQ 号。</p>
-    <div v-if="command && command.team_id" class="proc">
-      <template v-if="command.self">
-        <span class="proc-text">你在指挥「{{ command.name }}」· {{ command.region }}区 {{ command.country_name }}。</span>
-        <form class="off-set" @submit.prevent="rename()">
-          <label class="choice">编队名称
-            <input v-model="squadName" maxlength="16" />
-          </label>
-          <button type="submit">保存</button>
-        </form>
-        <form class="off-set" @submit.prevent="sendInvite()">
-          <label class="choice">邀请账号
-            <input v-model="inviteWho" required placeholder="对方的登录账号" />
-          </label>
-          <button type="submit">邀请</button>
-        </form>
-      </template>
-      <template v-else-if="command.state === 'wait'">
-        <span class="proc-text">{{ command.organizer }} 邀请这个号加入「{{ command.name }}」· {{ command.region }}区 {{ command.country_name }}。</span>
-        <button type="button" @click="answer(true)">接受</button>
-        <button type="button" class="ghost" @click="answer(false)">拒绝</button>
-      </template>
-      <template v-else>
-        <span class="proc-text">所在编队「{{ command.name }}」，指挥者 {{ command.organizer }}。点地图时，已加入的号会跟着做。</span>
-        <button type="button" class="ghost" @click="answer(false)">退出</button>
-      </template>
-      <ul class="desk-lines">
-        <li v-for="m in command.roster || []" :key="m.id">
-          {{ m.username }}
-          <span class="muted">{{ m.organizer ? "指挥者 · " : "" }}{{ m.status }}</span>
-          <button v-if="command.self && !m.organizer && m.state !== 'out'" type="button" class="ghost" @click="kick(m)">踢出</button>
-        </li>
-      </ul>
-    </div>
     <p v-if="err && errAt === 'bar'" class="err">{{ err }}</p>
   </section>
 </template>

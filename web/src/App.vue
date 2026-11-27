@@ -5,6 +5,7 @@ import "element-plus/es/components/menu/style/css";
 import "./base.css";
 import AccountBar from "./pages/AccountBar.vue";
 import AttackStatus from "./pages/AttackStatus.vue";
+import SquadPanel from "./components/SquadPanel.vue";
 import AttackPage from "./pages/AttackPage.vue";
 import DailyPage from "./pages/DailyPage.vue";
 import ActivityPage from "./pages/ActivityPage.vue";
@@ -1034,7 +1035,8 @@ async function inviteMember(username) {
   takeCommand(await api("/api/desk/invite", { username }));
 }
 
-async function kickMember(userId) {
+async function kickMember(member) {
+  const userId = member && typeof member === "object" ? member.id : member;
   takeCommand(await api("/api/desk/kick", { user_id: userId }));
 }
 
@@ -1746,11 +1748,17 @@ onUnmounted(() => {
         :off-note="offNote"
         :reload-qr="reloadQr"
         :show-err="showErr"
-        :command="command"
-        :save-command-accept="saveCommandAccept"
+      />
+      <SquadPanel
+        v-if="command && command.team_id && !toolsOn"
+        v-show="!sideOn"
+        :squad="command"
+        :lead="!!command.self"
+        :rename-squad="renameSquad"
         :invite-member="inviteMember"
         :kick-member="kickMember"
-        :rename-squad="renameSquad"
+        :answer="saveCommandAccept"
+        :show-err="(message) => showErr(message, 'bar')"
       />
       <div v-if="toolsOn && me.base_war && floatJobs.length && (tab === 'base' || tab === 'activity')" class="job-float" :class="{ 'is-collapsed': floatFolded }" :style="floatStyle">
         <header @pointerdown="dragFloat">任务状态</header>
@@ -1962,6 +1970,11 @@ onUnmounted(() => {
         :order-open="orderOpen"
         :hold-cell="holdCell"
         :show-err="showErr"
+        :squad="command"
+        :rename-squad="renameSquad"
+        :invite-member="inviteMember"
+        :kick-member="kickMember"
+        :save-command-accept="saveCommandAccept"
       />
       <BasePage
         v-show="toolsOn && me && me.base_war && tab === 'base'"
