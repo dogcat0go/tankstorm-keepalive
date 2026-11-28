@@ -9440,7 +9440,10 @@ _hit_lock = threading.Lock()
 _hits = {}
 _user_team = {}
 _hit_seq = 0
-_HIT_TEXT = {"win": "打过", "lose": "打不过", "repel": "击退", "down": "被打"}
+_HIT_TEXT = {
+    "win": "打过", "lose": "打不过", "repel": "击退", "down": "被打",
+    "sweep": "扫荡", "atk": "攻击",
+}
 
 
 def _team_of(user_id: int) -> int:
@@ -9484,7 +9487,7 @@ def clear_team_hits(team_id) -> None:
                 _user_team.pop(uid, None)
 
 
-def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pressing=False, hurt=None) -> None:
+def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pressing=False, hurt=None, loss=None) -> None:
     """编队攻打记一条现场战报。只放内存，不写库。"""
     global _hit_seq
     user_id = int(attack_context_user() or 0)
@@ -9506,11 +9509,13 @@ def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pre
     with _hit_lock:
         rows = _hits.setdefault(team_id, [])
         prev = rows[0] if rows else None
-        if (prev and prev["user_id"] == user_id and prev["result"] == result
-                and prev["enemy_uid"] == enemy_uid and prev["enemy_name"] == enemy_name):
+        dealt = hurt if isinstance(hurt, int) and not isinstance(hurt, bool) else None
+        ours = loss if isinstance(loss, int) and not isinstance(loss, bool) else None
+        if (result not in ("sweep", "atk") and prev and prev["user_id"] == user_id
+                and prev["result"] == result and prev["enemy_uid"] == enemy_uid
+                and prev["enemy_name"] == enemy_name):
             return
         _hit_seq += 1
-        dealt = hurt if isinstance(hurt, int) and not isinstance(hurt, bool) else None
         rows.insert(0, {
             "id": _hit_seq,
             "user_id": user_id,
@@ -9520,6 +9525,7 @@ def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pre
             "result": result,
             "detail": detail,
             "hurt": dealt,
+            "loss": ours,
             "pressing": bool(pressing),
             "at": now_ts(),
         })
@@ -9592,6 +9598,7 @@ def list_desk_hits(team_id, page=1, who="", result="", q="") -> dict:
                 "result_text": _HIT_TEXT.get(row["result"]) or row["result"],
                 "detail": row["detail"],
                 "hurt": row["hurt"] if isinstance(row.get("hurt"), int) and not isinstance(row.get("hurt"), bool) else None,
+                "loss": row["loss"] if isinstance(row.get("loss"), int) and not isinstance(row.get("loss"), bool) else None,
                 "pressing": bool(row["pressing"]),
                 "at": beijing_ts(row["at"]),
             }
