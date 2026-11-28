@@ -451,6 +451,14 @@ img.scan-qr { width: 280px; }
 .desk-map svg { display: block; width: 100%; height: 100%; }
 .desk-map circle { cursor: pointer; }
 .desk-map line, .desk-map circle { vector-effect: non-scaling-stroke; }
+.desk-ring { fill: none; pointer-events: none; stroke-width: 2; }
+.desk-ring-seat { stroke: #c45c26; }
+.desk-ring-hold { stroke: #e07a2f; stroke-width: 2.5; }
+.desk-ring-pick { stroke: #e07a2f; stroke-width: 2; animation: desk-halo 1.5s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes desk-halo {
+  0% { transform: scale(1); opacity: 0.95; }
+  100% { transform: scale(1.45); opacity: 0; }
+}
 .desk-map line { stroke: #c3b8a4; stroke-width: 1; pointer-events: none; }
 .desk-map text { font-size: 11px; fill: #3a342c; pointer-events: none; }
 .desk-side { display: flex; flex-direction: column; gap: 10px; }

@@ -40,6 +40,10 @@ let wheelX = 0;
 let wheelY = 0;
 let panDX = 0;
 let panDY = 0;
+let pinchWant = null;
+let pinch = null;
+let pointing = false;
+const fingers = new Map();
 
 const PALETTE = ["#c45c26", "#2f6f4e", "#3d5a80", "#8c3a4b", "#6b5b2a", "#3f6f8c", "#7a4e2d", "#4d5d3a", "#6a4c7a", "#8a5a2b", "#2c6e6a", "#7d3b3b", "#4a6741", "#5c4a32", "#345e7d", "#6e4b3a"];
 
@@ -118,36 +122,12 @@ function scheduleCam() {
   camFrame = requestAnimationFrame(flushCam);
 }
 
-function flushCam() {
-  camFrame = 0;
-  const svg = mapSvg.value;
-  if (!svg) {
-    wheelDY = 0;
-    panDX = 0;
-    panDY = 0;
-    return;
-  }
-  if (panDX || panDY) {
-    const u = unitScale(svg);
-    camX -= panDX * u.x;
-    camY -= panDY * u.y;
-    panDX = 0;
-    panDY = 0;
-    clampCam();
-    paintCam();
-  }
-  if (!wheelDY || !svg.getScreenCTM()) {
-    wheelDY = 0;
-    return;
-  }
+function zoomAt(svg, next, clientX, clientY) {
+  if (!svg.getScreenCTM() || next === zoom) return;
   const pt = svg.createSVGPoint();
-  pt.x = wheelX;
-  pt.y = wheelY;
+  pt.x = clientX;
+  pt.y = clientY;
   const here = pt.matrixTransform(svg.getScreenCTM().inverse());
-  const step = wheelMode === 1 ? 0.06 : 0.0016;
-  const next = Math.min(8, Math.max(1, zoom * Math.exp(-wheelDY * step)));
-  wheelDY = 0;
-  if (next === zoom) return;
   const { w, h } = mapSize();
   const vw = w / zoom;
   const vh = h / zoom;
@@ -162,6 +142,40 @@ function flushCam() {
   paintCam();
 }
 
+function flushCam() {
+  camFrame = 0;
+  const svg = mapSvg.value;
+  if (!svg) {
+    wheelDY = 0;
+    panDX = 0;
+    panDY = 0;
+    pinchWant = null;
+    return;
+  }
+  if (panDX || panDY) {
+    const u = unitScale(svg);
+    camX -= panDX * u.x;
+    camY -= panDY * u.y;
+    panDX = 0;
+    panDY = 0;
+    clampCam();
+    paintCam();
+  }
+  if (pinchWant != null) {
+    const next = pinchWant;
+    pinchWant = null;
+    zoomAt(svg, next, wheelX, wheelY);
+  }
+  if (!wheelDY || !svg.getScreenCTM()) {
+    wheelDY = 0;
+    return;
+  }
+  const step = wheelMode === 1 ? 0.06 : 0.0016;
+  const next = Math.min(8, Math.max(1, zoom * Math.exp(-wheelDY * step)));
+  wheelDY = 0;
+  zoomAt(svg, next, wheelX, wheelY);
+}
+
 function onMapWheel(e) {
   wheelDY += e.deltaY;
   wheelMode = e.deltaMode;
@@ -170,16 +184,55 @@ function onMapWheel(e) {
   scheduleCam();
 }
 
+function fingerSpan() {
+  const pts = [...fingers.values()];
+  if (pts.length < 2) return null;
+  const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+  return { dist, x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+}
+
 function onMapDown(e) {
-  if (e.button !== 0) return;
-  dragMoved = false;
-  dragAt = { x: e.clientX, y: e.clientY };
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (e.currentTarget && e.currentTarget.setPointerCapture) {
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* 手指已经松开 */ }
+  }
+  const span = fingerSpan();
+  if (span) {
+    pinch = { dist: span.dist, zoom, x: span.x, y: span.y };
+    dragAt = null;
+    dragMoved = true;
+    mapDrag.value = true;
+  } else {
+    dragMoved = false;
+    dragAt = { x: e.clientX, y: e.clientY };
+  }
+  if (pointing) return;
+  pointing = true;
   window.addEventListener("pointermove", onMapMove);
   window.addEventListener("pointerup", onMapUp);
   window.addEventListener("pointercancel", onMapUp);
 }
 
 function onMapMove(e) {
+  if (!fingers.has(e.pointerId)) return;
+  if (fingers.size >= 2) e.preventDefault();
+  fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const span = fingerSpan();
+  if (span) {
+    if (!pinch) pinch = { dist: span.dist, zoom, x: span.x, y: span.y };
+    panDX += span.x - pinch.x;
+    panDY += span.y - pinch.y;
+    pinch.x = span.x;
+    pinch.y = span.y;
+    wheelX = span.x;
+    wheelY = span.y;
+    pinchWant = Math.min(8, Math.max(1, pinch.zoom * (span.dist / pinch.dist)));
+    dragMoved = true;
+    mapDrag.value = true;
+    scheduleCam();
+    return;
+  }
   if (!dragAt) return;
   const dx = e.clientX - dragAt.x;
   const dy = e.clientY - dragAt.y;
@@ -194,12 +247,24 @@ function onMapMove(e) {
   scheduleCam();
 }
 
-function onMapUp() {
+function onMapUp(e) {
+  if (e && e.pointerId != null) fingers.delete(e.pointerId);
+  else fingers.clear();
+  if (fingers.size >= 2) return;
+  pinch = null;
+  if (fingers.size === 1) {
+    const p = [...fingers.values()][0];
+    dragAt = { x: p.x, y: p.y };
+    dragMoved = true;
+    return;
+  }
+  dragAt = null;
+  mapDrag.value = false;
+  if (!pointing) return;
+  pointing = false;
   window.removeEventListener("pointermove", onMapMove);
   window.removeEventListener("pointerup", onMapUp);
   window.removeEventListener("pointercancel", onMapUp);
-  dragAt = null;
-  mapDrag.value = false;
 }
 
 const team = computed(() => view.value.teams.find((t) => t.id === teamId.value) || null);
@@ -265,8 +330,21 @@ function fill(id) {
   return PALETTE[Math.abs(Number(id) || 0) % PALETTE.length];
 }
 
-function hereOf(a) {
-  return (view.value.cities || []).find((c) => c.id === a.here_id);
+const seated = computed(() => {
+  const by = {};
+  for (const a of members.value) {
+    const id = a.here_id || 0;
+    if (!id) continue;
+    if (!by[id]) by[id] = [];
+    by[id].push(a.username || "成员");
+  }
+  return by;
+});
+
+function ringR(c, kind) {
+  const base = c.capital || c.id === 9101 ? 9 : 5.5;
+  if (kind === "seat") return base + 6;
+  return base + (seated.value[c.id] ? 12 : 6);
 }
 
 const looks = computed(() => {
@@ -466,7 +544,7 @@ onUnmounted(() => {
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线、当前所在城市，以及这个号配置的最多恢复卡。城市用保活已经记下的位置，页面每秒看一次。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先点一座城，再点移动、攻打或打开城市。按住地图拖动，滚轮缩放。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市在旁边列出城里的人，敌我都看，并写出城里一共有多少人。只看前 5 页，不打。</p>
+  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线、当前所在城市，以及这个号配置的最多恢复卡。城市用保活已经记下的位置，页面每秒看一次。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先点一座城，再点移动、攻打或打开城市。按住地图拖动，滚轮或双指缩放。点中的城市亮一圈，成员所在的城市也有一圈，人走到哪就跟到哪。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市在旁边列出城里的人，敌我都看，并写出城里一共有多少人。只看前 5 页，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
   <div class="desk-manage">
     <form class="lock-row" @submit.prevent="makeTeam()">
@@ -521,17 +599,28 @@ onUnmounted(() => {
         <line v-for="e in edges" :key="e.id" :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2" />
         <g v-for="c in view.cities" :key="c.id">
           <circle
+            v-if="seated[c.id]"
+            class="desk-ring desk-ring-seat"
+            :cx="c.x" :cy="c.y" :r="ringR(c, 'seat')">
+            <title>{{ seated[c.id].join("、") }}</title>
+          </circle>
+          <circle
+            v-if="c.id === cityId"
+            class="desk-ring desk-ring-hold"
+            :cx="c.x" :cy="c.y" :r="ringR(c, 'pick')" />
+          <circle
+            v-if="c.id === cityId"
+            class="desk-ring desk-ring-pick"
+            :cx="c.x" :cy="c.y" :r="ringR(c, 'pick')" />
+          <circle
             :cx="c.x" :cy="c.y" :r="c.capital || c.id === 9101 ? 9 : 5.5"
             :fill="fill(c.owner)"
             :stroke="c.id === cityId ? '#1a1a1a' : (canSupply(c) ? '#2f6f4e' : '#fff')"
             :stroke-width="c.id === cityId ? 2.4 : 1"
             @click="pick(c)">
-            <title>{{ c.name }} {{ c.id }}</title>
+            <title>{{ c.name }} {{ c.id }}<template v-if="seated[c.id]"> · {{ seated[c.id].join("、") }}</template></title>
           </circle>
           <text :x="c.lx || c.x + 8" :y="c.ly || c.y + 3" text-anchor="middle">{{ c.name }}</text>
-        </g>
-        <g v-for="a in members" :key="'here' + a.id">
-          <circle v-if="hereOf(a)" :cx="hereOf(a).x" :cy="hereOf(a).y - 9" r="3" fill="#fff" stroke="#1a1a1a" />
         </g>
       </svg>
       <p v-else class="muted">城市目录还没装上。</p>
