@@ -1127,7 +1127,7 @@ onUnmounted(() => {
                   <p v-if="fightBusy === m.id" class="muted">读取中</p>
                   <p v-else-if="fightErr[m.id]" class="err">{{ fightErr[m.id] }}</p>
                   <template v-else-if="fightView[m.id]">
-                    <p class="muted">{{ fightView[m.id].username }} 的军事演习。同一对保留最近 10 场简易战报，时间是北京时间。</p>
+                    <p class="muted">{{ fightView[m.id].username }} 的军事演习。同一对保留最近 10 场，时间是北京时间。最新一场留下将领和参谋，更早的只留简易战报。</p>
                     <p v-if="fightView[m.id].note" class="muted">{{ fightView[m.id].note }}</p>
                     <template v-for="pair in fightView[m.id].pairs" :key="pair.uid">
                       <p class="wg-saved">{{ pair.name || pair.uid }}</p>

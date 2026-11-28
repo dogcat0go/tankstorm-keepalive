@@ -198,7 +198,7 @@ async function submitPwd() {
       <p v-else-if="err && errAt === 'wargame'" class="err">{{ err }}</p>
       <p v-else-if="histNote" class="muted">{{ histNote }}</p>
       <template v-else-if="histPairs.length">
-        <p class="muted">同一对保留最近 10 场简易战报，时间是北京时间。</p>
+        <p class="muted">同一对保留最近 10 场，时间是北京时间。最新一场留下将领和参谋，更早的只留简易战报。</p>
         <template v-for="pair in histPairs" :key="pair.uid">
           <p class="wg-saved">{{ pair.name || pair.uid }}</p>
           <template v-for="fight in pair.fights" :key="pair.uid + '-' + fight.id + '-' + fight.at">

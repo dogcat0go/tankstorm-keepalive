@@ -5395,16 +5395,21 @@ def _simple_wargame(battle):
 
 
 def save_wargame_brief(self_uid, enemy_uid, enemy_name, battle) -> None:
-    """按自己和对方的游戏编号留下简易战报。同一对再打就覆盖。"""
+    """按自己和对方的游戏编号留下战报。同一对再打，最新一场保留将领和参谋。
+
+    更早的场只留简易战报。最近 10 场。
+    """
     me = str(self_uid or "").strip()[:64]
     them = str(enemy_uid or "").strip()[:64]
     if not me or not them:
         return
+    full = _clean_wargame_battle(battle)
     brief = _simple_wargame(battle)
-    if not brief:
+    if not full or not brief:
         return
     name = str(enemy_name or "").strip()[:32]
     payload = json.dumps(brief, ensure_ascii=False)
+    detail = json.dumps(full, ensure_ascii=False)
     stamp = now_ts()
     try:
         conn = connect()
@@ -5420,10 +5425,25 @@ def save_wargame_brief(self_uid, enemy_uid, enemy_name, battle) -> None:
                     "INSERT INTO wargame_recent(self_uid, enemy_uid, enemy_name, battle, at) "
                     "VALUES (?,?,?,?,?)",
                     (me, them, name, old[0], old[1] or stamp))
+            prev = conn.execute(
+                "SELECT id, battle FROM wargame_recent WHERE self_uid=? AND enemy_uid=? "
+                "ORDER BY id DESC LIMIT 1",
+                (me, them)).fetchone()
+            if prev:
+                try:
+                    earlier = _simple_wargame(json.loads(prev[1] or ""))
+                except ValueError:
+                    earlier = None
+                if earlier:
+                    text = json.dumps(earlier, ensure_ascii=False)
+                    if text != prev[1]:
+                        conn.execute(
+                            "UPDATE wargame_recent SET battle=? WHERE id=?",
+                            (text, prev[0]))
             conn.execute(
                 "INSERT INTO wargame_recent(self_uid, enemy_uid, enemy_name, battle, at) "
                 "VALUES (?,?,?,?,?)",
-                (me, them, name, payload, stamp))
+                (me, them, name, detail, stamp))
             stale = conn.execute(
                 "SELECT id FROM wargame_recent WHERE self_uid=? AND enemy_uid=? "
                 "ORDER BY id DESC LIMIT -1 OFFSET 10",
@@ -5504,7 +5524,7 @@ def _fight_row(uid, name, raw, at, fight_id):
         battle = json.loads(raw or "")
     except ValueError:
         return None
-    battle = _simple_wargame(battle)
+    battle = _clean_wargame_battle(battle)
     if not battle:
         return None
     return {
