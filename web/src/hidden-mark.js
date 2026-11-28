@@ -4,6 +4,46 @@ export const MARK_ALPHA = 0.016;
 const MARK_FONT = 30;
 const REVEAL_RADIUS = 12;
 
+export function markTile(text, dpr) {
+  const name = String(text || "").trim();
+  const scale = Math.min(Math.max(Number(dpr) || 1, 1), 3);
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  ctx.font = `700 ${MARK_FONT}px sans-serif`;
+  const gapX = Math.max(ctx.measureText(name || "帐").width + 48, 180);
+  const gapY = 96;
+  const tileW = Math.ceil(gapX);
+  const tileH = Math.ceil(gapY * 2);
+  canvas.width = tileW;
+  canvas.height = tileH;
+  if (!name) return { canvas, cssWidth: tileW / scale, cssHeight: tileH / scale };
+  ctx.font = `700 ${MARK_FONT}px sans-serif`;
+  ctx.fillStyle = `rgba(255, 255, 0, ${MARK_ALPHA})`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, tileW, tileH);
+  ctx.clip();
+  for (let ix = -1; ix <= 1; ix += 1) {
+    for (let iy = -1; iy <= 1; iy += 1) {
+      const row = iy * 2;
+      ctx.save();
+      ctx.translate(tileW / 2 + ix * tileW, gapY / 2 + (row + 0) * gapY);
+      ctx.rotate(-Math.PI / 8);
+      ctx.fillText(name, 0, 0);
+      ctx.restore();
+      ctx.save();
+      ctx.translate(ix * tileW, gapY * 1.5 + row * gapY);
+      ctx.rotate(-Math.PI / 8);
+      ctx.fillText(name, 0, 0);
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+  return { canvas, cssWidth: tileW / scale, cssHeight: tileH / scale };
+}
+
 export function paintMark(ctx, text, width, height) {
   const name = String(text || "").trim();
   if (!name || width < 1 || height < 1) return;
