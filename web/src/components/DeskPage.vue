@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import SquadPanel from "./SquadPanel.vue";
 
 const view = ref({ cities: [], accounts: [], teams: [], countries: [], width: 320, height: 180 });
@@ -21,15 +21,25 @@ const cityId = ref(0);
 const organizerId = ref("");
 const countryId = ref("");
 const newName = ref("国战编队");
-const zoom = ref(1);
-const camX = ref(0);
-const camY = ref(0);
 const mapDrag = ref(false);
 const mapSvg = ref(null);
 let timer = 0;
+let seatTimer = 0;
+let seatBusy = false;
 let dragMoved = false;
 let dragAt = null;
 let camSet = false;
+let deskRaw = "";
+let zoom = 1;
+let camX = 0;
+let camY = 0;
+let camFrame = 0;
+let wheelDY = 0;
+let wheelMode = 0;
+let wheelX = 0;
+let wheelY = 0;
+let panDX = 0;
+let panDY = 0;
 
 const PALETTE = ["#c45c26", "#2f6f4e", "#3d5a80", "#8c3a4b", "#6b5b2a", "#3f6f8c", "#7a4e2d", "#4d5d3a", "#6a4c7a", "#8a5a2b", "#2c6e6a", "#7d3b3b", "#4a6741", "#5c4a32", "#345e7d", "#6e4b3a"];
 
@@ -45,37 +55,56 @@ async function api(path, body) {
   return data;
 }
 
+function mapSize() {
+  return {
+    w: Number(view.value.width) || 1,
+    h: Number(view.value.height) || 1,
+  };
+}
+
+function frameBox() {
+  const { w, h } = mapSize();
+  const vw = w / zoom;
+  const vh = h / zoom;
+  return `${camX - vw / 2} ${camY - vh / 2} ${vw} ${vh}`;
+}
+
+function paintCam() {
+  const svg = mapSvg.value;
+  if (svg) svg.setAttribute("viewBox", frameBox());
+}
+
 function placeCam() {
   const w = Number(view.value.width) || 0;
   const h = Number(view.value.height) || 0;
   if (!w || !h || camSet) return;
-  camX.value = w / 2;
-  camY.value = h / 2;
+  camX = w / 2;
+  camY = h / 2;
   camSet = true;
+  paintCam();
 }
 
 async function load() {
   const data = await api("/api/admin/desk");
-  view.value = data;
-  placeCam();
+  const raw = JSON.stringify(data);
+  if (raw !== deskRaw) {
+    deskRaw = raw;
+    view.value = data;
+    await nextTick();
+    placeCam();
+  } else if (!camSet) {
+    await nextTick();
+    placeCam();
+  }
   if (!view.value.teams.some((t) => t.id === teamId.value)) teamId.value = view.value.teams[0]?.id || 0;
 }
 
-const mapFrame = computed(() => {
-  const w = Number(view.value.width) || 1;
-  const h = Number(view.value.height) || 1;
-  const vw = w / zoom.value;
-  const vh = h / zoom.value;
-  return `${camX.value - vw / 2} ${camY.value - vh / 2} ${vw} ${vh}`;
-});
-
 function clampCam() {
-  const w = Number(view.value.width) || 1;
-  const h = Number(view.value.height) || 1;
-  const vw = w / zoom.value;
-  const vh = h / zoom.value;
-  camX.value = vw >= w ? w / 2 : Math.min(w - vw / 2, Math.max(vw / 2, camX.value));
-  camY.value = vh >= h ? h / 2 : Math.min(h - vh / 2, Math.max(vh / 2, camY.value));
+  const { w, h } = mapSize();
+  const vw = w / zoom;
+  const vh = h / zoom;
+  camX = vw >= w ? w / 2 : Math.min(w - vw / 2, Math.max(vw / 2, camX));
+  camY = vh >= h ? h / 2 : Math.min(h - vh / 2, Math.max(vh / 2, camY));
 }
 
 function unitScale(svg) {
@@ -84,28 +113,61 @@ function unitScale(svg) {
   return { x: 1 / m.a, y: 1 / m.d };
 }
 
-function onMapWheel(e) {
+function scheduleCam() {
+  if (camFrame) return;
+  camFrame = requestAnimationFrame(flushCam);
+}
+
+function flushCam() {
+  camFrame = 0;
   const svg = mapSvg.value;
-  if (!svg || !svg.getScreenCTM()) return;
+  if (!svg) {
+    wheelDY = 0;
+    panDX = 0;
+    panDY = 0;
+    return;
+  }
+  if (panDX || panDY) {
+    const u = unitScale(svg);
+    camX -= panDX * u.x;
+    camY -= panDY * u.y;
+    panDX = 0;
+    panDY = 0;
+    clampCam();
+    paintCam();
+  }
+  if (!wheelDY || !svg.getScreenCTM()) {
+    wheelDY = 0;
+    return;
+  }
   const pt = svg.createSVGPoint();
-  pt.x = e.clientX;
-  pt.y = e.clientY;
+  pt.x = wheelX;
+  pt.y = wheelY;
   const here = pt.matrixTransform(svg.getScreenCTM().inverse());
-  const step = e.deltaMode === 1 ? 0.06 : 0.0016;
-  const next = Math.min(8, Math.max(1, zoom.value * Math.exp(-e.deltaY * step)));
-  if (next === zoom.value) return;
-  const w = Number(view.value.width) || 1;
-  const h = Number(view.value.height) || 1;
-  const vw = w / zoom.value;
-  const vh = h / zoom.value;
-  const fx = (here.x - (camX.value - vw / 2)) / vw;
-  const fy = (here.y - (camY.value - vh / 2)) / vh;
+  const step = wheelMode === 1 ? 0.06 : 0.0016;
+  const next = Math.min(8, Math.max(1, zoom * Math.exp(-wheelDY * step)));
+  wheelDY = 0;
+  if (next === zoom) return;
+  const { w, h } = mapSize();
+  const vw = w / zoom;
+  const vh = h / zoom;
+  const fx = (here.x - (camX - vw / 2)) / vw;
+  const fy = (here.y - (camY - vh / 2)) / vh;
   const nw = w / next;
   const nh = h / next;
-  camX.value = here.x - fx * nw + nw / 2;
-  camY.value = here.y - fy * nh + nh / 2;
-  zoom.value = next;
+  camX = here.x - fx * nw + nw / 2;
+  camY = here.y - fy * nh + nh / 2;
+  zoom = next;
   clampCam();
+  paintCam();
+}
+
+function onMapWheel(e) {
+  wheelDY += e.deltaY;
+  wheelMode = e.deltaMode;
+  wheelX = e.clientX;
+  wheelY = e.clientY;
+  scheduleCam();
 }
 
 function onMapDown(e) {
@@ -126,11 +188,10 @@ function onMapMove(e) {
     dragMoved = true;
     mapDrag.value = true;
   }
-  const u = unitScale(mapSvg.value);
-  camX.value -= dx * u.x;
-  camY.value -= dy * u.y;
-  clampCam();
+  panDX += dx;
+  panDY += dy;
   dragAt = { x: e.clientX, y: e.clientY };
+  scheduleCam();
 }
 
 function onMapUp() {
@@ -255,6 +316,42 @@ async function loadHits() {
   hitPages.value = data.pages || 1;
 }
 
+function applySeats(rows) {
+  const team = (view.value.teams || []).find((t) => t.id === teamId.value);
+  if (!team || !team.roster) return;
+  const by = new Map(rows.map((r) => [r.id, r]));
+  for (const m of team.roster) {
+    const next = by.get(m.id);
+    if (!next) continue;
+    const here = next.here || "";
+    const hereId = next.here_id || 0;
+    if (m.here !== here) m.here = here;
+    if (m.here_id !== hereId) m.here_id = hereId;
+    if (m.cards !== next.cards) m.cards = next.cards;
+  }
+  for (const a of view.value.accounts || []) {
+    const next = by.get(a.id);
+    if (!next) continue;
+    const here = next.here || "";
+    const hereId = next.here_id || 0;
+    if (a.here !== here) a.here = here;
+    if (a.here_id !== hereId) a.here_id = hereId;
+  }
+}
+
+async function loadSeats() {
+  if (!teamId.value || seatBusy) return;
+  seatBusy = true;
+  try {
+    const data = await api("/api/admin/desk/seats?team_id=" + teamId.value);
+    applySeats(data.roster || []);
+  } catch (e) {
+    /* 城市刷新失败时留着上一次的位置 */
+  } finally {
+    seatBusy = false;
+  }
+}
+
 async function refresh() {
   try {
     await load();
@@ -271,7 +368,10 @@ async function send(action, extra) {
   try {
     const data = await api("/api/admin/desk", { action, ...extra });
     view.value = data;
+    deskRaw = JSON.stringify(data);
     if (data.lines) lines.value = data.lines;
+    await nextTick();
+    paintCam();
   } catch (e) {
     err.value = e.message;
   } finally {
@@ -354,16 +454,19 @@ function useTool(op) {
 onMounted(() => {
   refresh();
   timer = setInterval(refresh, 3000);
+  seatTimer = setInterval(() => { loadSeats().catch(() => {}); }, 1000);
 });
 onUnmounted(() => {
   clearInterval(timer);
+  clearInterval(seatTimer);
   onMapUp();
+  if (camFrame) cancelAnimationFrame(camFrame);
 });
 </script>
 
 <template>
   <h2>指挥测试</h2>
-  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先点一座城，再点移动、攻打或打开城市。按住地图拖动，滚轮缩放。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市在旁边列出城里的人，敌我都看，并写出城里一共有多少人。只看前 5 页，不打。</p>
+  <p class="muted">编队名称默认是国战编队，可以改。创建后填写对方账号发出邀请。对方接受前是等待加入，接受后是已加入；退出或被踢出是已退出。名单上另显示在线或离线、当前所在城市，以及这个号配置的最多恢复卡。城市用保活已经记下的位置，页面每秒看一次。指挥者可以踢人。管理在这个测试页。成员要在自己的页面看到编队，需要在账号配置里勾上「参与指挥测试」。编队任务有开始、暂停和结束。结束之后队员还在，下次可以直接再开始。进行中或暂停时，已加入的号自己的攻打和日常先停，退出或任务结束后再继续。下面是这一次任务的现场战报，最近 50 条，可以按人和结果筛。重新开始、结束、重新点攻打，或者有人加入、退出、被踢，这些记录就清掉。打不过仍记在原来的战败库。有人被打回去时，没在战败库里的队员会先打这个敌人。先点一座城，再点移动、攻打或打开城市。按住地图拖动，滚轮缩放。指挥者自己会做。已加入的号才会跟着做。移动只走路。补士气只在本国首都和相邻城，体力要大于 70。攻打会走进敌方城，有人就打，空城会占领，一次最多 8 座城。打开城市在旁边列出城里的人，敌我都看，并写出城里一共有多少人。只看前 5 页，不打。</p>
   <p v-if="err" class="err">{{ err }}</p>
   <div class="desk-manage">
     <form class="lock-row" @submit.prevent="makeTeam()">
@@ -414,7 +517,7 @@ onUnmounted(() => {
       :class="{ 'is-drag': mapDrag }"
       @wheel.prevent="onMapWheel"
       @pointerdown="onMapDown">
-      <svg v-if="view.cities.length" ref="mapSvg" :viewBox="mapFrame" role="img" aria-label="城市地图">
+      <svg v-if="view.cities.length" ref="mapSvg" role="img" aria-label="城市地图">
         <line v-for="e in edges" :key="e.id" :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2" />
         <g v-for="c in view.cities" :key="c.id">
           <circle
@@ -489,6 +592,8 @@ onUnmounted(() => {
           <option value="lose">打不过</option>
           <option value="repel">击退</option>
           <option value="down">被打</option>
+          <option value="sweep">扫荡</option>
+          <option value="atk">攻击</option>
         </select>
       </label>
       <label>关键字
@@ -503,6 +608,8 @@ onUnmounted(() => {
         <span class="who">{{ row.username }}</span>
         <span class="hit-result">{{ row.result_text }}</span>
         <span>{{ row.enemy_name || row.enemy_uid || "敌人" }}</span>
+        <span v-if="row.hurt != null">敌方损失 {{ row.hurt }}</span>
+        <span v-if="row.loss != null">我方损失 {{ row.loss }}</span>
         <span v-if="row.city_name || row.city_id" class="muted">{{ row.city_name || row.city_id }}</span>
         <span v-if="row.pressing" class="hit-press">正在打队员</span>
         <span v-if="row.detail" class="muted hit-detail">{{ row.detail }}</span>

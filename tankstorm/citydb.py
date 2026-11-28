@@ -4659,6 +4659,19 @@ def attack_here_id() -> int:
     return _kept_here(parsed)
 
 
+def stored_attack_here(user_id: int, conn=None) -> tuple:
+    """保活线程已经记下的所在城市。不向游戏再要一次。离线或还没读到返回 (0, "")。"""
+    parsed, _seen, online = _read_user_proc(int(user_id or 0), conn=conn)
+    if not online:
+        return 0, ""
+    here_id = _kept_here(parsed)
+    if not here_id:
+        return 0, ""
+    name = city_name(here_id, conn=conn)
+    text = f"{here_id} {name}".strip() if name else str(here_id)
+    return here_id, text
+
+
 def note_attack_here(city_id, power=None, morale=None) -> None:
     """记下这个攻打 QQ 当前所在城市，以及面板上的体力和士气。
 
@@ -8162,6 +8175,23 @@ def attack_order_open() -> bool:
         conn.close()
 
 
+def attack_order_ready() -> bool:
+    """有可以马上领的攻打订单。编队任务占着的号先不算，那些单还不能领。"""
+    ids = [i for i in executable_users() if not squad_holds(i)]
+    if not ids:
+        return False
+    slot = ",".join("?" * len(ids))
+    conn = connect(readonly=True)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM atk_order WHERE user_id IN (" + slot + ") "
+            "AND status IN ('pending','running') LIMIT 1",
+            tuple(ids)).fetchone()
+        return row is not None
+    finally:
+        conn.close()
+
+
 def requeue_running_orders() -> None:
     """拿到攻打号之后调用。标着正在打的是上一轮进程留下的，改回排队。同一个 QQ 上的单都改。"""
     ids = attack_context_users()
@@ -9410,7 +9440,10 @@ _hit_lock = threading.Lock()
 _hits = {}
 _user_team = {}
 _hit_seq = 0
-_HIT_TEXT = {"win": "打过", "lose": "打不过", "repel": "击退", "down": "被打"}
+_HIT_TEXT = {
+    "win": "打过", "lose": "打不过", "repel": "击退", "down": "被打",
+    "sweep": "扫荡", "atk": "攻击",
+}
 
 
 def _team_of(user_id: int) -> int:
@@ -9454,7 +9487,7 @@ def clear_team_hits(team_id) -> None:
                 _user_team.pop(uid, None)
 
 
-def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pressing=False) -> None:
+def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pressing=False, hurt=None, loss=None) -> None:
     """编队攻打记一条现场战报。只放内存，不写库。"""
     global _hit_seq
     user_id = int(attack_context_user() or 0)
@@ -9476,8 +9509,11 @@ def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pre
     with _hit_lock:
         rows = _hits.setdefault(team_id, [])
         prev = rows[0] if rows else None
-        if (prev and prev["user_id"] == user_id and prev["result"] == result
-                and prev["enemy_uid"] == enemy_uid and prev["enemy_name"] == enemy_name):
+        dealt = hurt if isinstance(hurt, int) and not isinstance(hurt, bool) else None
+        ours = loss if isinstance(loss, int) and not isinstance(loss, bool) else None
+        if (result not in ("sweep", "atk") and prev and prev["user_id"] == user_id
+                and prev["result"] == result and prev["enemy_uid"] == enemy_uid
+                and prev["enemy_name"] == enemy_name):
             return
         _hit_seq += 1
         rows.insert(0, {
@@ -9488,6 +9524,8 @@ def note_desk_hit(result, enemy_uid="", enemy_name="", city_id=0, detail="", pre
             "city_id": city_id,
             "result": result,
             "detail": detail,
+            "hurt": dealt,
+            "loss": ours,
             "pressing": bool(pressing),
             "at": now_ts(),
         })
@@ -9559,6 +9597,8 @@ def list_desk_hits(team_id, page=1, who="", result="", q="") -> dict:
                 "result": row["result"],
                 "result_text": _HIT_TEXT.get(row["result"]) or row["result"],
                 "detail": row["detail"],
+                "hurt": row["hurt"] if isinstance(row.get("hurt"), int) and not isinstance(row.get("hurt"), bool) else None,
+                "loss": row["loss"] if isinstance(row.get("loss"), int) and not isinstance(row.get("loss"), bool) else None,
                 "pressing": bool(row["pressing"]),
                 "at": beijing_ts(row["at"]),
             }

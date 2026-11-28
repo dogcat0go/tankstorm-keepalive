@@ -16,6 +16,7 @@
 """
 
 import math
+import time
 
 from . import citydb
 
@@ -413,12 +414,15 @@ def kick(team_id, user_id) -> str:
         if int(team[0]) == user_id:
             return "指挥者不能踢出自己。要散伙就解散这支编队"
         row = conn.execute(
-            "SELECT IFNULL(status,'wait') FROM war_member WHERE team_id=? AND user_id=?",
+            "SELECT IFNULL(m.status,'wait'), IFNULL(t.task,'idle') "
+            "FROM war_member m JOIN war_team t ON t.id=m.team_id "
+            "WHERE m.team_id=? AND m.user_id=?",
             (team_id, user_id)).fetchone()
         if not row:
             return "这个号不在这支编队里"
         if row[0] == "out":
             return "已经退出了"
+        was_held = row[0] == "in" and row[1] in ("run", "pause")
         conn.execute(
             "UPDATE war_member SET accept=0, status='out' WHERE team_id=? AND user_id=?",
             (team_id, user_id))
@@ -426,6 +430,8 @@ def kick(team_id, user_id) -> str:
         title = team[1] or _TEAM_NAME
     finally:
         conn.close()
+    if was_held:
+        citydb.mark_attack_resume(user_id)
     citydb.clear_desk(user_id)
     citydb.clear_team_hits(team_id)
     citydb.note_desk_text(f"已被请出编队「{title}」", user_id)
@@ -826,7 +832,7 @@ def _member_rows(team_id: int) -> list:
     try:
         rows = conn.execute(
             "SELECT u.id, u.username, IFNULL(u.region,0), IFNULL(u.game_country,0), "
-            "IFNULL(u.attack_qq,''), IFNULL(m.status,'wait') "
+            "IFNULL(u.attack_qq,''), IFNULL(m.status,'wait'), IFNULL(u.card_max,100) "
             "FROM war_member m JOIN app_user u ON u.id=m.user_id "
             "WHERE m.team_id=? ORDER BY u.id",
             (int(team_id),)).fetchall()
@@ -839,7 +845,20 @@ def _member_rows(team_id: int) -> list:
         "country": int(row[3] or 0),
         "qq": str(row[4] or ""),
         "state": row[5] if row[5] in ("wait", "in", "out") else "wait",
+        "cards": int(row[6] if row[6] is not None else 100),
     } for row in rows]
+
+
+def _place(who, status) -> dict:
+    """当前城市，以及这个号配置的最多恢复卡。城市用状态里已经记下的位置。"""
+    here = str(status.get("here") or "")
+    head = here.split(" ", 1)[0]
+    here_id = int(head) if head.isdigit() else 0
+    return {
+        "here": here,
+        "here_id": here_id,
+        "cards": int(who.get("cards") if who.get("cards") is not None else 100),
+    }
 
 
 def _seat(state) -> str:
@@ -874,8 +893,58 @@ def _roster(team_id, organizer_id) -> list:
             "online": online,
             "presence": presence,
             "organizer": who["id"] == int(organizer_id),
+            **_place(who, status),
         })
     return out
+
+
+_SEAT_WAIT = 1.0
+_seat_at = {}
+_seat_box = {}
+
+
+def _stored_spots(team_id) -> list:
+    """只读保活已经记下的城市。同一秒里多开的页面共用这一次结果。"""
+    members = _member_rows(team_id)
+    conn = citydb.connect(readonly=True)
+    try:
+        rows = []
+        for who in members:
+            here_id, here = citydb.stored_attack_here(who["id"], conn=conn)
+            rows.append({
+                "id": who["id"],
+                "here": here,
+                "here_id": here_id,
+                "cards": who["cards"],
+            })
+        return rows
+    finally:
+        conn.close()
+
+
+def seats(team_id) -> dict:
+    """编队成员当前城市和配置的恢复卡。不向游戏重读面板。"""
+    try:
+        team_id = int(team_id)
+    except (TypeError, ValueError):
+        return {"roster": []}
+    if team_id <= 0:
+        return {"roster": []}
+    now = time.monotonic()
+    last = _seat_at.get(team_id)
+    if last is not None and now - last < _SEAT_WAIT and team_id in _seat_box:
+        return _seat_box[team_id]
+    if not _team_row(team_id):
+        return {"roster": []}
+    payload = {"roster": _stored_spots(team_id)}
+    _seat_at[team_id] = now
+    _seat_box[team_id] = payload
+    return payload
+
+
+def own_seats(user_id) -> dict:
+    """指挥者自己的编队。不是指挥者则空。"""
+    return seats(_led_by(user_id))
 
 
 def _teams() -> list:
@@ -1023,6 +1092,8 @@ def set_task(team_id, state) -> str:
             continue
         if state == "idle":
             citydb.clear_desk(who["id"])
+            if current in ("run", "pause"):
+                citydb.mark_attack_resume(who["id"])
         if note:
             citydb.note_desk_text(note, who["id"])
     return ""
@@ -1045,7 +1116,8 @@ def set_accept(user_id, on) -> str:
     conn = citydb.connect()
     try:
         row = conn.execute(
-            "SELECT t.id, t.organizer_id, IFNULL(m.status,'wait'), IFNULL(t.name,'') "
+            "SELECT t.id, t.organizer_id, IFNULL(m.status,'wait'), IFNULL(t.name,''), "
+            "IFNULL(t.task,'idle') "
             "FROM war_member m JOIN war_team t ON t.id=m.team_id "
             "WHERE m.user_id=? AND IFNULL(m.status,'wait')!='out' "
             "ORDER BY t.id DESC LIMIT 1",
@@ -1057,6 +1129,7 @@ def set_accept(user_id, on) -> str:
             return "指挥者不用接受自己的邀请"
         title = row[3] or _TEAM_NAME
         was_in = row[2] == "in"
+        was_held = was_in and row[4] in ("run", "pause")
         if on:
             conn.execute(
                 "UPDATE war_member SET accept=1, status='in' WHERE user_id=? "
@@ -1075,6 +1148,8 @@ def set_accept(user_id, on) -> str:
         citydb.note_desk_text(f"已加入编队「{title}」", user_id)
     else:
         citydb.clear_desk(user_id)
+        if was_held:
+            citydb.mark_attack_resume(user_id)
         citydb.note_desk_text("已退出编队" if was_in else "已拒绝邀请", user_id)
     return ""
 

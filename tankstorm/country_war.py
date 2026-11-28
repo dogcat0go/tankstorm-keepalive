@@ -1641,11 +1641,14 @@ def _attack_player(rec, sock, my, uid, times, act, name, cost, cooldown, out,
         if not isinstance(mine_before, int) or isinstance(mine_before, bool):
             mine_before = None
         drop = None
-        if mine_before is not None and mine_n is not None and mine_before > mine_n:
+        if mine_before is not None and mine_n is not None and mine_before >= mine_n:
             drop = mine_before - mine_n
         out["击伤"] = lost_n
         out["对方剩余"] = after_n
         out["自己降低"] = drop
+        citydb.note_desk_hit(
+            "sweep" if name == "扫荡" else "atk",
+            uid, who, city, hurt=lost_n, loss=drop)
         out["自己剩余"] = mine_n
         citydb.note_lock_morale(after_n, confirmed=True)
         log.info("[打人] 第 %d 次%s回包 ret=%s 战功=%s 战报士气=%s 击伤=%s 自己士气=%s",
@@ -1720,9 +1723,12 @@ def _note_desk_hit(out, uid, who, city) -> None:
         return
     detail = reason
     if not detail and result == "win":
-        detail = f"击伤 {out.get('击伤')}，对方士气 {out.get('对方剩余')}"
+        left = out.get("对方剩余")
+        if isinstance(left, int) and not isinstance(left, bool):
+            detail = f"对方士气 {left}"
     citydb.note_desk_hit(
-        result, uid, who or out.get("名字") or "", city, detail, pressing=pressing)
+        result, uid, who or out.get("名字") or "", city, detail,
+        pressing=pressing)
 
 
 def _note_repel(out, tally, name: str = "") -> None:

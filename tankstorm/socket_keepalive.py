@@ -1995,7 +1995,7 @@ def _fight_modo(rec, sock, config, beater, job) -> None:
                  int(out.get("补兵") or 0))
         if why:
             log.info("订单 %s 结束原因：%s", job["id"], why)
-        if why in ("已暂停", "已定时关闭"):
+        if why in ("已暂停", "已定时关闭", "编队任务中", "编队已暂停"):
             citydb.defer_attack_order(job["id"])
             log.info("订单 %s %s，放回排队", job["id"], why)
             return
@@ -3353,7 +3353,7 @@ def _attack_orders(rec, sock, spec, ctx, beater, config) -> int:
                         with _order_account(int(job.get("user_id") or 0)):
                             _fight_claimed(rec, sock, config, beater, job)
                         continue
-                    if citydb.attack_order_open():
+                    if citydb.attack_order_ready():
                         hold_closed = False
                         citydb.set_attack_status("queue")
                         if not _wait_socket(sock, spec, ctx):
@@ -3577,11 +3577,12 @@ def run_remote_orders(qq, config: dict) -> int:
                 time.sleep(STORM_RETRY_SEC)
                 continue
             storm_retry = False
-            if resumed:
+            if resumed and not citydb.attack_order_ready():
                 citydb.clear_attack_resume()
             if not citydb.attack_hold_on():
                 citydb.fail_blocked_orders()
-                if citydb.daily_job_open() or citydb.attack_move_pending() > 0:
+                if (citydb.daily_job_open() or citydb.attack_move_pending() > 0
+                        or citydb.attack_order_ready()):
                     time.sleep(2)
                 else:
                     citydb.set_attack_status("idle")

@@ -248,6 +248,8 @@ const clock = ref(Date.now());
 let timer = 0;
 let atkTimer = 0;
 let clockTimer = 0;
+let seatTimer = 0;
+let seatBusy = false;
 
 function confirmUse(text) {
   return new Promise((resolve) => {
@@ -1003,6 +1005,29 @@ async function refreshAttacks() {
   markAttackHere();
 }
 
+async function loadCommandSeats() {
+  if (!me.value || !command.value || !command.value.self || seatBusy) return;
+  seatBusy = true;
+  try {
+    const data = await api("/api/desk/seats");
+    const rows = data.roster || [];
+    const by = new Map(rows.map((r) => [r.id, r]));
+    for (const m of command.value.roster || []) {
+      const next = by.get(m.id) || by.get(m.user_id);
+      if (!next) continue;
+      const here = next.here || "";
+      const hereId = next.here_id || 0;
+      if (m.here !== here) m.here = here;
+      if (m.here_id !== hereId) m.here_id = hereId;
+      if (m.cards !== next.cards) m.cards = next.cards;
+    }
+  } catch (e) {
+    /* 城市刷新失败时留着上一次的位置 */
+  } finally {
+    seatBusy = false;
+  }
+}
+
 async function saveCommandAccept(on) {
   commandBusy.value = true;
   try {
@@ -1720,11 +1745,13 @@ onMounted(async () => {
   clockTimer = setInterval(() => {
     clock.value = Date.now();
   }, 1000);
+  seatTimer = setInterval(() => { loadCommandSeats().catch(() => {}); }, 1000);
 });
 onUnmounted(() => {
   clearInterval(timer);
   clearInterval(atkTimer);
   clearInterval(clockTimer);
+  clearInterval(seatTimer);
 });
 </script>
 
