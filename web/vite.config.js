@@ -16,6 +16,7 @@ export default defineConfig({
         admin: fileURLToPath(new URL("./admin.html", import.meta.url)),
         "pwd-lab": fileURLToPath(new URL("./pwd-lab.html", import.meta.url)),
         napcat: fileURLToPath(new URL("./napcat.html", import.meta.url)),
+        mark: fileURLToPath(new URL("./mark.html", import.meta.url)),
       },
       // 文件名不带内容哈希。web/dist 由 update_tankstorm.sh 在服务器上生成，不进仓库。
       // 固定名字后，每次构建覆盖同一批文件，不会留下过期的哈希文件。

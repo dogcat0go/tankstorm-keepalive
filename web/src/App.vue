@@ -14,6 +14,7 @@ import QqPage from "./pages/QqPage.vue";
 import ProfilePage from "./pages/ProfilePage.vue";
 import MarkdownDoc from "./components/MarkdownDoc.vue";
 import SquadPanel from "./components/SquadPanel.vue";
+import HiddenMark from "./components/HiddenMark.vue";
 
 const me = ref(null);
 const mode = ref("login");
@@ -1775,6 +1776,9 @@ onUnmounted(() => {
     </form>
     <p v-if="!me && err && errAt === 'login'" class="err">{{ err }}</p>
     <template v-if="me">
+      <Teleport to="body">
+        <HiddenMark :text="me.username" />
+      </Teleport>
       <AccountBar
         v-model:hold-min="holdMin"
         :me="me"

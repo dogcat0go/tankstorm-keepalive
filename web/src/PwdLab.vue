@@ -1,6 +1,7 @@
 <script setup>
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import "./base.css";
+import HiddenMark from "./components/HiddenMark.vue";
 
 const me = ref(null);
 const username = ref("");
@@ -205,6 +206,9 @@ onBeforeUnmount(dropCaptcha);
 </script>
 
 <template>
+  <Teleport to="body">
+    <HiddenMark v-if="me" :text="me.username" />
+  </Teleport>
   <main>
     <h1>密码登录测试</h1>
     <p class="lead" v-if="!me">
