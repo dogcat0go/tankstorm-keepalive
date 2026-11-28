@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>显形</title>
+    <style>
+      .pair { display: grid; gap: 12px; }
+      .pair canvas { width: 100%; height: auto; border: 1px solid #ddd; border-radius: 8px; background: #fff; }
+      @media (min-width: 840px) {
+        .pair { grid-template-columns: 1fr 1fr; align-items: start; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>显形</h1>
+      <p class="lead">把手机截图放进来。蓝色掩膜会把藏在画面里的账号显出来。</p>
+      <form onsubmit="return false">
+        <label>截图<input id="file" type="file" accept="image/*" /></label>
+      </form>
+      <p class="muted" id="note">下面是示例。第一张是原图，第二张是掩膜之后。</p>
+      <div class="pair">
+        <canvas id="before"></canvas>
+        <canvas id="after"></canvas>
+      </div>
+    </main>
+    <script type="module" src="/src/mark.js"></script>
+  </body>
+</html>

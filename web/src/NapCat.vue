@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from "vue";
 import "./base.css";
+import HiddenMark from "./components/HiddenMark.vue";
 
 const me = ref(null);
 const username = ref("");
@@ -176,6 +177,9 @@ onUnmounted(stopQr);
 </script>
 
 <template>
+  <Teleport to="body">
+    <HiddenMark v-if="me" :text="me.username" />
+  </Teleport>
   <main>
     <h1>攻打号 NapCat 测试</h1>
     <p class="lead" v-if="!me">

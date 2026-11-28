@@ -4,6 +4,7 @@ import "./base.css";
 import MarkdownDoc from "./components/MarkdownDoc.vue";
 import BattleReport from "./components/BattleReport.vue";
 import DeskPage from "./components/DeskPage.vue";
+import HiddenMark from "./components/HiddenMark.vue";
 
 const me = ref(null);
 const username = ref("");
@@ -952,6 +953,9 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <Teleport to="body">
+    <HiddenMark v-if="me" :text="me.username" />
+  </Teleport>
   <main :class="{ 'admin-log': !!logQq }">
     <h1>管理</h1>
     <p class="lead" v-if="!me">
